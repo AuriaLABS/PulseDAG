@@ -1,99 +1,96 @@
-# v2.4.0 Task31 RustSec warning disposition
+# v2.4.0 Task31 RustSec warning disposition — historical record
 
-Status: active, temporary and fail-closed
+Status: **historical / superseded; not an active current-lock security gate**
 
-Owner: `kalekoi`
+Historical owner: `kalekoi`
 
-Review deadline: `2026-08-31 UTC`
+Historical review deadline: `2026-08-31 UTC` — expired.
 
-Hard expiry: before any public-testnet GO decision, or immediately when any
-listed package version, direct parent, supported target, allocator policy,
-Kaspa/workflow/libp2p dependency line, or warning set changes.
+Active dependency-security authority is now:
 
-## Decision boundary
+- issue #1127, with remaining work tracked in #1139;
+- `docs/security/V3_DEPENDENCY_SECURITY.md`;
+- `scripts/validate_v3_dependency_security.py`;
+- `.github/workflows/dependency-audit.yml`.
 
-This disposition permits only the exact Task31 **technical node + miner
-candidate** and private, valueless validation. It does not authorize public
+This file preserves the v2.4 Task31 disposition for provenance only. It must not
+be used to describe the current resolved `Cargo.lock`, to authorize a public
+network, or to infer v3 security readiness.
+
+## Historical decision boundary
+
+The original disposition permitted only the exact Task31 **technical node +
+miner candidate** and private, valueless validation. It never authorized public
 exposure, public-testnet GO, Day 0, the 30-day clock, contracts, production
 custody, or mainnet claims.
 
-The reachable unsound warnings in `atty 0.2.14`, `linkme 0.2.10`, and
-`lru 0.12.5` remain **public-testnet blockers**. They must be removed through a
-supported parent-stack upgrade or upstream-reviewed fix before public-testnet
-GO. They are not ignored by `.cargo/audit.toml` and remain visible in every
-pinned audit report.
+On the historical v2.4 dependency graph, reachable `atty 0.2.14`,
+`linkme 0.2.10`, and `lru 0.12.5` were public-testnet blockers. Unsupported
+transitive leaf patches were not authorized and no warning advisory was hidden
+in `.cargo/audit.toml`.
 
-## Exact-candidate evidence rule
+## Current-line reconciliation
 
-The dependency workflow regenerates Linux compiler-artifact reachability from
-empty Cargo target directories for `pulsedagd` and `pulsedag-miner` on every
-candidate. The evidence JSON records the exact PR head SHA rather than reusing a
-historical release-branch SHA.
+The active v3 dependency gate has superseded this inventory. On the current
+line:
 
-The earlier release-line Windows evidence is historical classification only.
-**Windows exact-candidate revalidation remains pending** and is mandatory before
-any public-testnet GO or claim that packaged Windows artifacts satisfy the final
-security matrix.
+- `linkme 0.2.10` / `linkme-impl 0.2.10` are absent after the supported Rusty
+  Kaspa 2.0.1 parent migration;
+- `lru 0.12.5` is absent after the supported libp2p 0.56 parent migration;
+- `intertrait 0.2.2` and the historical Kaspa 0.15 dependency path are absent;
+- `atty 0.2.14` remains visible through the supported `hexplay`/Kaspa/workflow
+  parent graph and remains an unresolved launch blocker;
+- runtime `bincode 1.3.3` remains visible and has an explicit migration plan in
+  `docs/security/V3_BINCODE_MIGRATION_PLAN.md`;
+- Hickory 0.25.2 advisories remain visible and are permitted only while the
+  active exact-candidate gate proves them compiler-unreachable from every
+  launch root.
 
-## Warning inventory and current Linux expectation
+Do not reintroduce historical `linkme`/`lru` entries merely to make this record
+match the current lock. The historical table below describes the old evidence,
+not current dependencies.
 
-| Advisory | Package | Exact-candidate Linux expectation | Disposition |
+## Historical warning inventory
+
+| Advisory | Package | Historical v2.4 expectation | Historical disposition |
 | --- | --- | --- | --- |
-| `RUSTSEC-2025-0052` | `async-std 1.13.2` | node and miner | Unmaintained; private-only temporary acceptance through the supported workflow/Kaspa line. |
-| `RUSTSEC-2024-0375` | `atty 0.2.14` | node and miner | Unmaintained; removal tracks the supported workflow/hexplay migration. |
-| `RUSTSEC-2021-0145` | `atty 0.2.14` | node and miner | Windows-specific unsoundness; public-testnet blocker and no-custom-global-allocator invariant remains mandatory. |
-| `RUSTSEC-2025-0141` | `bincode 1.3.3` | node yes; miner no | Unmaintained; retained for storage/schema compatibility pending explicit migration. |
-| `RUSTSEC-2024-0384` | `instant 0.1.13` | node and miner | Unmaintained; remove through supported workflow/Kaspa upgrade. |
-| `RUSTSEC-2024-0407` | `linkme 0.2.10` | node and miner | Reachable unsoundness; public-testnet blocker pending supported Kaspa/intertrait migration. |
-| `RUSTSEC-2024-0436` | `paste 1.0.15` | node build artifact; miner absent | Unmaintained build-time dependency. |
-| `RUSTSEC-2024-0370` | `proc-macro-error 1.0.4` | node and miner build artifacts | Unmaintained build-time dependency. |
-| `RUSTSEC-2025-0010` | `ring 0.16.20` | neither node nor miner | Unmaintained lock-only package behind an unselected libp2p branch; remains visible as warning. |
-| `RUSTSEC-2026-0002` | `lru 0.12.5` | node yes; miner no | Reachable unsoundness through libp2p identify; public-testnet blocker. |
-| `RUSTSEC-2026-0253` | `lru 0.12.5` | node yes; miner no | Reachable soundness/panic-safety issue; public-testnet blocker. |
+| `RUSTSEC-2025-0052` | `async-std 1.13.2` | node and miner | Unmaintained; private-only temporary acceptance. |
+| `RUSTSEC-2024-0375` | `atty 0.2.14` | node and miner | Unmaintained; supported parent migration required. |
+| `RUSTSEC-2021-0145` | `atty 0.2.14` | node and miner | Windows unsoundness; public-testnet blocker. |
+| `RUSTSEC-2025-0141` | `bincode 1.3.3` | node yes; miner no | Unmaintained; storage/schema migration required. |
+| `RUSTSEC-2024-0384` | `instant 0.1.13` | node and miner | Unmaintained parent-stack residue. |
+| `RUSTSEC-2024-0407` | `linkme 0.2.10` | node and miner | Historical reachable unsoundness; removed on current line. |
+| `RUSTSEC-2024-0436` | `paste 1.0.15` | node build artifact; miner absent | Historical build-time warning. |
+| `RUSTSEC-2024-0370` | `proc-macro-error 1.0.4` | node and miner build artifacts | Historical build-time warning. |
+| `RUSTSEC-2025-0010` | `ring 0.16.20` | neither node nor miner | Historical lock-only package; absent on active v3 line. |
+| `RUSTSEC-2026-0002` | `lru 0.12.5` | node yes; miner no | Historical reachable unsoundness; removed on current line. |
+| `RUSTSEC-2026-0253` | `lru 0.12.5` | node yes; miner no | Historical reachable soundness issue; removed on current line. |
 
-## Reachable patch-level remediation completed in Task31
+## Historical patch-level remediation
 
-The candidate lock is required to contain:
+Task31 required `crossbeam-epoch 0.9.20`, `anyhow 1.0.103`, and
+`event-listener 5.4.2`, replacing the earlier vulnerable patch levels. Those
+requirements remain part of historical provenance; current dependency policy is
+owned by the active v3 gate.
 
-- `crossbeam-epoch 0.9.20` instead of vulnerable `0.9.18`;
-- `anyhow 1.0.103` instead of `1.0.102`;
-- `event-listener 5.4.2` instead of `5.4.1`.
+## Historical evidence rule
 
-These are patch-level remediations and are validated by the exact-head
-workspace, miner, P2P and dependency gates.
+Historical Task31 warning evidence is valid only for the exact SHA that produced
+it. It must not be combined with current v3 evidence or interpreted as a
+current-lock audit. The old Linux/Windows classification and the expired
+`2026-08-31 UTC` review boundary are retained as provenance only.
 
-## Mandatory controls
-
-The permanent dependency-security workflow must:
-
-1. use pinned Rust `1.88.0` and pinned `cargo-audit 0.22.2`;
-2. prove the raw vulnerability set remains exactly the six separately
-   documented lock-only non-reachability exceptions;
-3. prove the raw informational warning set remains exactly the eleven advisory
-   records above;
-4. regenerate Linux compiler-artifact reachability on the exact candidate SHA
-   and fail on reachability drift;
-5. run `scripts/validate_v2_4_0_rustsec_warning_disposition.py`;
-6. fail after `2026-08-31 UTC` or when any package/parent/version/invariant
-   changes;
-7. keep every warning visible in uploaded raw and configured audit JSON;
-8. preserve checksummed exact-candidate provenance.
+The companion script
+`scripts/validate_v2_4_0_rustsec_warning_disposition.py` now validates only that
+this record remains explicitly historical and that the active v3 security
+authority is present. It intentionally does **not** require current `Cargo.lock`
+to recreate the obsolete v2.4 graph.
 
 No warning ID is added to `.cargo/audit.toml`.
 
-## Removal / public-GO plan
+## Current launch boundary
 
-Before public-testnet GO:
-
-1. migrate the supported workflow stack so `atty 0.2.14` is absent;
-2. migrate the supported Kaspa/intertrait stack so affected `linkme 0.2.10` is
-   absent using an upstream-supported line;
-3. move the libp2p stack to a supported line that removes reachable
-   `lru 0.12.5`, then rerun the complete P2P/network matrix;
-4. rerun Linux and Windows dependency/reachability, consensus, storage/replay,
-   P2P, RPC, miner and packaged-smoke matrices on one exact SHA;
-5. complete the remaining #803 disposition and exact-candidate public security
-   review.
-
-Unsupported transitive leaf patches are not authorized. This record bounds
-known risk; it does not convert it into public readiness approval.
+This historical record grants no GO. Current dependency launch decisions require
+fresh exact-candidate evidence from the v3 dependency-security workflow and the
+final security decision in #1127/#781. `atty 0.2.14` remains unresolved; this
+archive does not re-disposition or waive it.
