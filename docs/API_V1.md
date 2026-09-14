@@ -1,6 +1,8 @@
 # PulseDAG API v1
 
-PulseDAG v2.2.14 introduces a stable public API namespace at `/api/v1` as the compatibility foundation for v3.0.0 clients. The intent is to give explorers, wallets, miners, and operators predictable URLs while preserving practical aliases for existing integrations.
+PulseDAG v2.4.0 keeps the stable public API namespace at `/api/v1`. The sample below matches `get_api_version()` (`repo_version()` + `operator_stage()`). Historical v2.2.14 / v2.3.0 payloads are compatibility provenance only.
+
+This document does **not** authorize a `v2.4.0` tag, GitHub Release, public-testnet GO, Day 0, default high cadence, or `contracts_enabled=true`. Live trackers: #1132 (audit epic), #1128 (docs identity), #781 / #794 (launch control).
 
 ## Version response
 
@@ -12,13 +14,15 @@ PulseDAG v2.2.14 introduces a stable public API namespace at `/api/v1` as the co
   "data": {
     "api_version": "v1",
     "stable_prefix": "/api/v1",
-    "release_version": "v2.2.14",
-    "stage": "v2.2-readiness"
+    "release_version": "v2.4.0",
+    "stage": "v2.4-readiness"
   },
   "error": null,
   "meta": null
 }
 ```
+
+`stage` remains a readiness label for the moving Task31 candidate. It is not a public-testnet or contracts-activation signal.
 
 ## Public stable endpoints
 
@@ -52,11 +56,11 @@ The v1 namespace exposes read-mostly public chain, explorer, wallet-broadcast, m
 | `GET /api/v1/release` | `GET /release` | Release readiness metadata. |
 | `GET /api/v1/policy` | `GET /policy` | Consensus/runtime policy summary. |
 
-No smart-contract endpoints are part of API v1 yet.
+No smart-contract endpoints are part of API v1. `contracts_enabled` on `/status` must remain `false` on the Task31 line.
 
-### P2P diagnostics payload additions (v2.2.15)
+### P2P diagnostics payload (historical v2.2.15 fields, still current)
 
-`GET /api/v1/p2p/status` / `GET /p2p/status` remains a public, read-only diagnostic endpoint. In v2.2.15 it includes additional operator fields for chain-id isolation and peer troubleshooting without moving admin-only data onto the public surface:
+`GET /api/v1/p2p/status` / `GET /p2p/status` remains a public, read-only diagnostic endpoint. It includes operator fields for chain-id isolation and peer troubleshooting without moving admin-only data onto the public surface:
 
 - `chain_id`: local chain id used for P2P topics and message validation.
 - `p2p_mode` / `mode`: configured P2P mode, for example `libp2p-real`.
@@ -79,7 +83,7 @@ Admin routing is controlled by `PULSEDAG_ADMIN_ENABLED` and the exposure checks 
 - Enabling admin is an explicit operator action with `PULSEDAG_ADMIN_ENABLED=true`.
 - `public_safe` and `disabled_admin` reject startup when admin is enabled.
 - A non-local RPC bind cannot use the implicit `local_dev` exposure profile.
-- The supported public-testnet baseline keeps admin/operator RPC on loopback or private management infrastructure; the unsafe remote-admin override is not part of the public-safe deployment profile.
+- Keep admin/operator RPC on loopback or private management infrastructure. The unsafe remote-admin override is not part of the public-safe deployment profile and is not a public-testnet GO.
 
 ### Dangerous or sensitive endpoints
 
@@ -101,15 +105,15 @@ The following endpoints are intentionally treated as admin/operator surface:
 | `POST /admin/pow/metrics/prune` | `POST /pow/metrics/prune` | Deletes old PoW metric snapshots. |
 | `POST /admin/pow/auto/run` | `POST /pow/auto/run` | Runs automated PoW test/capture workflow. |
 
-Snapshot restore is currently documented as an operator runbook workflow rather than exposed as a public RPC route. It should remain operator-only if a future RPC endpoint is added.
+Snapshot restore is an operator runbook workflow rather than a public RPC route. It should remain operator-only if a future RPC endpoint is added.
 
 ## Compatibility guidance
 
 New integrations should use `/api/v1/...`. Existing clients can continue using top-level aliases for public endpoints during the v2.x compatibility window. Operators should migrate scripts from dangerous top-level aliases to `/admin/...` and keep admin routing disabled on public-facing RPC binds unless the endpoint is protected by network controls.
 
-## RPC security profiles (v2.2.19 hardening)
+## RPC security profiles
 
-PulseDAG supports four explicit RPC exposure profiles for public-testnet readiness, without enabling public testnet by default:
+PulseDAG supports four explicit RPC exposure profiles. They are hardening knobs for private/operator use. They do not enable public testnet by default (`public_testnet_ready=false`).
 
 - `local_dev`: localhost-oriented development profile.
 - `private_operator`: private/local operator use; admin routes remain disabled unless explicitly enabled.
@@ -130,7 +134,7 @@ For `public_safe`, the built-in guarded-route defaults are:
 
 ### Public exposure warning
 
-Do not expose RPC directly to the public internet without network controls. Even in `public_safe`, place RPC behind firewall and rate controls.
+Do not expose RPC directly to the public internet without network controls. Even in `public_safe`, place RPC behind firewall and rate controls. Preferred bind for Task31 rehearsal remains loopback unless `public_safe` or `PULSEDAG_RPC_UNSAFE_BIND_ANY=true` is set (see #1126 / PR #1133).
 
 ### Firewall examples
 
@@ -138,11 +142,9 @@ Do not expose RPC directly to the public internet without network controls. Even
 - Deny global inbound to RPC: `ufw deny 8080/tcp`
 - Allow loopback-only process binding: set `PULSEDAG_RPC_BIND=127.0.0.1:8080`
 
-### Recommended production profile
+### Recommended operator profile
 
-Use `PULSEDAG_API_PROFILE=public_safe` for public readers and keep operator/admin flows on separate private infrastructure.
-
-### Public-safe endpoints
+Use `PULSEDAG_API_PROFILE=public_safe` only when a read surface must leave loopback. Keep operator/admin flows on separate private infrastructure.
 
 Public-safe profile includes read-only explorer/health/status surfaces, for example:
 `/api/v1/health`, `/api/v1/status`, `/api/v1/blocks`, `/api/v1/txs`, `/api/v1/address/:address`, `/api/v1/readiness`, `/api/v1/release`, `/api/v1/policy`.
