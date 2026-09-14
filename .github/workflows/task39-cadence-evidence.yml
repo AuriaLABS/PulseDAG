@@ -13,6 +13,8 @@ on:
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
       - scripts/private_testnet/task39_cadence_evidence.py
+      - scripts/lib/patch_task39_cadence_integrity.py
+      - scripts/lib/patch_task39_propagation_availability.py
       - .github/workflows/task39-cadence-evidence.yml
   push:
     branches:
@@ -25,6 +27,8 @@ on:
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
       - scripts/private_testnet/task39_cadence_evidence.py
+      - scripts/lib/patch_task39_cadence_integrity.py
+      - scripts/lib/patch_task39_propagation_availability.py
       - .github/workflows/task39-cadence-evidence.yml
 
 permissions:
@@ -56,12 +60,23 @@ jobs:
           echo "candidate_sha=$(git rev-parse HEAD)"
           echo "candidate_tree=$(git rev-parse 'HEAD^{tree}')"
 
-      - name: Task39 harness syntax and self-test
+      - name: Task39 hardened harness syntax and self-test
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/private_testnet/task39_cadence_evidence.py
-          python3 scripts/private_testnet/task39_cadence_evidence.py --self-test
-          rm -rf scripts/private_testnet/__pycache__
+          base_harness="${RUNNER_TEMP:?RUNNER_TEMP is required}/task39_cadence_evidence.base.py"
+          harness="${RUNNER_TEMP:?RUNNER_TEMP is required}/task39_cadence_evidence.py"
+          python3 -m py_compile \
+            scripts/lib/patch_task39_cadence_integrity.py \
+            scripts/lib/patch_task39_propagation_availability.py
+          python3 scripts/lib/patch_task39_cadence_integrity.py \
+            scripts/private_testnet/task39_cadence_evidence.py \
+            "$base_harness"
+          python3 scripts/lib/patch_task39_propagation_availability.py \
+            "$base_harness" \
+            "$harness"
+          python3 -m py_compile "$harness"
+          python3 "$harness" --self-test
+          rm -rf scripts/lib/__pycache__ scripts/private_testnet/__pycache__
           test -z "$(git status --porcelain)"
 
       - name: Existing fast-cadence and startup-protocol regressions
@@ -85,7 +100,9 @@ jobs:
           PULSEDAG_MAX_TEMPLATE_AGE_MS: "5000"
         run: |
           set -euo pipefail
-          python3 scripts/private_testnet/task39_cadence_evidence.py \
+          harness="${RUNNER_TEMP:?RUNNER_TEMP is required}/task39_cadence_evidence.py"
+          test -f "$harness"
+          python3 "$harness" \
             --candidate-sha "$CANDIDATE_SHA" \
             --out-dir "$EVIDENCE_DIR" \
             --duration-secs 10 \
@@ -142,6 +159,32 @@ jobs:
               .measurement.shutdown_and_log_drain_overhead_ms >= 0 and
               .measurement.configured_post_sample_sleep_ms == 50 and
               .measurement.observed_same_node_poll_gap_ms.count >= 1 and
+              .measurement.active_window_sampling_min_success_fraction == 0.8 and
+              (all(.measurement.active_window_sampling_by_node[];
+                .attempts == (.successes + .failures) and
+                .attempts > 0 and
+                .successes >= 2 and
+                .success_fraction >= 0.8 and
+                .success_fraction <= 1.0)) and
+              (
+                (
+                  .propagation_and_dag.propagation_available == true and
+                  .propagation_and_dag.sampled_selected_tip_convergence_latency_ms.count >= 1 and
+                  .propagation_and_dag.propagation_unavailable_reason == null
+                ) or
+                (
+                  .propagation_and_dag.propagation_available == false and
+                  .propagation_and_dag.sampled_selected_tip_convergence_latency_ms.count == 0 and
+                  ((.propagation_and_dag.propagation_unavailable_reason | type) == "string") and
+                  ((.propagation_and_dag.propagation_unavailable_reason | length) > 0)
+                )
+              ) and
+              .propagation_and_dag.propagation_exclusion_policy == "exclude-pre-measurement-selected-tips" and
+              ((.propagation_and_dag.propagation_excluded_pre_measurement_tips | type) == "array") and
+              (all(.propagation_and_dag.propagation_excluded_pre_measurement_tips[];
+                (type == "string") and (length > 0))) and
+              ((.canonical_end_state.ordered_dag_tip | type) == "string") and
+              (.canonical_end_state.ordered_dag_tip | length) > 0 and
               .experimental_only == true and
               .runtime_gate_result == "PASS" and
               .production_cadence_selected == false and
