@@ -1,0 +1,139 @@
+name: PR1062 clean candidate publisher
+
+on:
+  push:
+    branches:
+      - codex/pr1062-bootstrap-768a04b
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  assemble-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: 36fb1697dc4fde894c4092d73cfca7008bd04a9a
+          fetch-depth: 0
+
+      - name: Guard current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_MAIN=36fb1697dc4fde894c4092d73cfca7008bd04a9a
+          git fetch origin main --no-tags
+          actual="$(git rev-parse origin/main)"
+          echo "expected_main=$EXPECTED_MAIN"
+          echo "actual_main=$actual"
+          test "$actual" = "$EXPECTED_MAIN"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+
+      - name: Download validated four-file artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr1062-four-merged-files-final
+          path: validated-four
+          github-token: ${{ github.token }}
+          repository: AuriaLABS/PulseDAG
+          run-id: 34827201788
+
+      - name: Assemble exact 13-file tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=8f2c1e02d124b06b179c63190abe40315f3cbb83
+
+          safe_paths=(
+            crates/pulsedag-rpc/src/handlers/address.rs
+            crates/pulsedag-wallet/README.md
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs
+            crates/pulsedag-wallet/src/lib.rs
+            crates/pulsedag-wallet/src/pending.rs
+            crates/pulsedag-wallet/src/pending_persistence.rs
+            crates/pulsedag-wallet/src/plan.rs
+            crates/pulsedag-wallet/src/safety.rs
+            docs/WALLET_PENDING_RECONCILIATION.md
+          )
+          for p in "${safe_paths[@]}"; do
+            mkdir -p "$(dirname "$p")"
+            git show "$SOURCE:$p" > "$p"
+          done
+
+          merged_paths=(
+            crates/pulsedag-core/src/validation.rs
+            crates/pulsedag-rpc/src/handlers/release.rs
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          )
+          for p in "${merged_paths[@]}"; do
+            test -f "validated-four/$p"
+            cp "validated-four/$p" "$p"
+          done
+
+          expected="$(printf '%s\n' \
+            crates/pulsedag-core/src/validation.rs \
+            crates/pulsedag-rpc/src/handlers/address.rs \
+            crates/pulsedag-rpc/src/handlers/release.rs \
+            crates/pulsedag-wallet/README.md \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+            crates/pulsedag-wallet/src/lib.rs \
+            crates/pulsedag-wallet/src/pending.rs \
+            crates/pulsedag-wallet/src/pending_persistence.rs \
+            crates/pulsedag-wallet/src/plan.rs \
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+            crates/pulsedag-wallet/src/safety.rs \
+            docs/WALLET_PENDING_RECONCILIATION.md | sort)"
+          actual="$(git diff --name-only | sort)"
+          echo "--- expected ---"
+          printf '%s\n' "$expected"
+          echo "--- actual ---"
+          printf '%s\n' "$actual"
+          test "$actual" = "$expected"
+          test "$(git diff --name-only | wc -l)" -eq 13
+          git diff --check
+          cargo fmt --all -- --check
+
+          grep -Fq authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
+          grep -Fq authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+
+      - name: Commit and publish isolated candidate
+        shell: bash
+        env:
+          CANDIDATE_BRANCH: candidate/pr1062-rebased-36fb169
+        run: |
+          set -euo pipefail
+          git config user.name "kalekói"
+          git config user.email "159061+kalekoi@users.noreply.github.com"
+          git checkout -B "$CANDIDATE_BRANCH"
+          git add -- \
+            crates/pulsedag-core/src/validation.rs \
+            crates/pulsedag-rpc/src/handlers/address.rs \
+            crates/pulsedag-rpc/src/handlers/release.rs \
+            crates/pulsedag-wallet/README.md \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+            crates/pulsedag-wallet/src/lib.rs \
+            crates/pulsedag-wallet/src/pending.rs \
+            crates/pulsedag-wallet/src/pending_persistence.rs \
+            crates/pulsedag-wallet/src/plan.rs \
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+            crates/pulsedag-wallet/src/safety.rs \
+            docs/WALLET_PENDING_RECONCILIATION.md
+          test "$(git diff --cached --name-only | wc -l)" -eq 13
+          git commit -m "wallet: rebase pending UTXO reconciliation onto current main"
+          test "$(git rev-list --count 36fb1697dc4fde894c4092d73cfca7008bd04a9a..HEAD)" -eq 1
+          git push --force origin "HEAD:refs/heads/$CANDIDATE_BRANCH"
+          echo "candidate_sha=$(git rev-parse HEAD)"
