@@ -374,11 +374,20 @@ mod tests {
 
     #[test]
     fn deterministic_batches_select_requested_device_and_module() {
-        let target_bits = 1;
+        let target_bits = 0x0300_0001;
         let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
         let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
-        assert!((0..7).all(|nonce| !work.evaluate_nonce(nonce).comparison.accepted()));
-        let launcher = Arc::new(FakeLauncher::canonical(&work, 0..7));
+        let rejected_hash = [0xffu8; 32];
+        assert!(!compare_pow_hash_to_target(
+            &rejected_hash,
+            &work.material.target.target
+        ));
+        let hashes = (0..7).map(|nonce| (nonce, rejected_hash)).collect();
+        let launcher = Arc::new(FakeLauncher {
+            hashes,
+            calls: Mutex::new(Vec::new()),
+            error: None,
+        });
         let backend = CudaMiningBackend::with_launcher(test_config(3, 3), launcher.clone());
 
         let result = backend.mine_header(header, 7, 99, target_bits).unwrap();
