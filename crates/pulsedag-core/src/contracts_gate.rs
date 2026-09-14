@@ -47,11 +47,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_task31_build_does_not_compile_executable_contracts() {
-        assert!(!EXECUTABLE_CONTRACTS_COMPILED);
-        assert!(!contracts_compile_time_executable());
-        assert!(!contracts_may_execute(true));
-        assert!(reject_inactive_contract_apply(true).is_err());
-        assert_eq!(contracts_compile_identity(), "inactive-task31");
+    fn compile_gate_identity_matches_feature() {
+        assert_eq!(
+            contracts_compile_time_executable(),
+            EXECUTABLE_CONTRACTS_COMPILED
+        );
+        assert_eq!(
+            contracts_may_execute(true),
+            EXECUTABLE_CONTRACTS_COMPILED
+        );
+        assert!(!contracts_may_execute(false));
+        if EXECUTABLE_CONTRACTS_COMPILED {
+            assert_eq!(
+                contracts_compile_identity(),
+                "executable-contracts-compiled"
+            );
+            assert!(reject_inactive_contract_apply(true).is_ok());
+        } else {
+            assert_eq!(contracts_compile_identity(), "inactive-task31");
+            assert!(reject_inactive_contract_apply(true).is_err());
+        }
     }
 }
