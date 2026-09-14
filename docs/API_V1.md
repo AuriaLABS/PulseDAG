@@ -1,6 +1,6 @@
 # PulseDAG API v1
 
-PulseDAG v2.2.14 introduces a stable public API namespace at `/api/v1` as the compatibility foundation for v3.0.0 clients. The intent is to give explorers, wallets, miners, and operators predictable URLs while preserving practical aliases for existing integrations.
+PulseDAG v2.4.0 keeps the stable public API namespace at `/api/v1`. The sample below matches `get_api_version()` (`repo_version()` + `operator_stage()`). Historical v2.2.14 / v2.3.0 payloads are compatibility provenance only. The intent is to give explorers, wallets, miners, and operators predictable URLs while preserving practical aliases for existing integrations.
 
 ## Version response
 
@@ -12,8 +12,8 @@ PulseDAG v2.2.14 introduces a stable public API namespace at `/api/v1` as the co
   "data": {
     "api_version": "v1",
     "stable_prefix": "/api/v1",
-    "release_version": "v2.2.14",
-    "stage": "v2.2-readiness"
+    "release_version": "v2.4.0",
+    "stage": "v2.4-readiness"
   },
   "error": null,
   "meta": null
