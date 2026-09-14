@@ -63,6 +63,10 @@ pub use accept::{
     AtomicBlockAcceptance, BlockAcceptanceResult, ChainStateMutationOutcome, TxAcceptanceResult,
 };
 pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
+pub use contracts_gate::{
+    contracts_compile_identity, contracts_compile_time_executable, contracts_may_execute,
+    reject_inactive_contract_apply, EXECUTABLE_CONTRACTS_COMPILED,
+};
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
 };
@@ -71,10 +75,6 @@ pub use pqc::{
     encode_hybrid_public_key_v1, encode_hybrid_signature_v1, HybridPublicKeyV1, HybridSignatureV1,
     ED25519_PUBLIC_KEY_BYTES, ED25519_SIGNATURE_BYTES, ML_DSA_65_PUBLIC_KEY_BYTES,
     ML_DSA_65_SIGNATURE_BYTES, PQC_ENVELOPE_VERSION_V1,
-};
-pub use contracts_gate::{
-    contracts_compile_identity, contracts_compile_time_executable, contracts_may_execute,
-    reject_inactive_contract_apply, EXECUTABLE_CONTRACTS_COMPILED,
 };
 pub use state::{
     ChainState, ConsensusMode, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
