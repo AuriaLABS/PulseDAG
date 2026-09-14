@@ -1,0 +1,291 @@
+name: PR1062 validated merge export
+
+on:
+  push:
+    branches:
+      - codex/pr1062-bootstrap-768a04b
+
+jobs:
+  export-validated-merge:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rebuild exact four-file merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=8f2c1e02d124b06b179c63190abe40315f3cbb83
+          BASE=c7a04869c8ec5cb4bcb590673118c228e7a02678
+          MAIN=768a04b76604adc9c2c3ca4489040b1d940e4f32
+          paths=(
+            crates/pulsedag-core/src/validation.rs
+            crates/pulsedag-rpc/src/handlers/release.rs
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          )
+          for p in "${paths[@]}"; do
+            git show "$SOURCE:$p" > current.tmp
+            git show "$BASE:$p" > base.tmp
+            git show "$MAIN:$p" > other.tmp
+            git merge-file --union current.tmp base.tmp other.tmp || true
+            cp current.tmp "$p"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+
+          source = "8f2c1e02d124b06b179c63190abe40315f3cbb83"
+          main = "768a04b76604adc9c2c3ca4489040b1d940e4f32"
+          cli_path = Path("crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs")
+          relay_path = Path("crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs")
+          relay_repo_path = "crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs"
+
+          cli = cli_path.read_text()
+          combined_import = '''use pulsedag_wallet_relay::{
+              fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
+              parse_signed_broadcast, prepare_broadcast, submit_prepared, AddressBalanceOutput,
+              AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput, RelayEnvelope,
+          };'''
+          cli, count = re.subn(
+              r"use pulsedag_wallet_relay::\{.*?\n\};",
+              combined_import,
+              cli,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit("failed to normalize CLI relay import")
+          cli_path.write_text(cli)
+
+          relay_source = subprocess.check_output(
+              ["git", "show", f"{source}:{relay_repo_path}"], text=True
+          )
+          relay_main = subprocess.check_output(
+              ["git", "show", f"{main}:{relay_repo_path}"], text=True
+          )
+
+          src_start = relay_source.index("pub async fn prepare_broadcast(")
+          src_end = relay_source.index("fn address_url(", src_start)
+          durable_region = relay_source[src_start:src_end]
+
+          old_reject_field = "            rejection_message: Some(error.message),\n"
+          if old_reject_field not in durable_region:
+              raise SystemExit("#1062 rejection output shape changed unexpectedly")
+          durable_region = durable_region.replace(
+              old_reject_field,
+              old_reject_field + "            rejection_classification: error.classification,\n",
+              1,
+          )
+          old_accept_field = "        rejection_message: None,\n"
+          if old_accept_field not in durable_region:
+              raise SystemExit("#1062 accepted output shape changed unexpectedly")
+          durable_region = durable_region.replace(
+              old_accept_field,
+              old_accept_field + "        rejection_classification: None,\n",
+              1,
+          )
+
+          rejection_pattern = (
+              r"        return Ok\(BroadcastOutput \{\n"
+              r"\s*accepted: false,\n"
+              r"\s*txid: final_txid,\n"
+              r"\s*mempool_size: None,\n"
+              r"\s*relay_network_profile: identity\.network\.network_profile,\n"
+              r"\s*relay_chain_id: identity\.network\.chain_id,\n"
+              r"\s*relay_version: identity\.version,\n"
+              r"\s*rejection_code: Some\(error\.code\),\n"
+              r"\s*rejection_message: Some\(error\.message\),\n"
+              r"\s*rejection_classification: error\.classification,\n"
+              r"\s*\}\);\n"
+          )
+          rejection_replacement = (
+              "        return Ok(rejected_broadcast_output(\n"
+              "            &final_txid,\n"
+              "            &identity,\n"
+              "            error,\n"
+              "        ));\n"
+          )
+          durable_region, replaced_rejection = re.subn(
+              rejection_pattern,
+              rejection_replacement,
+              durable_region,
+              count=1,
+          )
+          if replaced_rejection != 1:
+              raise SystemExit(
+                  f"expected exactly one durable rejection constructor, got {replaced_rejection}"
+              )
+
+          mempool_start = relay_main.index("async fn fetch_mempool_identity(")
+          mempool_end = relay_main.index("fn rejected_broadcast_output(", mempool_start)
+          mempool_identity_region = relay_main[mempool_start:mempool_end]
+
+          rejection_helper = '''fn rejected_broadcast_output(
+              final_txid: &str,
+              identity: &RelayIdentity,
+              error: ApiError,
+          ) -> BroadcastOutput {
+              BroadcastOutput {
+                  accepted: false,
+                  txid: final_txid.to_string(),
+                  mempool_size: None,
+                  relay_network_profile: identity.network.network_profile.clone(),
+                  relay_chain_id: identity.network.chain_id.clone(),
+                  relay_version: identity.version.clone(),
+                  rejection_code: Some(error.code),
+                  rejection_message: Some(error.message),
+                  rejection_classification: error.classification,
+              }
+          }
+
+          '''
+
+          relay = relay_path.read_text()
+          m = re.search(r"pub struct BroadcastOutput \{(.*?)\n\}", relay, re.S)
+          if not m:
+              raise SystemExit("BroadcastOutput missing")
+          if "rejection_classification" not in m.group(1):
+              body = m.group(1).replace(
+                  "    pub rejection_message: Option<String>,",
+                  "    pub rejection_message: Option<String>,\n    pub rejection_classification: Option<String>,",
+              )
+              relay = relay[:m.start(1)] + body + relay[m.end(1):]
+
+          m = re.search(r"struct ApiError \{(.*?)\n\}", relay, re.S)
+          if not m:
+              raise SystemExit("ApiError missing")
+          if "classification" not in m.group(1):
+              body = m.group(1).replace(
+                  "    message: String,",
+                  "    message: String,\n    #[serde(default)]\n    classification: Option<String>,",
+              )
+              relay = relay[:m.start(1)] + body + relay[m.end(1):]
+
+          starts = [
+              pos for marker in ("pub async fn prepare_broadcast(", "fn rejected_broadcast_output(")
+              if (pos := relay.find(marker)) >= 0
+          ]
+          if not starts:
+              raise SystemExit("relay submit conflict start not found")
+          start = min(starts)
+          end = relay.find("fn validate_decimal_u128(", start)
+          if end < 0:
+              raise SystemExit("main fee-estimate validation region missing")
+          relay = (
+              relay[:start]
+              + mempool_identity_region
+              + rejection_helper
+              + durable_region
+              + relay[end:]
+          )
+
+          relay, removed = re.subn(
+              r"\npub async fn broadcast_signed\(.*?\n\}\n",
+              "\n",
+              relay,
+              count=1,
+              flags=re.S,
+          )
+          if removed != 1:
+              raise SystemExit(f"expected exactly one obsolete broadcast_signed wrapper, got {removed}")
+
+          relay, adjusted_test = re.subn(
+              r"(let output = rejected_broadcast_output\(\n\s*)&signed,(\n\s*&identity,)",
+              r"\1&signed.final_txid,\2",
+              relay,
+              count=1,
+          )
+          if adjusted_test != 1:
+              raise SystemExit(
+                  f"expected exactly one main rejection-classification test call, got {adjusted_test}"
+              )
+          relay_path.write_text(relay)
+          PY
+
+      - name: Validate exact merged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+          grep -Fq authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
+          grep -Fq MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE crates/pulsedag-core/src/mempool_v3.rs
+          grep -Fq 'pub const fn production_default()' crates/pulsedag-core/src/mempool_v3.rs
+          grep -Fq authoritative_address_activity_v1 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq fetch_mempool_fee_estimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq pending_journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq prepare_broadcast crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq submit_prepared crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          ! grep -Fq broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'async fn fetch_mempool_identity' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'fn rejected_broadcast_output(' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+
+      - name: Compile affected packages and all targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p pulsedag-core -p pulsedag-rpc -p pulsedag-wallet --all-targets
+
+      - name: Focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-rpc release_metadata_reports_keyless_signed_relay_surface -- --nocapture
+          cargo test -p pulsedag-wallet --lib
+          cargo test -p pulsedag-wallet --bin pulsedag-wallet
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf pr1062-artifact
+          mkdir -p pr1062-artifact/crates/pulsedag-core/src
+          mkdir -p pr1062-artifact/crates/pulsedag-rpc/src/handlers
+          mkdir -p pr1062-artifact/crates/pulsedag-wallet/src/bin
+          mkdir -p pr1062-artifact/crates/pulsedag-wallet/src
+          cp crates/pulsedag-core/src/validation.rs pr1062-artifact/crates/pulsedag-core/src/validation.rs
+          cp crates/pulsedag-rpc/src/handlers/release.rs pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs
+          cp crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          cp crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          sha256sum pr1062-artifact/crates/pulsedag-core/src/validation.rs \
+                    pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs \
+                    pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+                    pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+                    | tee pr1062-artifact/SHA256SUMS
+          git diff -- \
+            crates/pulsedag-core/src/validation.rs \
+            crates/pulsedag-rpc/src/handlers/release.rs \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+            > pr1062-artifact/four-file.diff
+
+      - name: Upload validated artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1062-four-merged-files-final
+          path: pr1062-artifact
+          if-no-files-found: error
+          retention-days: 1
