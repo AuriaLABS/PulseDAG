@@ -1,0 +1,95 @@
+diff --git a/apps/pulsedagd/src/config.rs b/apps/pulsedagd/src/config.rs
+index 477f15e..f2da4c0 100644
+--- a/apps/pulsedagd/src/config.rs
++++ b/apps/pulsedagd/src/config.rs
+@@ -44,7 +44,6 @@ pub struct Config {
+     pub rpc_rate_limit_requests_per_minute: u32,
+     pub rpc_rate_limit_per_ip: bool,
+     pub rpc_cors_allowlist: Vec<String>,
+-    pub rpc_cors_unsafe_allow_wildcard_with_admin: bool,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -170,7 +169,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 0,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::Local => Self {
+                 network_profile: "local".into(),
+@@ -213,7 +211,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 0,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::Private => Self {
+                 network_profile: "private".into(),
+@@ -256,7 +253,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 120,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::Testnet => Self {
+                 network_profile: "testnet".into(),
+@@ -299,7 +295,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 120,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::RehearsalA => Self {
+                 network_profile: "rehearsal-a".into(),
+@@ -342,7 +337,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 0,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::RehearsalB => Self {
+                 network_profile: "rehearsal-b".into(),
+@@ -385,7 +379,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 0,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::RehearsalC => Self {
+                 network_profile: "rehearsal-c".into(),
+@@ -431,7 +424,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 0,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+             ConfigProfile::Operator => Self {
+                 network_profile: "operator".into(),
+@@ -474,7 +466,6 @@ impl Config {
+                 rpc_rate_limit_requests_per_minute: 120,
+                 rpc_rate_limit_per_ip: true,
+                 rpc_cors_allowlist: vec![],
+-                rpc_cors_unsafe_allow_wildcard_with_admin: false,
+             },
+         }
+     }
+@@ -495,10 +486,6 @@ impl Config {
+             read_env_bool("PULSEDAG_RPC_RATE_LIMIT_PER_IP", self.rpc_rate_limit_per_ip);
+         self.rpc_cors_allowlist =
+             read_env_list("PULSEDAG_RPC_CORS_ALLOWLIST", &self.rpc_cors_allowlist);
+-        self.rpc_cors_unsafe_allow_wildcard_with_admin = read_env_bool(
+-            "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
+-            self.rpc_cors_unsafe_allow_wildcard_with_admin,
+-        );
+         self.p2p_enabled = read_env_bool("PULSEDAG_P2P_ENABLED", self.p2p_enabled);
+         self.p2p_mode = read_env_string("PULSEDAG_P2P_MODE", &self.p2p_mode);
+         self.p2p_listen = read_env_string("PULSEDAG_P2P_LISTEN", &self.p2p_listen);
+@@ -1689,6 +1676,7 @@ mod tests {
+         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
+         std::env::set_var("PULSEDAG_RPC_CORS_ALLOWLIST", "*");
++        std::env::set_var("PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN", "true");
+         let err = Config::from_env().expect_err("wildcard cors with admin should fail");
+         assert!(err.to_string().contains("wildcard origin is not allowed"));
+     }
