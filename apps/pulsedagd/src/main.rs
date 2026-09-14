@@ -2003,13 +2003,7 @@ async fn main() -> Result<()> {
                 chain_id: cfg.chain_id.clone(),
                 peers: cfg.simulated_peers.clone(),
             })?,
-            other => {
-                warn!(configured_mode = %other, "unknown P2P mode, using memory-simulated mode");
-                build_p2p_stack(P2pMode::Memory {
-                    chain_id: cfg.chain_id.clone(),
-                    peers: cfg.simulated_peers.clone(),
-                })?
-            }
+            other => { anyhow::bail!("invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated"); }
         };
         if let Some(capabilities) = startup_protocol.local_capabilities.clone() {
             stack

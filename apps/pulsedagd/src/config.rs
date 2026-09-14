@@ -115,7 +115,7 @@ impl Config {
             .unwrap_or(ConfigProfile::Dev);
         let mut cfg = Self::defaults_for_profile(profile);
         let fast_cadence_profile = cfg.network_profile.clone();
-        cfg.apply_env_overrides();
+        cfg.apply_env_overrides()?;
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
@@ -123,6 +123,8 @@ impl Config {
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
         cfg.validate_security_hardening()?;
+        cfg.validate_p2p_mode()?;
+        cfg.validate_unspecified_rpc_bind()?;
         cfg.validate_single_node_mode()?;
         Ok(cfg)
     }
@@ -218,7 +220,7 @@ impl Config {
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
                 chain_id: "pulsedag-private".into(),
-                rpc_bind: "0.0.0.0:8280".into(),
+                rpc_bind: "127.0.0.1:8280".into(),
                 p2p_enabled: true,
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/32333".into(),
@@ -261,12 +263,12 @@ impl Config {
             ConfigProfile::Testnet => Self {
                 network_profile: "testnet".into(),
                 chain_id: "pulsedag-testnet".into(),
-                rpc_bind: "0.0.0.0:8080".into(),
+                rpc_bind: "127.0.0.1:8080".into(),
                 p2p_enabled: true,
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 24,
@@ -436,7 +438,7 @@ impl Config {
             ConfigProfile::Operator => Self {
                 network_profile: "operator".into(),
                 chain_id: "pulsedag-testnet".into(),
-                rpc_bind: "0.0.0.0:8080".into(),
+                rpc_bind: "127.0.0.1:8080".into(),
                 p2p_enabled: true,
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
@@ -479,7 +481,7 @@ impl Config {
         }
     }
 
-    fn apply_env_overrides(&mut self) {
+    fn apply_env_overrides(&mut self) -> Result<()> {
         self.network_profile = read_env_string("PULSEDAG_NETWORK_PROFILE", &self.network_profile);
         self.chain_id = read_env_string("PULSEDAG_CHAIN_ID", &self.chain_id);
         self.rpc_bind = read_env_string("PULSEDAG_RPC_BIND", &self.rpc_bind);
@@ -524,8 +526,14 @@ impl Config {
             self.experimental_ghostdag_selection,
         );
         if let Ok(raw) = std::env::var("PULSEDAG_CONSENSUS_MODE") {
-            if let Ok(mode) = raw.parse() {
-                self.consensus_mode = mode;
+            let raw = raw.trim();
+            if !raw.is_empty() {
+                if raw.eq_ignore_ascii_case("ghostdag_v1") {
+                    bail!(
+                        "invalid PULSEDAG_CONSENSUS_MODE 'ghostdag_v1'; runtime consensus accepts only 'legacy' or 'ghostdag_dev'. Use PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1 for activated-v2 protocol identity"
+                    );
+                }
+                self.consensus_mode = raw.parse().map_err(|err| anyhow::anyhow!("{err}"))?;
             }
         }
         self.experimental_fast_cadence = read_env_bool(
@@ -584,6 +592,7 @@ impl Config {
         );
         self.operator_auth_token = read_env_optional_nonempty("PULSEDAG_OPERATOR_AUTH_TOKEN");
         self.apply_admin_default_or_env_override();
+        Ok(())
     }
 }
 
@@ -625,7 +634,7 @@ impl Config {
             }
         }
 
-        self.apply_env_overrides();
+        self.apply_env_overrides()?;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
@@ -728,6 +737,8 @@ impl Config {
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
         self.validate_security_hardening()?;
+        self.validate_p2p_mode()?;
+        self.validate_unspecified_rpc_bind()?;
         self.validate_single_node_mode()?;
         Ok(())
     }
@@ -817,6 +828,39 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    fn validate_p2p_mode(&self) -> Result<()> {
+        if !self.p2p_enabled {
+            return Ok(());
+        }
+        match self.p2p_mode.as_str() {
+            "libp2p-real" | "libp2p" | "libp2p-dev" | "libp2p-skeleton" | "memory" | "simulated" => {
+                Ok(())
+            }
+            other => bail!(
+                "invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated"
+            ),
+        }
+    }
+
+    fn validate_unspecified_rpc_bind(&self) -> Result<()> {
+        if !is_unspecified_rpc_bind(&self.rpc_bind) {
+            return Ok(());
+        }
+        if self.api_profile == ApiExposureProfile::PublicSafe {
+            return Ok(());
+        }
+        let unsafe_override = std::env::var("PULSEDAG_RPC_UNSAFE_BIND_ANY")
+            .map(|v| parse_env_bool_value(&v))
+            .unwrap_or(false);
+        if unsafe_override {
+            return Ok(());
+        }
+        bail!(
+            "invalid API exposure: RPC bind {} is unspecified (all interfaces). Use a loopback bind, set PULSEDAG_API_PROFILE=public_safe, or acknowledge risk with PULSEDAG_RPC_UNSAFE_BIND_ANY=true",
+            self.rpc_bind
+        );
     }
 
     fn validate_single_node_mode(&self) -> Result<()> {
@@ -924,10 +968,11 @@ impl Config {
 
     pub fn config_safety_summary(&self) -> String {
         let mut warnings = Vec::new();
-        if self.rpc_bind.trim().starts_with("0.0.0.0:")
-            && std::env::var("PULSEDAG_API_PROFILE").is_err()
-        {
-            warnings.push("RPC bound to 0.0.0.0 without explicit PULSEDAG_API_PROFILE".to_string());
+        if is_unspecified_rpc_bind(&self.rpc_bind) {
+            warnings.push(format!(
+                "RPC bound to unspecified address {} (all interfaces)",
+                self.rpc_bind.trim()
+            ));
         }
         if matches!(self.api_profile, ApiExposureProfile::LocalDev)
             && !is_local_rpc_bind(&self.rpc_bind)
@@ -1011,10 +1056,28 @@ fn default_admin_enabled(_network_profile: &str, _rpc_bind: &str) -> bool {
     false
 }
 
+pub fn is_unspecified_rpc_bind(rpc_bind: &str) -> bool {
+    let raw = rpc_bind.trim();
+    if raw == "0.0.0.0"
+        || raw.starts_with("0.0.0.0:")
+        || raw == "::"
+        || raw == "[::]"
+        || raw.starts_with("[::]:")
+    {
+        return true;
+    }
+    raw.parse::<SocketAddr>()
+        .map(|addr| addr.ip().is_unspecified())
+        .unwrap_or(false)
+}
+
 pub fn is_local_rpc_bind(rpc_bind: &str) -> bool {
     let raw = rpc_bind.trim();
     if matches!(raw, "::1" | "[::1]") {
         return true;
+    }
+    if let Ok(addr) = raw.parse::<SocketAddr>() {
+        return addr.ip().is_loopback();
     }
     let host = raw
         .rsplit_once(':')
@@ -1136,6 +1199,7 @@ mod tests {
             "PULSEDAG_RPC_CORS_ALLOWLIST",
             "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
             "PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED",
+            "PULSEDAG_RPC_UNSAFE_BIND_ANY",
             "PULSEDAG_OPERATOR_AUTH_TOKEN",
             "PULSEDAG_SINGLE_NODE_MODE",
             "PULSEDAG_PRIVATE_TESTNET_ROLE",
@@ -1409,8 +1473,9 @@ mod tests {
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.network_profile, "private");
         assert_eq!(cfg.chain_id, "pulsedag-private");
-        assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:8280");
         assert!(!cfg.admin_enabled);
+        assert!(!cfg.p2p_mdns);
     }
 
     #[test]
@@ -1520,7 +1585,7 @@ mod tests {
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
             .expect("apply cli args");
-        assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:8280");
         assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/32333");
     }
 
@@ -1641,6 +1706,8 @@ mod tests {
         let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        std::env::set_var("PULSEDAG_RPC_UNSAFE_BIND_ANY", "true");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
         let err = Config::from_env().expect_err("remote admin without override should fail");
         assert!(err
@@ -1649,6 +1716,8 @@ mod tests {
 
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        std::env::set_var("PULSEDAG_RPC_UNSAFE_BIND_ANY", "true");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
         std::env::set_var("PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH", "true");
         let cfg = Config::from_env().expect("override allows startup");
@@ -1679,7 +1748,8 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
         std::env::set_var("PULSEDAG_API_PROFILE", "private_operator");
-        Config::from_env().expect("explicit profile should allow public bind");
+        std::env::set_var("PULSEDAG_RPC_UNSAFE_BIND_ANY", "true");
+        Config::from_env().expect("explicit profile plus bind ack should allow public bind");
     }
 
     #[test]
@@ -1809,9 +1879,95 @@ mod tests {
     fn config_safety_summary_reports_warning_for_public_bind_without_explicit_profile() {
         let _guard = env_guard();
         clear_test_env();
-        let cfg = Config::defaults_for_profile(ConfigProfile::Operator);
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Operator);
+        cfg.rpc_bind = "0.0.0.0:8080".into();
         let summary = cfg.config_safety_summary();
         assert!(summary.contains("warning"));
         assert!(summary.contains("0.0.0.0"));
+
+        cfg.rpc_bind = "[::]:8080".into();
+        let summary = cfg.config_safety_summary();
+        assert!(summary.contains("warning"));
+        assert!(summary.contains("[::]:8080"));
+    }
+
+    #[test]
+    fn testnet_profile_defaults_are_loopback_without_mdns() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:8080");
+        assert!(!cfg.p2p_mdns);
+        assert!(is_local_rpc_bind(&cfg.rpc_bind));
+        assert!(!is_unspecified_rpc_bind(&cfg.rpc_bind));
+    }
+
+    #[test]
+    fn unspecified_rpc_bind_fails_closed_without_ack() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        let err = Config::from_env().expect_err("unspecified bind must fail closed");
+        assert!(
+            err.to_string()
+                .contains("PULSEDAG_RPC_UNSAFE_BIND_ANY=true"),
+            "unexpected error: {err}"
+        );
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_RPC_BIND", "[::]:8080");
+        let err = Config::from_env().expect_err("unspecified ipv6 bind must fail closed");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_RPC_UNSAFE_BIND_ANY=true"));
+    }
+
+    #[test]
+    fn unspecified_rpc_bind_allowed_with_explicit_ack() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        std::env::set_var("PULSEDAG_RPC_UNSAFE_BIND_ANY", "true");
+        let cfg = Config::from_env().expect("explicit ack allows unspecified bind");
+        assert!(is_unspecified_rpc_bind(&cfg.rpc_bind));
+    }
+
+    #[test]
+    fn invalid_consensus_mode_fails_closed() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONSENSUS_MODE", "ghostdag_v1");
+        let err = Config::from_env().expect_err("ghostdag_v1 is not a runtime consensus mode");
+        assert!(
+            err.to_string().contains("PULSEDAG_PROTOCOL_CONSENSUS_MODE"),
+            "unexpected error: {err}"
+        );
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONSENSUS_MODE", "not-a-mode");
+        let err = Config::from_env().expect_err("garbage consensus mode must fail");
+        assert!(
+            err.to_string().contains("invalid consensus mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_p2p_mode_fails_closed() {
+        let _guard = env_guard();
+        for invalid in ["libp2p_real", "", "not-a-mode"] {
+            clear_test_env();
+            std::env::set_var("PULSEDAG_P2P_ENABLED", "true");
+            std::env::set_var("PULSEDAG_P2P_MODE", invalid);
+            let err = Config::from_env().expect_err("unknown p2p mode must fail closed");
+            assert!(
+                err.to_string().contains("invalid P2P mode"),
+                "unexpected error for {invalid:?}: {err}"
+            );
+        }
     }
 }
