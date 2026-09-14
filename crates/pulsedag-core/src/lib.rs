@@ -4,6 +4,7 @@ pub mod apply;
 pub mod consensus_metadata;
 pub mod consistency;
 pub mod contract_v3;
+pub mod contracts_gate;
 pub mod covenant_utxo_v1;
 pub mod covenant_v1;
 pub mod errors;
@@ -62,6 +63,10 @@ pub use accept::{
     AtomicBlockAcceptance, BlockAcceptanceResult, ChainStateMutationOutcome, TxAcceptanceResult,
 };
 pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
+pub use contracts_gate::{
+    contracts_compile_identity, contracts_compile_time_executable, contracts_may_execute,
+    reject_inactive_contract_apply, EXECUTABLE_CONTRACTS_COMPILED,
+};
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
 };

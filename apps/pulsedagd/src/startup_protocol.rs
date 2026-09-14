@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use pulsedag_core::{
+    contracts_compile_identity, contracts_compile_time_executable,
     finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
     genesis_v2::init_chain_state_v2, ConsensusMode, ProtocolActivationIdentity,
     CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
@@ -7,6 +8,7 @@ use pulsedag_core::{
 use pulsedag_p2p::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
 
 pub const STARTUP_PROTOCOL_MODE_ENV: &str = "PULSEDAG_PROTOCOL_CONSENSUS_MODE";
+pub const CONTRACTS_ENABLED_ENV: &str = "PULSEDAG_CONTRACTS_ENABLED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupProtocolMode {
@@ -34,6 +36,30 @@ impl StartupProtocolMode {
     }
 }
 
+fn env_flag_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Task31 fail-closed: runtime enablement cannot bypass the compile gate (#1131).
+pub fn enforce_inactive_contracts_for_task31() -> Result<()> {
+    let env_enabled = env_flag_truthy(CONTRACTS_ENABLED_ENV);
+    if env_enabled && !contracts_compile_time_executable() {
+        bail!(
+            "{CONTRACTS_ENABLED_ENV}=true is rejected: this binary was built without the executable-contracts Cargo feature ({})",
+            contracts_compile_identity()
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct StartupProtocolSelection {
     pub mode: StartupProtocolMode,
@@ -51,6 +77,7 @@ pub fn select_startup_protocol(
     chain_id: &str,
     runtime_consensus_mode: ConsensusMode,
 ) -> Result<StartupProtocolSelection> {
+    enforce_inactive_contracts_for_task31()?;
     select_startup_protocol_for_mode(
         chain_id,
         runtime_consensus_mode,
@@ -187,5 +214,19 @@ mod tests {
         );
         assert!(StartupProtocolMode::parse("ghostdag-v1").is_err());
         assert!(StartupProtocolMode::parse("").is_err());
+    }
+
+    #[test]
+    fn contracts_env_cannot_bypass_compile_gate() {
+        std::env::set_var(CONTRACTS_ENABLED_ENV, "true");
+        let result = enforce_inactive_contracts_for_task31();
+        if contracts_compile_time_executable() {
+            result.expect("feature-on builds may accept the env flag");
+        } else {
+            let err = result.expect_err("feature-off builds must reject the env flag");
+            assert!(err.to_string().contains("executable-contracts"));
+        }
+        std::env::remove_var(CONTRACTS_ENABLED_ENV);
+        enforce_inactive_contracts_for_task31().unwrap();
     }
 }

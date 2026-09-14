@@ -3,6 +3,11 @@ name = "pulsedag-core"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = []
+# Opt-in only. Task31 / v2.4.0 node builds must leave this off.
+executable-contracts = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -3,6 +3,10 @@ name = "pulsedagd"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = []
+executable-contracts = ["pulsedag-core/executable-contracts"]
+
 [dependencies]
 anyhow = "1"
 axum = "0.7"
