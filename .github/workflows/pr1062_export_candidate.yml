@@ -1,0 +1,206 @@
+name: PR1062 clean candidate export
+
+on:
+  push:
+    branches:
+      - codex/pr1062-export-36fb1697
+
+permissions:
+  contents: write
+
+jobs:
+  build-clean-candidate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Reconstruct exact 13-file candidate on current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE=8f2c1e02d124b06b179c63190abe40315f3cbb83
+          MAIN=36fb1697dc4fde894c4092d73cfca7008bd04a9a
+          HELPER=d7a38587a1c44775b55d03f628011ac3d6589c75
+
+          git checkout --detach "$MAIN"
+
+          safe_paths=(
+            crates/pulsedag-rpc/src/handlers/address.rs
+            crates/pulsedag-wallet/README.md
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs
+            crates/pulsedag-wallet/src/lib.rs
+            crates/pulsedag-wallet/src/pending.rs
+            crates/pulsedag-wallet/src/pending_persistence.rs
+            crates/pulsedag-wallet/src/plan.rs
+            crates/pulsedag-wallet/src/safety.rs
+            docs/WALLET_PENDING_RECONCILIATION.md
+          )
+          for p in "${safe_paths[@]}"; do
+            mkdir -p "$(dirname "$p")"
+            git show "$SOURCE:$p" > "$p"
+          done
+
+          python3 - <<'PY'
+          import subprocess
+
+          helper = "d7a38587a1c44775b55d03f628011ac3d6589c75"
+          old_main = "768a04b76604adc9c2c3ca4489040b1d940e4f32"
+          new_main = "36fb1697dc4fde894c4092d73cfca7008bd04a9a"
+          text = subprocess.check_output(
+              ["git", "show", f"{helper}:.github/workflows/pr1062_rebase_helper.yml"],
+              text=True,
+          )
+          lines = text.splitlines()
+
+          def extract_run(step_name: str) -> str:
+              marker = f"      - name: {step_name}"
+              try:
+                  start = lines.index(marker)
+              except ValueError as exc:
+                  raise SystemExit(f"missing helper step: {step_name}") from exc
+              run_line = None
+              for i in range(start + 1, len(lines)):
+                  if lines[i].startswith("      - name: "):
+                      break
+                  if lines[i] == "        run: |":
+                      run_line = i
+                      break
+              if run_line is None:
+                  raise SystemExit(f"missing run block: {step_name}")
+              block = []
+              for line in lines[run_line + 1:]:
+                  if line.startswith("      - name: "):
+                      break
+                  if line.startswith("          "):
+                      block.append(line[10:])
+                  elif line == "":
+                      block.append("")
+                  else:
+                      raise SystemExit(f"unexpected indentation in {step_name}: {line!r}")
+              return "\n".join(block) + "\n"
+
+          for step in (
+              "Three-way merge exact four files",
+              "Resolve exact semantic overlaps",
+          ):
+              script = extract_run(step).replace(old_main, new_main)
+              subprocess.run(["bash", "-c", script], check=True)
+          PY
+
+          rm -f current.tmp base.tmp other.tmp
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Verify exact file set and merged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(
+            crates/pulsedag-core/src/validation.rs
+            crates/pulsedag-rpc/src/handlers/address.rs
+            crates/pulsedag-rpc/src/handlers/release.rs
+            crates/pulsedag-wallet/README.md
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+            crates/pulsedag-wallet/src/lib.rs
+            crates/pulsedag-wallet/src/pending.rs
+            crates/pulsedag-wallet/src/pending_persistence.rs
+            crates/pulsedag-wallet/src/plan.rs
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+            crates/pulsedag-wallet/src/safety.rs
+            docs/WALLET_PENDING_RECONCILIATION.md
+          )
+          git add -- "${paths[@]}"
+          printf '%s\n' "${paths[@]}" | sort > /tmp/expected-files
+          git diff --cached --name-only | sort > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          test "$(git diff --cached --name-only | wc -l)" -eq 13
+          test -z "$(git status --porcelain | awk '$1 == "??" {print}')"
+
+          grep -Fq authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
+          grep -Fq MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE crates/pulsedag-core/src/mempool_v3.rs
+          grep -Fq authoritative_address_activity_v1 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
+          grep -Fq 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq fetch_mempool_fee_estimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq pending_journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq prepare_broadcast crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq submit_prepared crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          ! grep -Fq broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'async fn fetch_mempool_identity' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq 'fn rejected_broadcast_output(' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -Fq rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -Fq 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+
+      - name: Compile affected packages and all targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p pulsedag-core -p pulsedag-rpc -p pulsedag-wallet --all-targets
+
+      - name: Focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-rpc release_metadata_reports_keyless_signed_relay_surface -- --nocapture
+          cargo test -p pulsedag-wallet --lib
+          cargo test -p pulsedag-wallet --bin pulsedag-wallet
+
+      - name: Commit clean candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=36fb1697dc4fde894c4092d73cfca7008bd04a9a
+          git config user.name 'kalekói'
+          git config user.email 'hermida.prada@gmail.com'
+          git commit -m 'wallet: rebase pending UTXO reconciliation onto current main'
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "$MAIN"
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD | wc -l)" -eq 13
+          echo "$CANDIDATE_SHA" | tee candidate-sha.txt
+          echo "$MAIN" | tee candidate-base-sha.txt
+
+      - name: Stage candidate artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf pr1062-candidate
+          mkdir -p pr1062-candidate
+          while IFS= read -r p; do
+            mkdir -p "pr1062-candidate/$(dirname "$p")"
+            cp "$p" "pr1062-candidate/$p"
+          done < <(git diff-tree --no-commit-id --name-only -r HEAD)
+          cp candidate-sha.txt candidate-base-sha.txt pr1062-candidate/
+          find pr1062-candidate -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > pr1062-candidate/SHA256SUMS
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1062-clean-candidate-36fb1697
+          path: pr1062-candidate
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Push clean candidate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/candidate/pr1062-rebased-36fb1697
