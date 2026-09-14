@@ -10,7 +10,13 @@ The v2.4.0 repository contains the node and standalone external miner technical 
 
 ## Public-testnet security blockers
 
-Issue #1127 is the live authoritative RustSec/public-GO dependency record (historical #803). The current fail-closed disposition keeps reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` visible as public-testnet blockers until removed through supported parent-stack upgrades or an explicitly reviewed public-GO disposition.
+Issue #1127 is the live authoritative RustSec/public-GO dependency record (historical #803), with the remaining dependency cleanup tracked in #1139.
+
+The current lock no longer contains `linkme 0.2.10` or `lru 0.12.5`; those were historical v2.4 findings removed through supported parent-stack migrations. They must not be reintroduced and are enforced as forbidden legacy versions by the active v3 dependency-security gate.
+
+The reachable `atty 0.2.14` warning remains visible and remains an unresolved public-GO blocker. Runtime `bincode 1.3.3` is also still visible as an unmaintained first-party dependency; its migration must preserve storage, snapshot, fast-sync and rollback compatibility according to `docs/security/V3_BINCODE_MIGRATION_PLAN.md`.
+
+Hickory 0.25.2 advisories remain visible as lock-only residue and are permitted only while exact clean compiler-artifact evidence proves them unreachable from every launch root. `.cargo/audit.toml` must not hide these advisories.
 
 A stable expected warning set is not security approval. Unsupported transitive leaf patches are not authorized.
 
@@ -25,7 +31,7 @@ Until an explicit decision is recorded in the relevant control issue:
 - smart contracts remain disabled;
 - no Day 0 timestamp may be recorded.
 
-Smart-contract activation remains separately gated after at least 30 accepted public-testnet days and separate approval.
+Smart-contract activation is not part of the v3.0 launch; it requires a separately gated later protocol upgrade.
 
 ## Public network package
 
@@ -37,10 +43,10 @@ Final seed/node/observer/miner configs must be rendered only after the exact rel
 
 Task30/Task31 evidence is valid only for the source SHA and activation contract it actually tested. Any source, dependency, config, release-surface or workflow change that produces a new release candidate requires the affected exact-SHA gates to rerun. Evidence from different SHAs must not be combined to claim final readiness.
 
-The 24-hour private burn-in clock starts only after one unchanged final candidate is intentionally launched and its valid start evidence is recorded. Historical or superseded burn-ins do not count.
+Historical or superseded burn-ins do not count toward final v3 launch evidence. Final burn-in requirements are controlled by #781/#794 on one unchanged exact candidate.
 
 ## Operator and infrastructure boundary
 
 Repository templates do not provision or prove real public infrastructure. Before public GO, operators must separately record and verify failure-domain separation, persistent P2P identities, firewall policy, NTP/time sync, storage/backup, DNS/TLS ownership, observability, incident escalation and recovery procedures.
 
-See `SECURITY.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #781, #794, #1127, historical #803 and #873.
+See `SECURITY.md`, `docs/security/V3_DEPENDENCY_SECURITY.md`, `docs/security/V3_BINCODE_MIGRATION_PLAN.md`, #781, #794, #1127, #1139, historical #803 and #873.
