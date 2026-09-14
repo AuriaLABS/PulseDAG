@@ -10,7 +10,7 @@ The v2.4.0 repository contains the node and standalone external miner technical 
 
 ## Public-testnet security blockers
 
-Issue #803 remains the authoritative RustSec/public-GO dependency record. The current fail-closed disposition keeps reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` visible as public-testnet blockers until removed through supported parent-stack upgrades or an explicitly reviewed public-GO disposition.
+Issue #1127 is the live authoritative RustSec/public-GO dependency record (historical #803). The current fail-closed disposition keeps reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` visible as public-testnet blockers until removed through supported parent-stack upgrades or an explicitly reviewed public-GO disposition.
 
 A stable expected warning set is not security approval. Unsupported transitive leaf patches are not authorized.
 
@@ -43,4 +43,4 @@ The 24-hour private burn-in clock starts only after one unchanged final candidat
 
 Repository templates do not provision or prove real public infrastructure. Before public GO, operators must separately record and verify failure-domain separation, persistent P2P identities, firewall policy, NTP/time sync, storage/backup, DNS/TLS ownership, observability, incident escalation and recovery procedures.
 
-See `SECURITY.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #781, #794, #803 and #873.
+See `SECURITY.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #781, #794, #1127, historical #803 and #873.
