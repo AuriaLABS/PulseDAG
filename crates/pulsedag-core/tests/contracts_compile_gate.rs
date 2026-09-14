@@ -4,16 +4,34 @@ use pulsedag_core::{
 };
 
 #[test]
-fn default_task31_binary_does_not_compile_executable_contracts() {
-    assert!(!EXECUTABLE_CONTRACTS_COMPILED);
-    assert!(!contracts_compile_time_executable());
-    assert_eq!(contracts_compile_identity(), "inactive-task31");
+fn compile_identity_matches_feature_gate() {
+    assert_eq!(
+        contracts_compile_time_executable(),
+        EXECUTABLE_CONTRACTS_COMPILED
+    );
+    if EXECUTABLE_CONTRACTS_COMPILED {
+        assert_eq!(
+            contracts_compile_identity(),
+            "executable-contracts-compiled"
+        );
+    } else {
+        assert_eq!(contracts_compile_identity(), "inactive-task31");
+        assert!(!contracts_may_execute(true));
+        assert!(reject_inactive_contract_apply(true).is_err());
+    }
 }
 
 #[test]
-fn runtime_flag_cannot_enable_apply_without_compile_feature() {
-    assert!(!contracts_may_execute(false));
-    assert!(!contracts_may_execute(true));
-    assert!(reject_inactive_contract_apply(false).is_err());
-    assert!(reject_inactive_contract_apply(true).is_err());
+fn runtime_flag_cannot_enable_apply_when_compile_feature_is_off() {
+    if EXECUTABLE_CONTRACTS_COMPILED {
+        assert!(contracts_may_execute(true));
+        assert!(!contracts_may_execute(false));
+        assert!(reject_inactive_contract_apply(true).is_ok());
+        assert!(reject_inactive_contract_apply(false).is_err());
+    } else {
+        assert!(!contracts_may_execute(false));
+        assert!(!contracts_may_execute(true));
+        assert!(reject_inactive_contract_apply(false).is_err());
+        assert!(reject_inactive_contract_apply(true).is_err());
+    }
 }
