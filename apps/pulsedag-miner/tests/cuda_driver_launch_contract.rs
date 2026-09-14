@@ -62,6 +62,15 @@ fn assert_launch_matches(work: &ProtocolPowWork) {
 }
 
 #[test]
+fn cuda_driver_probe_accepts_selected_mock_device_and_rejects_missing_ordinal() {
+    cuda_driver_launch::probe_cuda_device(0).expect("mock CUDA device 0 must be selectable");
+    let error = cuda_driver_launch::probe_cuda_device(1).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("CUDA device index 1 was not found"));
+}
+
+#[test]
 fn cuda_driver_launch_matches_legacy_v1_canonical_pow() {
     let target_bits = 0x207f_ffff;
     let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
