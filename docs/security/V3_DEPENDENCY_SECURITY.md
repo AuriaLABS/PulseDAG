@@ -2,7 +2,7 @@
 
 Status: **active development gate; not final launch security approval**.
 
-Issue authority: #803. Launch authority: #781. Integrated program: #794.
+Issue authority: #1127 (historical #803). Launch authority: #781. Integrated program: #794.
 
 ## Historical v2.4 exception retirement
 
@@ -15,7 +15,7 @@ The libp2p 0.56 migration removes the historical lock-only vulnerable versions t
 - `hickory-proto 0.24.4`;
 - `h2 0.3.27`.
 
-## #803 lru remediation
+## #1127 / historical #803 lru remediation
 
 `lru 0.12.5` was reachable through the old libp2p stack (`libp2p-identify 0.45.0` and `libp2p-swarm 0.45.1`). The supported parent-stack migration in PR #1018 moves PulseDAG P2P to `libp2p 0.56.x`, where the selected identify/swarm line no longer resolves `lru 0.12.5`.
 
@@ -28,7 +28,7 @@ The remediation rule is fail-closed:
 - clean compiler-artifact reachability is captured for `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner` and `pulsedag-wallet`;
 - optional `dns`, `mdns`, `quic` and `upnp` libp2p packages must not be compiler-reachable from the selected PulseDAG feature set.
 
-## #803 linkme remediation
+## #1127 / historical #803 linkme remediation
 
 `linkme 0.2.10` was reachable through the legacy chain `kaspa-core 0.15.0 -> intertrait 0.2.2 -> linkme 0.2.10`. PulseDAG does not patch the `linkme` leaf or carry a private `intertrait` fork for the active remediation.
 
@@ -55,11 +55,11 @@ The Kaspa 2.0.1 lock graph currently contains `hickory-proto 0.25.2`, covered by
 
 The temporary development disposition is valid only while clean compiler-artifact evidence proves `hickory-proto 0.25.2` is absent from **all** launch roots: `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner` and `pulsedag-wallet`. If the package becomes compiler-reachable from any root, the gate fails closed. The CLI audit uses explicit per-run ignores only after that reachability proof; `.cargo/audit.toml` remains free of vulnerability ignores.
 
-This is not a final v3 launch disposition. The exact candidate security review in #803 must either remove this lock-only residue through a supported parent migration or explicitly renew the reviewed unreachable disposition for the final candidate.
+This is not a final v3 launch disposition. The exact candidate security review in #1127 must either remove this lock-only residue through a supported parent migration or explicitly renew the reviewed unreachable disposition for the final candidate.
 
 ## Remaining launch blocker and warning inventory
 
-This remediation does **not** close #803. The known reachable blocker remaining from the inherited dependency pair is:
+This remediation does **not** close #1127. The known reachable blocker remaining from the inherited dependency pair is:
 
 - `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`.
 
@@ -67,4 +67,4 @@ The Kaspa 2.0.1 graph also makes `derivative 2.2.0` (`RUSTSEC-2024-0388`, unmain
 
 ## Final launch boundary
 
-A PASS of the active dependency workflow means the current development candidate satisfies this dependency-remediation checkpoint. It does not mean `security_ready=true`, does not authorize mainnet/testnet launch and does not replace the final exact-candidate security review required by #803/#781.
+A PASS of the active dependency workflow means the current development candidate satisfies this dependency-remediation checkpoint. It does not mean `security_ready=true`, does not authorize mainnet/testnet launch and does not replace the final exact-candidate security review required by #1127/#781.
