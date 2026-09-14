@@ -17,7 +17,7 @@ pub fn contracts_compile_identity() -> &'static str {
     if EXECUTABLE_CONTRACTS_COMPILED {
         "executable-contracts-compiled"
     } else {
-        "contracts-inactive-compile-gate"
+        "inactive-task31"
     }
 }
 
@@ -52,6 +52,6 @@ mod tests {
         assert!(!contracts_compile_time_executable());
         assert!(!contracts_may_execute(true));
         assert!(reject_inactive_contract_apply(true).is_err());
-        assert_eq!(contracts_compile_identity(), "contracts-inactive-compile-gate");
+        assert_eq!(contracts_compile_identity(), "inactive-task31");
     }
 }

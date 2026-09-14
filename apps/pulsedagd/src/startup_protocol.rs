@@ -39,7 +39,12 @@ impl StartupProtocolMode {
 fn env_flag_truthy(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
