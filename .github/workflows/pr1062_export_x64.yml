@@ -1,0 +1,89 @@
+name: PR1062 clean candidate export x64
+
+on:
+  push:
+    branches:
+      - codex/pr1062-export-x64-36fb1697
+
+permissions:
+  contents: write
+
+jobs:
+  build-clean-candidate-x64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Reuse validated clean-candidate recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+
+          recipe_commit = "7277aa386b40fcfb93162568dfdfc69438f7029a"
+          recipe_path = ".github/workflows/pr1062_export_candidate.yml"
+          text = subprocess.check_output(
+              ["git", "show", f"{recipe_commit}:{recipe_path}"], text=True
+          )
+          lines = text.splitlines()
+
+          def extract_run(step_name: str) -> str:
+              marker = f"      - name: {step_name}"
+              try:
+                  start = lines.index(marker)
+              except ValueError as exc:
+                  raise SystemExit(f"missing recipe step: {step_name}") from exc
+              run_line = None
+              for i in range(start + 1, len(lines)):
+                  if lines[i].startswith("      - name: "):
+                      break
+                  if lines[i] == "        run: |":
+                      run_line = i
+                      break
+              if run_line is None:
+                  raise SystemExit(f"missing run block: {step_name}")
+              block = []
+              for line in lines[run_line + 1:]:
+                  if line.startswith("      - name: "):
+                      break
+                  if line.startswith("          "):
+                      block.append(line[10:])
+                  elif line == "":
+                      block.append("")
+                  else:
+                      raise SystemExit(f"unexpected indentation in {step_name}: {line!r}")
+              return "\n".join(block) + "\n"
+
+          for step in (
+              "Reconstruct exact 13-file candidate on current main",
+              "Verify exact file set and merged contracts",
+              "Compile affected packages and all targets",
+              "Focused tests",
+              "Commit clean candidate",
+              "Stage candidate artifact",
+          ):
+              print(f"===== {step} =====", flush=True)
+              subprocess.run(["bash", "-c", extract_run(step)], check=True)
+          PY
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1062-clean-candidate-36fb1697-x64
+          path: pr1062-candidate
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Push clean x64 candidate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/candidate/pr1062-rebased-36fb1697-x64
