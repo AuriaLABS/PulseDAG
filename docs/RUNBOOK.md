@@ -69,6 +69,17 @@ Machine-readable errors include:
 
 CORS `*` is always rejected at startup (`validate_cors_policy`). `PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN` is parsed but unused; it does not override the ban. Use an explicit allowlist. See #1129.
 
+## Consensus and bind knobs
+
+| Variable | Accepted values | Notes |
+|---|---|---|
+| `PULSEDAG_CONSENSUS_MODE` | `legacy`, `ghostdag_dev` | Runtime consensus. Invalid values abort startup. `ghostdag_v1` is **not** valid here. |
+| `PULSEDAG_PROTOCOL_CONSENSUS_MODE` | `legacy`, `ghostdag_v1` | Startup/protocol identity plane. Independent from runtime consensus. |
+| `PULSEDAG_P2P_MODE` | `libp2p-real`, `libp2p-dev`, `libp2p`, `libp2p-skeleton`, `memory`, `simulated` | Unknown values abort startup. They no longer fall back to a simulated stack. |
+| `PULSEDAG_RPC_BIND` | socket address | Defaults are loopback. `0.0.0.0` / `[::]` require `PULSEDAG_API_PROFILE=public_safe` or `PULSEDAG_RPC_UNSAFE_BIND_ANY=true`. |
+| `PULSEDAG_P2P_MDNS` | `true` / `false` | Default off for `testnet`, `private`, and `operator`. |
+| `PULSEDAG_RPC_CORS_ALLOWLIST` | explicit origins | CORS `*` is always rejected. The unused wildcard env does not override the ban (#1129). |
+
 ## Expected release boundary
 
 The final v2.4.0 candidate must report `version=v2.4.0`, external-miner mode, disabled smart contracts and an exact protocol/network identity matching the frozen candidate. Raw-private-key wallet RPC is removed from the supported node boundary; signed transactions must be produced outside the node.
