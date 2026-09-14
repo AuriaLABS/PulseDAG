@@ -47,6 +47,39 @@ type CuLaunchKernel = unsafe extern "system" fn(
 ) -> CuResult;
 type CuCtxSynchronize = unsafe extern "system" fn() -> CuResult;
 
+/// Validate that the NVIDIA Driver API is loadable and that the requested
+/// device ordinal exists. This does not create a context, load a module, launch
+/// a kernel, or establish mining equivalence; it is only an initialization
+/// probe used by backend selection.
+pub fn probe_cuda_device(device_index: usize) -> Result<()> {
+    let api = CudaDriverApi::load()?;
+    ensure_cuda_success(unsafe { (api.cu_init)(0) }, "cuInit")?;
+
+    let mut device_count = 0;
+    ensure_cuda_success(
+        unsafe { (api.cu_device_get_count)(&mut device_count) },
+        "cuDeviceGetCount",
+    )?;
+    if device_count <= 0 {
+        return Err(anyhow!("no NVIDIA CUDA devices discovered"));
+    }
+
+    let device_index_i32 = c_int::try_from(device_index)
+        .map_err(|_| anyhow!("CUDA device index does not fit in c_int"))?;
+    if device_index_i32 >= device_count {
+        return Err(anyhow!(
+            "CUDA device index {device_index} was not found; discovered {device_count} device(s)"
+        ));
+    }
+
+    let mut device = 0;
+    ensure_cuda_success(
+        unsafe { (api.cu_device_get)(&mut device, device_index_i32) },
+        "cuDeviceGet",
+    )?;
+    Ok(())
+}
+
 /// Execute the CUDA kHeavyHash matrix-generation and nonce-hash kernels through
 /// the NVIDIA Driver API. This function only returns accelerator hashes; callers
 /// must still re-verify every candidate through `ProtocolPowWork` before submit.

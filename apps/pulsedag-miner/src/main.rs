@@ -1,10 +1,16 @@
+#[cfg(feature = "cuda")]
+mod cuda_backend;
 mod submit_finality;
 mod template_protocol;
 
 use anyhow::{anyhow, Context, Result};
+#[cfg(feature = "cuda")]
+use cuda_backend::{CudaBackendConfig, CudaMiningBackend};
 use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
 use pulsedag_core::ProtocolActivationIdentity;
+#[cfg(feature = "cuda")]
+use pulsedag_miner::cuda_driver_launch;
 use pulsedag_miner::protocol_backend::{verify_backend_result_for_protocol, ProtocolMiningBackend};
 use pulsedag_miner::protocol_pow::compute_mined_block_hash;
 use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBackend};
@@ -13,6 +19,7 @@ use pulsedag_miner::{GpuBackendConfig, GpuMiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use submit_finality::{
@@ -78,12 +85,14 @@ struct Config {
     heartbeat: bool,
     worker_id: String,
     gpu_device: Option<usize>,
+    cuda_module: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendKind {
     Cpu,
     Gpu,
+    Cuda,
     Auto,
 }
 
@@ -94,9 +103,10 @@ impl std::str::FromStr for BackendKind {
         match value {
             "cpu" => Ok(Self::Cpu),
             "gpu" => Ok(Self::Gpu),
+            "cuda" => Ok(Self::Cuda),
             "auto" => Ok(Self::Auto),
             _ => Err(anyhow!(
-                "invalid --backend: {value}; expected 'cpu', 'gpu', or 'auto'"
+                "invalid --backend: {value}; expected 'cpu', 'gpu', 'cuda', or 'auto'"
             )),
         }
     }
@@ -394,6 +404,7 @@ where
     let mut heartbeat = true;
     let mut worker_id = String::new();
     let mut gpu_device = None;
+    let mut cuda_module = None;
 
     let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
@@ -401,8 +412,9 @@ where
             "--version" | "-V" => {
                 println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
                 println!(
-                    "backend_default=cpu backends=cpu,gpu,auto gpu_compiled={}",
-                    cfg!(feature = "gpu")
+                    "backend_default=cpu backends=cpu,gpu,cuda,auto gpu_compiled={} cuda_compiled={}",
+                    cfg!(feature = "gpu"),
+                    cfg!(feature = "cuda")
                 );
                 std::process::exit(0);
             }
@@ -421,6 +433,12 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --backend"))?
                     .parse()?
+            }
+            "--cuda-module" => {
+                cuda_module = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow!("missing value for --cuda-module"))?,
+                ))
             }
             "--max-tries" => {
                 max_tries = args
@@ -498,11 +516,12 @@ where
         heartbeat,
         worker_id,
         gpu_device,
+        cuda_module,
     })
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the existing optional OpenCL scaffold and requires the gpu feature. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects the single CUDA or OpenCL device for this slice. Auto preserves the existing OpenCL-then-CPU behavior when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first and falls through to the existing OpenCL attempt and then CPU if CUDA initialization or device selection fails. The canonical kHeavyHash OpenCL kernel is not implemented yet. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
 fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
@@ -515,7 +534,39 @@ fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
             println!("miner_backend requested=gpu active=pending cpu_backend_available=true");
             gpu_mining_backend(cfg.gpu_device)
         }
+        BackendKind::Cuda => {
+            let module_path = cfg
+                .cuda_module
+                .as_deref()
+                .ok_or_else(|| anyhow!("--backend cuda requires --cuda-module PATH"))?;
+            println!(
+                "miner_backend requested=cuda active=pending device_index={} module={}",
+                cfg.gpu_device.unwrap_or(0),
+                module_path.display()
+            );
+            cuda_mining_backend(module_path, cfg.gpu_device)
+        }
         BackendKind::Auto => {
+            if let Some(module_path) = cfg.cuda_module.as_deref() {
+                println!(
+                    "miner_backend requested=auto preference=cuda_if_available device_index={} module={} fallback=opencl_then_cpu",
+                    cfg.gpu_device.unwrap_or(0),
+                    module_path.display()
+                );
+                match cuda_mining_backend(module_path, cfg.gpu_device) {
+                    Ok(backend) => {
+                        println!("miner_backend requested=auto cuda_backend_available=true gpu_backend_available=not_checked cpu_fallback_active=false active=cuda");
+                        return Ok(backend);
+                    }
+                    Err(err) => {
+                        println!(
+                            "miner_backend requested=auto cuda_backend_available=false fallback=opencl_then_cpu reason={}",
+                            err
+                        );
+                    }
+                }
+            }
+
             println!("miner_backend requested=auto preference=gpu_if_available cpu_backend_available=true");
             match gpu_mining_backend(cfg.gpu_device) {
                 Ok(backend) => {
@@ -545,6 +596,40 @@ fn gpu_mining_backend(_device_index: Option<usize>) -> Result<Arc<dyn RuntimeMin
 fn gpu_mining_backend(device_index: Option<usize>) -> Result<Arc<dyn RuntimeMiningBackend>> {
     let config = GpuBackendConfig::default().with_device_index(device_index);
     Ok(Arc::new(GpuMiningBackend::new(config)?))
+}
+
+#[cfg(not(feature = "cuda"))]
+fn cuda_mining_backend(
+    _module_path: &Path,
+    _device_index: Option<usize>,
+) -> Result<Arc<dyn RuntimeMiningBackend>> {
+    Err(anyhow!(
+        "CUDA backend requested but pulsedag-miner was built without the cuda feature."
+    ))
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_mining_backend(
+    module_path: &Path,
+    device_index: Option<usize>,
+) -> Result<Arc<dyn RuntimeMiningBackend>> {
+    let module_image = std::fs::read(module_path)
+        .with_context(|| format!("failed to read CUDA module from {}", module_path.display()))?;
+    if module_image.is_empty() {
+        return Err(anyhow!("CUDA module at {} is empty", module_path.display()));
+    }
+
+    let device_index = device_index.unwrap_or(0);
+    cuda_driver_launch::probe_cuda_device(device_index).with_context(|| {
+        format!("CUDA Driver/device probe failed for device index {device_index}")
+    })?;
+    let config = CudaBackendConfig::new(module_image, device_index)?;
+    println!(
+        "cuda_backend configured device_index={} module={} hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED",
+        device_index,
+        module_path.display()
+    );
+    Ok(Arc::new(CudaMiningBackend::new(config)))
 }
 
 fn default_worker_id(miner_address: &str) -> String {
@@ -983,6 +1068,7 @@ mod tests {
         TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
+    use std::path::Path;
 
     fn telemetry_test_config() -> Config {
         Config {
@@ -997,6 +1083,7 @@ mod tests {
             heartbeat: true,
             worker_id: "worker-1".to_string(),
             gpu_device: None,
+            cuda_module: None,
         }
     }
 
@@ -1005,6 +1092,7 @@ mod tests {
         let cfg = parse_args_from(["--miner-address", "addr"]).expect("valid args should parse");
 
         assert_eq!(cfg.backend, BackendKind::Cpu);
+        assert!(cfg.cuda_module.is_none());
     }
 
     #[test]
@@ -1021,6 +1109,25 @@ mod tests {
             .expect("explicit gpu backend should parse");
 
         assert_eq!(cfg.backend, BackendKind::Gpu);
+    }
+
+    #[test]
+    fn parser_accepts_explicit_cuda_backend_module_and_device() {
+        let cfg = parse_args_from([
+            "--miner-address",
+            "addr",
+            "--backend",
+            "cuda",
+            "--cuda-module",
+            "kernel.ptx",
+            "--gpu-device",
+            "2",
+        ])
+        .expect("explicit CUDA backend should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Cuda);
+        assert_eq!(cfg.cuda_module.as_deref(), Some(Path::new("kernel.ptx")));
+        assert_eq!(cfg.gpu_device, Some(2));
     }
 
     #[test]
@@ -1048,12 +1155,85 @@ mod tests {
     }
 
     #[test]
-    fn usage_mentions_optional_gpu_backend() {
+    fn usage_mentions_optional_gpu_and_explicit_cuda_backends() {
         let text = usage();
 
-        assert!(text.contains("--backend cpu|gpu|auto"));
-        assert!(text.contains("gpu backend is optional"));
-        assert!(text.contains("gpu feature"));
+        assert!(text.contains("--backend cpu|gpu|cuda|auto"));
+        assert!(text.contains("--cuda-module PATH"));
+        assert!(text.contains("cuda feature"));
+        assert!(text.contains("never falls back"));
+        assert!(text.contains("falls through"));
+    }
+
+    #[test]
+    fn explicit_cuda_requires_module_without_fallback() {
+        let err = match mining_backend(&Config {
+            backend: BackendKind::Cuda,
+            ..telemetry_test_config()
+        }) {
+            Ok(_) => panic!("explicit CUDA without a module must fail"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("--backend cuda requires --cuda-module PATH"));
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn explicit_cuda_without_feature_fails_clearly() {
+        let err = match mining_backend(&Config {
+            backend: BackendKind::Cuda,
+            cuda_module: Some("kernel.ptx".into()),
+            ..telemetry_test_config()
+        }) {
+            Ok(_) => panic!("CUDA without feature must fail"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.to_string(),
+            "CUDA backend requested but pulsedag-miner was built without the cuda feature."
+        );
+    }
+
+    #[cfg(all(not(feature = "cuda"), not(feature = "gpu")))]
+    #[test]
+    fn auto_with_explicit_cuda_module_falls_back_to_cpu_without_accelerator_features() {
+        let backend = mining_backend(&Config {
+            backend: BackendKind::Auto,
+            cuda_module: Some("kernel.ptx".into()),
+            ..telemetry_test_config()
+        })
+        .expect("auto must preserve OpenCL-to-CPU fallback when CUDA is unavailable");
+
+        assert_eq!(backend.name(), "cpu");
+    }
+
+    #[cfg(all(feature = "cuda", not(feature = "gpu")))]
+    #[test]
+    fn auto_with_unreadable_cuda_module_falls_back_to_cpu() {
+        let backend = mining_backend(&Config {
+            backend: BackendKind::Auto,
+            cuda_module: Some("/definitely/not-present/pulsedag-kernel.ptx".into()),
+            ..telemetry_test_config()
+        })
+        .expect("auto must fall through after CUDA initialization failure");
+
+        assert_eq!(backend.name(), "cpu");
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn explicit_cuda_unreadable_module_fails_before_runtime_selection() {
+        let err = match mining_backend(&Config {
+            backend: BackendKind::Cuda,
+            cuda_module: Some("/definitely/not-present/pulsedag-kernel.ptx".into()),
+            ..telemetry_test_config()
+        }) {
+            Ok(_) => panic!("unreadable CUDA module must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("failed to read CUDA module"));
     }
 
     #[cfg(not(feature = "gpu"))]

@@ -1,0 +1,106 @@
+name: v3 launch Task 38 CUDA backend wiring
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/cuda_driver_launch.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - .github/workflows/task38-cuda-backend-wiring.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/cuda_driver_launch.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - .github/workflows/task38-cuda-backend-wiring.yml
+
+permissions:
+  contents: read
+
+jobs:
+  software-wiring-contract:
+    name: software-wiring-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_cuda_backend_wiring_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Standalone miner default compatibility
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-miner
+
+      - name: Standalone miner OpenCL scaffold compatibility
+        run: cargo test --locked -p pulsedag-miner --features gpu --bin pulsedag-miner
+
+      - name: Explicit CUDA backend wiring and fake-launcher regressions
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner
+
+      - name: Legacy-v1 and activated-v2 canonical protocol mining regressions
+        run: cargo test --locked -p pulsedag-miner protocol_backend::tests
+
+      - name: Canonical accelerator re-verification regressions
+        run: cargo test --locked -p pulsedag-miner protocol_pow::tests
+
+      - name: Standalone miner default Clippy
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-miner -- -D warnings
+
+      - name: Standalone miner OpenCL scaffold Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --bin pulsedag-miner -- -D warnings
+
+      - name: Standalone miner CUDA wiring Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --bin pulsedag-miner -- -D warnings
+
+      - name: Record software-only scope
+        shell: bash
+        run: |
+          echo "cuda_backend_cli_wiring=PASS"
+          echo "cuda_backend_single_device_contract=PASS"
+          echo "cuda_backend_fail_closed_no_cpu_fallback=PASS"
+          echo "cuda_backend_canonical_reverification=PASS"
+          echo "legacy_v1_protocol_path=PASS"
+          echo "activated_v2_protocol_path=PASS"
+          echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+          echo "amd_gpu_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"

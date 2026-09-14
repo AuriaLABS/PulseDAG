@@ -7,7 +7,7 @@ default-run = "pulsedag-miner"
 [features]
 default = []
 gpu = ["dep:libloading"]
-cuda = ["dep:libloading"]
+cuda = ["dep:libloading", "dep:sha3"]
 
 [[bin]]
 name = "pulsedag-cuda-probe"
@@ -23,7 +23,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 pulsedag-core = { path = "../../crates/pulsedag-core" }
 pulsedag-api = { path = "../../crates/pulsedag-api" }
 libloading = { version = "0.8", optional = true }
+sha3 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
-sha3 = "0.10"
