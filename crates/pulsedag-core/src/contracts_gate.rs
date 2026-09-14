@@ -52,10 +52,7 @@ mod tests {
             contracts_compile_time_executable(),
             EXECUTABLE_CONTRACTS_COMPILED
         );
-        assert_eq!(
-            contracts_may_execute(true),
-            EXECUTABLE_CONTRACTS_COMPILED
-        );
+        assert_eq!(contracts_may_execute(true), EXECUTABLE_CONTRACTS_COMPILED);
         assert!(!contracts_may_execute(false));
         if EXECUTABLE_CONTRACTS_COMPILED {
             assert_eq!(
