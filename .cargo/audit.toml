@@ -3,7 +3,7 @@
 # The historical v2.4 lock-only vulnerability exceptions expired on
 # 2026-08-31 and are not renewed here. The active development line carries
 # no vulnerability advisory ignores. Informational RustSec warnings remain
-# visible and are owned by issue #803 until removed or explicitly reviewed
+# visible and are owned by issue #1127 (historical tracker #803) until removed or explicitly reviewed
 # against the exact final v3 candidate.
 
 [advisories]

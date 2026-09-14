@@ -67,6 +67,8 @@ Machine-readable errors include:
 - `request_too_large`;
 - `rate_limited`.
 
+CORS `*` is always rejected at startup (`validate_cors_policy`). `PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN` is parsed but unused; it does not override the ban. Use an explicit allowlist. See #1129.
+
 ## Expected release boundary
 
 The final v2.4.0 candidate must report `version=v2.4.0`, external-miner mode, disabled smart contracts and an exact protocol/network identity matching the frozen candidate. Raw-private-key wallet RPC is removed from the supported node boundary; signed transactions must be produced outside the node.

@@ -39,7 +39,7 @@ Issue #819 remains the professional wallet/custody program. It blocks advertisin
 
 ## Security boundary
 
-Issue #803 remains the authoritative dependency-security/public-GO record. Reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` remain visible public-testnet blockers under the current fail-closed disposition until a supported parent-stack upgrade removes them or a separate reviewed disposition explicitly changes the launch decision.
+Issue #1127 is the live authoritative dependency-security/public-GO record (historical #803). Reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` remain visible public-testnet blockers under the current fail-closed disposition until a supported parent-stack upgrade removes them or a separate reviewed disposition explicitly changes the launch decision.
 
 A stable expected RustSec warning set is **not** security approval. Unsupported transitive leaf patches or unreleased dependency migrations are not accepted merely to make a scanner green.
 
@@ -82,4 +82,4 @@ Issue #781 is the only public-testnet launch-control record. Until it records an
 
 The private 24-hour burn-in in #789 begins only on one intentionally frozen, unchanged candidate after all prerequisites for starting that clock are satisfied.
 
-See `docs/release/V2_4_0_KNOWN_LIMITATIONS.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #873, #789, #794, #803 and #781.
+See `docs/release/V2_4_0_KNOWN_LIMITATIONS.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #873, #789, #794, #1127, historical #803 and #781.

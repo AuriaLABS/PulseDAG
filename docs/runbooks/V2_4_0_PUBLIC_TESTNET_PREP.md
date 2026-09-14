@@ -15,7 +15,7 @@ Before any public endpoint or bootnode is advertised, all of the following must 
 5. at least two persistent bootnode peer IDs and final `/p2p/<peer-id>` multiaddrs;
 6. public RPC DNS/TLS owner, request limits, per-IP limits and CORS allowlist;
 7. storage/backup/NTP/firewall checks for every role;
-8. security review including #803 disposition;
+8. security review including #1127 disposition (historical #803);
 9. explicit `GO_PUBLIC_TESTNET` in #781.
 
 Until then, the repository templates under `configs/public-testnet/` intentionally retain placeholders and `PULSEDAG_P2P_ENABLED=false`.

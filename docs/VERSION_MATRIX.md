@@ -57,3 +57,27 @@ The current Task31 candidate is explicitly closing release blockers including:
 ## Repository version rule
 
 Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently and must preserve the pending/no-GO guardrails above. References to earlier versions are allowed only when clearly presented as historical baselines, compatibility inputs, migration evidence, or archive material.
+
+## What `main` is (and is not)
+
+`main` is the **moving v2.4.0 Task31 candidate line**, not a frozen release and not a public-testnet GO branch.
+
+It currently also contains inactive v3/covenant/contract modules (`contract_v3`, `covenant_v1`, `tx_v3`, `mempool_v3`) and a v3 launch issue tree (`#781`, `#794`, `#1037+`, `#1041`). Those surfaces must remain disabled (`contracts_enabled=false`) and must not be described as part of the Task31 protocol identity (transaction v2 + header v2 + `ghostdag_v1`).
+
+| Line | Meaning |
+|---|---|
+| `main` | Moving Task31 construction line. Exact SHA not frozen. May contain inactive future code. |
+| Frozen Task31 candidate | Does not exist until an exact SHA is recorded and evidence is rerun on that SHA. |
+| v3 launch line | Planning and inactive foundation only. `#1041` does not authorize contract activation. |
+| Historical `v2.3.0` / `v2.2.x` | Compatibility and provenance only. |
+
+## Live control issues
+
+| Topic | Live issue | Historical |
+|---|---|---|
+| Coordinated launch control | #781 | — |
+| Integrated v3 program | #794 | — |
+| RustSec / public-GO dependency record | #1127 | #803 |
+| Task31 audit parent (this pass) | #1132 | #1115 |
+| v2.4 / v3 identity mix | #1131 | #1123 |
+| Stale active docs | #1128 | #1120 |
