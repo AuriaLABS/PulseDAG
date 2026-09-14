@@ -130,7 +130,7 @@ For `public_safe`, the built-in guarded-route defaults are:
 - wildcard CORS origin (`*`): **rejected**; use an explicit allowlist;
 - admin routes: **not mounted**.
 
-`public_safe` also rejects a zero request-rate limit unless an explicit unsafe override is supplied. Unsafe overrides are not part of any supported public baseline and must not be used to claim #794/#781 readiness.
+`public_safe` also rejects a zero request-rate limit unless an explicit unsafe override is supplied. Unsafe overrides are not part of the supported public-testnet baseline and must not be used to claim #794/#781 readiness.
 
 ### Public exposure warning
 
