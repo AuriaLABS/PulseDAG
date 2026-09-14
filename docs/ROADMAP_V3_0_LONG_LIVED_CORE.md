@@ -4,6 +4,8 @@ v3.0 is not a marketing milestone. It is the first long-lived functional PulseDA
 
 The v3.0 line must prefer durability, migration safety, reproducibility, and operator evidence over feature expansion. Each milestone below exists to reduce operational, consensus, sync, storage, or release risk before the next wider network commitment.
 
+Smart-contract implementation and smart-contract activation are intentionally decoupled. Smart-contract code may be complete and production-ready in the v3.0 codebase, but smart-contract deployment and execution are not active protocol behavior at the v3.0.0 mainnet launch. Activation is reserved for a later protocol upgrade with a dedicated gate.
+
 ## Philosophy
 
 - v3.0 is earned by evidence, not declared by version number.
@@ -11,6 +13,7 @@ The v3.0 line must prefer durability, migration safety, reproducibility, and ope
 - Release decisions must be reversible where possible, reproducible from artifacts, and backed by documented evidence.
 - New features are subordinate to core stability until the stable core is proven.
 - Compatibility claims must be narrow, implemented, tested, and documented.
+- Feature readiness does not imply protocol activation; activation-sensitive features require an explicit activation decision.
 
 ## Long-term sequence
 
@@ -28,8 +31,9 @@ The v3.0 line must prefer durability, migration safety, reproducibility, and ope
 | v2.5.x | Public-testnet preparation | Public operator documentation, bootstrap policy, monitoring, release reproducibility, and support readiness. |
 | v2.6.x | Public-testnet candidate and long soak | Candidate public network with long soak, incident tracking, rollback drills, and no unresolved Sev-1 consensus/sync incident. |
 | v2.7.x | Protocol freeze | Freeze consensus, network, storage, miner contract, and RPC boundaries except for documented safety fixes. |
-| v2.8.x | v3.0 release candidates | Reproducible artifacts, migration rehearsals, snapshot/restore evidence, and final operator sign-off. |
-| v3.0.0 | Long-lived functional core | Stable core release intended to run for years under documented upgrade, rollback, storage, and operational policies. |
+| v2.8.x | v3.0 release candidates | Reproducible artifacts, migration rehearsals, snapshot/restore evidence, final operator sign-off, and proof that smart contracts remain inactive. |
+| v3.0.0 | Long-lived functional core | Stable core release intended to run for years; smart-contract execution remains intentionally inactive at launch. |
+| Post-v3.0 activation | Smart-contract activation decision | Separate protocol upgrade with dedicated security, consensus, replay, migration, operator, and go/no-go evidence. |
 
 ## Milestone requirements
 
@@ -119,6 +123,7 @@ The v3.0 line must prefer durability, migration safety, reproducibility, and ope
 - Produce one or more v3.0 release candidates with reproducible artifacts and signed evidence indexes.
 - Rehearse upgrades from supported previous lines and rollbacks where rollback remains supported.
 - Re-run snapshot/restore, replay, pruning, multi-node, multi-miner, and RPC boundary validation.
+- Verify that any implemented smart-contract surfaces remain fail-closed and inactive under the v3.0.0 activation state.
 - Publish final operator documentation and known limitations before v3.0.0.
 
 ### v3.0.0 — Long-lived functional core
@@ -126,6 +131,15 @@ The v3.0 line must prefer durability, migration safety, reproducibility, and ope
 - Ship only when the core is stable enough to run for years under documented operating assumptions.
 - Preserve compatibility and migration expectations unless a documented safety issue requires otherwise.
 - Maintain release evidence, upgrade policy, rollback policy, and storage lifecycle policy as first-class release artifacts.
+- Do not activate smart-contract deployment or execution at v3.0.0 mainnet launch, even when implementation is complete.
+
+### Post-v3.0 — Smart-contract activation
+
+- Treat smart-contract activation as a separate protocol-upgrade decision, not as completion work for v3.0.0.
+- Require explicit activation parameters and a deterministic activation mechanism.
+- Require dedicated consensus/replay, security, migration/compatibility, RPC/operator, and recovery evidence.
+- Require an explicit go/no-go decision before activation.
+- Never infer activation from code presence, build inclusion, configuration defaults, or implementation readiness.
 
 ## v3.0.0 minimum gates
 
@@ -139,10 +153,14 @@ v3.0.0 must not ship unless all of the following are true:
 - Snapshot/restore evidence exists for supported operating paths.
 - Multi-node and multi-miner evidence exists and is linked from release evidence.
 - Public, operator, and development RPC boundaries are documented.
+- Smart-contract execution is proven inactive and non-interfering under the v3.0.0 mainnet activation state.
+
+Smart-contract implementation completeness is explicitly **not** a v3.0.0 minimum gate.
 
 ## Guardrails
 
-- Do not add smart contracts before the stable core is proven.
+- Do not activate smart contracts in v3.0.0 mainnet. Implementation may be ready, but activation belongs to a later dedicated protocol upgrade.
+- Do not allow smart-contract code presence or configuration alone to activate contract deployment, execution, or contract-specific state transitions.
 - Do not add pool coordination logic inside `pulsedag-miner`.
 - Keep the miner external and standalone.
 - Do not claim full Kaspa/GHOSTDAG compatibility unless implemented, tested, and documented.
