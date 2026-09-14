@@ -1,5 +1,3 @@
-#![cfg(feature = "cuda")]
-
 use anyhow::{anyhow, Result};
 use pulsedag_core::pow::compare_pow_hash_to_target;
 use pulsedag_core::types::BlockHeader;
