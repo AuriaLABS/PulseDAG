@@ -104,15 +104,21 @@ def main() -> None:
         "GO_PUBLIC_TESTNET",
         "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=true",
     )
-    require(
+    limitations = require(
         "docs/release/V2_4_0_KNOWN_LIMITATIONS.md",
         "no official end-user custody wallet",
         "atty 0.2.14",
         "linkme 0.2.10",
         "lru 0.12.5",
+        "bincode 1.3.3",
+        "docs/security/V3_BINCODE_MIGRATION_PLAN.md",
         "Evidence from different SHAs must not be combined",
         "smart contracts remain disabled",
     )
+    if "current lock no longer contains `linkme 0.2.10` or `lru 0.12.5`" not in limitations:
+        fail("known-limitations record must distinguish removed historical linkme/lru from current blockers")
+    if "reachable `atty 0.2.14` warning remains visible" not in limitations:
+        fail("known-limitations record lost the current atty blocker")
     require(
         "docs/release/V2_4_0_RELEASE_NOTES.md",
         "NOT RELEASED / NOT ACTIVATED",
