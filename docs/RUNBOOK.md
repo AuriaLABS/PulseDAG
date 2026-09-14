@@ -69,6 +69,27 @@ Machine-readable errors include:
 
 CORS `*` is always rejected at startup (`validate_cors_policy`). `PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN` is parsed but unused; it does not override the ban. Use an explicit allowlist. See #1129.
 
+## Consensus and bind knobs
+
+| Variable | Accepted values | Notes |
+|---|---|---|
+| `PULSEDAG_CONSENSUS_MODE` | `legacy`, `ghostdag_dev` | Runtime consensus. Invalid values abort startup. `ghostdag_v1` is **not** valid here. |
+| `PULSEDAG_PROTOCOL_CONSENSUS_MODE` | `legacy`, `ghostdag_v1` | Startup/protocol identity plane. Invalid values fail closed. |
+| `PULSEDAG_P2P_MODE` | `libp2p-real`, `libp2p-dev`, `libp2p`, `libp2p-skeleton`, `memory`, `simulated` | Unknown values abort startup. They never fall back to a simulated stack. |
+| `PULSEDAG_RPC_BIND` | socket address | Defaults are loopback. `0.0.0.0` / `[::]` require `PULSEDAG_API_PROFILE=public_safe` or `PULSEDAG_RPC_UNSAFE_BIND_ANY=true`. |
+| `PULSEDAG_P2P_MDNS` | `true` / `false` | Default off for `testnet`, `private`, and `operator`. |
+
+Configuration-valid consensus combinations and their release status:
+
+| Runtime `PULSEDAG_CONSENSUS_MODE` | Protocol `PULSEDAG_PROTOCOL_CONSENSUS_MODE` | Status |
+|---|---|---|
+| `legacy` | `legacy` | Configuration-valid legacy runtime + legacy protocol identity; not the current v2.4 template identity. |
+| `legacy` | `ghostdag_v1` | Configuration-valid and required by the current v2.4 private/public/single-node templates. |
+| `ghostdag_dev` | `legacy` | Configuration-valid for experimental/dev GhostDAG runtime work only; not authorized as a v2.4 release identity. |
+| `ghostdag_dev` | `ghostdag_v1` | Parser-valid but experimental only; not authorized by v2.4 production templates and invalid for the v2.4 single-node contract, which requires runtime `legacy`. |
+
+`ghostdag_v1` is never valid in `PULSEDAG_CONSENSUS_MODE`. Invalid values in either plane must fail closed rather than silently selecting another mode.
+
 ## Expected release boundary
 
 The final v2.4.0 candidate must report `version=v2.4.0`, external-miner mode, disabled smart contracts and an exact protocol/network identity matching the frozen candidate. Raw-private-key wallet RPC is removed from the supported node boundary; signed transactions must be produced outside the node.
