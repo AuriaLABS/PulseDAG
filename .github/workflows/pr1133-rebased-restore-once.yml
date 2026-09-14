@@ -25,24 +25,23 @@ jobs:
           git fetch origin cba7d4a45560d310c98df58529f500efd7ad1220
           git show cba7d4a45560d310c98df58529f500efd7ad1220:apps/pulsedagd/src/config.rs > apps/pulsedagd/src/config.rs
           python3 - <<'PY'
+          import re
           from pathlib import Path
           p = Path('apps/pulsedagd/src/main.rs')
           text = p.read_text()
-          old = '''            other => {
-                warn!(configured_mode = %other, "unknown P2P mode, using memory-simulated mode");
-                build_p2p_stack(P2pMode::Memory {
-                    chain_id: cfg.chain_id.clone(),
-                    peers: cfg.simulated_peers.clone(),
-                })?
-            }'''
-          new = '''            other => {
-                anyhow::bail!(
-                    "invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated"
-                );
-            }'''
-          if old not in text:
+          needle = 'unknown P2P mode, using memory-simulated mode'
+          if needle not in text:
               raise SystemExit('main.rs unknown-mode fallback not found; abort')
-          p.write_text(text.replace(old, new, 1))
+          text2, n = re.subn(
+              r'other => \{\s*warn!\(configured_mode = %other, "unknown P2P mode, using memory-simulated mode"\);\s*build_p2p_stack\(P2pMode::Memory \{\s*chain_id: cfg\.chain_id\.clone\(\),\s*peers: cfg\.simulated_peers\.clone\(\),\s*\}\)\?\s*\}',
+              "other => { anyhow::bail!(\"invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated\"); }",
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f'regex replace count={n}')
+          p.write_text(text2)
+          print('patched main.rs')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
