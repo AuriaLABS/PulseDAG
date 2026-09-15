@@ -4,7 +4,8 @@ pub mod mine;
 pub mod p2p;
 #[path = "tx_protocol.rs"]
 pub mod tx;
-#[allow(dead_code)]
+// Retained pre-protocol handlers + unit tests. Production routes use tx_protocol.
+#[cfg(test)]
 #[path = "tx.rs"]
 mod tx_legacy;
 pub mod wallet;
