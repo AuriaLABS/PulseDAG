@@ -66,11 +66,6 @@ mod original {
 
     #[cfg(test)]
     mod phase1_tests {
-        use std::{
-            fs,
-            time::{SystemTime, UNIX_EPOCH},
-        };
-
         use super::*;
 
         fn args(values: &[&str]) -> impl Iterator<Item = String> {
@@ -124,6 +119,11 @@ mod original {
         #[cfg(not(unix))]
         #[test]
         fn restore_refuses_unenforced_private_permissions_before_publish() {
+            use std::{
+                fs,
+                time::{SystemTime, UNIX_EPOCH},
+            };
+
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock after unix epoch")
