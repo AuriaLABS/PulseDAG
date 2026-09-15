@@ -1,0 +1,86 @@
+name: v3 launch Task 38 accelerator telemetry phase 7
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_telemetry.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-telemetry-probe.rs
+      - .github/workflows/task38-accelerator-telemetry-phase7.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_telemetry.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-telemetry-probe.rs
+      - .github/workflows/task38-accelerator-telemetry-phase7.yml
+
+permissions:
+  contents: read
+
+jobs:
+  accelerator-telemetry-contract:
+    name: accelerator-telemetry-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_accelerator_telemetry_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Accelerator telemetry unit contract
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-accelerator-telemetry-probe
+
+      - name: Deterministic telemetry self-test
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-telemetry-probe -- --self-test
+
+      - name: Accelerator telemetry clippy
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-accelerator-telemetry-probe -- -D warnings
+
+      - name: Record software-only telemetry scope
+        shell: bash
+        run: |
+          echo "accelerator_telemetry_contract=PASS"
+          echo "canonical_device_order=PASS"
+          echo "per_device_accounting=PASS"
+          echo "aggregate_accounting=PASS"
+          echo "health_transition_accounting=PASS"
+          echo "overflow_fail_closed=PASS"
+          echo "physical_hashrate=NOT_CLAIMED"
+          echo "vendor_sensor_telemetry=NOT_CLAIMED"
+          echo "physical_gpu_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
