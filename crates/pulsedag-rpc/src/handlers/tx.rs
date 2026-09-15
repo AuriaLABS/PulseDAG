@@ -292,6 +292,7 @@ pub async fn post_tx_build<S: RpcStateLike>(
     }
 }
 
+#[allow(dead_code)] // not re-exported; protocol path lives in tx_protocol.rs
 pub async fn post_tx_validate<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitTxRequest>,
@@ -319,6 +320,7 @@ pub async fn post_tx_validate<S: RpcStateLike>(
     }
 }
 
+#[allow(dead_code)] // not re-exported; protocol path lives in tx_protocol.rs
 pub async fn post_tx_submit<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitTxRequest>,

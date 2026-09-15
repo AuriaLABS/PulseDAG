@@ -4,7 +4,8 @@ pub mod mine;
 pub mod p2p;
 #[path = "tx_protocol.rs"]
 pub mod tx;
-#[allow(dead_code)]
+// Retained v1 handlers. Not a dead module: `tx_protocol.rs` re-exports these
+// symbols (`pub use super::tx_legacy::...`). See #1130.
 #[path = "tx.rs"]
 mod tx_legacy;
 pub mod wallet;
