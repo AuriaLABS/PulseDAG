@@ -1,0 +1,33 @@
+name: tmp-apply-1130-tx-item-allows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [audit/1130-tx-legacy-used-reexport]
+    paths:
+      - scripts/_tmp_1130_tx_item_allows.patch
+      - .github/workflows/_tmp_apply_1130_tx_item_allows.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/audit/1130-tx-legacy-used-reexport'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/1130-tx-legacy-used-reexport
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply and drop one-shot files
+        run: |
+          set -euo pipefail
+          git apply --verbose scripts/_tmp_1130_tx_item_allows.patch
+          rm -f scripts/_tmp_1130_tx_item_allows.patch .github/workflows/_tmp_apply_1130_tx_item_allows.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-rpc/src/handlers/tx.rs
+          git add -u scripts/_tmp_1130_tx_item_allows.patch .github/workflows/_tmp_apply_1130_tx_item_allows.yml || true
+          git commit -m "rpc: allow only unused legacy submit/validate in tx.rs (#1130)"
+          git push origin audit/1130-tx-legacy-used-reexport
