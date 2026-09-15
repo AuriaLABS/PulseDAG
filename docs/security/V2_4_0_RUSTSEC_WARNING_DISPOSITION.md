@@ -38,8 +38,10 @@ line:
   Kaspa 2.0.1 parent migration;
 - `lru 0.12.5` is absent after the supported libp2p 0.56 parent migration;
 - `intertrait 0.2.2` and the historical Kaspa 0.15 dependency path are absent;
-- `atty 0.2.14` remains visible through the supported `hexplay`/Kaspa/workflow
-  parent graph and remains an unresolved launch blocker;
+- `atty 0.2.14` remains visible through `hexplay 0.3.0` on the supported
+  Kaspa/workflow parent graph and remains an unresolved launch blocker — see
+  the dedicated path and Windows allocator invariant in
+  `docs/security/V3_DEPENDENCY_SECURITY.md`;
 - runtime `bincode 1.3.3` remains visible and has an explicit migration plan in
   `docs/security/V3_BINCODE_MIGRATION_PLAN.md`;
 - Hickory 0.25.2 advisories remain visible and are permitted only while the
