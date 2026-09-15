@@ -62,7 +62,7 @@ Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently
 
 `main` is the **moving v2.4.0 Task31 candidate line**, not a frozen release and not a public-testnet GO branch.
 
-It currently also contains inactive v3/covenant/contract modules (`contract_v3`, `covenant_v1`, `tx_v3`, `mempool_v3`) and a v3 launch issue tree (`#781`, `#794`, `#1037+`, `#1041`). Those surfaces must remain disabled (`contracts_enabled=false`) and must not be described as part of the Task31 protocol identity (transaction v2 + header v2 + `ghostdag_v1`).
+It currently also contains inactive v3/covenant/contract modules (`contract_v3`, `covenant_v1`, `tx_v3`, `mempool_v3`) and a v3 launch issue tree (`#781`, `#794`, `#1037+`, `#1041`). Those surfaces must remain disabled (`contracts_enabled=false`, compile-time contracts gate) and must not be described as part of the Task31 protocol identity (transaction v2 + header v2 + `ghostdag_v1`). Presence of that code on `main` is not activation.
 
 | Line | Meaning |
 |---|---|
@@ -73,11 +73,13 @@ It currently also contains inactive v3/covenant/contract modules (`contract_v3`,
 
 ## Live control issues
 
-| Topic | Live issue | Historical |
+| Topic | Live issue | Historical / closed this pass |
 |---|---|---|
 | Coordinated launch control | #781 | — |
 | Integrated v3 program | #794 | — |
-| RustSec / public-GO dependency record | #1127 | #803 |
-| Task31 audit parent (this pass) | #1132 | #1115 |
+| RustSec / public-GO dependency record | #1127 (closed as tracker; `atty`/`hexplay` and `bincode` remain blockers) | #803 |
+| Remaining crate-graph / bincode persist caps | #1153 (code) + `V3_BINCODE_MIGRATION_PLAN.md` | #1139 |
+| Task31 audit parent | #1132 | #1115 |
 | v2.4 / v3 identity mix | #1131 | #1123 |
-| Stale active docs | #1128 | #1120 |
+| Stale active docs | closed | #1128 / #1120 |
+| God-files / production `dead_code` | #1130 | #1122 |
