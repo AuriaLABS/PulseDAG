@@ -4,7 +4,7 @@ Active release documentation now targets the `v2.4.0` Task31 candidate construct
 
 `main` is the moving Task31 construction line, not a frozen tag. It may contain inactive v3/covenant modules; `contracts_enabled=false` remains mandatory. Live control issues: launch #781 / #794, RustSec/public-GO #1127 (replaces missing #803), identity mix #1131, docs hygiene #1128. See `VERSION_MATRIX.md`. The exact candidate is not yet frozen: activated-v2 startup/storage/P2P wiring and final exact-SHA validation remain in progress. This state does not authorize a release tag, GitHub Release publication, public-testnet launch, Day 0, default high-cadence activation, or smart contracts.
 
-The `v2.5.0` and `v2.6.0` roadmaps remain future planning documents. They do not bypass the v2.4.0 release/activation gates.
+The `v2.5.0`, `v2.6.0`, and `v3.0.0` roadmaps remain future planning documents. They do not bypass the v2.4.0 release/activation gates.
 
 ## Current v2.4.0 authority
 
@@ -42,6 +42,9 @@ Current authorization remains:
 
 - [`ROADMAP_V2_5_0.md`](ROADMAP_V2_5_0.md)
 - [`ROADMAP_V2_6_0.md`](ROADMAP_V2_6_0.md)
+- [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md)
+
+`ROADMAP_V3_0_0.md` is a differentiation thesis for a later genesis. It does not activate covenants, contracts, PulseVM, or high cadence, and it does not mix v3 identity into the Task31 protocol identity.
 
 ## Maintenance and history
 

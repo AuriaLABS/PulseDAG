@@ -28,6 +28,7 @@
 | `v2.4.0` | Versioned transaction/header protocol, GHOSTDAG stack, adversarial validation and final release activation | Active candidate construction |
 | `v2.5.0` | Future scale/GPU/adversarial-resilience program | Future planning |
 | `v2.6.0` | Future programmability program | Future planning |
+| `v3.0.0` | Future Pulse Layer genesis: PulseClock, covenant templates, based-apps v0, reproducible verify, official user surface | Future planning; see `ROADMAP_V3_0_0.md`. Not authorized |
 
 ## v2.4.0 evidence state
 
@@ -52,11 +53,13 @@ The current Task31 candidate is explicitly closing release blockers including:
 - starting or backdating the 30-day public-testnet clock;
 - enabling high cadence by default;
 - enabling smart contracts;
-- claiming an official end-user custody wallet is part of this node/miner candidate.
+- enabling covenant templates or PulseClock as live protocol identity;
+- claiming an official end-user custody wallet is part of this node/miner candidate;
+- treating `ROADMAP_V3_0_0.md` as an activation contract.
 
 ## Repository version rule
 
-Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently and must preserve the pending/no-GO guardrails above. References to earlier versions are allowed only when clearly presented as historical baselines, compatibility inputs, migration evidence, or archive material.
+Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently and must preserve the pending/no-GO guardrails above. References to earlier versions are allowed only when clearly presented as historical baselines, compatibility inputs, migration evidence, or archive material. References to `v3.0.0` are allowed only as future planning.
 
 ## What `main` is (and is not)
 
@@ -68,7 +71,7 @@ It currently also contains inactive v3/covenant/contract modules (`contract_v3`,
 |---|---|
 | `main` | Moving Task31 construction line. Exact SHA not frozen. May contain inactive future code. |
 | Frozen Task31 candidate | Does not exist until an exact SHA is recorded and evidence is rerun on that SHA. |
-| v3 launch line | Planning and inactive foundation only. `#1041` does not authorize contract activation. |
+| v3 launch line | Planning and inactive foundation only. `#1041` does not authorize contract activation. `ROADMAP_V3_0_0.md` does not authorize covenant or PulseClock activation. |
 | Historical `v2.3.0` / `v2.2.x` | Compatibility and provenance only. |
 
 ## Live control issues
