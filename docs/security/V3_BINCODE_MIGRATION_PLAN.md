@@ -1,6 +1,6 @@
 # PulseDAG runtime bincode 1.x migration plan
 
-Status: **planned security/storage migration; not yet implemented**
+Status: **planned security/storage migration; Phase 0 inventory started; not yet implemented**
 
 Authority: #1127 / #1139. Launch authority: #781. This plan does not grant public-testnet or mainnet GO.
 
@@ -15,28 +15,45 @@ A blind dependency bump is forbidden. The migration must preserve deterministic
 state recovery, snapshot/fast-sync compatibility, rollback safety and exact-SHA
 evidence.
 
-## Current scope inventory
+## Phase 0 call-site inventory (current main)
 
-Production/runtime uses that require explicit migration ownership include at
-least:
+Direct `bincode` crate declarations:
 
-- `crates/pulsedag-storage/src/lib.rs`: persisted state/snapshot payloads;
-- `crates/pulsedag-storage/src/fast_sync_resume.rs`:
-  `FastSyncSnapshotTransferPlanV1` resume data;
-- `crates/pulsedag-storage/src/fast_sync_network_resume.rs`:
-  `FastSyncNetworkTransferPlanV1` resume data;
-- `crates/pulsedag-storage/src/fast_sync_transfer.rs`: fast-sync bundle/payload
-  serialization;
-- `apps/pulsedagd`: direct runtime dependency and any node-side decoding paths.
+| Manifest | Kind | Notes |
+| --- | --- | --- |
+| `crates/pulsedag-storage/Cargo.toml` | runtime `bincode = "1.3"` | production encode/decode authority |
+| `apps/pulsedagd/Cargo.toml` | runtime `bincode = "1"` | **no first-party `bincode::` calls** in `apps/pulsedagd`; leftover direct dep |
+| `crates/pulsedag-core/Cargo.toml` | **dev-dependency** `bincode = "1.3"` | tests / golden comparisons only |
 
-`pulsedag-core` also uses bincode in tests to compare or snapshot structures.
-Those test-only uses are not persistent format authority and may migrate
-separately after production formats have explicit replacements.
+`pulsedag-p2p` has no direct `bincode` dependency. Fast-sync P2P carriers consume storage-produced bytes; they are not a second encode authority.
 
-Before implementation, the migration PR must produce a machine-readable
-inventory of every non-test `bincode::serialize` / `deserialize` call and map it
-to one of: on-disk persistent, snapshot, fast-sync/resume, RPC/network artifact,
-or transient internal use.
+### Production encode/decode entrypoints (`pulsedag-storage`)
+
+| File | Call | Record / payload | Class | Bound observed |
+| --- | --- | --- | --- | --- |
+| `src/lib.rs` | `serialize` / `deserialize` | `ChainState` and snapshot payloads | on-disk persistent + snapshot | snapshot metadata written alongside payload |
+| `src/lib.rs` | `serialize` | mempool admission height (`MEMPOOL_ADMISSION_HEIGHT_V1_KEY`) | on-disk persistent | key-scoped; size ceiling still to freeze |
+| `src/fast_sync_resume.rs` | `serialize` / `deserialize` | `FastSyncSnapshotTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1` before persist |
+| `src/fast_sync_network_resume.rs` | `serialize` / `deserialize` | `FastSyncNetworkTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1` before persist |
+| `src/fast_sync_transfer.rs` | `serialize` / `deserialize` | `FastSyncSnapshotBundleV1` payload | snapshot / fast-sync transfer | payload length recorded as `u64`; bundle/manifest cross-check on decode |
+
+### Test-only / non-authority uses
+
+| File | Class |
+| --- | --- |
+| `crates/pulsedag-core/src/{acceptance,mined_block,network_*,mining_state,mempool_*}_v2.rs` and similar | in-crate test/helper comparisons (core is dev-dep only) |
+| `crates/pulsedag-core/tests/*` | test |
+| `crates/pulsedag-storage/tests/mempool_expiry_persistence.rs` | test + legacy-bytes equality |
+| `crates/pulsedag-storage/tests/retarget_recovery_agreement.rs` | test restart round-trip |
+
+Still required before Phase 1 implementation:
+
+- machine-readable list of every non-test call with line numbers on the exact candidate SHA;
+- golden fixtures from real DBs / snapshots / resume plans;
+- freeze of exact byte ceilings and old-format identifier (do not infer format from payload only);
+- decision on whether `apps/pulsedagd`'s unused direct `bincode` dep can be removed in a separate hygiene PR without changing storage format.
+
+This inventory does **not** choose a replacement codec and does **not** change any reader/writer.
 
 ## Required target-codec contract
 
@@ -152,5 +169,5 @@ not waive Hickory lock-only evidence, does not add advisory ignores, and does no
 set dependency security or launch readiness to PASS. Those decisions remain
 under #1127/#1139 and #781.
 
-`RUSTSEC-2026-0285` (`rustls 0.23.39`) is tracked separately in #1145 and is
-out of scope for this storage-format plan.
+`RUSTSEC-2026-0285` (`rustls 0.23.39`) was closed by #1145/#1146 (`rustls 0.23.45`)
+and remains out of scope for this storage-format plan.
