@@ -1,6 +1,6 @@
 # PulseDAG runtime bincode 1.x migration plan
 
-Status: **planned security/storage migration; Phase 0 inventory started; not yet implemented**
+Status: **planned security/storage migration; Phase 0 inventory + size ceilings recorded; not yet implemented**
 
 Authority: #1127 / #1139. Launch authority: #781. This plan does not grant public-testnet or mainnet GO.
 
@@ -27,15 +27,36 @@ Direct `bincode` crate declarations:
 
 `pulsedag-p2p` has no direct `bincode` dependency. Fast-sync P2P carriers consume storage-produced bytes; they are not a second encode authority.
 
+#1149 attempted to drop the unused `pulsedagd` direct dep and was closed: `Cargo.lock` hygiene requires a workspace `cargo generate-lockfile` cycle, not a hand edit. The leftover dep remains until that lock-synced PR exists.
+
 ### Production encode/decode entrypoints (`pulsedag-storage`)
 
 | File | Call | Record / payload | Class | Bound observed |
 | --- | --- | --- | --- | --- |
-| `src/lib.rs` | `serialize` / `deserialize` | `ChainState` and snapshot payloads | on-disk persistent + snapshot | snapshot metadata written alongside payload |
-| `src/lib.rs` | `serialize` | mempool admission height (`MEMPOOL_ADMISSION_HEIGHT_V1_KEY`) | on-disk persistent | key-scoped; size ceiling still to freeze |
-| `src/fast_sync_resume.rs` | `serialize` / `deserialize` | `FastSyncSnapshotTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1` before persist |
-| `src/fast_sync_network_resume.rs` | `serialize` / `deserialize` | `FastSyncNetworkTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1` before persist |
-| `src/fast_sync_transfer.rs` | `serialize` / `deserialize` | `FastSyncSnapshotBundleV1` payload | snapshot / fast-sync transfer | payload length recorded as `u64`; bundle/manifest cross-check on decode |
+| `src/lib.rs` | `serialize` / `deserialize` | `ChainState` and snapshot payloads | on-disk persistent + snapshot | snapshot metadata written alongside payload; **no first-party MAX_* on the bincode blob itself** |
+| `src/lib.rs` | `serialize` | mempool admission height (`MEMPOOL_ADMISSION_HEIGHT_V1_KEY`) | on-disk persistent | key-scoped; **no explicit MAX_* yet** |
+| `src/fast_sync_resume.rs` | `serialize` / `deserialize` | `FastSyncSnapshotTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1` = **16 MiB** |
+| `src/fast_sync_network_resume.rs` | `serialize` / `deserialize` | `FastSyncNetworkTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1` = **16 MiB** |
+| `src/fast_sync_transfer.rs` | `serialize` / `deserialize` | `FastSyncSnapshotBundleV1` payload | snapshot / fast-sync transfer | chunk default 256 KiB, chunk max 512 KiB, max chunks 131072, transfer cap **16 GiB** |
+
+### Frozen size ceilings (Phase 0)
+
+These numbers are the current-code fail-closed limits. Changing any of them invalidates compatibility evidence.
+
+| Constant | Value | Applies to |
+| --- | --- | --- |
+| `MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1` | `16 * 1024 * 1024` (16 MiB) | serialized resume plan before persist |
+| `MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1` | `16 * 1024 * 1024` (16 MiB) | serialized network-resume plan before persist |
+| `DEFAULT_FAST_SYNC_SNAPSHOT_CHUNK_BYTES` | `256 * 1024` (256 KiB) | snapshot transfer chunking |
+| `MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES` | `512 * 1024` (512 KiB) | snapshot transfer chunking |
+| `MAX_FAST_SYNC_SNAPSHOT_CHUNKS` | `131_072` | snapshot transfer chunking |
+| `MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES` | `16 * 1024 * 1024 * 1024` (16 GiB) | total snapshot transfer |
+
+Still unfrozen (must be explicit before Phase 1 writes):
+
+- `ChainState` / snapshot bincode blob max size;
+- mempool admission height record max size;
+- old-format identifier (magic / domain), distinct from payload inference.
 
 ### Test-only / non-authority uses
 
@@ -50,8 +71,8 @@ Still required before Phase 1 implementation:
 
 - machine-readable list of every non-test call with line numbers on the exact candidate SHA;
 - golden fixtures from real DBs / snapshots / resume plans;
-- freeze of exact byte ceilings and old-format identifier (do not infer format from payload only);
-- decision on whether `apps/pulsedagd`'s unused direct `bincode` dep can be removed in a separate hygiene PR without changing storage format.
+- explicit MAX_* for `ChainState` and mempool admission height;
+- lock-synced removal of the unused `pulsedagd` direct `bincode` dep.
 
 This inventory does **not** choose a replacement codec and does **not** change any reader/writer.
 
