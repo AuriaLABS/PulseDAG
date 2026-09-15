@@ -44,7 +44,15 @@ Current authorization remains:
 - [`ROADMAP_V2_6_0.md`](ROADMAP_V2_6_0.md)
 - [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md)
 - [`PULSECLOCK_V1.md`](PULSECLOCK_V1.md)
+- [`ACCESS_SET_V1.md`](ACCESS_SET_V1.md)
 - [`COVENANT_VAULT_V1.md`](COVENANT_VAULT_V1.md)
+- [`COVENANT_HTLC_V1.md`](COVENANT_HTLC_V1.md)
+- [`COVENANT_PAY_STREAM_V1.md`](COVENANT_PAY_STREAM_V1.md)
+- [`COVENANT_MULTISIG_V1.md`](COVENANT_MULTISIG_V1.md)
+- [`COVENANT_CHANNEL_V1.md`](COVENANT_CHANNEL_V1.md)
+- [`COVENANT_COLORED_UTXO_V1.md`](COVENANT_COLORED_UTXO_V1.md)
+- [`BASED_APPS_V0.md`](BASED_APPS_V0.md)
+- [`PULSEDAG_VERIFY_V1.md`](PULSEDAG_VERIFY_V1.md)
 
 These files are a later-genesis thesis and planning specs. They do not activate covenants, contracts, PulseVM, or high cadence, and they do not mix v3 identity into the Task31 protocol identity.
 

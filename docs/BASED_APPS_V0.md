@@ -1,0 +1,99 @@
+# Based Apps v0
+
+Status: **PLANNING SPEC**
+
+Date: 2026-09-15 UTC
+Parent issues: #1174, #794
+Depends on: `PULSECLOCK_V1.md`, `ACCESS_SET_V1.md`
+Source thesis: `ROADMAP_V3_0_0.md` Task P4
+
+Planning only. Does not authorize PulseVM, PulseProgs, generic ZK, a hidden sequencer, or Task31 identity change.
+
+## Purpose
+
+L1 is ordering + data/commitment availability + settlement. Complex execution stays off-L1. v0 is commit-and-challenge measured in pulses, not a validity-proof VM.
+
+## Domain
+
+```text
+PulseDAG:based-app:v0
+```
+
+Bound to `chain_id` and a versioned `app_id` (32-byte namespace).
+
+## Objects
+
+### App profile (declared, not implicit)
+
+| Field | Meaning |
+|---|---|
+| `app_id` | SHA-256 of domain + chain_id + canonical profile bytes |
+| `operator_set` | 0 or more pubkeys; empty means anyone may post commits |
+| `challenge_pulses` | u32 in `[64, 65536]` |
+| `max_blob_bytes` | bound for a single commitment payload |
+| `da_mode` | `inline` (payload on L1) or `commit_only` (hash + locator, locator is not consensus-critical) |
+
+If `operator_set` is non-empty, only those keys may open a round. An undeclared extra operator is invalid. There is no hidden sequencer: if an operator exists, the profile names it.
+
+### Round commit output
+
+A based-app output (planning template family `based_commit_v0`) carries:
+
+| Field | Meaning |
+|---|---|---|
+| `app_id` | |
+| `round` | u64, strictly increasing per app |
+| `prev_state_root` | 32 bytes |
+| `next_state_root` | 32 bytes |
+| `payload_hash` | 32 bytes |
+| `payload` | optional, present iff `da_mode = inline` |
+| `opened_pulse_height` | PulseClock at first confirm |
+
+`payload` length MUST be `<= max_blob_bytes`. `SHA-256(payload) == payload_hash` when inline.
+
+### Challenge
+
+During `opened_pulse_height + challenge_pulses`, any party may post a `based_challenge_v0` spending the commit (write of that outpoint) with:
+
+- a conflicting `next_state_root` or fraud statement hash;
+- bond output (native value; planning minimum is a consensus dust multiple, exact amount later).
+
+v0 does not require L1 to re-execute the app. A challenge freezes settlement until either:
+
+- the operator (or original committer) posts a `resolve` signed over the same `round` that the challenger accepts by timeout without a second challenge, or
+- `challenge_pulses` elapse after the latest challenge with no resolve, and the original commit is rejected (state stays `prev_state_root`).
+
+This is intentionally coarse. Validity proofs are post-v0.
+
+### Settle
+
+If no challenge remains when `pulse_height >= opened_pulse_height + challenge_pulses`, anyone may spend path `settle`. Canonical app state for `app_id` becomes `next_state_root`. Successor may open `round+1`.
+
+## Ordering
+
+Canonical order of commits and challenges is GHOSTDAG apply order plus access-set rules:
+
+- `write_keys` includes `app_id` on commit, challenge, resolve, settle;
+- two opens of the same `round` conflict;
+- PulseClock is context, not a key.
+
+## Fail closed
+
+Unknown `app_id` version, missing PulseClock, oversized blob, or empty `payload` when `da_mode = inline` rejects. Disabled based-apps flag treats these outputs as unknown templates.
+
+## Non-goals
+
+- PulseVM execution of the payload.
+- Trusted sequencer unless named in the profile.
+- Cross-domain replay (`chain_id` bound).
+- Full DA sampling network.
+
+## Evidence before later activation
+
+- Open, timeout settle, challenge-then-reject golden vectors.
+- Duplicate round write-write conflict.
+- Replay without host time.
+
+## Authorization
+
+Planning only. Does not satisfy #794 Workstream B activation checks.
