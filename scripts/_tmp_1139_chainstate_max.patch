@@ -1,0 +1,107 @@
+diff --git a/crates/pulsedag-storage/src/lib.rs b/crates/pulsedag-storage/src/lib.rs
+--- a/crates/pulsedag-storage/src/lib.rs
++++ b/crates/pulsedag-storage/src/lib.rs
+@@ -24,6 +24,19 @@
+ const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
+ const MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY: &[u8] =
+     b"mempool_orphan_admission_height_v1";
++pub const MAX_CHAIN_STATE_BLOB_BYTES_V1: usize = 16 * 1024 * 1024 * 1024;
++pub const MAX_MEMPOOL_ADMISSION_HEIGHT_SIDECAR_BYTES_V1: usize = 16 * 1024 * 1024;
++pub const MAX_MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_BYTES_V1: usize = 16 * 1024 * 1024;
++
++fn reject_oversized_bincode(label: &str, bytes: &[u8], max: usize) -> Result<(), PulseError> {
++    if bytes.len() > max {
++        return Err(PulseError::StorageError(format!(
++            "{label} is {} bytes; maximum is {max}",
++            bytes.len()
++        )));
++    }
++    Ok(())
++}
+ pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+ const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
+ const CHAIN_ID_KEY: &[u8] = b"chain_id";
+@@ -1195,6 +1208,11 @@
+     ) -> Result<(), PulseError> {
+         let value =
+             bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
++        reject_oversized_bincode(
++            "chain_state blob",
++            &value,
++            MAX_CHAIN_STATE_BLOB_BYTES_V1,
++        )?;
+         let metadata = Self::snapshot_metadata_for_state(state, captured_at_unix);
+         batch.put_cf(meta_cf, CHAIN_STATE_KEY, value);
+         let mut admission_height = BTreeMap::<Hash, u64>::new();
+@@ -1203,23 +1221,31 @@
+                 admission_height.insert(txid.clone(), *height);
+             }
+         }
+-        batch.put_cf(
+-            meta_cf,
+-            MEMPOOL_ADMISSION_HEIGHT_V1_KEY,
+-            bincode::serialize(&admission_height)
+-                .map_err(|e| PulseError::StorageError(e.to_string()))?,
+-        );
++        let admission_bytes = bincode::serialize(&admission_height)
++            .map_err(|e| PulseError::StorageError(e.to_string()))?;
++        reject_oversized_bincode(
++            "mempool admission-height sidecar",
++            &admission_bytes,
++            MAX_MEMPOOL_ADMISSION_HEIGHT_SIDECAR_BYTES_V1,
++        )?;
++        batch.put_cf(meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY, admission_bytes);
+         let mut orphan_admission_height = BTreeMap::<Hash, u64>::new();
+         for (txid, height) in &state.mempool.orphan_admission_height {
+             if state.mempool.orphan_transactions.contains_key(txid) {
+                 orphan_admission_height.insert(txid.clone(), *height);
+             }
+         }
++        let orphan_bytes = bincode::serialize(&orphan_admission_height)
++            .map_err(|e| PulseError::StorageError(e.to_string()))?;
++        reject_oversized_bincode(
++            "mempool orphan admission-height sidecar",
++            &orphan_bytes,
++            MAX_MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_BYTES_V1,
++        )?;
+         batch.put_cf(
+             meta_cf,
+             MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
+-            bincode::serialize(&orphan_admission_height)
+-                .map_err(|e| PulseError::StorageError(e.to_string()))?,
++            orphan_bytes,
+         );
+         batch.put_cf(
+             meta_cf,
+@@ -1252,6 +1278,7 @@
+         else {
+             return Ok(None);
+         };
++        reject_oversized_bincode("chain_state blob", &bytes, MAX_CHAIN_STATE_BLOB_BYTES_V1)?;
+         let mut state: ChainState = bincode::deserialize(&bytes)
+             .map_err(|e| PulseError::StorageError(e.to_string()))?;
+         state.mempool.admission_height.clear();
+@@ -1260,6 +1287,11 @@
+             .get_cf(&cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
+             .map_err(|e| PulseError::StorageError(e.to_string()))?
+         {
++            reject_oversized_bincode(
++                "mempool admission-height sidecar",
++                &sidecar,
++                MAX_MEMPOOL_ADMISSION_HEIGHT_SIDECAR_BYTES_V1,
++            )?;
+             match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                 Ok(persisted) => {
+                     for (txid, height) in persisted {
+@@ -1285,6 +1317,11 @@
+             .get_cf(&cf, MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY)
+             .map_err(|e| PulseError::StorageError(e.to_string()))?
+         {
++            reject_oversized_bincode(
++                "mempool orphan admission-height sidecar",
++                &sidecar,
++                MAX_MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_BYTES_V1,
++            )?;
+             match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                 Ok(persisted) => {
+                     for (txid, height) in persisted {
