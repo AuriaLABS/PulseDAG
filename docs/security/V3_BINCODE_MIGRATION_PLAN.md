@@ -1,6 +1,6 @@
 # PulseDAG runtime bincode 1.x migration plan
 
-Status: **planned security/storage migration; Phase 0 inventory + size ceilings + key identifiers recorded; not yet implemented**
+Status: **planned security/storage migration; Phase 0 inventory + size ceilings + key identifiers recorded; Phase 1 MAX_* proposed, not yet implemented**
 
 Authority: #1127 / #1139. Launch authority: #781. This plan does not grant public-testnet or mainnet GO.
 
@@ -33,8 +33,8 @@ Direct `bincode` crate declarations:
 
 | File | Call | Record / payload | Class | Bound observed |
 | --- | --- | --- | --- | --- |
-| `src/lib.rs` | `serialize` / `deserialize` | `ChainState` and snapshot payloads | on-disk persistent + snapshot | snapshot metadata written alongside payload; **no first-party MAX_* on the bincode blob itself** |
-| `src/lib.rs` | `serialize` | mempool admission height (`MEMPOOL_ADMISSION_HEIGHT_V1_KEY`) | on-disk persistent | key-scoped; **no explicit MAX_* yet** |
+| `src/lib.rs` `stage_chain_state_snapshot_with_captured_at` / `load_chain_state` | `serialize` / `deserialize` | `ChainState` at `CHAIN_STATE_KEY` | on-disk persistent + snapshot | **no first-party MAX_* on the blob** |
+| `src/lib.rs` same persist/load | `serialize` / `deserialize` | `BTreeMap<Hash, u64>` sidecars at `MEMPOOL_ADMISSION_HEIGHT_V1_KEY` and `MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY` | on-disk sidecar | corrupt sidecar is warned and ignored; **no MAX_*** |
 | `src/fast_sync_resume.rs` | `serialize` / `deserialize` | `FastSyncSnapshotTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1` = **16 MiB** |
 | `src/fast_sync_network_resume.rs` | `serialize` / `deserialize` | `FastSyncNetworkTransferPlanV1` | fast-sync/resume | `MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1` = **16 MiB** |
 | `src/fast_sync_transfer.rs` | `serialize` / `deserialize` | `FastSyncSnapshotBundleV1` payload | snapshot / fast-sync transfer | chunk default 256 KiB, chunk max 512 KiB, max chunks 131072, transfer cap **16 GiB** |
@@ -52,6 +52,25 @@ These numbers are the current-code fail-closed limits. Changing any of them inva
 | `MAX_FAST_SYNC_SNAPSHOT_CHUNKS` | `131_072` | snapshot transfer chunking |
 | `MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES` | `16 * 1024 * 1024 * 1024` (16 GiB) | total snapshot transfer |
 
+### Proposed Phase 1 ceilings (not in code)
+
+`persist_chain_state` / `load_chain_state` currently serialize and deserialize with no length gate. These names are the candidate constants for the first code PR that adds bounds. They are **not** live fail-closed limits today.
+
+| Proposed constant | Proposed value | Rationale |
+| --- | --- | --- |
+| `MAX_CHAIN_STATE_BLOB_BYTES_V1` | `16 * 1024 * 1024 * 1024` (16 GiB) | Same as `MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES`. `ChainState` embeds DAG + UTXO; a tighter cap than the transfer path would reject local persist of a snapshot that fast-sync is still allowed to move. |
+| `MAX_MEMPOOL_ADMISSION_HEIGHT_SIDECAR_BYTES_V1` | `16 * 1024 * 1024` (16 MiB) | Sidecar is `BTreeMap<Hash, u64>` of live mempool txids, not a single height. Align with resume-plan caps. |
+| `MAX_MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_BYTES_V1` | `16 * 1024 * 1024` (16 MiB) | Same shape as the live admission-height sidecar. |
+
+Implementation rules when these land in code:
+
+- reject persist if serialized length exceeds the cap;
+- reject load / decode if on-disk length exceeds the cap **before** `bincode::deserialize`;
+- do not silently truncate;
+- do not change the existing corrupt-sidecar ignore path except to also reject oversized sidecars.
+
+A golden measurement on a real Task31 DB may tighten these before they freeze. Tightening after freeze invalidates compatibility evidence.
+
 ### Frozen old-format identifiers (Phase 0)
 
 Do **not** infer format only from payload bytes. Current storage locates legacy records by key/prefix and, for snapshot transfer, by an explicit encoding label.
@@ -59,8 +78,8 @@ Do **not** infer format only from payload bytes. Current storage locates legacy 
 | Identifier | Value | Role |
 | --- | --- | --- |
 | `CHAIN_STATE_KEY` | `b"chain_state"` | on-disk `ChainState` blob |
-| `MEMPOOL_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_admission_height_v1"` | on-disk admission height |
-| `MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_orphan_admission_height_v1"` | on-disk orphan admission height |
+| `MEMPOOL_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_admission_height_v1"` | on-disk live admission-height sidecar |
+| `MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_orphan_admission_height_v1"` | on-disk orphan admission-height sidecar |
 | `FAST_SYNC_RESUME_KEY_PREFIX_V1` | `"fast_sync_resume_v1:"` | resume plan/chunk key prefix |
 | `FAST_SYNC_RESUME_PLAN_SUFFIX_V1` | `":plan"` | resume plan suffix |
 | `FAST_SYNC_RESUME_CHUNK_MARKER_V1` | `":chunk:"` | resume chunk marker |
@@ -73,11 +92,6 @@ Do **not** infer format only from payload bytes. Current storage locates legacy 
 | `FAST_SYNC_SNAPSHOT_MANIFEST_VERSION` | `2` | snapshot manifest version |
 
 These identifiers are the legacy domain. A Phase 1 envelope must introduce a **new** magic/`codec_id` rather than overloading these keys in place.
-
-Still unfrozen (must be explicit before Phase 1 writes):
-
-- `ChainState` / snapshot bincode blob max size;
-- mempool admission height record max size.
 
 ### Test-only / non-authority uses
 
@@ -92,7 +106,7 @@ Still required before Phase 1 implementation:
 
 - machine-readable list of every non-test call with line numbers on the exact candidate SHA;
 - golden fixtures from real DBs / snapshots / resume plans;
-- explicit MAX_* for `ChainState` and mempool admission height;
+- code that actually enforces the proposed MAX_* above;
 - lock-synced removal of the unused `pulsedagd` direct `bincode` dep.
 
 This inventory does **not** choose a replacement codec and does **not** change any reader/writer.
