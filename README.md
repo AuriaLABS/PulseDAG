@@ -20,7 +20,7 @@ PulseDAG is in the **v2.4.0 Task31 release/activation candidate construction** s
 - Default high cadence remains experimental/disabled.
 - `contracts_enabled=false`.
 - `main` is a moving Task31 candidate, not a frozen release. Inactive v3/covenant code may be present; it is not part of the v2.4.0 protocol identity.
-- Live control issues: #781, #794, RustSec/public-GO #1127 (historical #803), identity #1131, docs #1128.
+- Live control issues: #781, #794, RustSec/public-GO #1127 (historical #803), remaining crate-graph #1139, identity #1131, docs #1128.
 
 ## Start here
 
