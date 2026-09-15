@@ -1,6 +1,6 @@
 # PulseDAG runtime bincode 1.x migration plan
 
-Status: **planned security/storage migration; Phase 0 inventory + size ceilings recorded; not yet implemented**
+Status: **planned security/storage migration; Phase 0 inventory + size ceilings + key identifiers recorded; not yet implemented**
 
 Authority: #1127 / #1139. Launch authority: #781. This plan does not grant public-testnet or mainnet GO.
 
@@ -52,11 +52,32 @@ These numbers are the current-code fail-closed limits. Changing any of them inva
 | `MAX_FAST_SYNC_SNAPSHOT_CHUNKS` | `131_072` | snapshot transfer chunking |
 | `MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES` | `16 * 1024 * 1024 * 1024` (16 GiB) | total snapshot transfer |
 
+### Frozen old-format identifiers (Phase 0)
+
+Do **not** infer format only from payload bytes. Current storage locates legacy records by key/prefix and, for snapshot transfer, by an explicit encoding label.
+
+| Identifier | Value | Role |
+| --- | --- | --- |
+| `CHAIN_STATE_KEY` | `b"chain_state"` | on-disk `ChainState` blob |
+| `MEMPOOL_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_admission_height_v1"` | on-disk admission height |
+| `MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY` | `b"mempool_orphan_admission_height_v1"` | on-disk orphan admission height |
+| `FAST_SYNC_RESUME_KEY_PREFIX_V1` | `"fast_sync_resume_v1:"` | resume plan/chunk key prefix |
+| `FAST_SYNC_RESUME_PLAN_SUFFIX_V1` | `":plan"` | resume plan suffix |
+| `FAST_SYNC_RESUME_CHUNK_MARKER_V1` | `":chunk:"` | resume chunk marker |
+| `FAST_SYNC_NETWORK_RESUME_KEY_PREFIX_V1` | `"fast_sync_network_resume_v1:"` | network-resume key prefix |
+| `FAST_SYNC_NETWORK_RESUME_PLAN_SUFFIX_V1` | `":plan"` | network-resume plan suffix |
+| `FAST_SYNC_NETWORK_RESUME_CHUNK_MARKER_V1` | `":chunk:"` | network-resume chunk marker |
+| `FAST_SYNC_SNAPSHOT_PAYLOAD_ENCODING_V1` | `"bincode-1.3-fast-sync-bundle-v1"` | explicit bundle encoding label |
+| `FAST_SYNC_SNAPSHOT_TRANSFER_VERSION` | `1` | transfer plan version |
+| `FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION` | `1` | network transfer plan version |
+| `FAST_SYNC_SNAPSHOT_MANIFEST_VERSION` | `2` | snapshot manifest version |
+
+These identifiers are the legacy domain. A Phase 1 envelope must introduce a **new** magic/`codec_id` rather than overloading these keys in place.
+
 Still unfrozen (must be explicit before Phase 1 writes):
 
 - `ChainState` / snapshot bincode blob max size;
-- mempool admission height record max size;
-- old-format identifier (magic / domain), distinct from payload inference.
+- mempool admission height record max size.
 
 ### Test-only / non-authority uses
 
