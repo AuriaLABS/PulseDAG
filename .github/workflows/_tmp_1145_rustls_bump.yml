@@ -1,0 +1,83 @@
+name: One-shot rustls 0.23.45 bump
+
+on:
+  push:
+    branches:
+      - deps/1145-rustls-0.23.45
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-1145-rustls-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: deps/1145-rustls-0.23.45
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned Rust 1.91.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.0 --profile minimal --no-self-update
+          rustup default 1.91.0
+          rustc --version
+          cargo --version
+      - name: Patch-bump rustls only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p rustls --precise 0.23.45 --locked=false
+          if ! grep -q 'name = "rustls"' Cargo.lock; then
+            echo "rustls missing from lock" >&2
+            exit 1
+          fi
+          if grep -q 'version = "0.23.39"' Cargo.lock && awk '
+            $0=="name = \"rustls\"" {p=1; next}
+            p && $0 ~ /^version = / {print; exit}
+          ' Cargo.lock | grep -q 0.23.39; then
+            echo "rustls still 0.23.39" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("Cargo.lock").read_text(encoding="utf-8")
+          blocks = text.split("[[package]]")
+          rustls_versions = []
+          for raw in blocks[1:]:
+              name = None
+              version = None
+              for line in raw.splitlines():
+                  if line.startswith("name = ") and name is None:
+                      name = line.split("=",1)[1].strip().strip('"')
+                  elif line.startswith("version = ") and version is None:
+                      version = line.split("=",1)[1].strip().strip('"')
+              if name == "rustls":
+                  rustls_versions.append(version)
+          print("locked rustls versions:", rustls_versions)
+          if rustls_versions != ["0.23.45"]:
+              raise SystemExit(f"unexpected rustls versions: {rustls_versions}")
+          if "0.23.39" in rustls_versions:
+              raise SystemExit("old rustls remained")
+          PY
+      - name: Commit lock and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name kalekoi
+          git config user.email hermida.prada@gmail.com
+          rm -f .github/workflows/_tmp_1145_rustls_bump.yml
+          git add Cargo.lock .github/workflows/_tmp_1145_rustls_bump.yml
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "deps: bump rustls 0.23.39 -> 0.23.45 (RUSTSEC-2026-0285 / #1145)"
+          git push origin HEAD:deps/1145-rustls-0.23.45
