@@ -2,7 +2,7 @@
 
 PulseDAG v2.4.0 keeps the stable public API namespace at `/api/v1`. The sample below matches `get_api_version()` (`repo_version()` + `operator_stage()`). Historical v2.2.14 / v2.3.0 payloads are compatibility provenance only.
 
-This document does **not** authorize a `v2.4.0` tag, GitHub Release, public-testnet GO, Day 0, default high cadence, or `contracts_enabled=true`. Live trackers: #1132 (audit epic), #1128 (docs identity), #781 / #794 (launch control).
+This document does **not** authorize a `v2.4.0` tag, GitHub Release, public-testnet GO, Day 0, default high cadence, or `contracts_enabled=true`. Live trackers: #1132 (audit epic), #1128 (docs identity), #1127 / #1139 (dependency graph), #781 / #794 (launch control).
 
 ## Version response
 

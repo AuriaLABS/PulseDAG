@@ -35,7 +35,7 @@ A green CI/security workflow is evidence for one exact candidate only. Known Rus
 
 ## v2.4.0 public-testnet boundary
 
-Public launch remains controlled by issues #781, #794 and #1127 (live RustSec/public-GO tracker; historical record was #803). Until an explicit `GO_PUBLIC_TESTNET` is recorded:
+Public launch remains controlled by issues #781, #794, #1127 (live RustSec/public-GO tracker; historical record was #803) and remaining crate-graph work in #1139. Until an explicit `GO_PUBLIC_TESTNET` is recorded:
 
 - `public_testnet_ready=false`
 - `thirty_day_public_testnet_clock_started=false`
