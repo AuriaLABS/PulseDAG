@@ -34,18 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo update -p rustls --precise 0.23.45 --locked=false
-          if ! grep -q 'name = "rustls"' Cargo.lock; then
-            echo "rustls missing from lock" >&2
-            exit 1
-          fi
-          if grep -q 'version = "0.23.39"' Cargo.lock && awk '
-            $0=="name = \"rustls\"" {p=1; next}
-            p && $0 ~ /^version = / {print; exit}
-          ' Cargo.lock | grep -q 0.23.39; then
-            echo "rustls still 0.23.39" >&2
-            exit 1
-          fi
+          cargo update -p rustls --precise 0.23.45
           python3 - <<'PY'
           from pathlib import Path
           text = Path("Cargo.lock").read_text(encoding="utf-8")
@@ -56,16 +45,14 @@ jobs:
               version = None
               for line in raw.splitlines():
                   if line.startswith("name = ") and name is None:
-                      name = line.split("=",1)[1].strip().strip('"')
+                      name = line.split("=", 1)[1].strip().strip('"')
                   elif line.startswith("version = ") and version is None:
-                      version = line.split("=",1)[1].strip().strip('"')
+                      version = line.split("=", 1)[1].strip().strip('"')
               if name == "rustls":
                   rustls_versions.append(version)
           print("locked rustls versions:", rustls_versions)
           if rustls_versions != ["0.23.45"]:
               raise SystemExit(f"unexpected rustls versions: {rustls_versions}")
-          if "0.23.39" in rustls_versions:
-              raise SystemExit("old rustls remained")
           PY
       - name: Commit lock and remove this workflow
         shell: bash
