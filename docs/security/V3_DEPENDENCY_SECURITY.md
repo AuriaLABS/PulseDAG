@@ -8,8 +8,6 @@ Issue authority: #1127 (historical #803). Launch authority: #781. Integrated pro
 
 The v2.4 lock-only vulnerability exception expired on **2026-08-31 UTC** and is not renewed for the active v3 development line. The active `.cargo/audit.toml` contains no vulnerability advisory ignores.
 
-The historical v2.4 warning-disposition document is retained only for provenance and no longer describes the current lock. Its companion validator checks historical status only; active current-line dependency enforcement is this document plus `scripts/validate_v3_dependency_security.py` and `.github/workflows/dependency-audit.yml`.
-
 The libp2p 0.56 migration removes the historical lock-only vulnerable versions that were retained by the v2.4 libp2p 0.54 graph:
 
 - `ring 0.16.20`;
@@ -66,14 +64,6 @@ This remediation does **not** close #1127. The known reachable blocker remaining
 - `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`.
 
 The Kaspa 2.0.1 graph also makes `derivative 2.2.0` (`RUSTSEC-2024-0388`, unmaintained) compiler-reachable. It remains visible in the raw warning inventory and requires owner/disposition in the final v3 security matrix. Other informational warnings likewise remain visible; no warning is hidden merely to obtain a green audit.
-
-## First-party bincode 1.x migration
-
-`bincode 1.3.3` (`RUSTSEC-2025-0141`, unmaintained) remains a direct/runtime concern in PulseDAG storage and node code. It is not a Kaspa/libp2p residue and must not be treated as solved by the parent-stack migrations above.
-
-The migration contract is `docs/security/V3_BINCODE_MIGRATION_PLAN.md`. It requires an explicit inventory of production formats, versioned codec/schema envelopes, bounded deterministic decoding, dual-read/new-write compatibility, old/new snapshot and fast-sync evidence, restartable non-destructive migration, rollback rules and exact-candidate recovery/replay tests before runtime bincode 1.x can be removed.
-
-This planning record does not itself resolve the warning or authorize changing the expected audit inventory.
 
 ## Final launch boundary
 
