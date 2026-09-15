@@ -2,7 +2,7 @@
 
 Status: **active development gate; not final launch security approval**.
 
-Issue authority: #1127 (historical #803). Launch authority: #781. Integrated program: #794.
+Issue authority: #1127 (historical #803). Launch authority: #781. Integrated program: #794. Remaining crate-graph work: #1139.
 
 ## Historical v2.4 exception retirement
 
@@ -57,13 +57,59 @@ The temporary development disposition is valid only while clean compiler-artifac
 
 This is not a final v3 launch disposition. The exact candidate security review in #1127 must either remove this lock-only residue through a supported parent migration or explicitly renew the reviewed unreachable disposition for the final candidate.
 
-## Remaining launch blocker and warning inventory
+## Remaining launch blocker: `atty` via `hexplay`
 
-This remediation does **not** close #1127. The known reachable blocker remaining from the inherited dependency pair is:
+This remediation does **not** close #1127 or #1139. The known reachable warning remaining from the inherited Kaspa / workflow parent graph is:
 
-- `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`.
+- `atty 0.2.14` — `RUSTSEC-2024-0375` (unmaintained), `RUSTSEC-2021-0145` (Windows unsoundness).
 
-The Kaspa 2.0.1 graph also makes `derivative 2.2.0` (`RUSTSEC-2024-0388`, unmaintained) compiler-reachable. It remains visible in the raw warning inventory and requires owner/disposition in the final v3 security matrix. Other informational warnings likewise remain visible; no warning is hidden merely to obtain a green audit.
+### Reachability path (do not leaf-patch)
+
+`atty 0.2.14` is **not** a direct PulseDAG dependency. On the current lock it is pulled through the supported parent path:
+
+`kaspa-hashes` / `kaspa-pow` (Rusty Kaspa 2.0.1) → workflow / debug formatting stack → `hexplay 0.3.0` → `atty 0.2.14`
+
+`hexplay 0.3.0` is a hex-dump pretty-printer. PulseDAG must not:
+
+- add a `[patch.crates-io]` override for `atty` or `hexplay`;
+- fork Kaspa solely to drop a debug pretty-printer;
+- hide `RUSTSEC-2024-0375` or `RUSTSEC-2021-0145` in `.cargo/audit.toml`.
+
+Removal of this path requires a **supported parent migration** (newer official Rusty Kaspa / workflow line that no longer depends on `hexplay`/`atty`, or an upstream drop of that debug dep). Until that exists, the warning remains visible in raw `cargo audit` and is a public-testnet GO blocker.
+
+### Windows allocator invariant (`RUSTSEC-2021-0145`)
+
+`RUSTSEC-2021-0145` is Windows-specific unsoundness: `atty` may dereference a potentially unaligned pointer. The advisory states the pointer is aligned in practice **unless a custom global allocator is used**. The Windows `System` allocator (`HeapAlloc`) provides sufficient alignment.
+
+PulseDAG therefore keeps this fail-closed invariant while `atty` remains in the lock graph:
+
+- no `#[global_allocator]` in first-party `*.rs` sources;
+- no custom allocator crate wired as the process global allocator on Windows launch roots (`pulsedagd`, `pulsedag-miner`, `pulsedag-wallet`, `pulsedag-p2p`);
+- the historical validator `scripts/validate_v2_4_0_rustsec_warning_disposition.py` still asserts the absence of `global_allocator` in first-party Rust sources.
+
+This invariant **mitigates the Windows unaligned-read precondition**. It does **not**:
+
+- make `atty` maintained;
+- authorize public-testnet GO;
+- waive `RUSTSEC-2024-0375` or `RUSTSEC-2021-0145`;
+- replace the required parent-stack removal of `hexplay`/`atty`.
+
+Windows exact-candidate security revalidation remains pending for any public network decision.
+
+## Visible unmaintained parent residue: `derivative 2.2.0`
+
+The Kaspa 2.0.1 graph also makes `derivative 2.2.0` (`RUSTSEC-2024-0388`, unmaintained derive-macro helper) compiler-reachable. Classification:
+
+- informational / unmaintained, not a vulnerability ID in the raw audit vulnerability set;
+- not a first-party PulseDAG crate;
+- not authorized for leaf override or `.cargo/audit.toml` ignore;
+- owner for final matrix: same parent-stack review as #1127/#1139.
+
+This record keeps the warning **visible**. It is not a public-testnet GO grant and does not replace the `atty` blocker. Removal tracks a supported Kaspa/workflow parent upgrade, not a PulseDAG fork of `derivative`.
+
+Other informational warnings likewise remain visible; no warning is hidden merely to obtain a green audit.
+
+Runtime `bincode 1.3.3` remains a separate tracked item with an explicit plan in `docs/security/V3_BINCODE_MIGRATION_PLAN.md`.
 
 ## Final launch boundary
 
