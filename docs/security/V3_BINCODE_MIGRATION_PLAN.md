@@ -151,3 +151,6 @@ This plan does not remove `bincode 1.3.3`, does not resolve `atty 0.2.14`, does
 not waive Hickory lock-only evidence, does not add advisory ignores, and does not
 set dependency security or launch readiness to PASS. Those decisions remain
 under #1127/#1139 and #781.
+
+`RUSTSEC-2026-0285` (`rustls 0.23.39`) is tracked separately in #1145 and is
+out of scope for this storage-format plan.
