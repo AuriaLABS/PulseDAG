@@ -3,6 +3,8 @@ pub mod acceptance_v2;
 pub mod apply;
 pub mod consensus_metadata;
 pub mod consistency;
+#[allow(clippy::too_many_arguments)]
+pub mod contract_state_v1;
 pub mod contract_v3;
 pub mod contracts_gate;
 pub mod covenant_utxo_v1;
