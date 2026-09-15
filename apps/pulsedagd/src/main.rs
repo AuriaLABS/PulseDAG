@@ -2003,7 +2003,9 @@ async fn main() -> Result<()> {
                 chain_id: cfg.chain_id.clone(),
                 peers: cfg.simulated_peers.clone(),
             })?,
-            other => { anyhow::bail!("invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated"); }
+            other => {
+                anyhow::bail!("invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated");
+            }
         };
         if let Some(capabilities) = startup_protocol.local_capabilities.clone() {
             stack
