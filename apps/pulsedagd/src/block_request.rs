@@ -38,7 +38,7 @@ pub struct MissingParentRequestRecord {
 }
 
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct PeerMissingParentHints {
     inventory: HashSet<String>,
     tip_ancestry: HashSet<String>,
@@ -413,7 +413,7 @@ impl BlockRequestTracker {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn missing_parent_request_state(&self, hash: &str) -> MissingParentRequestState {
         let mut state = self
             .request_state_by_hash
@@ -459,7 +459,7 @@ impl BlockRequestTracker {
         state
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_peer_inventory<I, S>(&mut self, peer: impl Into<String>, hashes: I)
     where
         I: IntoIterator<Item = S>,
@@ -481,7 +481,7 @@ impl BlockRequestTracker {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_peer_set_changed(&mut self) -> usize {
         self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
         let exhausted = self.exhausted_hashes.iter().cloned().collect::<Vec<_>>();
@@ -491,7 +491,7 @@ impl BlockRequestTracker {
             .count()
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_quiescence_recovery_window<I, S>(&mut self, hashes: I) -> usize
     where
         I: IntoIterator<Item = S>,
@@ -505,7 +505,7 @@ impl BlockRequestTracker {
             .count()
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_peer_tip_ancestry<I, S>(
         &mut self,
         peer: impl Into<String>,
@@ -528,7 +528,7 @@ impl BlockRequestTracker {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_peer_sync_state(
         &mut self,
         peer: impl Into<String>,
@@ -572,7 +572,7 @@ impl BlockRequestTracker {
         true
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn peer_sync_hints(&self) -> Vec<PeerSyncHintsSnapshot> {
         let mut snapshots = self
             .peer_hints
@@ -591,7 +591,7 @@ impl BlockRequestTracker {
         snapshots
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn note_successful_blockdata_response(&mut self, peer: impl Into<String>, hash: &str) {
         let hints = self.peer_hints.entry(peer.into()).or_default();
         hints.successful_blockdata_responses =
