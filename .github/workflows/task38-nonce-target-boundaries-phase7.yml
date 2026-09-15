@@ -1,0 +1,93 @@
+name: v3 launch Task 38 nonce target boundaries phase 7
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/pow_v2.rs
+      - crates/pulsedag-core/tests/pow_nonce_target_boundaries.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - apps/pulsedag-miner/tests/protocol_nonce_target_boundaries.rs
+      - .github/workflows/task38-nonce-target-boundaries-phase7.yml
+  push:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/pow_v2.rs
+      - crates/pulsedag-core/tests/pow_nonce_target_boundaries.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - apps/pulsedag-miner/tests/protocol_nonce_target_boundaries.rs
+      - .github/workflows/task38-nonce-target-boundaries-phase7.yml
+
+permissions:
+  contents: read
+
+jobs:
+  nonce-target-boundary-contract:
+    name: nonce-target-boundary-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_nonce_target_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Core nonce and target boundaries
+        run: cargo test --locked -p pulsedag-core --test pow_nonce_target_boundaries
+
+      - name: Miner protocol nonce and target boundaries
+        run: cargo test --locked -p pulsedag-miner --test protocol_nonce_target_boundaries
+
+      - name: Core boundary test clippy
+        run: cargo clippy --locked -p pulsedag-core --test pow_nonce_target_boundaries -- -D warnings
+
+      - name: Miner boundary test clippy
+        run: cargo clippy --locked -p pulsedag-miner --test protocol_nonce_target_boundaries -- -D warnings
+
+      - name: Record software-only boundary scope
+        shell: bash
+        run: |
+          echo "nonce_target_boundary_contract=PASS"
+          echo "canonical_target_inclusive_comparison=PASS"
+          echo "compact_target_extremes=PASS"
+          echo "nonce_u64_edges=PASS"
+          echo "protocol_boundary_parity=PASS"
+          echo "accelerator_result_reverification=PASS"
+          echo "physical_gpu_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
