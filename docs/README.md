@@ -44,8 +44,9 @@ Current authorization remains:
 - [`ROADMAP_V2_6_0.md`](ROADMAP_V2_6_0.md)
 - [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md)
 - [`PULSECLOCK_V1.md`](PULSECLOCK_V1.md)
+- [`COVENANT_VAULT_V1.md`](COVENANT_VAULT_V1.md)
 
-`ROADMAP_V3_0_0.md` is a differentiation thesis for a later genesis. `PULSECLOCK_V1.md` is the Task P1 planning spec. Neither activates covenants, contracts, PulseVM, or high cadence, and neither mixes v3 identity into the Task31 protocol identity.
+These files are a later-genesis thesis and planning specs. They do not activate covenants, contracts, PulseVM, or high cadence, and they do not mix v3 identity into the Task31 protocol identity.
 
 ## Maintenance and history
 
