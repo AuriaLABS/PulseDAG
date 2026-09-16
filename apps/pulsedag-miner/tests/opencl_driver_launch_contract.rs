@@ -40,5 +40,8 @@ fn invalid_work_size_fails_before_loading_opencl() {
 #[test]
 fn all_zero_pre_pow_hash_fails_before_loading_opencl() {
     let error = launch_kheavyhash_batch(0, [0; 32], &[0], 64).unwrap_err();
-    assert_eq!(error.to_string(), "OpenCL pre_pow_hash must not be all-zero");
+    assert_eq!(
+        error.to_string(),
+        "OpenCL pre_pow_hash must not be all-zero"
+    );
 }

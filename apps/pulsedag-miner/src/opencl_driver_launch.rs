@@ -37,13 +37,11 @@ type ClContextProperties = isize;
 type ClDeviceInfo = ClUint;
 type ClProgramBuildInfo = ClUint;
 
-type ClContextNotify = Option<
-    unsafe extern "system" fn(*const c_char, *const c_void, usize, *mut c_void),
->;
+type ClContextNotify =
+    Option<unsafe extern "system" fn(*const c_char, *const c_void, usize, *mut c_void)>;
 type ClProgramNotify = Option<unsafe extern "system" fn(ClProgram, *mut c_void)>;
 
-type ClGetPlatformIDs =
-    unsafe extern "system" fn(ClUint, *mut ClPlatformId, *mut ClUint) -> ClInt;
+type ClGetPlatformIDs = unsafe extern "system" fn(ClUint, *mut ClPlatformId, *mut ClUint) -> ClInt;
 type ClGetDeviceIDs = unsafe extern "system" fn(
     ClPlatformId,
     ClDeviceType,
@@ -51,13 +49,8 @@ type ClGetDeviceIDs = unsafe extern "system" fn(
     *mut ClDeviceId,
     *mut ClUint,
 ) -> ClInt;
-type ClGetDeviceInfo = unsafe extern "system" fn(
-    ClDeviceId,
-    ClDeviceInfo,
-    usize,
-    *mut c_void,
-    *mut usize,
-) -> ClInt;
+type ClGetDeviceInfo =
+    unsafe extern "system" fn(ClDeviceId, ClDeviceInfo, usize, *mut c_void, *mut usize) -> ClInt;
 type ClCreateContext = unsafe extern "system" fn(
     *const ClContextProperties,
     ClUint,
@@ -67,12 +60,8 @@ type ClCreateContext = unsafe extern "system" fn(
     *mut ClInt,
 ) -> ClContext;
 type ClReleaseContext = unsafe extern "system" fn(ClContext) -> ClInt;
-type ClCreateCommandQueue = unsafe extern "system" fn(
-    ClContext,
-    ClDeviceId,
-    ClBitfield,
-    *mut ClInt,
-) -> ClCommandQueue;
+type ClCreateCommandQueue =
+    unsafe extern "system" fn(ClContext, ClDeviceId, ClBitfield, *mut ClInt) -> ClCommandQueue;
 type ClReleaseCommandQueue = unsafe extern "system" fn(ClCommandQueue) -> ClInt;
 type ClCreateProgramWithSource = unsafe extern "system" fn(
     ClContext,
@@ -98,16 +87,10 @@ type ClGetProgramBuildInfo = unsafe extern "system" fn(
     *mut usize,
 ) -> ClInt;
 type ClReleaseProgram = unsafe extern "system" fn(ClProgram) -> ClInt;
-type ClCreateKernel =
-    unsafe extern "system" fn(ClProgram, *const c_char, *mut ClInt) -> ClKernel;
+type ClCreateKernel = unsafe extern "system" fn(ClProgram, *const c_char, *mut ClInt) -> ClKernel;
 type ClReleaseKernel = unsafe extern "system" fn(ClKernel) -> ClInt;
-type ClCreateBuffer = unsafe extern "system" fn(
-    ClContext,
-    ClMemFlags,
-    usize,
-    *mut c_void,
-    *mut ClInt,
-) -> ClMem;
+type ClCreateBuffer =
+    unsafe extern "system" fn(ClContext, ClMemFlags, usize, *mut c_void, *mut ClInt) -> ClMem;
 type ClReleaseMemObject = unsafe extern "system" fn(ClMem) -> ClInt;
 type ClEnqueueWriteBuffer = unsafe extern "system" fn(
     ClCommandQueue,
@@ -131,8 +114,7 @@ type ClEnqueueReadBuffer = unsafe extern "system" fn(
     *const ClEvent,
     *mut ClEvent,
 ) -> ClInt;
-type ClSetKernelArg =
-    unsafe extern "system" fn(ClKernel, ClUint, usize, *const c_void) -> ClInt;
+type ClSetKernelArg = unsafe extern "system" fn(ClKernel, ClUint, usize, *const c_void) -> ClInt;
 type ClEnqueueNDRangeKernel = unsafe extern "system" fn(
     ClCommandQueue,
     ClKernel,
@@ -238,13 +220,7 @@ pub fn launch_kheavyhash_batch(
         let source_ptr = source.as_ptr();
         let source_len = source.as_bytes().len();
         let program = unsafe {
-            (api.cl_create_program_with_source)(
-                context,
-                1,
-                &source_ptr,
-                &source_len,
-                &mut status,
-            )
+            (api.cl_create_program_with_source)(context, 1, &source_ptr, &source_len, &mut status)
         };
         ensure_handle(program, status, "clCreateProgramWithSource")?;
         resources.program = program;
@@ -273,17 +249,34 @@ pub fn launch_kheavyhash_batch(
         let hash_kernel = create_kernel(&api, program, HASH_KERNEL_NAME, "kheavyhash")?;
         resources.hash_kernel = hash_kernel;
 
-        let pre_buffer = create_buffer(&api, context, CL_MEM_READ_ONLY, HASH_BYTES, "pre_pow_hash")?;
+        let pre_buffer =
+            create_buffer(&api, context, CL_MEM_READ_ONLY, HASH_BYTES, "pre_pow_hash")?;
         resources.buffers.push(pre_buffer);
-        let matrix_buffer = create_buffer(&api, context, CL_MEM_READ_WRITE, MATRIX_BYTES, "matrix")?;
+        let matrix_buffer =
+            create_buffer(&api, context, CL_MEM_READ_WRITE, MATRIX_BYTES, "matrix")?;
         resources.buffers.push(matrix_buffer);
         let nonce_buffer = create_buffer(&api, context, CL_MEM_READ_ONLY, nonce_bytes, "nonces")?;
         resources.buffers.push(nonce_buffer);
-        let output_buffer = create_buffer(&api, context, CL_MEM_WRITE_ONLY, output_bytes, "outputs")?;
+        let output_buffer =
+            create_buffer(&api, context, CL_MEM_WRITE_ONLY, output_bytes, "outputs")?;
         resources.buffers.push(output_buffer);
 
-        enqueue_write(&api, queue, pre_buffer, pre_pow_hash.as_ptr().cast(), HASH_BYTES, "pre_pow_hash")?;
-        enqueue_write(&api, queue, nonce_buffer, nonces.as_ptr().cast(), nonce_bytes, "nonces")?;
+        enqueue_write(
+            &api,
+            queue,
+            pre_buffer,
+            pre_pow_hash.as_ptr().cast(),
+            HASH_BYTES,
+            "pre_pow_hash",
+        )?;
+        enqueue_write(
+            &api,
+            queue,
+            nonce_buffer,
+            nonces.as_ptr().cast(),
+            nonce_bytes,
+            "nonces",
+        )?;
 
         set_mem_arg(&api, matrix_kernel, 0, &pre_buffer, "matrix.pre_pow_hash")?;
         set_mem_arg(&api, matrix_kernel, 1, &matrix_buffer, "matrix.output")?;
@@ -388,11 +381,7 @@ fn select_gpu_device(api: &OpenClApi, requested_index: usize) -> Result<ClDevice
     let mut platforms = vec![std::ptr::null_mut(); platform_count as usize];
     ensure_opencl_success(
         unsafe {
-            (api.cl_get_platform_ids)(
-                platform_count,
-                platforms.as_mut_ptr(),
-                std::ptr::null_mut(),
-            )
+            (api.cl_get_platform_ids)(platform_count, platforms.as_mut_ptr(), std::ptr::null_mut())
         },
         "clGetPlatformIDs(list)",
     )?;
@@ -445,7 +434,10 @@ fn select_gpu_device(api: &OpenClApi, requested_index: usize) -> Result<ClDevice
 
 fn require_fp64(api: &OpenClApi, device: ClDeviceId) -> Result<()> {
     let extensions = device_info_string(api, device, CL_DEVICE_EXTENSIONS)?;
-    if extensions.split_ascii_whitespace().any(|item| item == "cl_khr_fp64") {
+    if extensions
+        .split_ascii_whitespace()
+        .any(|item| item == "cl_khr_fp64")
+    {
         Ok(())
     } else {
         Err(anyhow!(
@@ -510,11 +502,15 @@ fn program_build_log(api: &OpenClApi, program: ClProgram, device: ClDeviceId) ->
     Ok(value.to_string_lossy().into_owned())
 }
 
-fn create_kernel(api: &OpenClApi, program: ClProgram, name: &[u8], label: &str) -> Result<ClKernel> {
+fn create_kernel(
+    api: &OpenClApi,
+    program: ClProgram,
+    name: &[u8],
+    label: &str,
+) -> Result<ClKernel> {
     let mut status = CL_SUCCESS;
-    let kernel = unsafe {
-        (api.cl_create_kernel)(program, name.as_ptr().cast::<c_char>(), &mut status)
-    };
+    let kernel =
+        unsafe { (api.cl_create_kernel)(program, name.as_ptr().cast::<c_char>(), &mut status) };
     ensure_handle(kernel, status, &format!("clCreateKernel({label})"))?;
     Ok(kernel)
 }
@@ -527,9 +523,8 @@ fn create_buffer(
     label: &str,
 ) -> Result<ClMem> {
     let mut status = CL_SUCCESS;
-    let buffer = unsafe {
-        (api.cl_create_buffer)(context, flags, size, std::ptr::null_mut(), &mut status)
-    };
+    let buffer =
+        unsafe { (api.cl_create_buffer)(context, flags, size, std::ptr::null_mut(), &mut status) };
     ensure_handle(buffer, status, &format!("clCreateBuffer({label})"))?;
     Ok(buffer)
 }
@@ -759,20 +754,38 @@ impl OpenClApi {
                         cl_get_device_info: symbol!(ClGetDeviceInfo, "clGetDeviceInfo"),
                         cl_create_context: symbol!(ClCreateContext, "clCreateContext"),
                         cl_release_context: symbol!(ClReleaseContext, "clReleaseContext"),
-                        cl_create_command_queue: symbol!(ClCreateCommandQueue, "clCreateCommandQueue"),
-                        cl_release_command_queue: symbol!(ClReleaseCommandQueue, "clReleaseCommandQueue"),
-                        cl_create_program_with_source: symbol!(ClCreateProgramWithSource, "clCreateProgramWithSource"),
+                        cl_create_command_queue: symbol!(
+                            ClCreateCommandQueue,
+                            "clCreateCommandQueue"
+                        ),
+                        cl_release_command_queue: symbol!(
+                            ClReleaseCommandQueue,
+                            "clReleaseCommandQueue"
+                        ),
+                        cl_create_program_with_source: symbol!(
+                            ClCreateProgramWithSource,
+                            "clCreateProgramWithSource"
+                        ),
                         cl_build_program: symbol!(ClBuildProgram, "clBuildProgram"),
-                        cl_get_program_build_info: symbol!(ClGetProgramBuildInfo, "clGetProgramBuildInfo"),
+                        cl_get_program_build_info: symbol!(
+                            ClGetProgramBuildInfo,
+                            "clGetProgramBuildInfo"
+                        ),
                         cl_release_program: symbol!(ClReleaseProgram, "clReleaseProgram"),
                         cl_create_kernel: symbol!(ClCreateKernel, "clCreateKernel"),
                         cl_release_kernel: symbol!(ClReleaseKernel, "clReleaseKernel"),
                         cl_create_buffer: symbol!(ClCreateBuffer, "clCreateBuffer"),
                         cl_release_mem_object: symbol!(ClReleaseMemObject, "clReleaseMemObject"),
-                        cl_enqueue_write_buffer: symbol!(ClEnqueueWriteBuffer, "clEnqueueWriteBuffer"),
+                        cl_enqueue_write_buffer: symbol!(
+                            ClEnqueueWriteBuffer,
+                            "clEnqueueWriteBuffer"
+                        ),
                         cl_enqueue_read_buffer: symbol!(ClEnqueueReadBuffer, "clEnqueueReadBuffer"),
                         cl_set_kernel_arg: symbol!(ClSetKernelArg, "clSetKernelArg"),
-                        cl_enqueue_nd_range_kernel: symbol!(ClEnqueueNDRangeKernel, "clEnqueueNDRangeKernel"),
+                        cl_enqueue_nd_range_kernel: symbol!(
+                            ClEnqueueNDRangeKernel,
+                            "clEnqueueNDRangeKernel"
+                        ),
                         cl_finish: symbol!(ClFinish, "clFinish"),
                         _library: library,
                     })
