@@ -107,7 +107,10 @@ def patch_lib() -> None:
         Ok(true)
     }
 
-    #[cfg(test)]
+'''
+    module = one_replace(module, ensure_marker, status_helper + ensure_marker, 'OpenCL status helper insertion')
+
+    tests_block = '''    #[cfg(test)]
     mod tests {
         use super::{
             device_count_status_is_available, opencl_library_candidates, ClDeviceType,
@@ -134,9 +137,11 @@ def patch_lib() -> None:
             assert!(err.to_string().contains("OpenCL status -999"));
         }
     }
-
 '''
-    module = one_replace(module, ensure_marker, status_helper + ensure_marker, 'OpenCL status helper insertion')
+    final_close = module.rfind('\n}')
+    if final_close == -1:
+        raise SystemExit('OpenCL module closing brace not found')
+    module = module[:final_close].rstrip() + '\n\n' + tests_block + module[final_close:]
     LIB_PATH.write_text(text[:start] + module + text[end:])
 
 
