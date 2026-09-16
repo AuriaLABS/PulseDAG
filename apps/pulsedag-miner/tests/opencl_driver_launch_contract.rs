@@ -1,5 +1,6 @@
 #![cfg(feature = "gpu")]
 
+#[allow(dead_code)]
 #[path = "../src/opencl_driver_launch.rs"]
 mod opencl_driver_launch;
 
