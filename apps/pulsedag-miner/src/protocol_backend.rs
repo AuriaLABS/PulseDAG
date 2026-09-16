@@ -40,13 +40,7 @@ impl ProtocolMiningBackend for crate::GpuMiningBackend {
         target_bits: u32,
         identity: &ProtocolActivationIdentity,
     ) -> Result<NonceSearchResult> {
-        crate::opencl_backend::mine_canonical(
-            self,
-            header,
-            max_tries,
-            target_bits,
-            Some(identity),
-        )
+        crate::opencl_backend::mine_canonical(self, header, max_tries, target_bits, Some(identity))
     }
 }
 

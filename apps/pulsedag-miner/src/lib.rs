@@ -397,7 +397,8 @@ mod opencl {
         fn device_info_string(&self, device: ClDeviceId, info: ClDeviceInfo) -> Result<String> {
             let mut size = 0usize;
             let status = unsafe {
-                (self.cl_get_device_info)(device, info, 0, std::ptr::null_mut(), &mut size) };
+                (self.cl_get_device_info)(device, info, 0, std::ptr::null_mut(), &mut size)
+            };
             ensure_opencl_success(status, "clGetDeviceInfo(size)")?;
             let mut buf = vec![0u8; size.max(1)];
             let status = unsafe {

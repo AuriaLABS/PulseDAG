@@ -29,12 +29,7 @@ impl OpenClBatchLauncher for DriverOpenClBatchLauncher {
         nonces: &[u64],
         work_size: usize,
     ) -> Result<Vec<[u8; 32]>> {
-        opencl_driver_launch::launch_kheavyhash_batch(
-            device_index,
-            pre_pow_hash,
-            nonces,
-            work_size,
-        )
+        opencl_driver_launch::launch_kheavyhash_batch(device_index, pre_pow_hash, nonces, work_size)
     }
 }
 
@@ -119,12 +114,7 @@ fn search_work(
             break;
         }
 
-        let hashes = launcher.launch(
-            device_index,
-            pre_pow_hash,
-            &nonces,
-            work_size,
-        )?;
+        let hashes = launcher.launch(device_index, pre_pow_hash, &nonces, work_size)?;
         if hashes.len() != nonces.len() {
             return Err(anyhow!(
                 "OpenCL launcher returned {} hash(es) for {} nonce(s); refusing incomplete accelerator result",
@@ -254,10 +244,9 @@ mod tests {
             nonces
                 .iter()
                 .map(|nonce| {
-                    self.hashes
-                        .get(nonce)
-                        .copied()
-                        .ok_or_else(|| anyhow!("fake OpenCL launcher has no hash for nonce {nonce}"))
+                    self.hashes.get(nonce).copied().ok_or_else(|| {
+                        anyhow!("fake OpenCL launcher has no hash for nonce {nonce}")
+                    })
                 })
                 .collect()
         }
@@ -351,15 +340,9 @@ mod tests {
         };
         let backend = test_backend(3, 3, 64);
 
-        let result = mine_canonical_with_launcher(
-            &backend,
-            header,
-            7,
-            target_bits,
-            None,
-            &launcher,
-        )
-        .unwrap();
+        let result =
+            mine_canonical_with_launcher(&backend, header, 7, target_bits, None, &launcher)
+                .unwrap();
         assert!(!result.accepted);
         assert_eq!(result.tries, 7);
         assert_eq!(result.header.nonce, 6);
@@ -384,17 +367,14 @@ mod tests {
         let launcher = FakeLauncher::canonical(&work, 0..1);
         let backend = test_backend(0, 1, 64);
 
-        let result = mine_canonical_with_launcher(
-            &backend,
-            header,
-            1,
-            target_bits,
-            None,
-            &launcher,
-        )
-        .expect("legacy OpenCL search should use canonical work");
+        let result =
+            mine_canonical_with_launcher(&backend, header, 1, target_bits, None, &launcher)
+                .expect("legacy OpenCL search should use canonical work");
         assert_eq!(result.header.nonce, 0);
-        assert_eq!(launcher.calls()[0].pre_pow_hash, canonical_pre_pow_hash(&work));
+        assert_eq!(
+            launcher.calls()[0].pre_pow_hash,
+            canonical_pre_pow_hash(&work)
+        );
     }
 
     #[test]
@@ -416,7 +396,10 @@ mod tests {
         )
         .expect("v2 OpenCL search should use canonical protocol work");
         assert_eq!(result.header.nonce, 0);
-        assert_eq!(launcher.calls()[0].pre_pow_hash, canonical_pre_pow_hash(&work));
+        assert_eq!(
+            launcher.calls()[0].pre_pow_hash,
+            canonical_pre_pow_hash(&work)
+        );
     }
 
     #[test]
@@ -426,15 +409,8 @@ mod tests {
         let launcher = FakeLauncher::failing("mock OpenCL launch failure");
         let backend = test_backend(0, 2, 64);
 
-        let error = mine_canonical_with_launcher(
-            &backend,
-            header,
-            2,
-            target_bits,
-            None,
-            &launcher,
-        )
-        .unwrap_err();
+        let error = mine_canonical_with_launcher(&backend, header, 2, target_bits, None, &launcher)
+            .unwrap_err();
         assert!(error.to_string().contains("mock OpenCL launch failure"));
     }
 
@@ -453,15 +429,8 @@ mod tests {
         };
         let backend = test_backend(0, 1, 64);
 
-        let error = mine_canonical_with_launcher(
-            &backend,
-            header,
-            1,
-            target_bits,
-            None,
-            &launcher,
-        )
-        .unwrap_err();
+        let error = mine_canonical_with_launcher(&backend, header, 1, target_bits, None, &launcher)
+            .unwrap_err();
         assert!(error.to_string().contains("accelerator hash mismatch"));
     }
 
@@ -483,15 +452,9 @@ mod tests {
         let target_bits = 1;
         let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
         let backend = test_backend(0, 2, 64);
-        let error = mine_canonical_with_launcher(
-            &backend,
-            header,
-            2,
-            target_bits,
-            None,
-            &ShortLauncher,
-        )
-        .unwrap_err();
+        let error =
+            mine_canonical_with_launcher(&backend, header, 2, target_bits, None, &ShortLauncher)
+                .unwrap_err();
         assert!(error
             .to_string()
             .contains("refusing incomplete accelerator result"));
@@ -508,15 +471,9 @@ mod tests {
         let launcher = FakeLauncher::canonical(&work, 0..64);
         let backend = test_backend(0, 64, 64);
 
-        let result = mine_canonical_with_launcher(
-            &backend,
-            header,
-            64,
-            target_bits,
-            None,
-            &launcher,
-        )
-        .unwrap();
+        let result =
+            mine_canonical_with_launcher(&backend, header, 64, target_bits, None, &launcher)
+                .unwrap();
         assert!(result.accepted);
         assert_eq!(result.header.nonce, first_accepted);
         assert_eq!(
