@@ -6,6 +6,7 @@ on:
       - codex/issue-1038-opencl-worker-recovery-phase14
     paths:
       - "scripts/task38_phase14_patch.py"
+      - "scripts/task38_phase14_lint_fix.py"
       - ".github/workflows/task38-phase14-apply-once.yml"
 
 permissions:
@@ -32,6 +33,9 @@ jobs:
 
       - name: Apply Phase14 patch
         run: python3 scripts/task38_phase14_patch.py
+
+      - name: Apply strict lint shape fix
+        run: python3 scripts/task38_phase14_lint_fix.py
 
       - name: Format
         run: cargo fmt --all
@@ -63,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm scripts/task38_phase14_patch.py .github/workflows/task38-phase14-apply-once.yml
+          rm scripts/task38_phase14_patch.py scripts/task38_phase14_lint_fix.py .github/workflows/task38-phase14-apply-once.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
