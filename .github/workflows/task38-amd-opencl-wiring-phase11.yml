@@ -1,0 +1,109 @@
+name: v3 launch Task 38 AMD OpenCL wiring phase 11
+
+on:
+  push:
+    branches:
+      - codex/issue-1038-amd-opencl-wiring-phase11
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/lib.rs"
+      - "apps/pulsedag-miner/src/protocol_backend.rs"
+      - "apps/pulsedag-miner/src/protocol_pow.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/opencl/**"
+      - "apps/pulsedag-miner/tests/protocol_nonce_target_boundaries.rs"
+      - ".github/workflows/task38-amd-opencl-wiring-phase11.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/lib.rs"
+      - "apps/pulsedag-miner/src/protocol_backend.rs"
+      - "apps/pulsedag-miner/src/protocol_pow.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/opencl/**"
+      - "apps/pulsedag-miner/tests/protocol_nonce_target_boundaries.rs"
+      - ".github/workflows/task38-amd-opencl-wiring-phase11.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  software-wiring-contract:
+    name: OpenCL canonical wiring / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_wiring_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: OpenCL software wiring unit tests
+        run: cargo test --locked -p pulsedag-miner --features gpu opencl_backend::tests
+
+      - name: Protocol nonce and target boundary contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test protocol_nonce_target_boundaries
+
+      - name: OpenCL driver software contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract
+
+      - name: Strict Clippy for GPU feature
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --all-targets -- -D warnings
+
+      - name: Audit mandatory accelerator reverification
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "reverify_accelerator_hash" apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q "compare_pow_hash_to_target" apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q "protocol_nonce_partition" apps/pulsedag-miner/src/opencl_backend.rs
+          if grep -q "GPU_MINING_AMD_PASS=true" apps/pulsedag-miner/src/opencl_backend.rs; then
+            echo "::error::software-only wiring must not claim physical AMD PASS"
+            exit 1
+          fi
+          echo "amd_opencl_software_wiring=PASS"
+          echo "amd_opencl_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"

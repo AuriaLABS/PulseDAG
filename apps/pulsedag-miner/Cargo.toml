@@ -6,7 +6,7 @@ default-run = "pulsedag-miner"
 
 [features]
 default = []
-gpu = ["dep:libloading"]
+gpu = ["dep:libloading", "dep:sha3"]
 cuda = ["dep:libloading", "dep:sha3"]
 
 [[bin]]
