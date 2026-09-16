@@ -1,0 +1,39 @@
+name: Task38 temporary rustfmt export
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.91 rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Format workspace
+        run: cargo fmt --all
+
+      - name: Upload exact formatted phase10 sources
+        uses: actions/upload-artifact@v7
+        with:
+          name: task38-phase10-rustfmt
+          path: |
+            apps/pulsedag-miner/src/opencl_driver_launch.rs
+            apps/pulsedag-miner/tests/opencl_driver_launch_contract.rs
+          if-no-files-found: error
+          retention-days: 1
