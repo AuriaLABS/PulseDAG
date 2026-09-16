@@ -80,7 +80,11 @@ jobs:
           start = lib.index('#[cfg(feature = "gpu")]\nmod opencl {')
           end = lib.index('\npub fn miner_pow_preimage_bytes', start)
           module = lib[start:end]
+
           main = Path("apps/pulsedag-miner/src/main.rs").read_text()
+          usage_start = main.index("fn usage() -> &'static str {")
+          usage_end = main.index("\n}\n\nfn mining_backend", usage_start) + 2
+          usage = main[usage_start:usage_end]
 
           required = [
               'type ClBitfield = u64;',
@@ -99,10 +103,10 @@ jobs:
               raise SystemExit('OpenCL discovery must not use platform-width c_ulong for cl_device_type')
           if 'unsafe extern "C" fn' in module:
               raise SystemExit('OpenCL discovery must use extern system ABI')
-          if 'OpenCL scaffold' in main or 'not implemented yet' in main:
-              raise SystemExit('CLI still contains stale OpenCL scaffold/not-implemented language')
-          if 'canonical OpenCL kHeavyHash backend' not in main:
-              raise SystemExit('CLI does not describe canonical OpenCL backend')
+          if 'OpenCL scaffold' in usage or 'not implemented yet' in usage:
+              raise SystemExit('CLI usage still contains stale OpenCL scaffold/not-implemented language')
+          if 'canonical OpenCL kHeavyHash backend' not in usage:
+              raise SystemExit('CLI usage does not describe canonical OpenCL backend')
           PY
           echo "amd_opencl_discovery_software_contract=PASS"
           echo "amd_opencl_hardware_execution=NOT_CLAIMED"
