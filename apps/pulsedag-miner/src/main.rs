@@ -521,7 +521,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the existing optional OpenCL scaffold and requires the gpu feature. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects the single CUDA or OpenCL device for this slice. Auto preserves the existing OpenCL-then-CPU behavior when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first and falls through to the existing OpenCL attempt and then CPU if CUDA initialization or device selection fails. The canonical kHeavyHash OpenCL kernel is not implemented yet. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects the global single CUDA or OpenCL GPU device index for this software slice. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
 fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
@@ -1155,14 +1155,18 @@ mod tests {
     }
 
     #[test]
-    fn usage_mentions_optional_gpu_and_explicit_cuda_backends() {
+    fn usage_describes_canonical_opencl_and_explicit_cuda_backends() {
         let text = usage();
 
         assert!(text.contains("--backend cpu|gpu|cuda|auto"));
         assert!(text.contains("--cuda-module PATH"));
+        assert!(text.contains("canonical OpenCL kHeavyHash backend"));
+        assert!(text.contains("explicit gpu selection fails closed"));
         assert!(text.contains("cuda feature"));
         assert!(text.contains("never falls back"));
-        assert!(text.contains("falls through"));
+        assert!(text.contains("Physical NVIDIA/AMD validation is not claimed"));
+        assert!(!text.contains("OpenCL scaffold"));
+        assert!(!text.contains("not implemented yet"));
     }
 
     #[test]
