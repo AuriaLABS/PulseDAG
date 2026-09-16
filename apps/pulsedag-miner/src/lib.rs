@@ -202,37 +202,50 @@ impl MiningBackend for GpuMiningBackend {
 
 #[cfg(feature = "gpu")]
 mod opencl {
-    use super::OpenClDeviceSelection;
+    use super::{opencl_driver_launch, OpenClDeviceSelection};
     use anyhow::{anyhow, Context, Result};
     use libloading::Library;
     use std::ffi::CStr;
-    use std::os::raw::{c_int, c_uint, c_ulong, c_void};
+    use std::os::raw::{c_int, c_uint, c_void};
 
     type ClInt = c_int;
     type ClUint = c_uint;
     type ClPlatformId = *mut c_void;
     type ClDeviceId = *mut c_void;
-    type ClDeviceType = c_ulong;
+    type ClBitfield = u64;
+    type ClDeviceType = ClBitfield;
     type ClDeviceInfo = c_uint;
     type ClPlatformInfo = c_uint;
 
     const CL_SUCCESS: ClInt = 0;
+    const CL_DEVICE_NOT_FOUND: ClInt = -1;
     const CL_DEVICE_TYPE_GPU: ClDeviceType = 1 << 2;
     const CL_PLATFORM_NAME: ClPlatformInfo = 0x0902;
     const CL_DEVICE_NAME: ClDeviceInfo = 0x102B;
 
-    type ClGetPlatformIDs = unsafe extern "C" fn(ClUint, *mut ClPlatformId, *mut ClUint) -> ClInt;
-    type ClGetPlatformInfo =
-        unsafe extern "C" fn(ClPlatformId, ClPlatformInfo, usize, *mut c_void, *mut usize) -> ClInt;
-    type ClGetDeviceIDs = unsafe extern "C" fn(
+    type ClGetPlatformIDs =
+        unsafe extern "system" fn(ClUint, *mut ClPlatformId, *mut ClUint) -> ClInt;
+    type ClGetPlatformInfo = unsafe extern "system" fn(
+        ClPlatformId,
+        ClPlatformInfo,
+        usize,
+        *mut c_void,
+        *mut usize,
+    ) -> ClInt;
+    type ClGetDeviceIDs = unsafe extern "system" fn(
         ClPlatformId,
         ClDeviceType,
         ClUint,
         *mut ClDeviceId,
         *mut ClUint,
     ) -> ClInt;
-    type ClGetDeviceInfo =
-        unsafe extern "C" fn(ClDeviceId, ClDeviceInfo, usize, *mut c_void, *mut usize) -> ClInt;
+    type ClGetDeviceInfo = unsafe extern "system" fn(
+        ClDeviceId,
+        ClDeviceInfo,
+        usize,
+        *mut c_void,
+        *mut usize,
+    ) -> ClInt;
 
     pub fn select_device(requested_device_index: Option<usize>) -> Result<OpenClDeviceSelection> {
         let api = OpenClApi::load()?;
@@ -274,6 +287,20 @@ mod opencl {
         }
     }
 
+    fn opencl_library_candidates(override_name: Option<String>) -> Vec<String> {
+        if let Some(name) = override_name.filter(|value| !value.trim().is_empty()) {
+            return vec![name];
+        }
+
+        if cfg!(target_os = "windows") {
+            vec!["OpenCL.dll".to_string()]
+        } else if cfg!(target_os = "macos") {
+            vec!["/System/Library/Frameworks/OpenCL.framework/OpenCL".to_string()]
+        } else {
+            vec!["libOpenCL.so.1".to_string(), "libOpenCL.so".to_string()]
+        }
+    }
+
     struct OpenClApi {
         _library: Library,
         cl_get_platform_ids: ClGetPlatformIDs,
@@ -284,16 +311,12 @@ mod opencl {
 
     impl OpenClApi {
         fn load() -> Result<Self> {
-            let names: &[&str] = if cfg!(target_os = "windows") {
-                &["OpenCL.dll"]
-            } else if cfg!(target_os = "macos") {
-                &["/System/Library/Frameworks/OpenCL.framework/OpenCL"]
-            } else {
-                &["libOpenCL.so.1", "libOpenCL.so"]
-            };
+            let names = opencl_library_candidates(
+                std::env::var(opencl_driver_launch::OPENCL_LIBRARY_ENV).ok(),
+            );
 
             let mut last_error = None;
-            for name in names {
+            for name in &names {
                 let library = match unsafe { Library::new(name) } {
                     Ok(library) => library,
                     Err(err) => {
@@ -351,7 +374,7 @@ mod opencl {
                     &mut count,
                 )
             };
-            if status != CL_SUCCESS {
+            if !device_count_status_is_available(status)? {
                 return Ok(Vec::new());
             }
             let mut devices = vec![std::ptr::null_mut(); count as usize];
@@ -415,6 +438,14 @@ mod opencl {
         }
     }
 
+    fn device_count_status_is_available(status: ClInt) -> Result<bool> {
+        if status == CL_DEVICE_NOT_FOUND {
+            return Ok(false);
+        }
+        ensure_opencl_success(status, "clGetDeviceIDs(count)")?;
+        Ok(true)
+    }
+
     fn ensure_opencl_success(status: ClInt, call: &str) -> Result<()> {
         if status == CL_SUCCESS {
             Ok(())
@@ -426,6 +457,33 @@ mod opencl {
     fn c_string_from_buf(buf: &[u8]) -> Result<String> {
         let cstr = CStr::from_bytes_until_nul(buf).unwrap_or(c"");
         Ok(cstr.to_string_lossy().into_owned())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            device_count_status_is_available, opencl_library_candidates, ClDeviceType,
+            CL_DEVICE_NOT_FOUND, CL_SUCCESS,
+        };
+
+        #[test]
+        fn explicit_library_override_is_exclusive() {
+            let candidates = opencl_library_candidates(Some("/tmp/pulsedag-opencl-test.so".into()));
+            assert_eq!(candidates, vec!["/tmp/pulsedag-opencl-test.so"]);
+        }
+
+        #[test]
+        fn opencl_device_type_matches_64_bit_bitfield_abi() {
+            assert_eq!(std::mem::size_of::<ClDeviceType>(), 8);
+        }
+
+        #[test]
+        fn only_device_not_found_maps_to_empty_gpu_list() {
+            assert!(!device_count_status_is_available(CL_DEVICE_NOT_FOUND).unwrap());
+            assert!(device_count_status_is_available(CL_SUCCESS).unwrap());
+            let err = device_count_status_is_available(-999).unwrap_err();
+            assert!(err.to_string().contains("OpenCL status -999"));
+        }
     }
 }
 
