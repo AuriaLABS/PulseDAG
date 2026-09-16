@@ -491,7 +491,6 @@ fn program_build_log(api: &OpenClApi, program: ClProgram, device: ClDeviceId) ->
                 buffer.len(),
                 buffer.as_mut_ptr().cast::<c_void>(),
                 std::ptr::null_mut(),
-                &mut size,
             )
         },
         "clGetProgramBuildInfo(value)",
