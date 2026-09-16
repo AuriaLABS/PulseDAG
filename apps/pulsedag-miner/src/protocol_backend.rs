@@ -35,24 +35,12 @@ impl ProtocolMiningBackend for crate::GpuMiningBackend {
     fn mine_header_for_protocol(
         &self,
         header: BlockHeader,
-        _max_tries: u64,
+        max_tries: u64,
         _threads: usize,
         target_bits: u32,
         identity: &ProtocolActivationIdentity,
     ) -> Result<NonceSearchResult> {
-        let work = build_protocol_pow_work(&header, target_bits, Some(identity))?;
-        Err(anyhow!(
-            "OpenCL GPU backend selected platform[{}]={} device[{}]={}, but canonical kHeavyHash OpenCL mining is not implemented yet; refusing to mine with a non-canonical kernel. protocol_path={} canonical_pre_pow_bytes={} target_hex={} batch_size={} work_size={}. Use --backend cpu to mine on the CPU.",
-            self.selected_device.platform_index,
-            self.selected_device.platform_name,
-            self.selected_device.device_index,
-            self.selected_device.device_name,
-            work.path.as_str(),
-            work.material.pre_pow_bytes.len(),
-            work.material.target.target_hex,
-            self.config.batch_size,
-            self.config.work_size,
-        ))
+        crate::opencl_backend::mine_canonical(self, header, max_tries, target_bits, Some(identity))
     }
 }
 

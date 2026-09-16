@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
 pub mod cuda_driver_launch;
+#[cfg(feature = "gpu")]
+mod opencl_backend;
+#[cfg(feature = "gpu")]
+pub mod opencl_driver_launch;
 pub mod protocol_backend;
 pub mod protocol_pow;
 
@@ -126,13 +130,26 @@ pub struct GpuMiningBackend {
 #[cfg(feature = "gpu")]
 impl GpuMiningBackend {
     pub fn new(config: GpuBackendConfig) -> Result<Self> {
+        if config.batch_size == 0 {
+            return Err(anyhow!("OpenCL GPU batch size must be non-zero"));
+        }
+        if config.work_size == 0 {
+            return Err(anyhow!("OpenCL GPU work size must be non-zero"));
+        }
+
         let selected_device = opencl::select_device(config.device_index).map_err(|err| {
             anyhow!(
                 "OpenCL GPU backend initialization failed: {err}. Use --backend cpu to fall back to CPU mining."
             )
         })?;
+        opencl_driver_launch::probe_opencl_gpu(selected_device.device_index).map_err(|err| {
+            anyhow!(
+                "OpenCL canonical runtime probe failed for GPU device index {}: {err}. Use --backend cpu to fall back to CPU mining.",
+                selected_device.device_index
+            )
+        })?;
         println!(
-            "gpu_backend_opencl selected platform[{}]={} device[{}]={} batch_size={} work_size={} env_batch=PULSEDAG_MINER_GPU_BATCH_SIZE env_work=PULSEDAG_MINER_GPU_WORK_SIZE",
+            "gpu_backend_opencl selected platform[{}]={} device[{}]={} batch_size={} work_size={} canonical_runtime=true hardware_equivalence=NOT_CLAIMED GPU_MINING_AMD_PASS=NOT_CLAIMED env_batch=PULSEDAG_MINER_GPU_BATCH_SIZE env_work=PULSEDAG_MINER_GPU_WORK_SIZE",
             selected_device.platform_index,
             selected_device.platform_name,
             selected_device.device_index,
@@ -175,30 +192,11 @@ impl MiningBackend for GpuMiningBackend {
     fn mine_header(
         &self,
         header: BlockHeader,
-        _max_tries: u64,
+        max_tries: u64,
         _threads: usize,
         target_bits: u32,
     ) -> Result<NonceSearchResult> {
-        // Build canonical nonce-independent material here so the GPU path cannot
-        // accidentally invent a simplified header format. A future OpenCL kernel
-        // must consume this exact adapter material and must still pass every
-        // found nonce through `verify_backend_result_with_core` before submit.
-        let mut canonical_header = header.clone();
-        canonical_header.difficulty = target_bits;
-        let material = canonical_pow_adapter()
-            .pre_pow_material(&canonical_header)
-            .map_err(|reason| anyhow!("invalid canonical PoW material: {}", reason.code()))?;
-        Err(anyhow!(
-            "OpenCL GPU backend selected platform[{}]={} device[{}]={}, but canonical kHeavyHash OpenCL mining is not implemented yet; refusing to mine with a non-canonical kernel. canonical_pre_pow_bytes={} target_hex={} batch_size={} work_size={}. Use --backend cpu to mine on the CPU.",
-            self.selected_device.platform_index,
-            self.selected_device.platform_name,
-            self.selected_device.device_index,
-            self.selected_device.device_name,
-            material.pre_pow_bytes.len(),
-            material.target.target_hex,
-            self.config.batch_size,
-            self.config.work_size,
-        ))
+        opencl_backend::mine_canonical(self, header, max_tries, target_bits, None)
     }
 }
 
@@ -820,47 +818,6 @@ mod tests {
 
         assert!(!verification.accepted);
         assert_ne!(verification.final_hash_hex, fake_gpu_result.final_hash_hex);
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn gpu_backend_scaffold_uses_canonical_material_and_refuses_fake_kernel() {
-        use super::{GpuBackendConfig, GpuMiningBackend, OpenClDeviceSelection};
-
-        let backend = GpuMiningBackend::for_test(
-            GpuBackendConfig {
-                device_index: Some(0),
-                batch_size: 1024,
-                work_size: 64,
-            },
-            OpenClDeviceSelection {
-                platform_index: 0,
-                device_index: 0,
-                platform_name: "test-platform".to_string(),
-                device_name: "test-device".to_string(),
-            },
-        );
-        let target_bits = 0x207fffff;
-        let header = BlockHeader {
-            version: 1,
-            parents: vec!["b".into(), "a".into()],
-            timestamp: 2,
-            nonce: 0,
-            difficulty: target_bits,
-            merkle_root: "m".into(),
-            state_root: "s".into(),
-            blue_score: 2,
-            height: 2,
-        };
-
-        let err = backend
-            .mine_header(header, 1, 1, target_bits)
-            .expect_err("scaffold must not mine with a non-canonical kernel");
-        let message = err.to_string();
-
-        assert!(message.contains("canonical kHeavyHash OpenCL mining is not implemented"));
-        assert!(message.contains("canonical_pre_pow_bytes="));
-        assert!(message.contains("Use --backend cpu"));
     }
 
     #[test]
