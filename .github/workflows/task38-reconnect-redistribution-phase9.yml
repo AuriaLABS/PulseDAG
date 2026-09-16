@@ -1,0 +1,107 @@
+name: v3 launch Task 38 reconnect redistribution phase 9
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-scheduler-probe.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-reconnect-redistribution-phase9.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-scheduler-probe.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-reconnect-redistribution-phase9.yml
+
+permissions:
+  contents: read
+
+jobs:
+  reconnect-redistribution-contract:
+    name: reconnect-redistribution-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_reconnect_redistribution_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Reconnect controller unit contract
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe
+
+      - name: Reconnect controller deterministic self-test
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe -- --self-test
+
+      - name: Existing scheduler regression contract
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-scheduler-probe -- --self-test
+
+      - name: Canonical nonce partition regression
+        run: cargo test --locked -p pulsedag-miner nonce_partitions_are_deterministic_disjoint_and_cover_domain
+
+      - name: Reconnect controller strict Clippy
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe -- -D warnings
+
+      - name: Record software-only reconnect scope
+        run: |
+          echo "accelerator_reconnect_contract=PASS"
+          echo "job_refresh_generation=PASS"
+          echo "failed_worker_redistribution=PASS"
+          echo "stale_completion_rejection=PASS"
+          echo "health_state_preservation=PASS"
+          echo "deterministic_recovery_rejoin=PASS"
+          echo "network_transport_execution=NOT_CLAIMED"
+          echo "physical_gpu_execution=NOT_CLAIMED"
+          echo "single_multi_gpu_correctness=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
