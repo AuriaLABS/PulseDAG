@@ -1,5 +1,5 @@
 use crate::opencl_driver_launch;
-use crate::protocol_backend::protocol_nonce_partition;
+use crate::protocol_backend::{protocol_nonce_lane_count, protocol_nonce_partition};
 use crate::protocol_pow::{build_protocol_pow_work, ProtocolPowWork};
 use crate::{GpuMiningBackend, NonceSearchResult};
 use anyhow::{anyhow, Result};
@@ -68,11 +68,16 @@ fn mine_canonical_with_launcher(
         return Err(anyhow!("OpenCL work size must be non-zero"));
     }
 
+    let device_indices = backend
+        .selected_devices()
+        .iter()
+        .map(|device| device.device_index)
+        .collect::<Vec<_>>();
     search_work(
         header,
         work,
         max_tries,
-        backend.selected_device().device_index,
+        &device_indices,
         batch_size,
         backend.config().work_size,
         launcher,
@@ -83,79 +88,111 @@ fn search_work(
     header: BlockHeader,
     work: ProtocolPowWork,
     max_tries: u64,
-    device_index: usize,
+    device_indices: &[usize],
     batch_size: usize,
     work_size: usize,
     launcher: &dyn OpenClBatchLauncher,
 ) -> Result<NonceSearchResult> {
+    if device_indices.is_empty() {
+        return Err(anyhow!(
+            "OpenCL multi-device search requires at least one device"
+        ));
+    }
+    for (position, device_index) in device_indices.iter().enumerate() {
+        if device_indices[..position].contains(device_index) {
+            return Err(anyhow!(
+                "OpenCL multi-device search contains duplicate device index {device_index}"
+            ));
+        }
+    }
+
     let max_tries = max_tries.max(1);
-    let partition = protocol_nonce_partition(max_tries, 1, 0)?;
+    let active_lanes = protocol_nonce_lane_count(max_tries, device_indices.len());
+    let partitions = (0..active_lanes)
+        .map(|lane| protocol_nonce_partition(max_tries, active_lanes, lane))
+        .collect::<Result<Vec<_>>>()?;
+    let mut iterations = vec![0u64; active_lanes];
+    let mut exhausted = vec![false; active_lanes];
     let pre_pow_hash = canonical_pre_pow_hash(&work);
-    let mut iteration = 0u64;
     let mut tries = 0u64;
     let mut last_nonce = None;
 
     loop {
-        let mut nonces = Vec::with_capacity(batch_size);
-        for _ in 0..batch_size {
-            let Some(nonce) = partition.nonce_at(iteration)? else {
-                break;
-            };
-            nonces.push(nonce);
-            iteration = iteration.checked_add(1).ok_or_else(|| {
-                anyhow!(
-                    "OpenCL nonce iteration overflow for canonical lane {}",
-                    partition.lane()
-                )
-            })?;
-        }
-
-        if nonces.is_empty() {
-            break;
-        }
-
-        let hashes = launcher.launch(device_index, pre_pow_hash, &nonces, work_size)?;
-        if hashes.len() != nonces.len() {
-            return Err(anyhow!(
-                "OpenCL launcher returned {} hash(es) for {} nonce(s); refusing incomplete accelerator result",
-                hashes.len(),
-                nonces.len()
-            ));
-        }
-
-        let batch_tries = u64::try_from(nonces.len())
-            .map_err(|_| anyhow!("OpenCL batch nonce count does not fit in u64"))?;
-        tries = tries
-            .checked_add(batch_tries)
-            .ok_or_else(|| anyhow!("OpenCL nonce attempt counter overflow"))?;
-
-        for (&nonce, &accelerator_hash) in nonces.iter().zip(&hashes) {
-            last_nonce = Some(nonce);
-            if !compare_pow_hash_to_target(&accelerator_hash, &work.material.target.target) {
+        let mut made_progress = false;
+        for lane_index in 0..active_lanes {
+            if exhausted[lane_index] {
                 continue;
             }
+            let partition = partitions[lane_index];
+            let device_index = device_indices[lane_index];
+            let mut nonces = Vec::with_capacity(batch_size);
+            for _ in 0..batch_size {
+                let Some(nonce) = partition.nonce_at(iterations[lane_index])? else {
+                    exhausted[lane_index] = true;
+                    break;
+                };
+                nonces.push(nonce);
+                iterations[lane_index] =
+                    iterations[lane_index].checked_add(1).ok_or_else(|| {
+                        anyhow!(
+                            "OpenCL nonce iteration overflow for canonical lane {}",
+                            partition.lane()
+                        )
+                    })?;
+            }
 
-            let accepted = work.reverify_accelerator_hash(nonce, accelerator_hash)?;
-            if !accepted {
+            if nonces.is_empty() {
+                continue;
+            }
+            made_progress = true;
+
+            let hashes = launcher.launch(device_index, pre_pow_hash, &nonces, work_size)?;
+            if hashes.len() != nonces.len() {
                 return Err(anyhow!(
-                    "OpenCL accelerator hash passed target prefilter for nonce {nonce} but canonical re-verification rejected it"
+                    "OpenCL launcher returned {} hash(es) for {} nonce(s); refusing incomplete accelerator result",
+                    hashes.len(),
+                    nonces.len()
                 ));
             }
 
-            let mut winner = header.clone();
-            winner.nonce = nonce;
-            let canonical = work.evaluate_nonce(nonce);
-            return Ok(NonceSearchResult {
-                header: winner,
-                accepted: true,
-                tries,
-                final_hash_hex: canonical.final_hash.hash_hex,
-            });
+            let batch_tries = u64::try_from(nonces.len())
+                .map_err(|_| anyhow!("OpenCL batch nonce count does not fit in u64"))?;
+            tries = tries
+                .checked_add(batch_tries)
+                .ok_or_else(|| anyhow!("OpenCL nonce attempt counter overflow"))?;
+
+            for (&nonce, &accelerator_hash) in nonces.iter().zip(&hashes) {
+                last_nonce = Some(nonce);
+                if !compare_pow_hash_to_target(&accelerator_hash, &work.material.target.target) {
+                    continue;
+                }
+
+                let accepted = work.reverify_accelerator_hash(nonce, accelerator_hash)?;
+                if !accepted {
+                    return Err(anyhow!(
+                        "OpenCL accelerator hash passed target prefilter for nonce {nonce} but canonical re-verification rejected it"
+                    ));
+                }
+
+                let mut winner = header.clone();
+                winner.nonce = nonce;
+                let canonical = work.evaluate_nonce(nonce);
+                return Ok(NonceSearchResult {
+                    header: winner,
+                    accepted: true,
+                    tries,
+                    final_hash_hex: canonical.final_hash.hash_hex,
+                });
+            }
+        }
+
+        if !made_progress {
+            break;
         }
     }
 
     let fallback_nonce = last_nonce.ok_or_else(|| {
-        anyhow!("OpenCL canonical nonce partition produced no work after normalization")
+        anyhow!("OpenCL canonical nonce partitions produced no work after normalization")
     })?;
     let canonical = work.evaluate_nonce(fallback_nonce);
     let mut fallback = header;
@@ -274,6 +311,15 @@ mod tests {
         )
     }
 
+    fn test_selection(device_index: usize) -> OpenClDeviceSelection {
+        OpenClDeviceSelection {
+            platform_index: 0,
+            device_index,
+            platform_name: "test-platform".to_string(),
+            device_name: format!("test-device-{device_index}"),
+        }
+    }
+
     fn test_backend(device_index: usize, batch_size: u64, work_size: usize) -> GpuMiningBackend {
         GpuMiningBackend::for_test(
             GpuBackendConfig {
@@ -281,13 +327,66 @@ mod tests {
                 batch_size,
                 work_size,
             },
-            OpenClDeviceSelection {
-                platform_index: 0,
-                device_index,
-                platform_name: "test-platform".to_string(),
-                device_name: "test-device".to_string(),
-            },
+            test_selection(device_index),
         )
+    }
+
+    fn test_backend_devices(
+        device_indices: &[usize],
+        batch_size: u64,
+        work_size: usize,
+    ) -> GpuMiningBackend {
+        GpuMiningBackend::for_test_devices(
+            GpuBackendConfig {
+                device_index: None,
+                batch_size,
+                work_size,
+            },
+            device_indices.iter().copied().map(test_selection).collect(),
+        )
+    }
+
+    #[test]
+    fn multi_device_batches_cover_nonce_domain_exactly_once() {
+        let target_bits = 0x0300_0001;
+        let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+        let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+        let rejected_hash = [0xffu8; 32];
+        assert!(!compare_pow_hash_to_target(
+            &rejected_hash,
+            &work.material.target.target
+        ));
+        let launcher = FakeLauncher {
+            hashes: (0..7).map(|nonce| (nonce, rejected_hash)).collect(),
+            calls: Mutex::new(Vec::new()),
+            error: None,
+        };
+        let backend = test_backend_devices(&[1, 3], 2, 64);
+
+        let result =
+            mine_canonical_with_launcher(&backend, header, 7, target_bits, None, &launcher)
+                .unwrap();
+        assert!(!result.accepted);
+        assert_eq!(result.tries, 7);
+
+        let calls = launcher.calls();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0].device_index, 1);
+        assert_eq!(calls[0].nonces, vec![0, 2]);
+        assert_eq!(calls[1].device_index, 3);
+        assert_eq!(calls[1].nonces, vec![1, 3]);
+        assert_eq!(calls[2].device_index, 1);
+        assert_eq!(calls[2].nonces, vec![4, 6]);
+        assert_eq!(calls[3].device_index, 3);
+        assert_eq!(calls[3].nonces, vec![5]);
+
+        let mut observed = calls
+            .iter()
+            .flat_map(|call| call.nonces.iter().copied())
+            .collect::<Vec<_>>();
+        observed.sort_unstable();
+        let expected: Vec<u64> = (0..7).collect();
+        assert_eq!(observed, expected);
     }
 
     #[test]

@@ -1,0 +1,103 @@
+name: v3 launch Task 38 AMD OpenCL multi-device phase 13
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/lib.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - ".github/workflows/task38-amd-opencl-multidevice-phase13.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  multidevice-contract:
+    name: OpenCL multi-device software contract / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_multidevice_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: OpenCL multi-device unit contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu --lib opencl_backend::tests
+
+      - name: OpenCL device-list parser contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --lib gpu_device_list_tests
+
+      - name: Preserve OpenCL driver software contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract
+
+      - name: Strict Clippy for GPU feature
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --all-targets -- -D warnings
+
+      - name: Audit multi-device fail-closed scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path("apps/pulsedag-miner/src/lib.rs").read_text()
+          backend = Path("apps/pulsedag-miner/src/opencl_backend.rs").read_text()
+
+          required = [
+              (lib, 'PULSEDAG_MINER_GPU_DEVICES'),
+              (lib, 'selected_devices: Vec<OpenClDeviceSelection>'),
+              (lib, 'pub fn selected_devices(&self)'),
+              (backend, 'protocol_nonce_lane_count'),
+              (backend, 'device_indices: &[usize]'),
+              (backend, 'reverify_accelerator_hash'),
+              (backend, 'duplicate device index'),
+          ]
+          for haystack, needle in required:
+              if needle not in haystack:
+                  raise SystemExit(f"missing Phase 13 software contract: {needle}")
+
+          if 'GPU_MINING_AMD_PASS=true' in lib or 'GPU_MINING_AMD_PASS=true' in backend:
+              raise SystemExit('Phase 13 must not claim AMD physical pass')
+          if 'GPU_MINING_NVIDIA_PASS=true' in lib or 'GPU_MINING_NVIDIA_PASS=true' in backend:
+              raise SystemExit('Phase 13 must not claim NVIDIA physical pass')
+          PY
+          echo "amd_opencl_homogeneous_multidevice_software=PASS"
+          echo "amd_opencl_multigpu_hardware=NOT_CLAIMED"
+          echo "mixed_vendor_runtime=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
