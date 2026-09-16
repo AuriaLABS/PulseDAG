@@ -1,0 +1,111 @@
+name: v3 launch Task 38 reconnect foundation phase 15
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-scheduler-probe.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-reconnect-foundation-phase15.yml
+  push:
+    branches:
+      - codex/issue-1038-reconnect-foundation-phase15
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+      - apps/pulsedag-miner/src/bin/pulsedag-accelerator-scheduler-probe.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-reconnect-foundation-phase15.yml
+
+permissions:
+  contents: read
+
+jobs:
+  reconnect-foundation-contract:
+    name: reconnect foundation / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_reconnect_foundation_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Reconnect controller unit contract
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe
+
+      - name: Reconnect controller deterministic self-test
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe -- --self-test
+
+      - name: Existing scheduler regression contract
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-scheduler-probe -- --self-test
+
+      - name: Canonical nonce partition regression
+        run: cargo test --locked -p pulsedag-miner nonce_partitions_are_deterministic_disjoint_and_cover_domain
+
+      - name: Reconnect controller strict Clippy
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe -- -D warnings
+
+      - name: Audit software-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'AcceleratorControlTransition::Reconnect' apps/pulsedag-miner/src/accelerator_reconnect.rs
+          grep -q 'AcceleratorControlTransition::JobRefresh' apps/pulsedag-miner/src/accelerator_reconnect.rs
+          grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/accelerator_reconnect.rs
+          grep -q 'complete_lane(stale_before_reconnect).is_err' apps/pulsedag-miner/src/accelerator_reconnect.rs
+          grep -q 'miner_loop_integration=NOT_CLAIMED' apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+          echo 'accelerator_reconnect_foundation=PASS'
+          echo 'miner_loop_integration=NOT_CLAIMED'
+          echo 'network_transport_execution=NOT_CLAIMED'
+          echo 'physical_gpu_execution=NOT_CLAIMED'
+          echo 'GPU_MINING_AMD_PASS=NOT_CLAIMED'
+          echo 'GPU_MINING_NVIDIA_PASS=NOT_CLAIMED'
