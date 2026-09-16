@@ -6,6 +6,12 @@ use pulsedag_core::types::BlockHeader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+extern crate self as pulsedag_miner;
+
+#[cfg(feature = "gpu")]
+#[allow(dead_code)]
+#[path = "accelerator_scheduler.rs"]
+mod accelerator_scheduler_runtime;
 #[cfg(feature = "cuda")]
 pub mod cuda_driver_launch;
 #[cfg(feature = "gpu")]
