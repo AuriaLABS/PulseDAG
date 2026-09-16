@@ -1,0 +1,174 @@
+name: v3 launch Task 38 AMD OpenCL runtime phase 10
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/opencl/**"
+      - "apps/pulsedag-miner/tests/opencl_driver_launch_contract.rs"
+      - ".github/workflows/task38-amd-opencl-runtime-phase10.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/opencl/**"
+      - "apps/pulsedag-miner/tests/opencl_driver_launch_contract.rs"
+      - ".github/workflows/task38-amd-opencl-runtime-phase10.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust-runtime-contract:
+    name: rust runtime contract / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_runtime_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: OpenCL driver software contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract
+
+      - name: Strict Clippy for OpenCL driver contract
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract -- -D warnings
+
+      - name: Record software-only scope
+        shell: bash
+        run: |
+          echo "amd_opencl_runtime_contract=PASS"
+          echo "amd_opencl_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
+
+  canonical-opencl-source:
+    name: canonical OpenCL source compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_runtime_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Build exact runtime-concatenated OpenCL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("apps/pulsedag-miner/opencl")
+          shared = (root / "kheavyhash_shared.h").read_text(encoding="utf-8")
+          matrix = (root / "kheavyhash_matrix.cl").read_text(encoding="utf-8")
+          hashing = (root / "kheavyhash.cl").read_text(encoding="utf-8")
+
+          def strip_shared_include(source: str) -> str:
+              return "\n".join(
+                  line for line in source.splitlines()
+                  if line.strip() != '#include "kheavyhash_shared.h"'
+              )
+
+          program = (
+              "#define PULSEDAG_OPENCL_EMBEDDED_SHARED 1\n"
+              + shared + "\n"
+              + strip_shared_include(matrix) + "\n"
+              + strip_shared_include(hashing) + "\n"
+          )
+          Path("/tmp/pulsedag-task38-opencl-runtime.cl").write_text(program, encoding="utf-8")
+          PY
+
+          grep -q "pulsedag_generate_matrix_kernel" /tmp/pulsedag-task38-opencl-runtime.cl
+          grep -q "pulsedag_kheavyhash_kernel" /tmp/pulsedag-task38-opencl-runtime.cl
+          if grep -q '#include "kheavyhash_shared.h"' /tmp/pulsedag-task38-opencl-runtime.cl; then
+            echo "::error::runtime-concatenated source still contains unresolved shared include"
+            exit 1
+          fi
+
+      - name: Compile exact OpenCL 1.2 program
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang --version
+          clang -x cl -cl-std=CL1.2 -Dcl_khr_fp64=1 -Werror -fsyntax-only \
+            /tmp/pulsedag-task38-opencl-runtime.cl
+          echo "amd_opencl_runtime_program_compile=PASS"
+          echo "amd_opencl_fp64_rank_contract=PASS"
+          echo "amd_opencl_hardware_execution=NOT_CLAIMED"
+
+      - name: Preserve canonical matrix vector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unknown-pragmas \
+            apps/pulsedag-miner/opencl/kheavyhash_matrix_host_self_test.c \
+            -lm -o /tmp/pulsedag-opencl-matrix-selftest
+          /tmp/pulsedag-opencl-matrix-selftest
+
+      - name: Preserve canonical shared-math vectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            apps/pulsedag-miner/opencl/kheavyhash_host_self_test.c \
+            -lm -o /tmp/pulsedag-opencl-kheavyhash-selftest
+          /tmp/pulsedag-opencl-kheavyhash-selftest
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
