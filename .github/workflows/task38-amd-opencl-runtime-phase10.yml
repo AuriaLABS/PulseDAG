@@ -154,6 +154,15 @@ jobs:
           echo "amd_opencl_fp64_rank_contract=PASS"
           echo "amd_opencl_hardware_execution=NOT_CLAIMED"
 
+      - name: Preserve canonical matrix vector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unknown-pragmas \
+            apps/pulsedag-miner/opencl/kheavyhash_matrix_host_self_test.c \
+            -lm -o /tmp/pulsedag-opencl-matrix-selftest
+          /tmp/pulsedag-opencl-matrix-selftest
+
       - name: Preserve canonical shared-math vectors
         shell: bash
         run: |
