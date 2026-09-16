@@ -121,10 +121,73 @@ pub struct OpenClDeviceSelection {
 }
 
 #[cfg(feature = "gpu")]
+const OPENCL_DEVICE_LIST_ENV: &str = "PULSEDAG_MINER_GPU_DEVICES";
+
+#[cfg(feature = "gpu")]
+fn parse_opencl_device_indices(value: &str) -> Result<Vec<usize>> {
+    let mut indices = Vec::new();
+    for raw_index in value.split(',') {
+        let token = raw_index.trim();
+        if token.is_empty() {
+            return Err(anyhow!(
+                "{OPENCL_DEVICE_LIST_ENV} contains an empty device index"
+            ));
+        }
+        let index = token.parse::<usize>().map_err(|_| {
+            anyhow!("invalid OpenCL GPU device index '{token}' in {OPENCL_DEVICE_LIST_ENV}")
+        })?;
+        indices.push(index);
+    }
+    if indices.is_empty() {
+        return Err(anyhow!(
+            "{OPENCL_DEVICE_LIST_ENV} must contain at least one device index"
+        ));
+    }
+    indices.sort_unstable();
+    if indices.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(anyhow!(
+            "{OPENCL_DEVICE_LIST_ENV} contains a duplicate device index"
+        ));
+    }
+    Ok(indices)
+}
+
+#[cfg(feature = "gpu")]
+fn requested_opencl_device_indices(explicit: Option<usize>) -> Result<Option<Vec<usize>>> {
+    let env_value = std::env::var(OPENCL_DEVICE_LIST_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (explicit, env_value) {
+        (Some(_), Some(_)) => Err(anyhow!(
+            "explicit --gpu-device selection cannot be combined with {OPENCL_DEVICE_LIST_ENV}"
+        )),
+        (Some(index), None) => Ok(Some(vec![index])),
+        (None, Some(value)) => Ok(Some(parse_opencl_device_indices(&value)?)),
+        (None, None) => Ok(None),
+    }
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod gpu_device_list_tests {
+    use super::parse_opencl_device_indices;
+
+    #[test]
+    fn opencl_device_list_is_canonicalized_and_duplicates_fail_closed() {
+        assert_eq!(
+            parse_opencl_device_indices("3, 1,2").unwrap(),
+            vec![1, 2, 3]
+        );
+        assert!(parse_opencl_device_indices("1,1").is_err());
+        assert!(parse_opencl_device_indices("1,,2").is_err());
+        assert!(parse_opencl_device_indices("gpu0").is_err());
+    }
+}
+
+#[cfg(feature = "gpu")]
 #[derive(Debug, Clone)]
 pub struct GpuMiningBackend {
     config: GpuBackendConfig,
-    selected_device: OpenClDeviceSelection,
+    selected_devices: Vec<OpenClDeviceSelection>,
 }
 
 #[cfg(feature = "gpu")]
@@ -137,29 +200,39 @@ impl GpuMiningBackend {
             return Err(anyhow!("OpenCL GPU work size must be non-zero"));
         }
 
-        let selected_device = opencl::select_device(config.device_index).map_err(|err| {
-            anyhow!(
-                "OpenCL GPU backend initialization failed: {err}. Use --backend cpu to fall back to CPU mining."
-            )
-        })?;
-        opencl_driver_launch::probe_opencl_gpu(selected_device.device_index).map_err(|err| {
+        let requested_devices = requested_opencl_device_indices(config.device_index)?;
+        let selected_devices = opencl::select_devices(requested_devices.as_deref()).map_err(|err| {
+        anyhow!(
+            "OpenCL GPU backend initialization failed: {err}. Use --backend cpu to fall back to CPU mining."
+        )
+    })?;
+        if selected_devices.is_empty() {
+            return Err(anyhow!("OpenCL GPU backend selected no devices"));
+        }
+        for selected_device in &selected_devices {
+            opencl_driver_launch::probe_opencl_gpu(selected_device.device_index).map_err(|err| {
             anyhow!(
                 "OpenCL canonical runtime probe failed for GPU device index {}: {err}. Use --backend cpu to fall back to CPU mining.",
                 selected_device.device_index
             )
         })?;
+        }
+        let selected_indices = selected_devices
+            .iter()
+            .map(|device| device.device_index.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         println!(
-            "gpu_backend_opencl selected platform[{}]={} device[{}]={} batch_size={} work_size={} canonical_runtime=true hardware_equivalence=NOT_CLAIMED GPU_MINING_AMD_PASS=NOT_CLAIMED env_batch=PULSEDAG_MINER_GPU_BATCH_SIZE env_work=PULSEDAG_MINER_GPU_WORK_SIZE",
-            selected_device.platform_index,
-            selected_device.platform_name,
-            selected_device.device_index,
-            selected_device.device_name,
-            config.batch_size,
-            config.work_size,
-        );
+        "gpu_backend_opencl selected_devices={} device_indices={} batch_size={} work_size={} canonical_runtime=true homogeneous_multidevice_software=true hardware_equivalence=NOT_CLAIMED GPU_MINING_AMD_PASS=NOT_CLAIMED env_devices={} env_batch=PULSEDAG_MINER_GPU_BATCH_SIZE env_work=PULSEDAG_MINER_GPU_WORK_SIZE",
+        selected_devices.len(),
+        selected_indices,
+        config.batch_size,
+        config.work_size,
+        OPENCL_DEVICE_LIST_ENV,
+    );
         Ok(Self {
             config,
-            selected_device,
+            selected_devices,
         })
     }
 
@@ -168,7 +241,11 @@ impl GpuMiningBackend {
     }
 
     pub fn selected_device(&self) -> &OpenClDeviceSelection {
-        &self.selected_device
+        &self.selected_devices[0]
+    }
+
+    pub fn selected_devices(&self) -> &[OpenClDeviceSelection] {
+        &self.selected_devices
     }
 
     #[cfg(test)]
@@ -176,9 +253,18 @@ impl GpuMiningBackend {
         config: GpuBackendConfig,
         selected_device: OpenClDeviceSelection,
     ) -> Self {
+        Self::for_test_devices(config, vec![selected_device])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_devices(
+        config: GpuBackendConfig,
+        selected_devices: Vec<OpenClDeviceSelection>,
+    ) -> Self {
+        assert!(!selected_devices.is_empty());
         Self {
             config,
-            selected_device,
+            selected_devices,
         }
     }
 }
@@ -247,13 +333,16 @@ mod opencl {
         *mut usize,
     ) -> ClInt;
 
-    pub fn select_device(requested_device_index: Option<usize>) -> Result<OpenClDeviceSelection> {
+    pub fn select_devices(
+        requested_device_indices: Option<&[usize]>,
+    ) -> Result<Vec<OpenClDeviceSelection>> {
         let api = OpenClApi::load()?;
         let platforms = api.platforms()?;
         if platforms.is_empty() {
             return Err(anyhow!("no OpenCL platforms found"));
         }
 
+        let mut discovered = Vec::new();
         let mut global_device_index = 0usize;
         for (platform_index, platform) in platforms.iter().copied().enumerate() {
             let platform_name = api
@@ -261,30 +350,50 @@ mod opencl {
                 .unwrap_or_else(|_| "<unknown platform>".to_string());
             let devices = api.gpu_devices(platform)?;
             for (platform_device_index, device) in devices.iter().copied().enumerate() {
-                if requested_device_index.is_none_or(|idx| idx == global_device_index) {
-                    let device_name = api
-                        .device_info_string(device, CL_DEVICE_NAME)
-                        .unwrap_or_else(|_| "<unknown GPU device>".to_string());
-                    return Ok(OpenClDeviceSelection {
-                        platform_index,
-                        device_index: global_device_index,
-                        platform_name,
-                        device_name: format!(
-                            "{} (platform_device_index={})",
-                            device_name, platform_device_index
-                        ),
-                    });
-                }
+                let device_name = api
+                    .device_info_string(device, CL_DEVICE_NAME)
+                    .unwrap_or_else(|_| "<unknown GPU device>".to_string());
+                discovered.push(OpenClDeviceSelection {
+                    platform_index,
+                    device_index: global_device_index,
+                    platform_name: platform_name.clone(),
+                    device_name: format!(
+                        "{} (platform_device_index={})",
+                        device_name, platform_device_index
+                    ),
+                });
                 global_device_index = global_device_index.saturating_add(1);
             }
         }
 
-        match requested_device_index {
-            Some(index) => Err(anyhow!(
-                "OpenCL GPU device index {index} was not found; discovered {global_device_index} GPU device(s)"
-            )),
-            None => Err(anyhow!("no OpenCL GPU devices found")),
+        if discovered.is_empty() {
+            return Err(anyhow!("no OpenCL GPU devices found"));
         }
+
+        let Some(requested_device_indices) = requested_device_indices else {
+            return Ok(vec![discovered.remove(0)]);
+        };
+        if requested_device_indices.is_empty() {
+            return Err(anyhow!("OpenCL GPU device selection must not be empty"));
+        }
+
+        let mut canonical_indices = requested_device_indices.to_vec();
+        canonical_indices.sort_unstable();
+        if canonical_indices.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(anyhow!("OpenCL GPU device selection contains duplicates"));
+        }
+
+        let discovered_count = discovered.len();
+        canonical_indices
+        .into_iter()
+        .map(|index| {
+            discovered.get(index).cloned().ok_or_else(|| {
+                anyhow!(
+                    "OpenCL GPU device index {index} was not found; discovered {discovered_count} GPU device(s)"
+                )
+            })
+        })
+        .collect()
     }
 
     fn opencl_library_candidates(override_name: Option<String>) -> Vec<String> {
