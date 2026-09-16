@@ -1,0 +1,49 @@
+name: Phase 10 OpenCL FFI fix
+
+on:
+  push:
+    branches:
+      - automation/phase10-opencl-ffi-fix
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Phase 10 branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1038-amd-opencl-runtime-phase10
+          fetch-depth: 0
+
+      - name: Patch clGetProgramBuildInfo value call
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("apps/pulsedag-miner/src/opencl_driver_launch.rs")
+          text = path.read_text(encoding="utf-8")
+          old = '''                buffer.as_mut_ptr().cast::<c_void>(),
+                std::ptr::null_mut(),
+                &mut size,
+'''
+          new = '''                buffer.as_mut_ptr().cast::<c_void>(),
+                std::ptr::null_mut(),
+'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"expected exactly one FFI call match, found {count}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+      - name: Commit exact fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- apps/pulsedag-miner/src/opencl_driver_launch.rs
+          git commit -m "fix: correct OpenCL program build log FFI call"
+          git push origin HEAD:codex/issue-1038-amd-opencl-runtime-phase10
