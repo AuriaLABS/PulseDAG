@@ -12,6 +12,7 @@ It deliberately does **not** activate the existing `--backend gpu` path yet.
 - deterministic global GPU selection by device index;
 - checked buffer/work-size arithmetic;
 - fail-closed program build, launch, readback and successful-path cleanup handling;
+- exact OpenCL 1.2 `clGetProgramBuildInfo` call shape is compile-checked on Linux and Windows; the build-log value-read path follows the six-argument API contract without an extra size pointer;
 - runtime source assembled from the exact phase-9 shared math plus matrix/hash kernels;
 - Linux/Windows Rust contract CI and OpenCL 1.2 source compilation without physical GPU hardware.
 
