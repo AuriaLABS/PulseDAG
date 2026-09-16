@@ -1,0 +1,194 @@
+name: v3 launch Task 38 no GPU consensus shortcut phase 8
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - crates/pulsedag-storage/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedagd/**
+      - scripts/verify_task38_no_gpu_consensus_shortcut.py
+      - scripts/verify_task38_consensus_enforcement.py
+      - .github/workflows/task38-no-gpu-consensus-shortcut-phase8.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/**
+      - crates/pulsedag-storage/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedagd/**
+      - scripts/verify_task38_no_gpu_consensus_shortcut.py
+      - scripts/verify_task38_consensus_enforcement.py
+      - .github/workflows/task38-no-gpu-consensus-shortcut-phase8.yml
+
+permissions:
+  contents: read
+
+jobs:
+  consensus-accelerator-independence:
+    name: consensus-accelerator-independence (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_no_gpu_consensus_shortcut_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Static consensus accelerator-independence audit
+        run: python scripts/verify_task38_no_gpu_consensus_shortcut.py
+
+      - name: Consensus rejection and vendor/runtime enforcement audit
+        run: python scripts/verify_task38_consensus_enforcement.py
+
+      - name: Exact audited item identity contract
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import re
+
+          root = Path.cwd()
+          audit_path = root / "scripts" / "verify_task38_no_gpu_consensus_shortcut.py"
+          spec = importlib.util.spec_from_file_location("task38_primary_audit", audit_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("unable to load primary Task38 audit module")
+          audit = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(audit)
+
+          validation = audit.rust_structural_code(
+              (root / "crates" / "pulsedag-core" / "src" / "validation.rs").read_text(
+                  encoding="utf-8"
+              )
+          )
+          types = audit.rust_structural_code(
+              (root / "crates" / "pulsedag-core" / "src" / "types.rs").read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          contracts = (
+              (validation, "fn", "validate_block"),
+              (types, "struct", "BlockHeader"),
+              (types, "fn", "canonical_block_header_bytes"),
+          )
+          for source, kind, name in contracts:
+              escaped = re.escape(name)
+              if kind == "fn":
+                  exact_pattern = rf"(?m)^\s*pub\s+fn\s+{escaped}\s*\("
+                  masquerade_pattern = (
+                      rf"(?m)^\s*pub\s+fn\s+({escaped}[A-Za-z0-9_]+)\s*\("
+                  )
+              else:
+                  exact_pattern = rf"(?m)^\s*pub\s+struct\s+{escaped}\s*\{{"
+                  masquerade_pattern = (
+                      rf"(?m)^\s*pub\s+struct\s+({escaped}[A-Za-z0-9_]+)\s*\{{"
+                  )
+
+              exact = re.findall(exact_pattern, source)
+              masquerades = re.findall(masquerade_pattern, source)
+              if len(exact) != 1:
+                  raise SystemExit(
+                      f"expected exactly one public {kind} {name}, found {len(exact)}"
+                  )
+              if masquerades:
+                  raise SystemExit(
+                      f"{name}-prefixed public {kind}(s) could shadow structural audit: "
+                      + ", ".join(masquerades)
+                  )
+
+          print("audited_item_exact_identity=PASS")
+          PY
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Node dependency graph excludes standalone miner
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p pulsedagd -e normal,build > task38-node-tree.txt
+          if grep -Eiq 'pulsedag[-_]miner' task38-node-tree.txt; then
+            echo 'pulsedagd dependency graph unexpectedly contains pulsedag-miner' >&2
+            cat task38-node-tree.txt >&2
+            exit 1
+          fi
+
+      - name: Core dependency graph excludes standalone miner
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p pulsedag-core -e normal,build > task38-core-tree.txt
+          if grep -Eiq 'pulsedag[-_]miner' task38-core-tree.txt; then
+            echo 'pulsedag-core dependency graph unexpectedly contains pulsedag-miner' >&2
+            cat task38-core-tree.txt >&2
+            exit 1
+          fi
+
+      - name: Canonical miner/node PoW agreement regressions
+        run: cargo test --locked -p pulsedag-core --test pow_miner_node_agreement
+
+      - name: Canonical PoW vector regressions
+        run: cargo test --locked -p pulsedag-core --test pow_v2_2_10_vectors --test pow_official_vectors
+
+      - name: Core validation rejection regressions
+        run: |
+          cargo test --locked -p pulsedag-core validation::tests::validate_block_rejects_lower_than_expected_difficulty -- --exact
+          cargo test --locked -p pulsedag-core validation::tests::validate_block_rejects_stale_template_difficulty -- --exact
+
+      - name: Core and node strict Clippy
+        run: cargo clippy --locked -p pulsedag-core -p pulsedagd --all-targets -- -D warnings
+
+      - name: Record software-only scope
+        run: |
+          echo "node_consensus_accelerator_independent=PASS"
+          echo "canonical_pow_validation_authority=PASS"
+          echo "consensus_difficulty_rejection_propagated=PASS"
+          echo "canonical_pow_rejection_propagated=PASS"
+          echo "audited_item_exact_identity=PASS"
+          echo "node_miner_dependency_absent=PASS"
+          echo "consensus_header_backend_discriminator_absent=PASS"
+          echo "gpu_vendor_runtime_alias_contract=PASS"
+          echo "physical_gpu_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
