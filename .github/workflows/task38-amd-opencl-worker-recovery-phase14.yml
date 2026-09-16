@@ -1,0 +1,79 @@
+name: v3 launch Task 38 AMD OpenCL worker recovery phase 14
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/lib.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - "apps/pulsedag-miner/src/accelerator_scheduler.rs"
+      - ".github/workflows/task38-amd-opencl-worker-recovery-phase14.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  worker-recovery-software-contract:
+    name: worker recovery software contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify exact candidate SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify OpenCL worker recovery contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu --lib opencl_backend::tests
+
+      - name: Verify scheduler regression contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu --lib accelerator_scheduler_runtime::tests
+
+      - name: Preserve OpenCL driver contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract
+
+      - name: Strict GPU Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --all-targets -- -D warnings
+
+      - name: Audit worker isolation and non-claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'AcceleratorSchedule::build' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'recover_unavailable_workers' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'mark_unavailable' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'failed_worker_is_isolated_replays_batch_and_recovers_next_job' apps/pulsedag-miner/src/opencl_backend.rs
+          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs
+          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs
+          echo 'opencl_worker_isolation_software=PASS'
+          echo 'opencl_worker_recovery_software=PASS'
+          echo 'physical_device_recovery=NOT_CLAIMED'
+          echo 'long_duration_soak=NOT_CLAIMED'
+          echo 'GPU_MINING_AMD_PASS=NOT_CLAIMED'
+          echo 'GPU_MINING_NVIDIA_PASS=NOT_CLAIMED'

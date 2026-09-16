@@ -99,7 +99,8 @@ jobs:
           set -euo pipefail
           grep -q "reverify_accelerator_hash" apps/pulsedag-miner/src/opencl_backend.rs
           grep -q "compare_pow_hash_to_target" apps/pulsedag-miner/src/opencl_backend.rs
-          grep -q "protocol_nonce_partition" apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q "AcceleratorSchedule::build" apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q "partition.nonce_at" apps/pulsedag-miner/src/opencl_backend.rs
           if grep -q "GPU_MINING_AMD_PASS=true" apps/pulsedag-miner/src/opencl_backend.rs; then
             echo "::error::software-only wiring must not claim physical AMD PASS"
             exit 1
