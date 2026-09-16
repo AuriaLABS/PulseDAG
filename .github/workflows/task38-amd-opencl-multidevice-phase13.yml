@@ -82,8 +82,9 @@ jobs:
               (lib, 'PULSEDAG_MINER_GPU_DEVICES'),
               (lib, 'selected_devices: Vec<OpenClDeviceSelection>'),
               (lib, 'pub fn selected_devices(&self)'),
-              (backend, 'protocol_nonce_lane_count'),
-              (backend, 'device_indices: &[usize]'),
+              (backend, 'AcceleratorSchedule::build'),
+              (backend, 'partition.nonce_at'),
+              (backend, 'device_indices'),
               (backend, 'reverify_accelerator_hash'),
               (backend, 'duplicate device index'),
           ]
