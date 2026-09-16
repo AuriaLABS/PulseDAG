@@ -1,0 +1,110 @@
+name: v3 launch Task 38 AMD OpenCL discovery phase 12
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/lib.rs"
+      - "apps/pulsedag-miner/src/main.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - ".github/workflows/task38-amd-opencl-discovery-phase12.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  discovery-contract:
+    name: OpenCL discovery/CLI contract / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_discovery_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: OpenCL discovery unit contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu --lib opencl::tests
+
+      - name: CLI canonical OpenCL description contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --bin pulsedag-miner usage_describes_canonical_opencl_and_explicit_cuda_backends
+
+      - name: Preserve OpenCL driver software contract
+        run: cargo test --locked -p pulsedag-miner --features gpu --test opencl_driver_launch_contract
+
+      - name: Strict Clippy for GPU feature
+        run: cargo clippy --locked -p pulsedag-miner --features gpu --all-targets -- -D warnings
+
+      - name: Audit discovery ABI and fail-closed semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path("apps/pulsedag-miner/src/lib.rs").read_text()
+          start = lib.index('#[cfg(feature = "gpu")]\nmod opencl {')
+          end = lib.index('\npub fn miner_pow_preimage_bytes', start)
+          module = lib[start:end]
+          main = Path("apps/pulsedag-miner/src/main.rs").read_text()
+
+          required = [
+              'type ClBitfield = u64;',
+              'type ClDeviceType = ClBitfield;',
+              'unsafe extern "system" fn',
+              'opencl_driver_launch::OPENCL_LIBRARY_ENV',
+              'CL_DEVICE_NOT_FOUND',
+              'device_count_status_is_available(status)?',
+              'ensure_opencl_success(status, "clGetDeviceIDs(count)")?',
+          ]
+          for needle in required:
+              if needle not in module:
+                  raise SystemExit(f"missing discovery contract: {needle}")
+
+          if 'c_ulong' in module:
+              raise SystemExit('OpenCL discovery must not use platform-width c_ulong for cl_device_type')
+          if 'unsafe extern "C" fn' in module:
+              raise SystemExit('OpenCL discovery must use extern system ABI')
+          if 'OpenCL scaffold' in main or 'not implemented yet' in main:
+              raise SystemExit('CLI still contains stale OpenCL scaffold/not-implemented language')
+          if 'canonical OpenCL kHeavyHash backend' not in main:
+              raise SystemExit('CLI does not describe canonical OpenCL backend')
+          PY
+          echo "amd_opencl_discovery_software_contract=PASS"
+          echo "amd_opencl_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
