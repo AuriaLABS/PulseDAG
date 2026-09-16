@@ -1,5 +1,6 @@
 #[path = "../accelerator_reconnect.rs"]
 mod accelerator_reconnect;
+#[allow(dead_code)]
 #[path = "../accelerator_scheduler.rs"]
 mod accelerator_scheduler;
 
