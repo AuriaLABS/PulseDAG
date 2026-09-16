@@ -20,22 +20,25 @@ jobs:
           fetch-depth: 0
 
       - name: Patch clGetProgramBuildInfo value call
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 - <<'PY'
           from pathlib import Path
           path = Path("apps/pulsedag-miner/src/opencl_driver_launch.rs")
           text = path.read_text(encoding="utf-8")
-          old = '''                buffer.as_mut_ptr().cast::<c_void>(),
-                std::ptr::null_mut(),
-                &mut size,
-'''
-          new = '''                buffer.as_mut_ptr().cast::<c_void>(),
-                std::ptr::null_mut(),
-'''
+          old = """                buffer.as_mut_ptr().cast::<c_void>(),
+                          std::ptr::null_mut(),
+                          &mut size,
+          """
+          new = """                buffer.as_mut_ptr().cast::<c_void>(),
+                          std::ptr::null_mut(),
+          """
           count = text.count(old)
           if count != 1:
               raise SystemExit(f"expected exactly one FFI call match, found {count}")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
 
       - name: Commit exact fix
         shell: bash
