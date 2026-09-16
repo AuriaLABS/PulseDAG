@@ -1,7 +1,7 @@
 # v2.4.0 god-file split plan (#1130)
 
-Status: **planning only**. Does not change consensus, P2P wire, or Task31 identity.
-Does not authorize a public-testnet GO.
+Status: **planning + test-module inventory**. Does not change consensus, P2P wire,
+or Task31 identity. Does not authorize a public-testnet GO.
 
 ## Why this is P2
 
@@ -12,33 +12,37 @@ closed. Clippy `--all-targets -D warnings` still requires the remaining
 
 ## Snapshot on current `main`
 
-Approximate sizes (blob bytes):
+`crates/pulsedag-p2p/src/lib.rs` is still **11,406 lines / ~459 KiB**.
+Message codecs already live under `messages/`. Live sync files are already
+extracted.
 
-| Path | Bytes | Notes |
-|---|---:|---|
-| `crates/pulsedag-p2p/src/lib.rs` | ~459 KiB | Still the swarm/runtime god-file |
-| `crates/pulsedag-p2p/src/messages/` | extracted | Capability, DAG sync, fast-sync, wire limits |
-| `live_fast_sync_v1.rs` | ~19 KiB | Already out of `lib.rs` |
-| `live_protocol_sync_v1.rs` | ~19 KiB | Already out of `lib.rs` |
-| `runtime.rs` | ~1.3 KiB | Thin |
-| `apps/pulsedagd/src/main.rs` | large | Node orchestration |
-| `apps/pulsedagd/src/block_request.rs` | ~1.7k lines | Allows stay until helpers are `#[cfg(test)]` *and* clippy-clean |
+## `#[cfg(test)]` modules still inside `lib.rs`
 
-The original "11,406 lines all in one file" finding is **partially stale**:
-message codecs already live under `messages/`.
+Counted 2026-09-16 against `main`:
+
+| Line | Module | First peel? |
+|---:|---|---|
+| 4241 | `protocol_block_hash_tests` | **Yes** — ~90 lines, three tests, no swarm |
+| 6966 | `tests` | No — large topology/inbound suite |
+| 8902 | (next `cfg(test)` block) | No — after the big `tests` module |
+| 9586 | (next `cfg(test)` block) | No |
+| 11218 | (last `cfg(test)` block) | No |
+
+Do **not** move all five in one PR. The GitHub contents API cannot rewrite
+`lib.rs` as a single blob safely; use a one-shot `git apply` workflow like
+`#1153`, and only for `protocol_block_hash_tests` first.
+
+Proposed destination: `crates/pulsedag-p2p/src/protocol_block_hash_tests.rs`
+with `#[cfg(test)] mod protocol_block_hash_tests;` left in `lib.rs`.
 
 ## Allowed split order
 
-One concern per PR. No wire/`codec_id` change. No Kaspa bump.
-
-1. **Inventory only** (this document).
-2. Move `#[cfg(test)]` modules out of `pulsedag-p2p/src/lib.rs` into
-   `src/tests_*.rs` or `tests/` **without** changing production items.
-3. Peel identity / peer-score / dial tables from `lib.rs` if they are already
-   sectioned by comments.
-4. Peel swarm event loop last.
-5. Repeat for `pulsedagd` `main.rs` (config and request paths already have
-   sibling files).
+1. Inventory (this document).
+2. Move `protocol_block_hash_tests` only.
+3. Move remaining `cfg(test)` blocks one at a time.
+4. Peel identity / peer-score / dial tables.
+5. Peel swarm event loop last.
+6. Repeat for `pulsedagd` `main.rs`.
 
 ## Explicit non-goals
 
