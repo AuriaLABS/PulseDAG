@@ -1,0 +1,135 @@
+name: v3 launch Task 38 AMD OpenCL equivalence phase 9
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/opencl/**"
+      - "fixtures/pow/v2_2_10_official_vectors.json"
+      - ".github/workflows/task38-amd-opencl-equivalence-phase9.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/pulsedag-core/**"
+      - "apps/pulsedag-miner/opencl/**"
+      - "fixtures/pow/v2_2_10_official_vectors.json"
+      - ".github/workflows/task38-amd-opencl-equivalence-phase9.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-vector-contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: Canonical pre-PoW and kHeavyHash vectors
+        run: cargo test --locked -p pulsedag-core --test pow_v2_2_10_vectors
+
+  amd-opencl-compile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Record exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_amd_opencl_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Bind OpenCL self-test vectors to canonical fixture
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          fixture = json.loads(
+              Path("fixtures/pow/v2_2_10_official_vectors.json").read_text(encoding="utf-8")
+          )
+          source = Path(
+              "apps/pulsedag-miner/opencl/kheavyhash_host_self_test.c"
+          ).read_text(encoding="utf-8")
+          matches = re.findall(
+              r'pd_check_vector\(\s*"([^"]+)"\s*,\s*"([0-9a-f]{64})"\s*,'
+              r'\s*PD_U64_C\((\d+)\)\s*,\s*"([0-9a-f]{64})"\s*\)',
+              source,
+              re.DOTALL,
+          )
+          actual = [(name, pre, int(nonce), final) for name, pre, nonce, final in matches]
+          expected = [
+              (
+                  vector["id"],
+                  vector["pre_pow_hash"],
+                  int(vector["header"]["nonce"]),
+                  vector["pow_hash"],
+              )
+              for vector in fixture["vectors"]
+          ]
+          if actual != expected:
+              raise SystemExit(
+                  f"OpenCL self-test vectors drifted from canonical fixture: "
+                  f"actual={actual!r} expected={expected!r}"
+              )
+          print(f"amd_opencl_fixture_binding={len(actual)}/{len(expected)} PASS")
+          PY
+
+      - name: Compile OpenCL kernel source
+        run: |
+          set -euo pipefail
+          clang --version
+          clang -x cl -cl-std=CL1.2 -Werror -fsyntax-only \
+            apps/pulsedag-miner/opencl/kheavyhash.cl
+          echo "amd_opencl_kernel_compile=PASS"
+
+      - name: Execute shared-math golden vectors without GPU hardware
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            apps/pulsedag-miner/opencl/kheavyhash_host_self_test.c \
+            -lm -o /tmp/pulsedag-opencl-kheavyhash-selftest
+          /tmp/pulsedag-opencl-kheavyhash-selftest
+          echo "amd_opencl_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
