@@ -174,9 +174,6 @@ pub fn launch_kheavyhash_batch(
     if work_size == 0 {
         return Err(anyhow!("OpenCL work size must be non-zero"));
     }
-    if pre_pow_hash == [0; HASH_BYTES] {
-        return Err(anyhow!("OpenCL pre_pow_hash must not be all-zero"));
-    }
 
     let nonce_bytes = nonces
         .len()
@@ -494,6 +491,7 @@ fn program_build_log(api: &OpenClApi, program: ClProgram, device: ClDeviceId) ->
                 buffer.len(),
                 buffer.as_mut_ptr().cast::<c_void>(),
                 std::ptr::null_mut(),
+                &mut size,
             )
         },
         "clGetProgramBuildInfo(value)",
