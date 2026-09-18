@@ -894,19 +894,20 @@ fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefresh
     LoopRefreshDecision::RefreshWork
 }
 
-async fn mine_once(
+async fn acquire_template_and_runtime_job(
     client: &Client,
     cfg: &Config,
-    backend: Arc<dyn RuntimeMiningBackend>,
-    telemetry: &mut MinerTelemetry,
     mut loop_control: Option<&mut LoopControlState>,
-) -> Result<MineOnceOutcome> {
+) -> Result<(
+    TemplateData,
+    Option<ProtocolActivationIdentity>,
+    Option<AcceleratorRuntimeJob>,
+)> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
-    let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
-
     let template_request = client.post(&template_url).json(&TemplateRequest {
         miner_address: cfg.miner_address.clone(),
     });
+
     let template_resp = match template_request.send().await {
         Ok(response) => response,
         Err(err) => {
@@ -919,6 +920,7 @@ async fn mine_once(
         }
     }
     .error_for_status()?;
+
     let template_api: ApiResponse<TemplateData> = match template_resp.json().await {
         Ok(template_api) => template_api,
         Err(err) => {
@@ -939,21 +941,37 @@ async fn mine_once(
         template.protocol_identity.as_ref(),
         template.protocol_identity_fingerprint.as_deref(),
     )?;
-    let runtime_job = if let Some(control) = loop_control.as_deref_mut() {
+
+    let runtime_job = if let Some(control) = loop_control {
         let runtime_job = control.on_work_acquired(cfg.max_tries)?;
         if let Some(job) = runtime_job {
             println!(
-            "accelerator_loop_control template_id={} transition={:?} generation={} reconnect_epoch={}",
-            template.template_id,
-            job.transition,
-            job.generation,
-            job.reconnect_epoch
-        );
+                "accelerator_loop_control template_id={} transition={:?} generation={} reconnect_epoch={}",
+                template.template_id,
+                job.transition,
+                job.generation,
+                job.reconnect_epoch
+            );
         }
         runtime_job
     } else {
         None
     };
+
+    Ok((template, protocol_identity, runtime_job))
+}
+
+async fn mine_once(
+    client: &Client,
+    cfg: &Config,
+    backend: Arc<dyn RuntimeMiningBackend>,
+    telemetry: &mut MinerTelemetry,
+    mut loop_control: Option<&mut LoopControlState>,
+) -> Result<MineOnceOutcome> {
+    let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
+
+    let (template, protocol_identity, runtime_job) =
+        acquire_template_and_runtime_job(client, cfg, loop_control.as_deref_mut()).await?;
     let protocol_identity_fingerprint = template.protocol_identity_fingerprint.clone();
     let template_id = template.template_id;
     let mut block = template.block;
@@ -1263,14 +1281,16 @@ async fn mine_header_with_backend(
 mod tests {
     use super::AcceleratorDeviceKey;
     use super::{
-        apply_mined_header, default_worker_id, evaluate_template_freshness,
-        loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
-        should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
-        Config, LoopControlState, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry,
-        SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
+        acquire_template_and_runtime_job, apply_mined_header, default_worker_id,
+        evaluate_template_freshness, loop_refresh_decision_after_outcome, mining_backend,
+        parse_args_from, should_skip_stale_submit, submit_rejection_action, usage, BackendKind,
+        Block, BlockHeader, Config, LoopControlState, LoopRefreshDecision, MineOnceOutcome,
+        MinerTelemetry, SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
     use std::path::Path;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn telemetry_test_config() -> Config {
         Config {
@@ -1728,6 +1748,239 @@ mod tests {
         assert!(action.contains("hard warning"));
         assert!(action.contains("backend/canonical mismatch"));
         assert!(action.contains("discard nonce/header"));
+    }
+
+    #[derive(Debug, Clone)]
+    enum TemplateLoopbackStep {
+        Healthy(&'static str),
+        Disconnect,
+        HttpStatus(u16),
+    }
+
+    fn loopback_template_body(template_id: &str) -> String {
+        serde_json::json!({
+            "ok": true,
+            "data": {
+                "protocol_version": 1,
+                "algorithm": "kHeavyHash",
+                "template_id": template_id,
+                "created_at_unix": 1,
+                "expires_at_unix": 4_000_000_000u64,
+                "freshness_ttl_secs": 60,
+                "freshness_grace_secs": 5,
+                "protocol_identity": null,
+                "protocol_identity_fingerprint": null,
+                "block": {
+                    "header": {
+                        "version": 1,
+                        "parents": ["p"],
+                        "timestamp": 1,
+                        "nonce": 0,
+                        "difficulty": 1,
+                        "merkle_root": "m",
+                        "state_root": "s",
+                        "blue_score": 1,
+                        "height": 1
+                    },
+                    "transactions": [],
+                    "hash": "h"
+                },
+                "target_hex": "01",
+                "compact_target": 1
+            },
+            "error": null,
+            "meta": {}
+        })
+        .to_string()
+    }
+
+    async fn spawn_template_loopback(steps: Vec<TemplateLoopbackStep>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("loopback address must resolve");
+
+        tokio::spawn(async move {
+            for step in steps {
+                let (mut socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("scripted loopback connection must arrive");
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 1024];
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("loopback request must be readable");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(
+                        request.len() < 16 * 1024,
+                        "loopback request headers exceeded test bound"
+                    );
+                }
+                let request = String::from_utf8_lossy(&request);
+                assert!(
+                    request.starts_with("POST /mining/template "),
+                    "unexpected loopback request line: {request}"
+                );
+
+                match step {
+                    TemplateLoopbackStep::Healthy(template_id) => {
+                        let body = loopback_template_body(template_id);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        socket
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("healthy loopback response must write");
+                        socket
+                            .shutdown()
+                            .await
+                            .expect("healthy loopback response must close");
+                    }
+                    TemplateLoopbackStep::Disconnect => {
+                        drop(socket);
+                    }
+                    TemplateLoopbackStep::HttpStatus(status) => {
+                        let body = "{}";
+                        let response = format!(
+                            "HTTP/1.1 {status} Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        socket
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("HTTP error loopback response must write");
+                        socket
+                            .shutdown()
+                            .await
+                            .expect("HTTP error loopback response must close");
+                    }
+                }
+            }
+        });
+
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn phase17_loopback_template_disconnect_recovery_has_exact_reconnect_semantics() {
+        let node = spawn_template_loopback(vec![
+            TemplateLoopbackStep::Healthy("tpl-initial"),
+            TemplateLoopbackStep::Disconnect,
+            TemplateLoopbackStep::Disconnect,
+            TemplateLoopbackStep::Healthy("tpl-recovered"),
+            TemplateLoopbackStep::Healthy("tpl-refresh"),
+            TemplateLoopbackStep::HttpStatus(503),
+            TemplateLoopbackStep::Healthy("tpl-after-http-error"),
+        ])
+        .await;
+        let cfg = Config {
+            node,
+            heartbeat: false,
+            max_tries: 8,
+            ..telemetry_test_config()
+        };
+        let client = reqwest::Client::builder()
+            .build()
+            .expect("loopback client must build");
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::cuda(0)], cfg.max_tries)
+            .expect("loop control must build");
+
+        let (initial, initial_identity, initial_job) =
+            acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+                .await
+                .expect("initial template acquisition must succeed");
+        assert!(initial_identity.is_none());
+        let initial_job = initial_job.expect("accelerator runtime job must exist");
+        assert_eq!(initial.template_id, "tpl-initial");
+        assert_eq!(initial_job.transition, None);
+        assert_eq!(initial_job.generation, 0);
+        assert_eq!(initial_job.reconnect_epoch, 0);
+        assert!(!state.reconnect_pending);
+
+        for _ in 0..2 {
+            let err = acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+                .await
+                .expect_err("scripted TCP disconnect must fail acquisition");
+            assert!(
+                err.to_string()
+                    .contains("template request failed before HTTP response"),
+                "unexpected disconnect error: {err:#}"
+            );
+            assert!(state.reconnect_pending);
+        }
+
+        let (recovered, recovered_identity, recovered_job) =
+            acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+                .await
+                .expect("recovery template acquisition must succeed");
+        assert!(recovered_identity.is_none());
+        let recovered_job = recovered_job.expect("accelerator runtime job must exist");
+        assert_eq!(recovered.template_id, "tpl-recovered");
+        assert_eq!(
+            recovered_job.transition,
+            Some(super::AcceleratorControlTransition::Reconnect { max_tries: 8 })
+        );
+        assert_eq!(recovered_job.generation, 1);
+        assert_eq!(recovered_job.reconnect_epoch, 1);
+        assert!(!state.reconnect_pending);
+
+        let (refreshed, refreshed_identity, refreshed_job) =
+            acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+                .await
+                .expect("healthy refresh acquisition must succeed");
+        assert!(refreshed_identity.is_none());
+        let refreshed_job = refreshed_job.expect("accelerator runtime job must exist");
+        assert_eq!(refreshed.template_id, "tpl-refresh");
+        assert_eq!(
+            refreshed_job.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(refreshed_job.generation, 2);
+        assert_eq!(refreshed_job.reconnect_epoch, 1);
+        assert!(!state.reconnect_pending);
+
+        let http_err = acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+            .await
+            .expect_err("HTTP application failure must fail acquisition");
+        assert!(
+            http_err.to_string().contains("503"),
+            "unexpected HTTP status error: {http_err:#}"
+        );
+        assert!(
+            !state.reconnect_pending,
+            "HTTP application status must not synthesize reconnect"
+        );
+
+        let (after_http_error, after_http_error_identity, after_http_error_job) =
+            acquire_template_and_runtime_job(&client, &cfg, Some(&mut state))
+                .await
+                .expect("healthy acquisition after HTTP application error must succeed");
+        assert!(after_http_error_identity.is_none());
+        let after_http_error_job =
+            after_http_error_job.expect("accelerator runtime job must exist");
+        assert_eq!(after_http_error.template_id, "tpl-after-http-error");
+        assert_eq!(
+            after_http_error_job.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(after_http_error_job.generation, 3);
+        assert_eq!(after_http_error_job.reconnect_epoch, 1);
+        assert!(!state.reconnect_pending);
     }
 
     #[test]
