@@ -1,8 +1,16 @@
+#[allow(dead_code)]
+#[path = "accelerator_reconnect.rs"]
+mod accelerator_reconnect;
+#[allow(dead_code)]
+#[path = "accelerator_scheduler.rs"]
+mod accelerator_scheduler;
 #[cfg(feature = "cuda")]
 mod cuda_backend;
 mod submit_finality;
 mod template_protocol;
 
+use accelerator_reconnect::{AcceleratorControlTransition, AcceleratorReconnectController};
+use accelerator_scheduler::AcceleratorDeviceKey;
 use anyhow::{anyhow, Context, Result};
 #[cfg(feature = "cuda")]
 use cuda_backend::{CudaBackendConfig, CudaMiningBackend};
@@ -31,6 +39,139 @@ use tokio::time::{sleep, Duration};
 
 trait RuntimeMiningBackend: MiningBackend + ProtocolMiningBackend {}
 impl<T> RuntimeMiningBackend for T where T: MiningBackend + ProtocolMiningBackend {}
+
+struct RuntimeBackendSelection {
+    backend: Arc<dyn RuntimeMiningBackend>,
+    accelerator_devices: Vec<AcceleratorDeviceKey>,
+}
+
+impl RuntimeBackendSelection {
+    fn cpu() -> Self {
+        Self {
+            backend: Arc::new(CpuMiningBackend),
+            accelerator_devices: Vec::new(),
+        }
+    }
+}
+
+impl std::ops::Deref for RuntimeBackendSelection {
+    type Target = dyn RuntimeMiningBackend;
+
+    fn deref(&self) -> &Self::Target {
+        self.backend.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AcceleratorRuntimeJob {
+    transition: Option<AcceleratorControlTransition>,
+    generation: u64,
+    reconnect_epoch: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LoopControlState {
+    accelerator: Option<AcceleratorReconnectController>,
+    has_successful_work: bool,
+    reconnect_pending: bool,
+}
+
+impl LoopControlState {
+    fn new(devices: &[AcceleratorDeviceKey], max_tries: u64) -> Result<Self> {
+        let accelerator = if devices.is_empty() {
+            None
+        } else {
+            Some(AcceleratorReconnectController::build(
+                devices,
+                max_tries.max(1),
+            )?)
+        };
+        Ok(Self {
+            accelerator,
+            has_successful_work: false,
+            reconnect_pending: false,
+        })
+    }
+
+    fn note_template_transport_failure(&mut self) {
+        if self.accelerator.is_some() && self.has_successful_work {
+            self.reconnect_pending = true;
+        }
+    }
+
+    fn on_work_acquired(&mut self, max_tries: u64) -> Result<Option<AcceleratorRuntimeJob>> {
+        let Some(current) = self.accelerator.as_ref() else {
+            self.reconnect_pending = false;
+            return Ok(None);
+        };
+
+        let transition = if !self.has_successful_work {
+            None
+        } else if self.reconnect_pending {
+            Some(AcceleratorControlTransition::Reconnect {
+                max_tries: max_tries.max(1),
+            })
+        } else {
+            Some(AcceleratorControlTransition::JobRefresh {
+                max_tries: max_tries.max(1),
+            })
+        };
+
+        if let Some(transition) = transition {
+            self.accelerator = Some(current.apply(transition)?);
+        }
+        self.has_successful_work = true;
+        self.reconnect_pending = false;
+
+        let controller = self
+            .accelerator
+            .as_ref()
+            .expect("accelerator runtime job requires controller state");
+        Ok(Some(AcceleratorRuntimeJob {
+            transition,
+            generation: controller.schedule().generation(),
+            reconnect_epoch: controller.reconnect_epoch(),
+        }))
+    }
+
+    fn validate_job_identity(&self, job: Option<AcceleratorRuntimeJob>) -> Result<()> {
+        match (self.accelerator.as_ref(), job) {
+            (None, None) => Ok(()),
+            (Some(controller), Some(job)) => {
+                if controller.schedule().generation() != job.generation
+                    || controller.reconnect_epoch() != job.reconnect_epoch
+                {
+                    return Err(anyhow!(
+              "stale accelerator runtime job identity: job generation={} reconnect_epoch={} current generation={} reconnect_epoch={}",
+              job.generation,
+              job.reconnect_epoch,
+              controller.schedule().generation(),
+              controller.reconnect_epoch()
+          ));
+                }
+                Ok(())
+            }
+            (None, Some(_)) => Err(anyhow!(
+                "accelerator runtime job identity exists without accelerator controller"
+            )),
+            (Some(_), None) => Err(anyhow!(
+                "accelerator controller requires a runtime job identity before submit"
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    fn accelerator_mut(&mut self) -> Option<&mut AcceleratorReconnectController> {
+        self.accelerator.as_mut()
+    }
+}
+
+fn is_template_transport_error(error: &reqwest::Error) -> bool {
+    !error.is_status()
+        && !error.is_decode()
+        && !error.is_builder()
+        && (error.is_connect() || error.is_timeout() || error.is_request() || error.is_body())
+}
 
 #[derive(Debug, Serialize)]
 struct TemplateRequest {
@@ -362,13 +503,24 @@ fn apply_mined_header(
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
     let client = Client::builder().build()?;
-    let backend = mining_backend(&cfg)?;
+    let selection = mining_backend(&cfg)?;
+    let backend = Arc::clone(&selection.backend);
     let mut telemetry = MinerTelemetry::new(backend.name(), cfg.threads);
     telemetry.log("miner_start");
 
     if cfg.loop_mode {
+        let mut loop_control =
+            LoopControlState::new(&selection.accelerator_devices, cfg.max_tries)?;
         loop {
-            match mine_once(&client, &cfg, Arc::clone(&backend), &mut telemetry).await {
+            match mine_once(
+                &client,
+                &cfg,
+                Arc::clone(&backend),
+                &mut telemetry,
+                Some(&mut loop_control),
+            )
+            .await
+            {
                 Ok(outcome) => {
                     let _decision = loop_refresh_decision_after_outcome(outcome);
                 }
@@ -377,7 +529,7 @@ async fn main() -> Result<()> {
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
     } else {
-        mine_once(&client, &cfg, backend, &mut telemetry).await?;
+        mine_once(&client, &cfg, backend, &mut telemetry, None).await?;
         Ok(())
     }
 }
@@ -524,11 +676,11 @@ fn usage() -> &'static str {
     "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects the global single CUDA or OpenCL GPU device index for this software slice. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
-fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
+fn mining_backend(cfg: &Config) -> Result<RuntimeBackendSelection> {
     match cfg.backend {
         BackendKind::Cpu => {
             println!("miner_backend requested=cpu active=cpu cpu_backend_available=true");
-            Ok(Arc::new(CpuMiningBackend))
+            Ok(RuntimeBackendSelection::cpu())
         }
         BackendKind::Gpu => {
             println!("miner_backend requested=gpu active=pending cpu_backend_available=true");
@@ -578,7 +730,7 @@ fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
                         "miner_backend requested=auto gpu_backend_available=false cpu_fallback_active=true active=cpu reason={}",
                         err
                     );
-                    Ok(Arc::new(CpuMiningBackend))
+                    Ok(RuntimeBackendSelection::cpu())
                 }
             }
         }
@@ -586,23 +738,32 @@ fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
 }
 
 #[cfg(not(feature = "gpu"))]
-fn gpu_mining_backend(_device_index: Option<usize>) -> Result<Arc<dyn RuntimeMiningBackend>> {
+fn gpu_mining_backend(_device_index: Option<usize>) -> Result<RuntimeBackendSelection> {
     Err(anyhow!(
         "GPU backend requested but pulsedag-miner was built without the gpu feature."
     ))
 }
 
 #[cfg(feature = "gpu")]
-fn gpu_mining_backend(device_index: Option<usize>) -> Result<Arc<dyn RuntimeMiningBackend>> {
+fn gpu_mining_backend(device_index: Option<usize>) -> Result<RuntimeBackendSelection> {
     let config = GpuBackendConfig::default().with_device_index(device_index);
-    Ok(Arc::new(GpuMiningBackend::new(config)?))
+    let backend = GpuMiningBackend::new(config)?;
+    let accelerator_devices = backend
+        .selected_devices()
+        .iter()
+        .map(|device| AcceleratorDeviceKey::opencl(device.device_index))
+        .collect();
+    Ok(RuntimeBackendSelection {
+        backend: Arc::new(backend),
+        accelerator_devices,
+    })
 }
 
 #[cfg(not(feature = "cuda"))]
 fn cuda_mining_backend(
     _module_path: &Path,
     _device_index: Option<usize>,
-) -> Result<Arc<dyn RuntimeMiningBackend>> {
+) -> Result<RuntimeBackendSelection> {
     Err(anyhow!(
         "CUDA backend requested but pulsedag-miner was built without the cuda feature."
     ))
@@ -612,7 +773,7 @@ fn cuda_mining_backend(
 fn cuda_mining_backend(
     module_path: &Path,
     device_index: Option<usize>,
-) -> Result<Arc<dyn RuntimeMiningBackend>> {
+) -> Result<RuntimeBackendSelection> {
     let module_image = std::fs::read(module_path)
         .with_context(|| format!("failed to read CUDA module from {}", module_path.display()))?;
     if module_image.is_empty() {
@@ -629,7 +790,10 @@ fn cuda_mining_backend(
         device_index,
         module_path.display()
     );
-    Ok(Arc::new(CudaMiningBackend::new(config)))
+    Ok(RuntimeBackendSelection {
+        backend: Arc::new(CudaMiningBackend::new(config)),
+        accelerator_devices: vec![AcceleratorDeviceKey::cuda(device_index)],
+    })
 }
 
 fn default_worker_id(miner_address: &str) -> String {
@@ -735,19 +899,37 @@ async fn mine_once(
     cfg: &Config,
     backend: Arc<dyn RuntimeMiningBackend>,
     telemetry: &mut MinerTelemetry,
+    mut loop_control: Option<&mut LoopControlState>,
 ) -> Result<MineOnceOutcome> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
     let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
 
-    let template_resp = client
-        .post(&template_url)
-        .json(&TemplateRequest {
-            miner_address: cfg.miner_address.clone(),
-        })
-        .send()
-        .await?
-        .error_for_status()?;
-    let template_api: ApiResponse<TemplateData> = template_resp.json().await?;
+    let template_request = client.post(&template_url).json(&TemplateRequest {
+        miner_address: cfg.miner_address.clone(),
+    });
+    let template_resp = match template_request.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            if is_template_transport_error(&err) {
+                if let Some(control) = loop_control.as_deref_mut() {
+                    control.note_template_transport_failure();
+                }
+            }
+            return Err(err).context("template request failed before HTTP response");
+        }
+    }
+    .error_for_status()?;
+    let template_api: ApiResponse<TemplateData> = match template_resp.json().await {
+        Ok(template_api) => template_api,
+        Err(err) => {
+            if is_template_transport_error(&err) {
+                if let Some(control) = loop_control.as_deref_mut() {
+                    control.note_template_transport_failure();
+                }
+            }
+            return Err(err).context("template response failed before complete decode");
+        }
+    };
     let template = template_api
         .data
         .ok_or_else(|| anyhow!("template endpoint returned no data"))?;
@@ -757,6 +939,21 @@ async fn mine_once(
         template.protocol_identity.as_ref(),
         template.protocol_identity_fingerprint.as_deref(),
     )?;
+    let runtime_job = if let Some(control) = loop_control.as_deref_mut() {
+        let runtime_job = control.on_work_acquired(cfg.max_tries)?;
+        if let Some(job) = runtime_job {
+            println!(
+            "accelerator_loop_control template_id={} transition={:?} generation={} reconnect_epoch={}",
+            template.template_id,
+            job.transition,
+            job.generation,
+            job.reconnect_epoch
+        );
+        }
+        runtime_job
+    } else {
+        None
+    };
     let protocol_identity_fingerprint = template.protocol_identity_fingerprint.clone();
     let template_id = template.template_id;
     let mut block = template.block;
@@ -855,6 +1052,10 @@ async fn mine_once(
         telemetry.log("template_skipped_stale");
         send_worker_heartbeat(client, cfg, telemetry).await;
         return Ok(MineOnceOutcome::SkippedStaleTemplate);
+    }
+
+    if let Some(control) = loop_control.as_deref() {
+        control.validate_job_identity(runtime_job)?;
     }
 
     let submitted_hash = block.hash.clone();
@@ -1060,12 +1261,13 @@ async fn mine_header_with_backend(
 
 #[cfg(test)]
 mod tests {
+    use super::AcceleratorDeviceKey;
     use super::{
         apply_mined_header, default_worker_id, evaluate_template_freshness,
         loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
         should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
-        Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
-        TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
+        Config, LoopControlState, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry,
+        SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
     use std::path::Path;
@@ -1526,6 +1728,128 @@ mod tests {
         assert!(action.contains("hard warning"));
         assert!(action.contains("backend/canonical mismatch"));
         assert!(action.contains("discard nonce/header"));
+    }
+
+    #[test]
+    fn accelerator_loop_initial_work_does_not_fake_reconnect_or_refresh() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::opencl(0)], 8).unwrap();
+        let job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(job.transition, None);
+        assert_eq!(job.generation, 0);
+        assert_eq!(job.reconnect_epoch, 0);
+        assert!(!state.reconnect_pending);
+    }
+
+    #[test]
+    fn accelerator_loop_consecutive_work_is_deterministic_job_refresh() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::opencl(0)], 8).unwrap();
+        let first = state.on_work_acquired(8).unwrap().unwrap();
+        let second = state.on_work_acquired(8).unwrap().unwrap();
+        let third = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(first.transition, None);
+        assert_eq!(
+            second.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(
+            third.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(second.generation, first.generation + 1);
+        assert_eq!(third.generation, second.generation + 1);
+        assert_eq!(first.reconnect_epoch, 0);
+        assert_eq!(second.reconnect_epoch, 0);
+        assert_eq!(third.reconnect_epoch, 0);
+    }
+
+    #[test]
+    fn accelerator_loop_transport_failure_before_first_work_is_not_reconnect() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::cuda(0)], 8).unwrap();
+        state.note_template_transport_failure();
+        let first = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(first.transition, None);
+        assert_eq!(first.generation, 0);
+        assert_eq!(first.reconnect_epoch, 0);
+    }
+
+    #[test]
+    fn accelerator_loop_repeated_template_transport_failures_reconnect_once() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::cuda(0)], 8).unwrap();
+        state.on_work_acquired(8).unwrap();
+        state.note_template_transport_failure();
+        state.note_template_transport_failure();
+        state.note_template_transport_failure();
+        let reconnected = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(
+            reconnected.transition,
+            Some(super::AcceleratorControlTransition::Reconnect { max_tries: 8 })
+        );
+        assert_eq!(reconnected.generation, 1);
+        assert_eq!(reconnected.reconnect_epoch, 1);
+
+        let refreshed = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(
+            refreshed.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(refreshed.generation, 2);
+        assert_eq!(refreshed.reconnect_epoch, 1);
+    }
+
+    #[test]
+    fn accelerator_loop_reconnect_rejects_pre_reconnect_ticket_and_job_identity() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::opencl(0)], 8).unwrap();
+        let old_job = state.on_work_acquired(8).unwrap().unwrap();
+        let stale = state
+            .accelerator_mut()
+            .unwrap()
+            .dispatch_lane(0)
+            .unwrap()
+            .unwrap();
+        state.note_template_transport_failure();
+        let current_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert!(state
+            .accelerator_mut()
+            .unwrap()
+            .complete_lane(stale)
+            .is_err());
+        assert!(state.validate_job_identity(Some(old_job)).is_err());
+        state.validate_job_identity(Some(current_job)).unwrap();
+    }
+
+    #[test]
+    fn accelerator_loop_refresh_rejects_prior_generation_ticket_and_job_identity() {
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::cuda(0)], 8).unwrap();
+        let old_job = state.on_work_acquired(8).unwrap().unwrap();
+        let stale = state
+            .accelerator_mut()
+            .unwrap()
+            .dispatch_lane(0)
+            .unwrap()
+            .unwrap();
+        let current_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(current_job.reconnect_epoch, old_job.reconnect_epoch);
+        assert!(state
+            .accelerator_mut()
+            .unwrap()
+            .complete_lane(stale)
+            .is_err());
+        assert!(state.validate_job_identity(Some(old_job)).is_err());
+        state.validate_job_identity(Some(current_job)).unwrap();
+    }
+
+    #[test]
+    fn accelerator_loop_stale_and_finality_outcomes_do_not_fake_reconnect() {
+        for outcome in [
+            MineOnceOutcome::NodeRejectedStaleTemplate,
+            MineOnceOutcome::SkippedStaleTemplate,
+            MineOnceOutcome::SubmitFinalityStillUnknown,
+        ] {
+            assert_eq!(
+                loop_refresh_decision_after_outcome(outcome),
+                LoopRefreshDecision::RefreshWork
+            );
+        }
     }
 
     #[test]
