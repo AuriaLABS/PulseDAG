@@ -894,16 +894,12 @@ fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefresh
     LoopRefreshDecision::RefreshWork
 }
 
-async fn mine_once(
+async fn fetch_template(
     client: &Client,
     cfg: &Config,
-    backend: Arc<dyn RuntimeMiningBackend>,
-    telemetry: &mut MinerTelemetry,
     mut loop_control: Option<&mut LoopControlState>,
-) -> Result<MineOnceOutcome> {
+) -> Result<TemplateData> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
-    let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
-
     let template_request = client.post(&template_url).json(&TemplateRequest {
         miner_address: cfg.miner_address.clone(),
     });
@@ -930,9 +926,24 @@ async fn mine_once(
             return Err(err).context("template response failed before complete decode");
         }
     };
-    let template = template_api
+    template_api
         .data
-        .ok_or_else(|| anyhow!("template endpoint returned no data"))?;
+        .ok_or_else(|| anyhow!("template endpoint returned no data"))
+}
+
+async fn mine_once(
+    client: &Client,
+    cfg: &Config,
+    backend: Arc<dyn RuntimeMiningBackend>,
+    telemetry: &mut MinerTelemetry,
+    mut loop_control: Option<&mut LoopControlState>,
+) -> Result<MineOnceOutcome> {
+    let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
+
+    let template = match loop_control.as_deref_mut() {
+        Some(control) => fetch_template(client, cfg, Some(control)).await?,
+        None => fetch_template(client, cfg, None).await?,
+    };
 
     let protocol_identity = validated_template_protocol_identity(
         &template.block.header,
@@ -1263,14 +1274,109 @@ async fn mine_header_with_backend(
 mod tests {
     use super::AcceleratorDeviceKey;
     use super::{
-        apply_mined_header, default_worker_id, evaluate_template_freshness,
+        apply_mined_header, default_worker_id, evaluate_template_freshness, fetch_template,
         loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
         should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
         Config, LoopControlState, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry,
         SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
+    use serde_json::json;
     use std::path::Path;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    enum LoopbackTemplateReply {
+        Json(String),
+        Drop,
+        ServiceUnavailable,
+    }
+
+    fn loopback_template_body(template_id: &str) -> String {
+        json!({
+            "ok": true,
+            "data": {
+                "protocol_version": 1,
+                "algorithm": "kheavyhash",
+                "template_id": template_id,
+                "created_at_unix": 1,
+                "expires_at_unix": 4_000_000_000_u64,
+                "freshness_ttl_secs": 30,
+                "freshness_grace_secs": 5,
+                "protocol_identity": null,
+                "protocol_identity_fingerprint": null,
+                "block": {
+                    "hash": "loopback-block",
+                    "header": {
+                        "version": 1,
+                        "parents": [],
+                        "timestamp": 1,
+                        "difficulty": 1,
+                        "nonce": 0,
+                        "merkle_root": "loopback-merkle",
+                        "state_root": "loopback-state",
+                        "blue_score": 0,
+                        "height": 1
+                    },
+                    "transactions": []
+                },
+                "target_hex": "ff",
+                "compact_target": 1
+            },
+            "error": null,
+            "meta": {}
+        })
+        .to_string()
+    }
+
+    async fn spawn_template_loopback(
+        replies: Vec<LoopbackTemplateReply>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener must bind");
+        let address = listener
+            .local_addr()
+            .expect("loopback listener must expose local address");
+        let task = tokio::spawn(async move {
+            for reply in replies {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("loopback listener must accept request");
+                let mut request = [0_u8; 4096];
+                stream
+                    .read(&mut request)
+                    .await
+                    .expect("loopback request must be readable");
+
+                match reply {
+                    LoopbackTemplateReply::Drop => continue,
+                    LoopbackTemplateReply::ServiceUnavailable => {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .expect("loopback status response must be writable");
+                    }
+                    LoopbackTemplateReply::Json(body) => {
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("loopback JSON response must be writable");
+                    }
+                }
+            }
+        });
+        (format!("http://{address}"), task)
+    }
+
 
     fn telemetry_test_config() -> Config {
         Config {
@@ -1728,6 +1834,136 @@ mod tests {
         assert!(action.contains("hard warning"));
         assert!(action.contains("backend/canonical mismatch"));
         assert!(action.contains("discard nonce/header"));
+    }
+
+    #[tokio::test]
+    async fn accelerator_loopback_transport_failures_reconnect_exactly_once() {
+        let (node, server) = spawn_template_loopback(vec![
+            LoopbackTemplateReply::Json(loopback_template_body("template-1")),
+            LoopbackTemplateReply::Drop,
+            LoopbackTemplateReply::Drop,
+            LoopbackTemplateReply::Json(loopback_template_body("template-2")),
+            LoopbackTemplateReply::Json(loopback_template_body("template-3")),
+        ])
+        .await;
+        let mut cfg = telemetry_test_config();
+        cfg.node = node;
+        cfg.heartbeat = false;
+        let client = Client::builder().build().unwrap();
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::opencl(0)], 8).unwrap();
+
+        let first = fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("initial template acquisition must succeed");
+        assert_eq!(first.template_id, "template-1");
+        let first_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(first_job.transition, None);
+        assert_eq!(first_job.generation, 0);
+        assert_eq!(first_job.reconnect_epoch, 0);
+
+        assert!(fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .is_err());
+        assert!(state.reconnect_pending);
+        assert!(fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .is_err());
+        assert!(state.reconnect_pending);
+
+        let recovered = fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("template acquisition after transport recovery must succeed");
+        assert_eq!(recovered.template_id, "template-2");
+        let recovered_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(
+            recovered_job.transition,
+            Some(super::AcceleratorControlTransition::Reconnect { max_tries: 8 })
+        );
+        assert_eq!(recovered_job.generation, 1);
+        assert_eq!(recovered_job.reconnect_epoch, 1);
+        assert!(!state.reconnect_pending);
+
+        let refreshed = fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("next healthy template acquisition must succeed");
+        assert_eq!(refreshed.template_id, "template-3");
+        let refreshed_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(
+            refreshed_job.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(refreshed_job.generation, 2);
+        assert_eq!(refreshed_job.reconnect_epoch, 1);
+
+        server.await.expect("loopback server task must complete");
+    }
+
+    #[tokio::test]
+    async fn accelerator_loopback_http_status_error_does_not_fake_reconnect() {
+        let (node, server) = spawn_template_loopback(vec![
+            LoopbackTemplateReply::Json(loopback_template_body("template-1")),
+            LoopbackTemplateReply::ServiceUnavailable,
+            LoopbackTemplateReply::Json(loopback_template_body("template-2")),
+        ])
+        .await;
+        let mut cfg = telemetry_test_config();
+        cfg.node = node;
+        cfg.heartbeat = false;
+        let client = Client::builder().build().unwrap();
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::cuda(0)], 8).unwrap();
+
+        fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("initial template acquisition must succeed");
+        state.on_work_acquired(8).unwrap();
+
+        assert!(fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .is_err());
+        assert!(!state.reconnect_pending);
+
+        let next = fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("healthy template acquisition after HTTP status error must succeed");
+        assert_eq!(next.template_id, "template-2");
+        let next_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(
+            next_job.transition,
+            Some(super::AcceleratorControlTransition::JobRefresh { max_tries: 8 })
+        );
+        assert_eq!(next_job.generation, 1);
+        assert_eq!(next_job.reconnect_epoch, 0);
+
+        server.await.expect("loopback server task must complete");
+    }
+
+    #[tokio::test]
+    async fn accelerator_loopback_transport_failure_before_first_work_is_not_reconnect() {
+        let (node, server) = spawn_template_loopback(vec![
+            LoopbackTemplateReply::Drop,
+            LoopbackTemplateReply::Json(loopback_template_body("template-1")),
+        ])
+        .await;
+        let mut cfg = telemetry_test_config();
+        cfg.node = node;
+        cfg.heartbeat = false;
+        let client = Client::builder().build().unwrap();
+        let mut state = LoopControlState::new(&[AcceleratorDeviceKey::opencl(0)], 8).unwrap();
+
+        assert!(fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .is_err());
+        assert!(!state.reconnect_pending);
+
+        fetch_template(&client, &cfg, Some(&mut state))
+            .await
+            .expect("first healthy template acquisition must succeed");
+        let first_job = state.on_work_acquired(8).unwrap().unwrap();
+        assert_eq!(first_job.transition, None);
+        assert_eq!(first_job.generation, 0);
+        assert_eq!(first_job.reconnect_epoch, 0);
+
+        server.await.expect("loopback server task must complete");
     }
 
     #[test]

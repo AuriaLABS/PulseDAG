@@ -1,0 +1,109 @@
+name: v3 launch Task 38 reconnect loopback phase 17
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - .github/workflows/task38-reconnect-loopback-phase17.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/accelerator_reconnect.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - .github/workflows/task38-reconnect-loopback-phase17.yml
+
+permissions:
+  contents: read
+
+jobs:
+  reconnect-loopback-contract:
+    name: reconnect loopback / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_reconnect_loopback_candidate_sha=${ACTUAL_SHA}"
+          echo "task38_reconnect_loopback_candidate_tree=$(git rev-parse 'HEAD^{tree}')"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Loopback transport acceptance default
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-miner accelerator_loopback_
+
+      - name: Loopback transport acceptance OpenCL feature
+        run: cargo test --locked -p pulsedag-miner --features gpu --bin pulsedag-miner accelerator_loopback_
+
+      - name: Loopback transport acceptance CUDA feature
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner accelerator_loopback_
+
+      - name: Existing reconnect controller self-test
+        run: cargo run --locked -p pulsedag-miner --bin pulsedag-accelerator-reconnect-probe -- --self-test
+
+      - name: Strict Clippy default
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-miner -- -D warnings
+
+      - name: Strict Clippy OpenCL
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-miner --features gpu -- -D warnings
+
+      - name: Strict Clippy CUDA
+        run: cargo clippy --locked -p pulsedag-miner --bin pulsedag-miner --features cuda -- -D warnings
+
+      - name: Audit hermetic transport boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'async fn fetch_template' apps/pulsedag-miner/src/main.rs
+          grep -q 'accelerator_loopback_transport_failures_reconnect_exactly_once' apps/pulsedag-miner/src/main.rs
+          grep -q 'accelerator_loopback_http_status_error_does_not_fake_reconnect' apps/pulsedag-miner/src/main.rs
+          grep -q 'accelerator_loopback_transport_failure_before_first_work_is_not_reconnect' apps/pulsedag-miner/src/main.rs
+          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/main.rs
+          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/main.rs
+          echo 'hermetic_template_transport_disconnect_recovery=PASS'
+          echo 'exactly_one_reconnect_after_recovery=PASS'
+          echo 'http_application_error_not_reconnect=PASS'
+          echo 'physical_gpu_execution=NOT_CLAIMED'
