@@ -60,6 +60,8 @@ def convergence_contract(current):
     roots = [data.get("ordered_dag_state_root") for data in current.values()]
     heights = [data.get("selected_height") for data in current.values()]
     ordered = [data.get("ordered_dag_tip") for data in current.values()]
+    selection_digests = [data.get("selection_digest") for data in current.values()]
+    ordered_dag_digests = [data.get("ordered_dag_digest") for data in current.values()]
     return (
         len(set(tips)) == 1
         and len(set(roots)) == 1
@@ -68,6 +70,10 @@ def convergence_contract(current):
         and all(value is not None for value in roots)
         and all(isinstance(value, str) and value for value in ordered)
         and len(set(ordered)) == 1
+        and all(isinstance(value, str) and value for value in selection_digests)
+        and len(set(selection_digests)) == 1
+        and all(isinstance(value, str) and value for value in ordered_dag_digests)
+        and len(set(ordered_dag_digests)) == 1
     )
 
 
@@ -246,6 +252,31 @@ def install(base):
         if manifest.get("runtime_gate_result") == "PASS" and not ordered_tip:
             reasons.append("canonical ordered_dag_tip missing after convergence")
 
+        canonical = manifest.get("canonical_end_state", {})
+        for digest_name in ("selection_digest", "ordered_dag_digest"):
+            digest = canonical.get(digest_name, {})
+            if (
+                manifest.get("runtime_gate_result") == "PASS"
+                and (
+                    digest.get("available") is not True
+                    or not isinstance(digest.get("value"), str)
+                    or not digest.get("value")
+                )
+            ):
+                reasons.append(f"{digest_name} unavailable after convergence")
+
+        latency = manifest.get("acceptance_state_apply_latency", {})
+        if manifest.get("runtime_gate_result") == "PASS":
+            if latency.get("available") is not True or latency.get("unit") != "microseconds":
+                reasons.append("canonical state-apply latency distribution unavailable")
+            by_node = latency.get("by_node", {})
+            for name in ("a", "b", "c"):
+                summary = by_node.get(name, {})
+                if int(summary.get("count") or 0) < 1:
+                    reasons.append(
+                        f"canonical state-apply latency has no accepted sample node={name}"
+                    )
+
         measurement = manifest.setdefault("measurement", {})
         measurement["sampling_coverage_by_node"] = coverage
         measurement["sampling_coverage_contract"] = {
@@ -299,13 +330,15 @@ def selftest():
     assert active_propagation_ms(samples, {baseline}) == [7.0]
 
     good = {
-        "a": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o"},
-        "b": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o"},
-        "c": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o"},
+        "a": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o", "selection_digest": "sd", "ordered_dag_digest": "od"},
+        "b": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o", "selection_digest": "sd", "ordered_dag_digest": "od"},
+        "c": {"selected_tip": "s", "ordered_dag_state_root": "r", "selected_height": 9, "ordered_dag_tip": "o", "selection_digest": "sd", "ordered_dag_digest": "od"},
     }
     assert convergence_contract(good)
     assert not convergence_contract({**good, "c": {**good["c"], "ordered_dag_tip": "different"}})
     assert not convergence_contract({**good, "c": {**good["c"], "ordered_dag_tip": None}})
+    assert not convergence_contract({**good, "c": {**good["c"], "selection_digest": "different"}})
+    assert not convergence_contract({**good, "c": {**good["c"], "ordered_dag_digest": None}})
     print("task39 strict evidence guards self-test: PASS")
 
 

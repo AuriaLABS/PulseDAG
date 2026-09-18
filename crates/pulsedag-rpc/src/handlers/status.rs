@@ -42,6 +42,10 @@ pub struct NodeStatusData {
     pub ordered_dag_rebuild_total: u64,
     pub ordered_dag_rebuild_failed_total: u64,
     pub ordered_dag_state_root: Option<String>,
+    pub selection_digest: Option<String>,
+    pub ordered_dag_digest: Option<String>,
+    pub canonical_state_apply_latency_us:
+        Option<pulsedag_core::CanonicalStateApplyLatencySummary>,
     pub consensus_mode: String,
     pub protocol_consensus_mode: String,
     pub ghostdag_metadata_active: bool,
@@ -93,6 +97,47 @@ pub struct NodeStatusData {
 
 static STATUS_RESPONSE_CACHE: OnceLock<Mutex<Option<NodeStatusData>>> = OnceLock::new();
 
+#[derive(Debug, Clone)]
+struct CanonicalDigestCacheEntry {
+    chain_id: String,
+    genesis_hash: String,
+    generation: u64,
+    selection_digest: String,
+    ordered_dag_digest: String,
+}
+
+static CANONICAL_DIGEST_CACHE: OnceLock<Mutex<Option<CanonicalDigestCacheEntry>>> = OnceLock::new();
+
+fn canonical_digests_for_chain(chain: &ChainState) -> (String, String) {
+    let cache = CANONICAL_DIGEST_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.as_ref() {
+            if entry.chain_id == chain.chain_id
+                && entry.genesis_hash == chain.dag.genesis_hash
+                && entry.generation == chain.chain_state_generation
+            {
+                return (
+                    entry.selection_digest.clone(),
+                    entry.ordered_dag_digest.clone(),
+                );
+            }
+        }
+    }
+
+    let selection_digest = pulsedag_core::selection_digest(chain);
+    let ordered_dag_digest = pulsedag_core::ordered_dag_digest(chain);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CanonicalDigestCacheEntry {
+            chain_id: chain.chain_id.clone(),
+            genesis_hash: chain.dag.genesis_hash.clone(),
+            generation: chain.chain_state_generation,
+            selection_digest: selection_digest.clone(),
+            ordered_dag_digest: ordered_dag_digest.clone(),
+        });
+    }
+    (selection_digest, ordered_dag_digest)
+}
+
 fn cached_status_response(reason: String) -> Option<NodeStatusData> {
     STATUS_RESPONSE_CACHE
         .get_or_init(|| Mutex::new(None))
@@ -103,6 +148,9 @@ fn cached_status_response(reason: String) -> Option<NodeStatusData> {
             data.rpc_response_degraded = true;
             data.rpc_response_stale = true;
             data.rpc_response_degraded_reason = Some(reason);
+            data.selection_digest = None;
+            data.ordered_dag_digest = None;
+            data.canonical_state_apply_latency_us = None;
             data
         })
 }
@@ -148,6 +196,9 @@ fn status_from_rpc_snapshot(
         ordered_dag_rebuild_total: 0,
         ordered_dag_rebuild_failed_total: 0,
         ordered_dag_state_root: None,
+        selection_digest: None,
+        ordered_dag_digest: None,
+        canonical_state_apply_latency_us: None,
         consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
         protocol_consensus_mode,
         ghostdag_metadata_active: false,
@@ -210,6 +261,8 @@ struct StatusStateSnapshot {
     ordered_dag_rebuild_total: u64,
     ordered_dag_rebuild_failed_total: u64,
     ordered_dag_state_root: Option<String>,
+    selection_digest: String,
+    ordered_dag_digest: String,
     consensus_mode: String,
     ghostdag_metadata_active: bool,
     high_cadence_allowed: bool,
@@ -247,6 +300,7 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
         .max_by_key(|b| b.header.height)
         .map(|b| b.hash.clone());
     let selected_tip = chain.dag.selected_chain.last().cloned();
+    let (selection_digest, ordered_dag_digest) = canonical_digests_for_chain(chain);
     let selected_block = selected_tip
         .as_ref()
         .and_then(|hash| chain.dag.blocks.get(hash));
@@ -263,6 +317,8 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
         ordered_dag_rebuild_total: chain.dag.ordered_dag_rebuild_total,
         ordered_dag_rebuild_failed_total: chain.dag.ordered_dag_rebuild_failed_total,
         ordered_dag_state_root: chain.dag.ordered_dag_state_root.clone(),
+        selection_digest,
+        ordered_dag_digest,
         consensus_mode: chain.dag.consensus_mode.to_string(),
         ghostdag_metadata_active: chain.dag.consensus_mode.ghostdag_metadata_active(),
         high_cadence_allowed: chain.dag.consensus_mode.high_cadence_allowed(),
@@ -420,6 +476,8 @@ pub async fn get_status<S: RpcStateLike>(
     let recommended_keep_from_height = chain_snapshot
         .best_height
         .saturating_sub(keep_recent.saturating_sub(1));
+    let canonical_state_apply_latency_us =
+        pulsedag_core::canonical_state_apply_latency_summary();
 
     let peer_summary = format!(
         "peer_count={} semantics={}",
@@ -445,6 +503,9 @@ pub async fn get_status<S: RpcStateLike>(
         ordered_dag_rebuild_total: chain_snapshot.ordered_dag_rebuild_total,
         ordered_dag_rebuild_failed_total: chain_snapshot.ordered_dag_rebuild_failed_total,
         ordered_dag_state_root: chain_snapshot.ordered_dag_state_root,
+        selection_digest: Some(chain_snapshot.selection_digest),
+        ordered_dag_digest: Some(chain_snapshot.ordered_dag_digest),
+        canonical_state_apply_latency_us,
         consensus_mode: chain_snapshot.consensus_mode,
         protocol_consensus_mode,
         ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active,
@@ -514,7 +575,7 @@ pub async fn get_status<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::get_status;
+    use super::{canonical_digests_for_chain, get_status};
     use crate::{
         api::{
             build_node_rpc_snapshot, NodeRpcSnapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -829,13 +890,42 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_protocol_identity_separately_from_internal_consensus() {
-        let Json(resp) = get_status(State(mk_activated_v2_state())).await;
+        let state = mk_activated_v2_state();
+        let (expected_selection, expected_ordered) = {
+            let chain = state.chain.read().await;
+            (
+                pulsedag_core::selection_digest(&chain),
+                pulsedag_core::ordered_dag_digest(&chain),
+            )
+        };
+        let Json(resp) = get_status(State(state)).await;
         let data = resp.data.expect("activated-v2 status data should exist");
 
         assert!(resp.ok);
         assert_eq!(data.consensus_mode, "legacy");
         assert_eq!(data.protocol_consensus_mode, "ghostdag_v1");
         assert!(!data.high_cadence_allowed);
+        assert_eq!(data.selection_digest.as_deref(), Some(expected_selection.as_str()));
+        assert_eq!(data.ordered_dag_digest.as_deref(), Some(expected_ordered.as_str()));
+        assert!(data.canonical_state_apply_latency_us.is_none());
+    }
+
+    #[test]
+    fn canonical_digest_cache_reuses_generation_and_invalidates_on_generation_change() {
+        let mut chain =
+            init_chain_state_v2("task39-status-digest-cache".to_string()).expect("v2 state");
+        let first = canonical_digests_for_chain(&chain);
+        let again = canonical_digests_for_chain(&chain);
+        assert_eq!(first, again);
+        assert_eq!(first.0, pulsedag_core::selection_digest(&chain));
+        assert_eq!(first.1, pulsedag_core::ordered_dag_digest(&chain));
+
+        chain.dag.ordered_dag.push("task39-synthetic-order-entry".to_string());
+        chain.chain_state_generation = chain.chain_state_generation.saturating_add(1);
+        let refreshed = canonical_digests_for_chain(&chain);
+        assert_eq!(refreshed.0, pulsedag_core::selection_digest(&chain));
+        assert_eq!(refreshed.1, pulsedag_core::ordered_dag_digest(&chain));
+        assert_ne!(first.1, refreshed.1);
     }
 
     #[tokio::test]
@@ -850,6 +940,9 @@ mod tests {
         assert!(data.rpc_response_degraded);
         assert!(data.rpc_response_stale);
         assert_eq!(data.chain_id, "testnet-dev");
+        assert!(data.selection_digest.is_none());
+        assert!(data.ordered_dag_digest.is_none());
+        assert!(data.canonical_state_apply_latency_us.is_none());
     }
 
     #[tokio::test]
@@ -908,6 +1001,9 @@ mod tests {
         assert!(data.rpc_response_stale);
         assert!(data.rpc_response_degraded);
         assert_eq!(data.best_height, 7);
+        assert!(data.selection_digest.is_none());
+        assert!(data.ordered_dag_digest.is_none());
+        assert!(data.canonical_state_apply_latency_us.is_none());
         assert_eq!(data.rpc_response_degraded_reason.as_deref(), Some("/status avoided waiting for fresh liveness state: node RPC snapshot capture skipped because chain read lock is busy"));
     }
 
