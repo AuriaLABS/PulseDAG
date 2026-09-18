@@ -1281,6 +1281,7 @@ mod tests {
         SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
+    use reqwest::Client;
     use serde_json::json;
     use std::path::Path;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
