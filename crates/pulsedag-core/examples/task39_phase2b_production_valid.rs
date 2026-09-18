@@ -218,7 +218,6 @@ fn run(args: Args) -> Result<Manifest, String> {
     corpus.update(b"PulseDAG:task39-phase2b-production-valid-corpus:v1");
     let mut pow_attempts_total = 0_u64;
     let mut pow_attempts_max = 0_u64;
-    let mut pow_failures = 0_u64;
     let mut max_context_blocks = state.dag.blocks.len();
     let mut max_utxo_entries = state.utxo.utxos.len();
     let mut final_state_root = state.utxo.compute_state_root().map_err(|e| e.to_string())?;
@@ -272,7 +271,6 @@ fn run(args: Args) -> Result<Manifest, String> {
         pow_attempts_total = pow_attempts_total.saturating_add(attempts);
         pow_attempts_max = pow_attempts_max.max(attempts);
         if !mined {
-            pow_failures = pow_failures.saturating_add(1);
             return Err(format!(
                 "PoW search failed at block index {index} height {height} after {attempts} attempts"
             ));
@@ -304,7 +302,7 @@ fn run(args: Args) -> Result<Manifest, String> {
         }
     }
 
-    let production_valid = pow_failures == 0 && state.dag.best_height == blocks as u64;
+    let production_valid = state.dag.best_height == blocks as u64;
     let mut missing = vec![
         "restart_snapshot_prune_same_corpus",
         "production_valid_parallel_dag_same_corpus",
@@ -333,7 +331,7 @@ fn run(args: Args) -> Result<Manifest, String> {
         final_difficulty_bits,
         pow_attempts_total,
         pow_attempts_max,
-        pow_failures,
+        pow_failures: 0,
         max_context_blocks,
         max_utxo_entries,
         retained_context_limit: RETAINED_BLOCKS,
