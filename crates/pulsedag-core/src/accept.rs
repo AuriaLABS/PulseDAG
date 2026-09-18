@@ -13,8 +13,12 @@ use crate::{
     validation::{missing_transaction_inputs, validate_block, validate_transaction},
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::{
+    atomic::{AtomicU64, Ordering as AtomicOrdering},
+    Mutex, OnceLock,
+};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AcceptSource {
@@ -37,6 +41,78 @@ static CHAIN_STATE_MUTATION_COORDINATOR: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn chain_state_mutation_coordinator() -> &'static Mutex<()> {
     CHAIN_STATE_MUTATION_COORDINATOR.get_or_init(|| Mutex::new(()))
+}
+
+const CANONICAL_STATE_APPLY_LATENCY_WINDOW_CAPACITY: usize = 256;
+static CANONICAL_STATE_APPLY_LATENCY_US: OnceLock<Mutex<VecDeque<u64>>> = OnceLock::new();
+static CANONICAL_STATE_APPLY_REPREPARE_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CanonicalStateApplyLatencySummary {
+    pub count: usize,
+    pub min: u64,
+    pub max: u64,
+    pub mean: f64,
+    pub p50: u64,
+    pub p95: u64,
+    pub p99: u64,
+    pub last: u64,
+    pub window_capacity: usize,
+    pub reprepare_attempts_total: u64,
+}
+
+fn canonical_state_apply_latency_window() -> &'static Mutex<VecDeque<u64>> {
+    CANONICAL_STATE_APPLY_LATENCY_US.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn percentile_nearest_rank(sorted: &[u64], percentile: usize) -> u64 {
+    let rank = ((sorted.len().saturating_mul(percentile).saturating_add(99)) / 100).max(1);
+    sorted[rank.saturating_sub(1).min(sorted.len().saturating_sub(1))]
+}
+
+fn summarize_canonical_state_apply_latency(
+    samples: &VecDeque<u64>,
+) -> Option<CanonicalStateApplyLatencySummary> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut sorted = samples.iter().copied().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let mean = sorted.iter().map(|value| *value as f64).sum::<f64>() / sorted.len() as f64;
+    Some(CanonicalStateApplyLatencySummary {
+        count: sorted.len(),
+        min: sorted[0],
+        max: *sorted.last().expect("non-empty latency window"),
+        mean,
+        p50: percentile_nearest_rank(&sorted, 50),
+        p95: percentile_nearest_rank(&sorted, 95),
+        p99: percentile_nearest_rank(&sorted, 99),
+        last: *samples.back().expect("non-empty latency window"),
+        window_capacity: CANONICAL_STATE_APPLY_LATENCY_WINDOW_CAPACITY,
+        reprepare_attempts_total: CANONICAL_STATE_APPLY_REPREPARE_TOTAL
+            .load(AtomicOrdering::Relaxed),
+    })
+}
+
+pub fn canonical_state_apply_latency_summary() -> Option<CanonicalStateApplyLatencySummary> {
+    canonical_state_apply_latency_window()
+        .lock()
+        .ok()
+        .and_then(|samples| summarize_canonical_state_apply_latency(&samples))
+}
+
+pub(crate) fn record_canonical_state_apply_latency(latency_us: u64, reprepare_attempts: u64) {
+    if let Ok(mut samples) = canonical_state_apply_latency_window().lock() {
+        if samples.len() >= CANONICAL_STATE_APPLY_LATENCY_WINDOW_CAPACITY {
+            samples.pop_front();
+        }
+        samples.push_back(latency_us);
+    }
+    CANONICAL_STATE_APPLY_REPREPARE_TOTAL.fetch_add(reprepare_attempts, AtomicOrdering::Relaxed);
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -922,6 +998,8 @@ where
     }
 
     let mut base_generation = state.chain_state_generation;
+    let mut reprepare_attempts = 0_u64;
+    let prepare_started = Instant::now();
     let mut working = match prepare_block_state(&block, state) {
         Ok(working) => working,
         Err(err) => {
@@ -930,6 +1008,7 @@ where
             ))
         }
     };
+    let mut final_prepare_latency_us = elapsed_us(prepare_started);
 
     let _commit_guard = chain_state_mutation_coordinator()
         .lock()
@@ -949,6 +1028,8 @@ where
                 state.chain_state_mutation_conflict_total.saturating_add(1);
             state.chain_state_reprepare_total = state.chain_state_reprepare_total.saturating_add(1);
             base_generation = state.chain_state_generation;
+            reprepare_attempts = reprepare_attempts.saturating_add(1);
+            let prepare_started = Instant::now();
             working = match prepare_block_state(&block, state) {
                 Ok(working) => working,
                 Err(err) => {
@@ -957,6 +1038,7 @@ where
                     ))
                 }
             };
+            final_prepare_latency_us = elapsed_us(prepare_started);
             continue;
         }
 
@@ -997,6 +1079,7 @@ where
         break;
     }
 
+    record_canonical_state_apply_latency(final_prepare_latency_us, reprepare_attempts);
     broadcast(&block)?;
     Ok(AtomicBlockAcceptance {
         result: BlockAcceptanceResult::Accepted,
@@ -1066,6 +1149,25 @@ mod tests {
         },
     };
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn canonical_state_apply_latency_summary_has_stable_percentiles() {
+        assert!(summarize_canonical_state_apply_latency(&VecDeque::new()).is_none());
+        let samples = VecDeque::from([1_u64, 2, 3, 4]);
+        let summary = summarize_canonical_state_apply_latency(&samples).expect("summary");
+        assert_eq!(summary.count, 4);
+        assert_eq!(summary.min, 1);
+        assert_eq!(summary.max, 4);
+        assert_eq!(summary.mean, 2.5);
+        assert_eq!(summary.p50, 2);
+        assert_eq!(summary.p95, 4);
+        assert_eq!(summary.p99, 4);
+        assert_eq!(summary.last, 4);
+        assert_eq!(
+            summary.window_capacity,
+            CANONICAL_STATE_APPLY_LATENCY_WINDOW_CAPACITY
+        );
+    }
 
     type InvalidBlockCase = (
         &'static str,

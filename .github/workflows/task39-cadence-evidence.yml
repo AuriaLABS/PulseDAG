@@ -75,6 +75,8 @@ jobs:
           cargo test --locked -p pulsedagd config::tests::experimental_fast_cadence
           cargo test --locked -p pulsedagd config::tests::target_block_interval
           cargo test --locked -p pulsedagd startup_protocol::tests::
+          cargo test --locked -p pulsedag-core canonical_state_apply_latency_summary_has_stable_percentiles
+          cargo test --locked -p pulsedag-rpc handlers::status::tests::
 
       - name: Build release node and standalone miner
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
@@ -162,11 +164,28 @@ jobs:
               .sync_finality.final_converged == true and
               (.canonical_end_state.ordered_dag_tip | type) == "string" and
               (.canonical_end_state.ordered_dag_tip | length) > 0 and
+              .canonical_end_state.selection_digest.available == true and
+              (.canonical_end_state.selection_digest.value | type) == "string" and
+              (.canonical_end_state.selection_digest.value | length) > 0 and
+              .canonical_end_state.ordered_dag_digest.available == true and
+              (.canonical_end_state.ordered_dag_digest.value | type) == "string" and
+              (.canonical_end_state.ordered_dag_digest.value | length) > 0 and
+              .acceptance_state_apply_latency.available == true and
+              .acceptance_state_apply_latency.unit == "microseconds" and
+              (. as $root | all(["a","b","c"][]; . as $n |
+                $root.acceptance_state_apply_latency.by_node[$n].count >= 1 and
+                $root.acceptance_state_apply_latency.by_node[$n].window_capacity == 256 and
+                $root.acceptance_state_apply_latency.by_node[$n].min >= 0 and
+                $root.acceptance_state_apply_latency.by_node[$n].p50 >= 0 and
+                $root.acceptance_state_apply_latency.by_node[$n].p95 >= 0 and
+                $root.acceptance_state_apply_latency.by_node[$n].p99 >= 0 and
+                $root.acceptance_state_apply_latency.by_node[$n].max >= 0
+              )) and
               .experimental_only == true and
               .runtime_gate_result == "PASS" and
               .production_cadence_selected == false and
               .coverage.completion_eligible == false and
-              (.coverage.missing_required_measurements | length) >= 1
+              (.coverage.missing_required_measurements | length) == 0
             ' "$evidence" >/dev/null
             expected="$(jq -r --argjson cadence "$cadence" '.runs[] | select(.cadence_ms == $cadence) | .evidence_sha256' "$EVIDENCE_DIR/aggregate.json")"
             actual="$(sha256sum "$evidence" | awk '{print $1}')"

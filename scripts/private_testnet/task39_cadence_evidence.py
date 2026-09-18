@@ -361,6 +361,8 @@ def sample(urls, sink):
                 "tip": data.get("selected_tip"),
                 "root": data.get("ordered_dag_state_root"),
                 "ordered_tip": data.get("ordered_dag_tip"),
+                "selection_digest": data.get("selection_digest"),
+                "ordered_dag_digest": data.get("ordered_dag_digest"),
                 "tips": int(data.get("tip_count") or 0),
                 "orphans": int(data.get("orphan_count") or 0),
                 "peers": int(data.get("peer_count") or 0),
@@ -669,6 +671,22 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
         tips = {data.get("selected_tip") for data in final.values()}
         roots = {data.get("ordered_dag_state_root") for data in final.values()}
         ordered = {data.get("ordered_dag_tip") for data in final.values()}
+        selection_digests = {data.get("selection_digest") for data in final.values()}
+        ordered_dag_digests = {data.get("ordered_dag_digest") for data in final.values()}
+        if len(selection_digests) != 1 or None in selection_digests:
+            raise RuntimeError("selection_digest did not converge across all nodes")
+        if len(ordered_dag_digests) != 1 or None in ordered_dag_digests:
+            raise RuntimeError("ordered_dag_digest did not converge across all nodes")
+
+        state_apply_latency = {}
+        for name, data in final.items():
+            summary = data.get("canonical_state_apply_latency_us")
+            if not isinstance(summary, dict) or int(summary.get("count") or 0) < 1:
+                raise RuntimeError(
+                    f"canonical state-apply latency unavailable for node={name}"
+                )
+            state_apply_latency[name] = summary
+
         accepted = {name: int(data["accepted"]) for name, data in miner_data.items()}
         accepted_total = sum(accepted.values())
         if accepted_total < blocks:
@@ -695,11 +713,7 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 ),
             }
 
-        missing = [
-            "canonical_block_acceptance_and_state_apply_latency_distribution",
-            "selection_digest",
-            "ordered_dag_digest",
-        ]
+        missing = []
         configured_limits = {key: int(value) for key, value in EXPERIMENTAL_LIMITS.items()}
         effective_cadences = {
             name: effective_cadence_ms(data) for name, data in readiness_start.items()
@@ -801,10 +815,13 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 },
             },
             "acceptance_state_apply_latency": {
-                "available": False,
-                "reason": (
-                    "not exposed by current runtime/status surfaces; no synthetic value recorded"
+                "available": True,
+                "unit": "microseconds",
+                "window_semantics": (
+                    "bounded per-node final accepted canonical materialization samples; "
+                    "persistence and broadcast excluded; reprepare attempts reported separately"
                 ),
+                "by_node": state_apply_latency,
             },
             "storage_db_amplification_proxy": storage,
             "mining": {
@@ -841,12 +858,14 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 "ordered_dag_tip": next(iter(ordered)) if len(ordered) == 1 else None,
                 "ordered_dag_state_root": next(iter(roots)) if len(roots) == 1 else None,
                 "selection_digest": {
-                    "available": False,
-                    "reason": "not exposed by current rehearsal RPC",
+                    "available": True,
+                    "value": next(iter(selection_digests)),
+                    "source": "/status canonical digest cache keyed by chain_state_generation",
                 },
                 "ordered_dag_digest": {
-                    "available": False,
-                    "reason": "not exposed by current rehearsal RPC",
+                    "available": True,
+                    "value": next(iter(ordered_dag_digests)),
+                    "source": "/status canonical digest cache keyed by chain_state_generation",
                 },
             },
             "coverage": {

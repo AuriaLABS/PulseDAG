@@ -1,8 +1,9 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Instant};
 
 use crate::{
     accept::{
-        mutate_chain_state_serialized, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
+        mutate_chain_state_serialized, record_canonical_state_apply_latency, AcceptSource,
+        AtomicBlockAcceptance, BlockAcceptanceResult,
     },
     acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     apply::apply_transaction,
@@ -259,17 +260,26 @@ where
         ));
     }
 
+    let mut final_prepare_latency_us = None;
+    let mut prepare_attempts = 0_u64;
     let mutation = mutate_chain_state_serialized(
         state,
         source.as_str(),
         |base| {
+            let prepare_started = Instant::now();
             let prepared = prepare_activated_v2_mined_block_state(&block, base, identity)?;
+            final_prepare_latency_us =
+                Some(prepare_started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+            prepare_attempts = prepare_attempts.saturating_add(1);
             Ok((prepared, ()))
         },
         |prepared| persist(&block, prepared),
     )?;
     debug_assert_eq!(state.chain_state_generation, mutation.generation);
 
+    if let Some(latency_us) = final_prepare_latency_us {
+        record_canonical_state_apply_latency(latency_us, prepare_attempts.saturating_sub(1));
+    }
     broadcast(&block)?;
     Ok(AtomicBlockAcceptance {
         result: BlockAcceptanceResult::Accepted,
