@@ -1,0 +1,127 @@
+name: v3 Task39 production-valid replay
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      block_count:
+        description: "Production-valid streaming block count; use 1000000 for the Phase-2 scale probe"
+        required: true
+        default: "1000000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task39-production-valid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-valid-replay:
+    name: production-valid streaming replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Format and strict Clippy
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --locked -p pulsedag-core --example task39_phase2b_production_valid -- -D warnings
+
+      - name: Phase2b self-test
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p pulsedag-core --example task39_phase2b_production_valid --             --self-test             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2b-selftest.json"
+          jq -e '
+            .schema == "pulsedag.task39.phase2b-production-valid.v1" and
+            .production_validated_blocks == 128 and
+            .production_valid_pow_and_state_root_per_block == true and
+            .pow_failures == 0 and
+            .max_context_blocks <= .retained_context_limit and
+            .max_utxo_entries <= 2 and
+            .retained_context_limit > .retarget_window_size and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false
+          ' "$RUNNER_TEMP/task39-phase2b-selftest.json" >/dev/null
+
+      - name: Run exact-candidate production-valid replay
+        shell: bash
+        env:
+          PR_BLOCK_COUNT: "4096"
+          DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BLOCK_COUNT="$DISPATCH_BLOCK_COUNT"
+          else
+            BLOCK_COUNT="$PR_BLOCK_COUNT"
+          fi
+          mkdir -p "$RUNNER_TEMP/task39-phase2b"
+          cargo run --locked --release -p pulsedag-core --example task39_phase2b_production_valid --             --blocks "$BLOCK_COUNT"             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2b/evidence.json"
+
+      - name: Enforce production-valid contract without premature completion claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-phase2b/evidence.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" '
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .production_validated_blocks == .requested_blocks and
+            .production_valid_pow_and_state_root_per_block == true and
+            .pow_failures == 0 and
+            .pow_attempts_total >= .production_validated_blocks and
+            .pow_attempts_max >= 1 and
+            .max_context_blocks <= .retained_context_limit and
+            .max_utxo_entries <= 2 and
+            .retained_context_limit > .retarget_window_size and
+            .bounded_validation_context == true and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false and
+            (.coverage.missing_required_measurements | index("restart_snapshot_prune_same_corpus")) != null and
+            (.coverage.missing_required_measurements | index("production_valid_parallel_dag_same_corpus")) != null
+          ' "$E" >/dev/null
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.block_count }}" -ge 1000000 ]; then
+            jq -e '
+              .million_block_count_observed == true and
+              .production_validated_blocks >= 1000000
+            ' "$E" >/dev/null
+          fi
+          sha256sum "$E" | tee "$RUNNER_TEMP/task39-phase2b/evidence.sha256"
+
+      - name: Upload exact-candidate production-valid evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-phase2b-production-valid-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task39-phase2b
+            ${{ runner.temp }}/task39-phase2b-selftest.json
+          if-no-files-found: warn
+          retention-days: 14

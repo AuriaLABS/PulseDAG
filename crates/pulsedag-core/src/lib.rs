@@ -179,9 +179,9 @@ pub use state_replay_v2::{
 };
 
 pub use apply::{
-    accept_block_to_dag_metadata, commit_rebuilt_state, rebuild_state_from_ordered_dag,
-    refresh_ordered_dag_phase, refresh_selected_chain_phase, OrderedDagRebuild,
-    OrderedDagRebuildDiagnostics,
+    accept_block_to_dag_metadata, apply_transaction, commit_rebuilt_state,
+    rebuild_state_from_ordered_dag, refresh_ordered_dag_phase, refresh_selected_chain_phase,
+    OrderedDagRebuild, OrderedDagRebuildDiagnostics,
 };
 
 pub use mempool::{
