@@ -3,8 +3,8 @@ use pulsedag_core::{
     accept_block_to_dag_metadata, address_from_public_key, apply_transaction, block_subsidy,
     build_candidate_block, build_coinbase_transaction, compute_txid, consensus_difficulty_snapshot,
     dev_mine_header, refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
-    signing_message, state_digest, validate_block, Block, ChainState, OutPoint, Transaction, TxInput,
-    TxOutput,
+    signing_message, state_digest, validate_block, Block, ChainState, OutPoint, Transaction,
+    TxInput, TxOutput,
 };
 use pulsedag_storage::Storage;
 use serde::Serialize;
@@ -342,7 +342,9 @@ fn run(args: Args) -> Result<Manifest, String> {
         .commit_compact_prune(&state, &retained_hashes, generation)
         .map_err(|e| e.to_string())?;
     let retained_blocks_after_prune = source.list_blocks().map_err(|e| e.to_string())?.len();
-    let source_chain_anchor_valid = source.chain_anchor_valid(&state).map_err(|e| e.to_string())?;
+    let source_chain_anchor_valid = source
+        .chain_anchor_valid(&state)
+        .map_err(|e| e.to_string())?;
     let (snapshot_bundle, snapshot_report) = source
         .export_snapshot_bundle(Some(CHAIN_ID))
         .map_err(|e| e.to_string())?;
@@ -378,7 +380,10 @@ fn run(args: Args) -> Result<Manifest, String> {
         .map_err(|e| e.to_string())?
         .ok_or("snapshot import did not persist chain state")?;
     let imported_digest = state_digest(&imported).map_err(|e| e.to_string())?;
-    let imported_root = imported.utxo.compute_state_root().map_err(|e| e.to_string())?;
+    let imported_root = imported
+        .utxo
+        .compute_state_root()
+        .map_err(|e| e.to_string())?;
     let imported_tip = imported
         .dag
         .ordered_dag_tip
@@ -429,7 +434,10 @@ fn run(args: Args) -> Result<Manifest, String> {
     let fail_reasons = if restart_snapshot_prune_same_corpus {
         Vec::new()
     } else {
-        vec!["snapshot/prune/restart/restore contract did not hold on the production-valid corpus".to_string()]
+        vec![
+            "snapshot/prune/restart/restore contract did not hold on the production-valid corpus"
+                .to_string(),
+        ]
     };
 
     let manifest = Manifest {
