@@ -1,0 +1,143 @@
+name: v3 Task39 snapshot-prune same-corpus replay
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      block_count:
+        description: "Production-valid same-corpus storage lifecycle block count"
+        required: true
+        default: "4096"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task39-snapshot-prune-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshot-prune:
+    name: production-valid same-corpus snapshot prune restart restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Format, strict Clippy and existing storage regressions
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --locked -p pulsedag-storage --example task39_phase2c_snapshot_prune -- -D warnings
+          cargo test --locked -p pulsedag-storage --test task789_pruned_v2_restart
+          cargo test --locked -p pulsedag-storage --test v3_fast_sync_restore_rejoin
+
+      - name: Phase2c self-test
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p pulsedag-storage --example task39_phase2c_snapshot_prune --             --self-test             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2c-selftest.json"
+          jq -e '
+            .schema == "pulsedag.task39.phase2c-snapshot-prune.v1" and
+            .production_validated_blocks == 128 and
+            .production_valid_pow_and_state_root_per_block == true and
+            .restart_snapshot_prune_same_corpus == true and
+            .pruned_blocks > 0 and
+            .snapshot_export_restore_guarantees_explicit == true and
+            .cold_restart_state_digest_matches == true and
+            .imported_snapshot_state_digest_matches == true and
+            .imported_snapshot_survives_cold_restart == true and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false
+          ' "$RUNNER_TEMP/task39-phase2c-selftest.json" >/dev/null
+
+      - name: Run Phase2b reference and Phase2c exact-candidate same corpus
+        shell: bash
+        env:
+          PR_BLOCK_COUNT: "4096"
+          DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BLOCK_COUNT="$DISPATCH_BLOCK_COUNT"
+          else
+            BLOCK_COUNT="$PR_BLOCK_COUNT"
+          fi
+          mkdir -p "$RUNNER_TEMP/task39-phase2c"
+          cargo run --locked --release -p pulsedag-core --example task39_phase2b_production_valid --             --blocks "$BLOCK_COUNT"             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2c/phase2b-reference.json"
+          cargo run --locked --release -p pulsedag-storage --example task39_phase2c_snapshot_prune --             --blocks "$BLOCK_COUNT"             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2c/evidence.json"
+
+      - name: Enforce exact same-corpus lifecycle contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-phase2c/evidence.json"
+          R="$RUNNER_TEMP/task39-phase2c/phase2b-reference.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" '
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .production_validated_blocks == .requested_blocks and
+            .production_valid_pow_and_state_root_per_block == true and
+            .restart_snapshot_prune_same_corpus == true and
+            .snapshot_exists_before_prune == true and
+            .snapshot_export_restore_guarantees_explicit == true and
+            .pruned_blocks > 0 and
+            .persisted_blocks_before_prune == .requested_blocks and
+            .retained_blocks_after_prune <= .retained_context_limit and
+            .retained_context_limit > .retarget_window_size and
+            .max_utxo_entries <= 2 and
+            .cold_restart_state_digest_matches == true and
+            .cold_restart_state_root_matches == true and
+            .cold_restart_tip_matches == true and
+            .imported_snapshot_state_digest_matches == true and
+            .imported_snapshot_state_root_matches == true and
+            .imported_snapshot_tip_matches == true and
+            .imported_snapshot_survives_cold_restart == true and
+            .source_chain_anchor_valid == true and
+            .restored_chain_anchor_valid == true and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false and
+            (.coverage.missing_required_measurements | index("restart_snapshot_prune_same_corpus")) == null and
+            (.coverage.missing_required_measurements | index("production_valid_parallel_dag_same_corpus")) != null
+          ' "$E" >/dev/null
+          jq -e --slurpfile ref "$R" '
+            .corpus_digest == $ref[0].corpus_digest and
+            .final_tip == $ref[0].final_tip and
+            .final_state_root == $ref[0].final_state_root and
+            .production_validated_blocks == $ref[0].production_validated_blocks
+          ' "$E" >/dev/null
+          sha256sum "$E" "$R" | tee "$RUNNER_TEMP/task39-phase2c/evidence.sha256"
+
+      - name: Upload exact-candidate Phase2c evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-phase2c-snapshot-prune-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task39-phase2c
+            ${{ runner.temp }}/task39-phase2c-selftest.json
+          if-no-files-found: warn
+          retention-days: 14
