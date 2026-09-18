@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashSet};
 
 use crate::{
     state::{ChainState, SelectedParentPolicy},
@@ -84,9 +84,10 @@ pub fn calculate_selected_parent(block: &Block, state: &ChainState) -> Option<Ha
 
 pub fn rebuild_selected_chain_from_tip(state: &ChainState, tip: Option<Hash>) -> Vec<Hash> {
     let mut chain = Vec::new();
+    let mut visited = HashSet::new();
     let mut cursor = tip;
     while let Some(hash) = cursor {
-        if !state.dag.blocks.contains_key(&hash) || chain.contains(&hash) {
+        if !state.dag.blocks.contains_key(&hash) || !visited.insert(hash.clone()) {
             break;
         }
         cursor = state.dag.selected_parents.get(&hash).cloned().flatten();
@@ -188,6 +189,31 @@ mod tests {
             vec!["hash-a", "hash-b", "hash-c"]
         );
         assert_eq!(preferred_tip_hash(&state), Some("hash-a".to_string()));
+    }
+
+    #[test]
+    fn selected_chain_rebuild_stops_on_cycle_without_quadratic_membership_scan() {
+        let mut state = init_chain_state("selection-cycle-test".to_string());
+        let genesis = state.dag.genesis_hash.clone();
+        let a = tip_block("cycle-a", 1, 1, 1);
+        let b = tip_block("cycle-b", 2, 2, 2);
+        state.dag.blocks.insert(a.hash.clone(), a);
+        state.dag.blocks.insert(b.hash.clone(), b);
+        state
+            .dag
+            .selected_parents
+            .insert("cycle-a".to_string(), Some(genesis));
+        state
+            .dag
+            .selected_parents
+            .insert("cycle-b".to_string(), Some("cycle-a".to_string()));
+        state
+            .dag
+            .selected_parents
+            .insert("cycle-a".to_string(), Some("cycle-b".to_string()));
+
+        let chain = super::rebuild_selected_chain_from_tip(&state, Some("cycle-b".to_string()));
+        assert_eq!(chain, vec!["cycle-a".to_string(), "cycle-b".to_string()]);
     }
 
     #[test]

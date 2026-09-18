@@ -1,0 +1,135 @@
+name: v3 Task39 million-replay foundation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      block_count:
+        description: "Synthetic metadata corpus size; use 1000000 for the Phase-2a scale probe"
+        required: true
+        default: "1000000"
+      permutation_window:
+        description: "Bounded arrival-permutation window"
+        required: true
+        default: "32"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task39-million-replay-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay-foundation:
+    name: deterministic replay foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Format and existing replay regressions
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core selection::tests::selected_chain_rebuild_stops_on_cycle_without_quadratic_membership_scan
+          cargo test --locked -p pulsedag-core --test replay_determinism
+          cargo test --locked -p pulsedag-core --test replay_order_independence
+
+      - name: Phase2a self-test
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p pulsedag-core --example task39_phase2a_replay --             --self-test             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2a-selftest.json"
+          jq -e '
+            .schema == "pulsedag.task39.phase2a-replay.v1" and
+            .generated_blocks == 128 and
+            .exact_equivalence == true and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false and
+            .corpus_contract.production_valid_pow_and_state_root_per_block == false
+          ' "$RUNNER_TEMP/task39-phase2a-selftest.json" >/dev/null
+
+      - name: Run exact-candidate replay foundation
+        shell: bash
+        env:
+          PR_BLOCK_COUNT: "4096"
+          DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
+          DISPATCH_WINDOW: ${{ inputs.permutation_window }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BLOCK_COUNT="$DISPATCH_BLOCK_COUNT"
+            WINDOW="$DISPATCH_WINDOW"
+          else
+            BLOCK_COUNT="$PR_BLOCK_COUNT"
+            WINDOW="32"
+          fi
+          mkdir -p "$RUNNER_TEMP/task39-phase2a"
+          cargo run --locked --release -p pulsedag-core --example task39_phase2a_replay --             --blocks "$BLOCK_COUNT"             --window "$WINDOW"             --candidate-sha "$CANDIDATE_SHA"             --candidate-tree "$CANDIDATE_TREE"             --out "$RUNNER_TEMP/task39-phase2a/evidence.json"
+
+      - name: Enforce foundation contract without premature completion claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-phase2a/evidence.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" '
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .generated_blocks == .requested_blocks and
+            .topology.includes_parallel_blocks == true and
+            .topology.includes_multi_parent_joins == true and
+            .corpus_contract.metadata_replay_uses_production_ghostdag_classifier == true and
+            .corpus_contract.canonical_rebuild_uses_production_ordered_dag_state_rebuild == true and
+            .corpus_contract.production_valid_pow_and_state_root_per_block == false and
+            .exact_equivalence == true and
+            (.runs | length) == 2 and
+            (.runs[0].observation.canonical_bundle_digest == .runs[1].observation.canonical_bundle_digest) and
+            (.runs[0].observation.selection_digest == .runs[1].observation.selection_digest) and
+            (.runs[0].observation.merge_set_digest == .runs[1].observation.merge_set_digest) and
+            (.runs[0].observation.ordered_dag_digest == .runs[1].observation.ordered_dag_digest) and
+            (.runs[0].observation.transaction_outcomes_digest == .runs[1].observation.transaction_outcomes_digest) and
+            (.runs[0].observation.state_digest == .runs[1].observation.state_digest) and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false and
+            (.coverage.missing_required_measurements | index("production_valid_pow_and_state_root_per_block")) != null and
+            (.coverage.missing_required_measurements | index("restart_snapshot_prune_same_corpus")) != null
+          ' "$E" >/dev/null
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.block_count }}" -ge 1000000 ]; then
+            jq -e '.million_block_count_observed == true' "$E" >/dev/null
+          fi
+          sha256sum "$E" | tee "$RUNNER_TEMP/task39-phase2a/evidence.sha256"
+
+      - name: Upload exact-candidate replay foundation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-phase2a-replay-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task39-phase2a
+            ${{ runner.temp }}/task39-phase2a-selftest.json
+          if-no-files-found: warn
+          retention-days: 14
