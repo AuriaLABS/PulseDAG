@@ -101,10 +101,7 @@ pub fn canonical_state_apply_latency_summary() -> Option<CanonicalStateApplyLate
         .and_then(|samples| summarize_canonical_state_apply_latency(&samples))
 }
 
-pub(crate) fn record_canonical_state_apply_latency(
-    latency_us: u64,
-    reprepare_attempts: u64,
-) {
+pub(crate) fn record_canonical_state_apply_latency(latency_us: u64, reprepare_attempts: u64) {
     if let Ok(mut samples) = canonical_state_apply_latency_window().lock() {
         if samples.len() >= CANONICAL_STATE_APPLY_LATENCY_WINDOW_CAPACITY {
             samples.pop_front();
@@ -115,10 +112,7 @@ pub(crate) fn record_canonical_state_apply_latency(
 }
 
 fn elapsed_us(started: Instant) -> u64 {
-    started
-        .elapsed()
-        .as_micros()
-        .min(u64::MAX as u128) as u64
+    started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1158,6 +1152,7 @@ mod tests {
 
     #[test]
     fn canonical_state_apply_latency_summary_has_stable_percentiles() {
+        assert!(summarize_canonical_state_apply_latency(&VecDeque::new()).is_none());
         let samples = VecDeque::from([1_u64, 2, 3, 4]);
         let summary = summarize_canonical_state_apply_latency(&samples).expect("summary");
         assert_eq!(summary.count, 4);

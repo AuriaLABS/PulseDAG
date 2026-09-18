@@ -59,12 +59,11 @@ pub mod validation;
 pub mod validation_v2;
 
 pub use accept::{
-    accept_block, accept_block_atomically, accept_block_with_result,
-    canonical_state_apply_latency_summary, accept_transaction,
+    accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
     accept_transaction_for_protocol, accept_transaction_with_result,
-    accept_transaction_with_result_for_protocol, mutate_chain_state_serialized, AcceptSource,
-    AtomicBlockAcceptance, BlockAcceptanceResult, CanonicalStateApplyLatencySummary,
-    ChainStateMutationOutcome, TxAcceptanceResult,
+    accept_transaction_with_result_for_protocol, canonical_state_apply_latency_summary,
+    mutate_chain_state_serialized, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
+    CanonicalStateApplyLatencySummary, ChainStateMutationOutcome, TxAcceptanceResult,
 };
 pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
 pub use contracts_gate::{

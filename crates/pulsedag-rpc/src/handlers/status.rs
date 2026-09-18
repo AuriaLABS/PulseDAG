@@ -44,8 +44,7 @@ pub struct NodeStatusData {
     pub ordered_dag_state_root: Option<String>,
     pub selection_digest: Option<String>,
     pub ordered_dag_digest: Option<String>,
-    pub canonical_state_apply_latency_us:
-        Option<pulsedag_core::CanonicalStateApplyLatencySummary>,
+    pub canonical_state_apply_latency_us: Option<pulsedag_core::CanonicalStateApplyLatencySummary>,
     pub consensus_mode: String,
     pub protocol_consensus_mode: String,
     pub ghostdag_metadata_active: bool,
@@ -476,8 +475,7 @@ pub async fn get_status<S: RpcStateLike>(
     let recommended_keep_from_height = chain_snapshot
         .best_height
         .saturating_sub(keep_recent.saturating_sub(1));
-    let canonical_state_apply_latency_us =
-        pulsedag_core::canonical_state_apply_latency_summary();
+    let canonical_state_apply_latency_us = pulsedag_core::canonical_state_apply_latency_summary();
 
     let peer_summary = format!(
         "peer_count={} semantics={}",
@@ -905,9 +903,14 @@ mod tests {
         assert_eq!(data.consensus_mode, "legacy");
         assert_eq!(data.protocol_consensus_mode, "ghostdag_v1");
         assert!(!data.high_cadence_allowed);
-        assert_eq!(data.selection_digest.as_deref(), Some(expected_selection.as_str()));
-        assert_eq!(data.ordered_dag_digest.as_deref(), Some(expected_ordered.as_str()));
-        assert!(data.canonical_state_apply_latency_us.is_none());
+        assert_eq!(
+            data.selection_digest.as_deref(),
+            Some(expected_selection.as_str())
+        );
+        assert_eq!(
+            data.ordered_dag_digest.as_deref(),
+            Some(expected_ordered.as_str())
+        );
     }
 
     #[test]
@@ -920,7 +923,10 @@ mod tests {
         assert_eq!(first.0, pulsedag_core::selection_digest(&chain));
         assert_eq!(first.1, pulsedag_core::ordered_dag_digest(&chain));
 
-        chain.dag.ordered_dag.push("task39-synthetic-order-entry".to_string());
+        chain
+            .dag
+            .ordered_dag
+            .push("task39-synthetic-order-entry".to_string());
         chain.chain_state_generation = chain.chain_state_generation.saturating_add(1);
         let refreshed = canonical_digests_for_chain(&chain);
         assert_eq!(refreshed.0, pulsedag_core::selection_digest(&chain));

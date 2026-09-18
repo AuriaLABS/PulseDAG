@@ -268,12 +268,8 @@ where
         |base| {
             let prepare_started = Instant::now();
             let prepared = prepare_activated_v2_mined_block_state(&block, base, identity)?;
-            final_prepare_latency_us = Some(
-                prepare_started
-                    .elapsed()
-                    .as_micros()
-                    .min(u64::MAX as u128) as u64,
-            );
+            final_prepare_latency_us =
+                Some(prepare_started.elapsed().as_micros().min(u64::MAX as u128) as u64);
             prepare_attempts = prepare_attempts.saturating_add(1);
             Ok((prepared, ()))
         },
@@ -282,10 +278,7 @@ where
     debug_assert_eq!(state.chain_state_generation, mutation.generation);
 
     if let Some(latency_us) = final_prepare_latency_us {
-        record_canonical_state_apply_latency(
-            latency_us,
-            prepare_attempts.saturating_sub(1),
-        );
+        record_canonical_state_apply_latency(latency_us, prepare_attempts.saturating_sub(1));
     }
     broadcast(&block)?;
     Ok(AtomicBlockAcceptance {
