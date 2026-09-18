@@ -1,0 +1,93 @@
+name: v3 launch Task 38 loopback transport phase 17
+
+on:
+  pull_request:
+    paths:
+      - "apps/pulsedag-miner/src/main.rs"
+      - "apps/pulsedag-miner/src/accelerator_reconnect.rs"
+      - "apps/pulsedag-miner/src/accelerator_scheduler.rs"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/task38-loopback-transport-phase17.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/main.rs"
+      - "apps/pulsedag-miner/src/accelerator_reconnect.rs"
+      - "apps/pulsedag-miner/src/accelerator_scheduler.rs"
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/task38-loopback-transport-phase17.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  loopback-transport:
+    name: loopback transport / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Record exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "candidate=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test -z "$(git status --porcelain)"
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Phase 17 loopback transport acceptance default
+        run: cargo test --locked -p pulsedag-miner tests::phase17_loopback_template_disconnect_recovery_has_exact_reconnect_semantics -- --exact
+
+      - name: Phase 17 loopback transport acceptance OpenCL feature
+        run: cargo test --locked -p pulsedag-miner --features gpu tests::phase17_loopback_template_disconnect_recovery_has_exact_reconnect_semantics -- --exact
+
+      - name: Phase 17 loopback transport acceptance CUDA feature
+        run: cargo test --locked -p pulsedag-miner --features cuda tests::phase17_loopback_template_disconnect_recovery_has_exact_reconnect_semantics -- --exact
+
+      - name: Existing stale/finality fresh-work regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-miner tests::accelerator_loop_stale_and_finality_outcomes_do_not_fake_reconnect -- --exact
+          cargo test --locked -p pulsedag-miner tests::task29_unresolved_finality_refreshes_work_without_resubmit -- --exact
+          cargo test --locked -p pulsedag-miner tests::stale_loop_mode_refreshes_work_after_stale -- --exact
+
+      - name: Strict Clippy default
+        run: cargo clippy --locked -p pulsedag-miner --all-targets -- -D warnings
+
+      - name: Strict Clippy OpenCL
+        run: cargo clippy --locked -p pulsedag-miner --all-targets --features gpu -- -D warnings
+
+      - name: Strict Clippy CUDA
+        run: cargo clippy --locked -p pulsedag-miner --all-targets --features cuda -- -D warnings
+
+      - name: Audit Phase 17 claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'POST /mining/template ' apps/pulsedag-miner/src/main.rs
+          grep -q 'TemplateLoopbackStep::Disconnect' apps/pulsedag-miner/src/main.rs
+          grep -q 'TemplateLoopbackStep::HttpStatus(503)' apps/pulsedag-miner/src/main.rs
+          grep -q 'AcceleratorControlTransition::Reconnect' apps/pulsedag-miner/src/main.rs
+          grep -q 'AcceleratorControlTransition::JobRefresh' apps/pulsedag-miner/src/main.rs
+          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/main.rs
+          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/main.rs
