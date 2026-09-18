@@ -281,9 +281,7 @@ fn run(args: Args) -> Result<Manifest, String> {
         refresh_block_consensus_ids(&mut block);
 
         validate_block(&block, &state).map_err(|e| {
-            format!(
-                "production validation rejected block index {index} height {height}: {e}"
-            )
+            format!("production validation rejected block index {index} height {height}: {e}")
         })?;
 
         final_state_root = advance_validated_context(&mut state, &block)?;
