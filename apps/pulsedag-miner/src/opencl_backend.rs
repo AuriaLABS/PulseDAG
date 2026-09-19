@@ -112,7 +112,6 @@ pub(crate) fn mine_canonical(
     )
 }
 
-
 pub(crate) fn launch_mixed_runtime_batch(
     backend: &GpuMiningBackend,
     device_index: usize,

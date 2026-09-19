@@ -875,7 +875,6 @@ fn cuda_mining_backend(
     })
 }
 
-
 #[cfg(not(all(feature = "gpu", feature = "cuda")))]
 fn mixed_mining_backend(
     _module_path: &Path,
@@ -916,7 +915,8 @@ fn mixed_mining_backend(
     };
     let cuda_backend = CudaMiningBackend::new(cuda_config);
 
-    let opencl_backend = GpuMiningBackend::new(GpuBackendConfig::default().with_device_index(None))?;
+    let opencl_backend =
+        GpuMiningBackend::new(GpuBackendConfig::default().with_device_index(None))?;
     let backend = HeterogeneousMiningBackend::new(cuda_backend, opencl_backend)?;
     let accelerator_devices = backend.devices().to_vec();
 
@@ -1500,8 +1500,15 @@ mod tests {
 
     #[test]
     fn parser_accepts_mixed_backend() {
-        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "mixed", "--cuda-module", "kernel.ptx"])
-            .unwrap();
+        let cfg = parse_args_from([
+            "--miner-address",
+            "addr",
+            "--backend",
+            "mixed",
+            "--cuda-module",
+            "kernel.ptx",
+        ])
+        .unwrap();
         assert_eq!(cfg.backend, BackendKind::Mixed);
         assert_eq!(cfg.cuda_module, Some(PathBuf::from("kernel.ptx")));
     }

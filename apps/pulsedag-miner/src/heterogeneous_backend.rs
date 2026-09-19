@@ -43,16 +43,14 @@ impl MixedBatchLauncher for ProductMixedBatchLauncher {
         nonces: &[u64],
     ) -> Result<Vec<[u8; 32]>> {
         match owner.backend {
-            AcceleratorBackendKind::Cuda => self.cuda.launch_mixed_runtime_batch(
-                owner.device_index,
-                pre_pow_hash,
-                nonces,
-            ),
-            AcceleratorBackendKind::OpenCl => self.opencl.launch_mixed_runtime_batch(
-                owner.device_index,
-                pre_pow_hash,
-                nonces,
-            ),
+            AcceleratorBackendKind::Cuda => {
+                self.cuda
+                    .launch_mixed_runtime_batch(owner.device_index, pre_pow_hash, nonces)
+            }
+            AcceleratorBackendKind::OpenCl => {
+                self.opencl
+                    .launch_mixed_runtime_batch(owner.device_index, pre_pow_hash, nonces)
+            }
         }
     }
 }
@@ -207,7 +205,8 @@ impl HeterogeneousMiningBackend {
 
                 for (&nonce, &accelerator_hash) in nonces.iter().zip(&hashes) {
                     last_nonce = Some(nonce);
-                    if !compare_pow_hash_to_target(&accelerator_hash, &work.material.target.target) {
+                    if !compare_pow_hash_to_target(&accelerator_hash, &work.material.target.target)
+                    {
                         continue;
                     }
 
