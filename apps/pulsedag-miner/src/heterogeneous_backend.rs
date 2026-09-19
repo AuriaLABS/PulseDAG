@@ -414,6 +414,34 @@ mod tests {
     }
 
     #[test]
+    fn mixed_runtime_rejects_prefilter_hash_that_fails_canonical_reverification() {
+        let target_bits = 0x207f_ffff;
+        let header = header(target_bits);
+        let launcher = Arc::new(FakeMixedLauncher {
+            hashes: [(0u64, [0u8; 32]), (1u64, [0xffu8; 32])]
+                .into_iter()
+                .collect(),
+            calls: Mutex::new(Vec::new()),
+            batch_size: 1,
+        });
+        let backend = HeterogeneousMiningBackend::with_launcher(
+            vec![
+                AcceleratorDeviceKey::cuda(0),
+                AcceleratorDeviceKey::opencl(0),
+            ],
+            launcher,
+        )
+        .unwrap();
+
+        let error = backend
+            .mine_header(header, 2, 1, target_bits)
+            .expect_err("non-canonical accelerator hash must fail closed");
+        assert!(error
+            .to_string()
+            .contains("canonical re-verification rejected"));
+    }
+
+    #[test]
     fn mixed_runtime_requires_both_vendor_kinds() {
         let launcher = Arc::new(FakeMixedLauncher {
             hashes: BTreeMap::new(),
