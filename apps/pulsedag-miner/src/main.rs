@@ -6,6 +6,8 @@ mod accelerator_reconnect;
 mod accelerator_scheduler;
 #[cfg(feature = "cuda")]
 mod cuda_backend;
+#[cfg(all(feature = "gpu", feature = "cuda"))]
+mod heterogeneous_backend;
 mod submit_finality;
 mod template_protocol;
 
@@ -14,6 +16,8 @@ use accelerator_scheduler::AcceleratorDeviceKey;
 use anyhow::{anyhow, Context, Result};
 #[cfg(feature = "cuda")]
 use cuda_backend::{CudaBackendConfig, CudaMiningBackend};
+#[cfg(all(feature = "gpu", feature = "cuda"))]
+use heterogeneous_backend::HeterogeneousMiningBackend;
 use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
 use pulsedag_core::ProtocolActivationIdentity;
@@ -234,6 +238,7 @@ enum BackendKind {
     Cpu,
     Gpu,
     Cuda,
+    Mixed,
     Auto,
 }
 
@@ -245,9 +250,10 @@ impl std::str::FromStr for BackendKind {
             "cpu" => Ok(Self::Cpu),
             "gpu" => Ok(Self::Gpu),
             "cuda" => Ok(Self::Cuda),
+            "mixed" => Ok(Self::Mixed),
             "auto" => Ok(Self::Auto),
             _ => Err(anyhow!(
-                "invalid --backend: {value}; expected 'cpu', 'gpu', 'cuda', or 'auto'"
+                "invalid --backend: {value}; expected 'cpu', 'gpu', 'cuda', 'mixed', or 'auto'"
             )),
         }
     }
@@ -673,7 +679,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects one CUDA or OpenCL GPU device. CUDA homogeneous multi-device software scheduling may be requested with PULSEDAG_MINER_CUDA_DEVICES=0,1 (mutually exclusive with --gpu-device); OpenCL multi-device selection uses PULSEDAG_MINER_GPU_DEVICES. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|mixed|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects one CUDA or OpenCL GPU device. CUDA homogeneous multi-device software scheduling may be requested with PULSEDAG_MINER_CUDA_DEVICES=0,1 (mutually exclusive with --gpu-device); OpenCL multi-device selection uses PULSEDAG_MINER_GPU_DEVICES. The mixed backend requires both gpu+cuda features plus --cuda-module PATH and builds one canonical CUDA+OpenCL schedule; select vendor device lists with PULSEDAG_MINER_CUDA_DEVICES and PULSEDAG_MINER_GPU_DEVICES. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
 fn mining_backend(cfg: &Config) -> Result<RuntimeBackendSelection> {
@@ -697,6 +703,17 @@ fn mining_backend(cfg: &Config) -> Result<RuntimeBackendSelection> {
                 module_path.display()
             );
             cuda_mining_backend(module_path, cfg.gpu_device)
+        }
+        BackendKind::Mixed => {
+            let module_path = cfg
+                .cuda_module
+                .as_deref()
+                .ok_or_else(|| anyhow!("--backend mixed requires --cuda-module PATH"))?;
+            println!(
+                "miner_backend requested=mixed active=pending module={} mixed_vendor_software=true",
+                module_path.display()
+            );
+            mixed_mining_backend(module_path, cfg.gpu_device)
         }
         BackendKind::Auto => {
             if let Some(module_path) = cfg.cuda_module.as_deref() {
@@ -855,6 +872,61 @@ fn cuda_mining_backend(
             .into_iter()
             .map(AcceleratorDeviceKey::cuda)
             .collect(),
+    })
+}
+
+#[cfg(not(all(feature = "gpu", feature = "cuda")))]
+fn mixed_mining_backend(
+    _module_path: &Path,
+    _device_index: Option<usize>,
+) -> Result<RuntimeBackendSelection> {
+    Err(anyhow!(
+        "mixed backend requested but pulsedag-miner was not built with both gpu and cuda features."
+    ))
+}
+
+#[cfg(all(feature = "gpu", feature = "cuda"))]
+fn mixed_mining_backend(
+    module_path: &Path,
+    device_index: Option<usize>,
+) -> Result<RuntimeBackendSelection> {
+    if device_index.is_some() {
+        return Err(anyhow!(
+            "--backend mixed does not accept --gpu-device because CUDA and OpenCL indices are separate; use PULSEDAG_MINER_CUDA_DEVICES and PULSEDAG_MINER_GPU_DEVICES"
+        ));
+    }
+
+    let module_image = std::fs::read(module_path)
+        .with_context(|| format!("failed to read CUDA module from {}", module_path.display()))?;
+    if module_image.is_empty() {
+        return Err(anyhow!("CUDA module at {} is empty", module_path.display()));
+    }
+
+    let cuda_device_indices = requested_cuda_device_indices(None)?;
+    for &selected_index in &cuda_device_indices {
+        cuda_driver_launch::probe_cuda_device(selected_index).with_context(|| {
+            format!("CUDA Driver/device probe failed for device index {selected_index}")
+        })?;
+    }
+    let cuda_config = if cuda_device_indices.len() == 1 {
+        CudaBackendConfig::new(module_image, cuda_device_indices[0])?
+    } else {
+        CudaBackendConfig::for_devices(module_image, cuda_device_indices)?
+    };
+    let cuda_backend = CudaMiningBackend::new(cuda_config);
+
+    let opencl_backend =
+        GpuMiningBackend::new(GpuBackendConfig::default().with_device_index(None))?;
+    let backend = HeterogeneousMiningBackend::new(cuda_backend, opencl_backend)?;
+    let accelerator_devices = backend.devices().to_vec();
+
+    println!(
+        "mixed_backend configured devices={} canonical_schedule=true mixed_vendor_software=true hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED GPU_MINING_AMD_PASS=NOT_CLAIMED",
+        accelerator_devices.len()
+    );
+    Ok(RuntimeBackendSelection {
+        backend: Arc::new(backend),
+        accelerator_devices,
     })
 }
 
@@ -1350,7 +1422,7 @@ mod tests {
         MinerTelemetry, SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1427,6 +1499,21 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_mixed_backend() {
+        let cfg = parse_args_from([
+            "--miner-address",
+            "addr",
+            "--backend",
+            "mixed",
+            "--cuda-module",
+            "kernel.ptx",
+        ])
+        .unwrap();
+        assert_eq!(cfg.backend, BackendKind::Mixed);
+        assert_eq!(cfg.cuda_module, Some(PathBuf::from("kernel.ptx")));
+    }
+
+    #[test]
     fn parser_accepts_auto_backend() {
         let cfg = parse_args_from(["--miner-address", "addr", "--backend", "auto"])
             .expect("auto backend should parse");
@@ -1454,7 +1541,7 @@ mod tests {
     fn usage_describes_canonical_opencl_and_explicit_cuda_backends() {
         let text = usage();
 
-        assert!(text.contains("--backend cpu|gpu|cuda|auto"));
+        assert!(text.contains("--backend cpu|gpu|cuda|mixed|auto"));
         assert!(text.contains("--cuda-module PATH"));
         assert!(text.contains("PULSEDAG_MINER_CUDA_DEVICES"));
         assert!(text.contains("canonical OpenCL kHeavyHash backend"));
