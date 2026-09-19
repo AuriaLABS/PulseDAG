@@ -91,6 +91,7 @@ jobs:
           grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'mark_unavailable' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'failed_cuda_worker_is_isolated_replays_batch_and_recovers_next_job' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'unavailable_cuda_worker_stays_isolated_when_probe_still_fails' apps/pulsedag-miner/src/cuda_backend.rs
           ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/cuda_backend.rs
           ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/cuda_backend.rs
           echo 'cuda_worker_isolation_software=PASS'
