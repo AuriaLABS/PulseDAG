@@ -89,7 +89,7 @@ jobs:
           PR_BLOCK_COUNT: "4096"
           DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
         run: |
-          set -euo pipefal
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BLOCK_COUNT="$DISPATCH_BLOCK_COUNT"
           else
