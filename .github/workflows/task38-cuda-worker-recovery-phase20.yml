@@ -1,0 +1,121 @@
+name: v3 launch Task 38 CUDA worker recovery phase 20
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/cuda_backend.rs"
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/accelerator_scheduler.rs"
+      - "apps/pulsedag-miner/src/heterogeneous_backend.rs"
+      - ".github/workflows/task38-cuda-worker-recovery-phase20.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/cuda_backend.rs"
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/accelerator_scheduler.rs"
+      - "apps/pulsedag-miner/src/heterogeneous_backend.rs"
+      - ".github/workflows/task38-cuda-worker-recovery-phase20.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-worker-recovery-software-contract:
+    name: CUDA worker recovery software contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_cuda_worker_recovery_candidate_sha=$EXPECTED_SHA"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify CUDA worker recovery contracts
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner cuda_backend::tests
+
+      - name: Preserve scheduler regression contracts
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner accelerator_scheduler::tests
+
+      - name: Build deterministic CUDA Driver API shim
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -fPIC -shared \
+            apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp \
+            -o /tmp/libcuda-pulsedag-mock.so
+          test -s /tmp/libcuda-pulsedag-mock.so
+
+      - name: Preserve CUDA driver contract
+        if: runner.os == 'Linux'
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+        run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract
+
+      - name: Preserve CUDA driver host contract on Windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe
+
+      - name: Preserve mixed CUDA+OpenCL runtime
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner heterogeneous_backend::tests
+
+      - name: Strict CUDA Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --all-targets -- -D warnings
+
+      - name: Strict mixed-feature Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner -- -D warnings
+
+      - name: Audit worker isolation and non-claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'CudaWorkerHealth' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'recover_unavailable_workers' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'mark_unavailable' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'failed_cuda_worker_is_isolated_replays_batch_and_recovers_next_job' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'unavailable_cuda_worker_stays_isolated_when_probe_still_fails' apps/pulsedag-miner/src/cuda_backend.rs
+          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/cuda_backend.rs
+          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/cuda_backend.rs
+          echo 'cuda_worker_isolation_software=PASS'
+          echo 'cuda_worker_recovery_software=PASS'
+          echo 'canonical_nonce_partition_preserved=PASS'
+          echo 'physical_cuda_device_recovery=NOT_CLAIMED'
+          echo 'watchdog_timeout_enforcement=NOT_CLAIMED'
+          echo 'long_duration_soak=NOT_CLAIMED'
+          echo 'GPU_MINING_NVIDIA_PASS=NOT_CLAIMED'
+          echo 'GPU_MINING_AMD_PASS=NOT_CLAIMED'
