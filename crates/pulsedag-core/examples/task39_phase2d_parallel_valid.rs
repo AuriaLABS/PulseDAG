@@ -726,7 +726,7 @@ fn run(args: Args) -> Result<Manifest, String> {
         && alternate.missing_parent_events > 0
         && alternate.retried_events > 0;
 
-    let mut missing = Vec::new();
+    let mut missing = vec!["restart_snapshot_prune_same_parallel_corpus"];
     if blocks.len() < MILLION {
         missing.push("million_block_exact_candidate_run");
     }

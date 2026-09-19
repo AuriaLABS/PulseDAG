@@ -80,6 +80,7 @@ jobs:
             (.runs[1].missing_parent_events > 0) and
             (.runs[1].retried_events > 0) and
             .coverage.completion_eligible == false and
+            (.coverage.missing_required_measurements | index("restart_snapshot_prune_same_parallel_corpus")) != null and
             .runtime_gate_result == "PASS"
           ' "$RUNNER_TEMP/task39-phase2d-selftest.json" >/dev/null
 
@@ -142,6 +143,7 @@ jobs:
             (.runs[0].observation.state_digest == .runs[1].observation.state_digest) and
             (.runs[0].observation.state_root == .runs[1].observation.state_root) and
             .coverage.completion_eligible == false and
+            (.coverage.missing_required_measurements | index("restart_snapshot_prune_same_parallel_corpus")) != null and
             .runtime_gate_result == "PASS"
           ' "$E" >/dev/null
           jq -e '
