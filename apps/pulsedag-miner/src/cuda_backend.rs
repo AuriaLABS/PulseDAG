@@ -289,6 +289,7 @@ impl CudaMiningBackend {
                 }
 
                 let lane = &schedule.lanes()[lane_index];
+                let initial_owner_device_index = lane.owner.device_index;
                 let partition = lane.partition;
                 let mut next_iteration = iterations[lane_index];
                 let mut lane_exhausted = false;
@@ -328,8 +329,9 @@ impl CudaMiningBackend {
                             schedule = schedule.redistribute_failed_device(owner).map_err(
                                 |redistribution_error| {
                                     anyhow!(
-                                        "CUDA worker {} launch failed: {launch_error}; deterministic worker redistribution failed: {redistribution_error}",
-                                        owner.device_index
+                                        "CUDA worker {} launch failed (batch initial owner {}): {launch_error}; deterministic worker redistribution failed: {redistribution_error}",
+                                        owner.device_index,
+                                        initial_owner_device_index
                                     )
                                 },
                             )?;
