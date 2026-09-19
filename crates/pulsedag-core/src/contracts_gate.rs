@@ -3,6 +3,14 @@
 //! Contract/covenant modules remain in the tree as inactive foundation.
 //! Executable apply is compiled only when the `executable-contracts` Cargo
 //! feature is enabled. Default Task31 / node builds must leave that feature off.
+//!
+//! This compile/runtime gate is a necessary execution precondition only. It is
+//! not consensus authorization. A future activation must additionally satisfy
+//! the versioned, identity-bound, protocol-upgrade authorization contract in
+//! `programmability_activation_v1`; the current launch profile remains inactive.
+
+#[path = "programmability_activation_v1.rs"]
+pub mod programmability_activation_v1;
 
 /// True when this crate was built with `--features executable-contracts`.
 #[cfg(feature = "executable-contracts")]
@@ -22,18 +30,24 @@ pub fn contracts_compile_identity() -> &'static str {
 }
 
 /// Whether this binary is allowed to treat `contracts.config.enabled = true`
-/// as an executable admission path.
+/// as an executable admission precondition. This does not grant consensus
+/// authorization by itself.
 pub fn contracts_compile_time_executable() -> bool {
     EXECUTABLE_CONTRACTS_COMPILED
 }
 
-/// Combined runtime + compile gate. Runtime `enabled` is ignored unless the
-/// compile feature is present.
+/// Combined runtime + compile precondition. Runtime `enabled` is ignored unless
+/// the compile feature is present. A `true` result is still insufficient for
+/// consensus activation without `ProgrammabilityActivationContractV1`.
 pub fn contracts_may_execute(runtime_enabled: bool) -> bool {
     EXECUTABLE_CONTRACTS_COMPILED && runtime_enabled
 }
 
 /// Reject executable apply when the Task31 compile gate is closed.
+///
+/// Passing this precondition does not authorize programmability at consensus;
+/// callers must also satisfy the separate activation contract before any future
+/// execution wiring can be considered.
 pub fn reject_inactive_contract_apply(runtime_enabled: bool) -> Result<(), &'static str> {
     if contracts_may_execute(runtime_enabled) {
         Ok(())
