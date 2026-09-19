@@ -1,0 +1,119 @@
+name: v3 launch Task 38 CUDA multi-device phase 18
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-cuda-backend-wiring.yml
+      - .github/workflows/task38-cuda-multidevice-phase18.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-cuda-backend-wiring.yml
+      - .github/workflows/task38-cuda-multidevice-phase18.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-multidevice-contract:
+    name: CUDA multi-device software contract / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_cuda_multidevice_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: CUDA backend multi-device contracts
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner cuda_backend::tests
+
+      - name: Accelerator scheduler mixed-inventory foundation
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-accelerator-scheduler-probe
+
+      - name: Preserve canonical protocol partition regressions
+        run: cargo test --locked -p pulsedag-miner protocol_backend::tests
+
+      - name: Strict CUDA Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --bin pulsedag-miner -- -D warnings
+
+      - name: Audit Phase 18 scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path("apps/pulsedag-miner/src/main.rs").read_text()
+          cuda = Path("apps/pulsedag-miner/src/cuda_backend.rs").read_text()
+
+          required = [
+              (main, "PULSEDAG_MINER_CUDA_DEVICES"),
+              (main, "CudaBackendConfig::for_devices"),
+              (cuda, "device_indices: Vec<usize>"),
+              (cuda, "AcceleratorSchedule::build"),
+              (cuda, "partition.nonce_at"),
+              (cuda, "lane.owner.device_index"),
+              (cuda, "reverify_accelerator_hash"),
+              (cuda, "duplicate indices"),
+          ]
+          for haystack, needle in required:
+              if needle not in haystack:
+                  raise SystemExit(f"missing Phase 18 software contract: {needle}")
+
+          if "GPU_MINING_NVIDIA_PASS=true" in main or "GPU_MINING_NVIDIA_PASS=true" in cuda:
+              raise SystemExit("Phase 18 must not claim NVIDIA physical pass")
+          if "GPU_MINING_AMD_PASS=true" in main or "GPU_MINING_AMD_PASS=true" in cuda:
+              raise SystemExit("Phase 18 must not claim AMD physical pass")
+          PY
+          echo "cuda_homogeneous_multidevice_software=PASS"
+          echo "canonical_nonce_partition_reuse=PASS"
+          echo "cuda_multigpu_hardware_correctness=NOT_CLAIMED"
+          echo "cuda_worker_recovery=NOT_CLAIMED"
+          echo "mixed_vendor_runtime=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"

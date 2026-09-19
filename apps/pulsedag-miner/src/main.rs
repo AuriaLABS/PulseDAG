@@ -673,7 +673,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects the global single CUDA or OpenCL GPU device index for this software slice. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects one CUDA or OpenCL GPU device. CUDA homogeneous multi-device software scheduling may be requested with PULSEDAG_MINER_CUDA_DEVICES=0,1 (mutually exclusive with --gpu-device); OpenCL multi-device selection uses PULSEDAG_MINER_GPU_DEVICES. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
 fn mining_backend(cfg: &Config) -> Result<RuntimeBackendSelection> {
@@ -759,6 +759,53 @@ fn gpu_mining_backend(device_index: Option<usize>) -> Result<RuntimeBackendSelec
     })
 }
 
+#[cfg(feature = "cuda")]
+const CUDA_DEVICE_LIST_ENV: &str = "PULSEDAG_MINER_CUDA_DEVICES";
+
+#[cfg(feature = "cuda")]
+fn parse_cuda_device_indices(value: &str) -> Result<Vec<usize>> {
+    let mut indices = Vec::new();
+    for raw_index in value.split(',') {
+        let token = raw_index.trim();
+        if token.is_empty() {
+            return Err(anyhow!(
+                "{CUDA_DEVICE_LIST_ENV} contains an empty device index"
+            ));
+        }
+        let index = token.parse::<usize>().map_err(|_| {
+            anyhow!("invalid CUDA device index '{token}' in {CUDA_DEVICE_LIST_ENV}")
+        })?;
+        indices.push(index);
+    }
+    if indices.is_empty() {
+        return Err(anyhow!(
+            "{CUDA_DEVICE_LIST_ENV} must contain at least one device index"
+        ));
+    }
+    indices.sort_unstable();
+    if indices.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(anyhow!(
+            "{CUDA_DEVICE_LIST_ENV} contains a duplicate device index"
+        ));
+    }
+    Ok(indices)
+}
+
+#[cfg(feature = "cuda")]
+fn requested_cuda_device_indices(explicit: Option<usize>) -> Result<Vec<usize>> {
+    let env_value = std::env::var(CUDA_DEVICE_LIST_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (explicit, env_value) {
+        (Some(_), Some(_)) => Err(anyhow!(
+            "explicit --gpu-device selection cannot be combined with {CUDA_DEVICE_LIST_ENV}"
+        )),
+        (Some(index), None) => Ok(vec![index]),
+        (None, Some(value)) => parse_cuda_device_indices(&value),
+        (None, None) => Ok(vec![0]),
+    }
+}
+
 #[cfg(not(feature = "cuda"))]
 fn cuda_mining_backend(
     _module_path: &Path,
@@ -780,19 +827,34 @@ fn cuda_mining_backend(
         return Err(anyhow!("CUDA module at {} is empty", module_path.display()));
     }
 
-    let device_index = device_index.unwrap_or(0);
-    cuda_driver_launch::probe_cuda_device(device_index).with_context(|| {
-        format!("CUDA Driver/device probe failed for device index {device_index}")
-    })?;
-    let config = CudaBackendConfig::new(module_image, device_index)?;
+    let device_indices = requested_cuda_device_indices(device_index)?;
+    for &selected_index in &device_indices {
+        cuda_driver_launch::probe_cuda_device(selected_index).with_context(|| {
+            format!("CUDA Driver/device probe failed for device index {selected_index}")
+        })?;
+    }
+    let config = if device_indices.len() == 1 {
+        CudaBackendConfig::new(module_image, device_indices[0])?
+    } else {
+        CudaBackendConfig::for_devices(module_image, device_indices.clone())?
+    };
+    let selected = device_indices
+        .iter()
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     println!(
-        "cuda_backend configured device_index={} module={} hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED",
-        device_index,
+        "cuda_backend configured devices={} device_indices={} module={} homogeneous_multidevice_software=true hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED",
+        device_indices.len(),
+        selected,
         module_path.display()
     );
     Ok(RuntimeBackendSelection {
         backend: Arc::new(CudaMiningBackend::new(config)),
-        accelerator_devices: vec![AcceleratorDeviceKey::cuda(device_index)],
+        accelerator_devices: device_indices
+            .into_iter()
+            .map(AcceleratorDeviceKey::cuda)
+            .collect(),
     })
 }
 
@@ -1352,6 +1414,18 @@ mod tests {
         assert_eq!(cfg.gpu_device, Some(2));
     }
 
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_device_list_parser_is_canonical_and_fail_closed() {
+        assert_eq!(
+            super::parse_cuda_device_indices("3, 1,2").unwrap(),
+            vec![1, 2, 3]
+        );
+        assert!(super::parse_cuda_device_indices("1,1").is_err());
+        assert!(super::parse_cuda_device_indices("1,,2").is_err());
+        assert!(super::parse_cuda_device_indices("cuda0").is_err());
+    }
+
     #[test]
     fn parser_accepts_auto_backend() {
         let cfg = parse_args_from(["--miner-address", "addr", "--backend", "auto"])
@@ -1382,6 +1456,7 @@ mod tests {
 
         assert!(text.contains("--backend cpu|gpu|cuda|auto"));
         assert!(text.contains("--cuda-module PATH"));
+        assert!(text.contains("PULSEDAG_MINER_CUDA_DEVICES"));
         assert!(text.contains("canonical OpenCL kHeavyHash backend"));
         assert!(text.contains("explicit gpu selection fails closed"));
         assert!(text.contains("cuda feature"));

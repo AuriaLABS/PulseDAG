@@ -95,7 +95,8 @@ jobs:
         shell: bash
         run: |
           echo "cuda_backend_cli_wiring=PASS"
-          echo "cuda_backend_single_device_contract=PASS"
+          echo "cuda_backend_device_selection_contract=PASS"
+          echo "cuda_backend_homogeneous_multidevice_software=PASS"
           echo "cuda_backend_fail_closed_no_cpu_fallback=PASS"
           echo "cuda_backend_canonical_reverification=PASS"
           echo "legacy_v1_protocol_path=PASS"
