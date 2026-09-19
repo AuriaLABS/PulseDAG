@@ -137,14 +137,17 @@ impl CudaMiningBackend {
         Self { config, launcher }
     }
 
+    #[cfg(feature = "gpu")]
     pub(crate) fn selected_device_indices(&self) -> &[usize] {
         &self.config.device_indices
     }
 
+    #[cfg(feature = "gpu")]
     pub(crate) fn mixed_runtime_batch_size(&self) -> usize {
         self.config.batch_size
     }
 
+    #[cfg(feature = "gpu")]
     pub(crate) fn launch_mixed_runtime_batch(
         &self,
         device_index: usize,
