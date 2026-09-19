@@ -1,0 +1,166 @@
+name: v3 Task39 production-valid parallel replay
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      block_count:
+        description: "Activated-v2 production-valid parallel DAG block count"
+        required: true
+        default: "4096"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task39-parallel-valid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-valid-parallel:
+    name: activated-v2 same-corpus parallel replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Format, Clippy, and activated-v2 fork regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --locked -p pulsedag-core --example task39_phase2d_parallel_valid -- -D warnings
+          cargo test --locked -p pulsedag-core network_context_v2::tests::parallel_valid_block_is_deferred_instead_of_rejected_by_live_tip_state
+          cargo test --locked -p pulsedag-core network_staging_v2::tests::merge_anchor_promotes_staged_side_tip_and_state_atomically
+
+      - name: Phase2d self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p pulsedag-core --example task39_phase2d_parallel_valid -- \
+            --self-test \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --out "$RUNNER_TEMP/task39-phase2d-selftest.json"
+          jq -e '
+            .schema == "pulsedag.task39.phase2d-parallel-valid.v1" and
+            .generated_blocks == 192 and
+            .topology.parallel_pairs > 0 and
+            .topology.multi_parent_joins == .topology.parallel_pairs and
+            .exact_equivalence == true and
+            .production_valid_parallel_dag_same_corpus == true and
+            .pow_failures == 0 and
+            (.runs | length) == 2 and
+            (.runs[0].rejected_events == 0) and
+            (.runs[1].rejected_events == 0) and
+            (.runs[1].missing_parent_events > 0) and
+            (.runs[1].retried_events > 0) and
+            .coverage.completion_eligible == false and
+            .runtime_gate_result == "PASS"
+          ' "$RUNNER_TEMP/task39-phase2d-selftest.json" >/dev/null
+
+      - name: Run exact-candidate activated-v2 parallel replay
+        shell: bash
+        env:
+          PR_BLOCK_COUNT: "4096"
+          DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
+        run: |
+          set -euo pipefal
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BLOCK_COUNT="$DISPATCH_BLOCK_COUNT"
+          else
+            BLOCK_COUNT="$PR_BLOCK_COUNT"
+          fi
+          mkdir -p "$RUNNER_TEMP/task39-phase2d"
+          cargo run --locked --release -p pulsedag-core --example task39_phase2d_parallel_valid -- \
+            --blocks "$BLOCK_COUNT" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --out "$RUNNER_TEMP/task39-phase2d/evidence.json"
+
+      - name: Enforce production-valid parallel contract without premature completion claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-phase2d/evidence.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" '
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .generated_blocks == .requested_blocks and
+            .corpus_contract.activated_v2_context_validation == true and
+            .corpus_contract.activated_v2_runtime_staging_and_promotion == true and
+            .corpus_contract.production_pow_validation == true and
+            .corpus_contract.authoritative_ordered_dag_state_replay == true and
+            .corpus_contract.same_corpus_two_arrival_orders == true and
+            .topology.includes_parallel_blocks == true and
+            .topology.includes_multi_parent_joins == true and
+            .topology.parallel_pairs > 0 and
+            .topology.multi_parent_joins == .topology.parallel_pairs and
+            .pow_failures == 0 and
+            .exact_equivalence == true and
+            .production_valid_parallel_dag_same_corpus == true and
+            (.runs | length) == 2 and
+            (.runs[0].finalized_blocks == .generated_blocks) and
+            (.runs[1].finalized_blocks == .generated_blocks) and
+            (.runs[0].final_pending_count == 0) and
+            (.runs[1].final_pending_count == 0) and
+             (.runs[0].final_staged_count == 0) and
+            (.runs[1].final_staged_count == 0) and
+            (.runs[0].rejected_events == 0) and
+            (.runs[1].rejected_events == 0) and
+            (.runs[1].missing_parent_events > 0) and
+            (.runs[1].retried_events > 0) and
+            (.runs[0].observation.canonical_bundle_digest == .runs[1].observation.canonical_bundle_digest) and
+            (.runs[0].observation.selection_digest == .runs[1].observation.selection_digest) and
+            (.runs[0].observation.merge_set_digest == .runs[1].observation.merge_set_digest) and
+            (.runs[0].observation.ordered_dag_digest == .runs[1].observation.ordered_dag_digest) and
+            (.runs[0].observation.transaction_outcomes_digest == .runs[1].observation.transaction_outcomes_digest) and
+            (.runs[0].observation.state_digest == .runs[1].observation.state_digest) and
+            (.runs[0].observation.state_root == .runs[1].observation.state_root) and
+            .coverage.completion_eligible == false and
+            .runtime_gate_result == "PASS"
+          ' "$E" >/dev/null
+          jq -e '
+            if .generated_blocks < 1000000 then
+              .million_block_count_observed == false and
+              (.coverage.missing_required_measurements | index("million_block_exact_candidate_run")) != null
+            else
+              .million_block_count_observed == true
+            end
+          ' "$E" >/dev/null
+          sha256sum "$E" | tee "$RUNNER_TEMP/task39-phase2d/evidence.sha256"
+
+      - name: Upload exact-candidate production-valid parallel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-phase2d-parallel-valid-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task39-phase2d
+            ${{ runner.temp }}/task39-phase2d-selftest.json
+          if-no-files-found: warn
+          retention-days: 14
