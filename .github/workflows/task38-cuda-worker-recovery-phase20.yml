@@ -70,8 +70,25 @@ jobs:
       - name: Preserve scheduler regression contracts
         run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner accelerator_scheduler::tests
 
+      - name: Build deterministic CUDA Driver API shim
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -fPIC -shared \
+            apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp \
+            -o /tmp/libcuda-pulsedag-mock.so
+          test -s /tmp/libcuda-pulsedag-mock.so
+
       - name: Preserve CUDA driver contract
+        if: runner.os == 'Linux'
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
         run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract
+
+      - name: Preserve CUDA driver host contract on Windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe
 
       - name: Preserve mixed CUDA+OpenCL runtime
         run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner heterogeneous_backend::tests
