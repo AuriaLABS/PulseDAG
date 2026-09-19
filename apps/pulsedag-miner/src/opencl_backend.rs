@@ -112,6 +112,32 @@ pub(crate) fn mine_canonical(
     )
 }
 
+pub(crate) fn launch_mixed_runtime_batch(
+    backend: &GpuMiningBackend,
+    device_index: usize,
+    pre_pow_hash: [u8; 32],
+    nonces: &[u64],
+) -> Result<Vec<[u8; 32]>> {
+    if !backend
+        .selected_devices()
+        .iter()
+        .any(|device| device.device_index == device_index)
+    {
+        return Err(anyhow!(
+            "OpenCL mixed runtime requested unselected device index {device_index}"
+        ));
+    }
+    if backend.config().work_size == 0 {
+        return Err(anyhow!("OpenCL work size must be non-zero"));
+    }
+    DriverOpenClBatchLauncher.launch(
+        device_index,
+        pre_pow_hash,
+        nonces,
+        backend.config().work_size,
+    )
+}
+
 #[cfg(test)]
 fn mine_canonical_with_launcher(
     backend: &GpuMiningBackend,
