@@ -8,7 +8,8 @@ use pulsedag_miner::protocol_backend::ProtocolMiningBackend;
 use pulsedag_miner::protocol_pow::{build_protocol_pow_work, ProtocolPowWork};
 use pulsedag_miner::{MiningBackend, NonceSearchResult};
 use sha3::{Digest, Keccak256};
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 const DEFAULT_CUDA_BATCH_SIZE: usize = 4_096;
 const DEFAULT_CUDA_BLOCK_SIZE: u32 = 256;
@@ -87,6 +88,10 @@ impl CudaBackendConfig {
 }
 
 trait CudaBatchLauncher: Send + Sync {
+    fn probe(&self, _device_index: usize) -> Result<()> {
+        Ok(())
+    }
+
     fn launch(
         &self,
         module_image: &[u8],
@@ -101,6 +106,10 @@ trait CudaBatchLauncher: Send + Sync {
 struct DriverCudaBatchLauncher;
 
 impl CudaBatchLauncher for DriverCudaBatchLauncher {
+    fn probe(&self, device_index: usize) -> Result<()> {
+        cuda_driver_launch::probe_cuda_device(device_index)
+    }
+
     fn launch(
         &self,
         module_image: &[u8],
@@ -119,9 +128,58 @@ impl CudaBatchLauncher for DriverCudaBatchLauncher {
     }
 }
 
+#[derive(Debug, Default)]
+struct CudaWorkerHealth {
+    unavailable: Mutex<BTreeSet<usize>>,
+}
+
+impl CudaWorkerHealth {
+    fn selected_unavailable(&self, selected: &[usize]) -> Result<BTreeSet<usize>> {
+        let unavailable = self
+            .unavailable
+            .lock()
+            .map_err(|_| anyhow!("CUDA worker health mutex poisoned"))?;
+        Ok(unavailable
+            .iter()
+            .copied()
+            .filter(|device_index| selected.contains(device_index))
+            .collect())
+    }
+
+    fn mark_unavailable(&self, device_index: usize) -> Result<()> {
+        self.unavailable
+            .lock()
+            .map_err(|_| anyhow!("CUDA worker health mutex poisoned"))?
+            .insert(device_index);
+        Ok(())
+    }
+
+    fn mark_recovered(&self, device_index: usize) -> Result<()> {
+        self.unavailable
+            .lock()
+            .map_err(|_| anyhow!("CUDA worker health mutex poisoned"))?
+            .remove(&device_index);
+        Ok(())
+    }
+}
+
+fn recover_unavailable_workers(
+    selected_device_indices: &[usize],
+    launcher: &dyn CudaBatchLauncher,
+    worker_health: &CudaWorkerHealth,
+) -> Result<()> {
+    for device_index in worker_health.selected_unavailable(selected_device_indices)? {
+        if launcher.probe(device_index).is_ok() {
+            worker_health.mark_recovered(device_index)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct CudaMiningBackend {
     config: CudaBackendConfig,
     launcher: Arc<dyn CudaBatchLauncher>,
+    worker_health: CudaWorkerHealth,
 }
 
 impl CudaMiningBackend {
@@ -129,12 +187,17 @@ impl CudaMiningBackend {
         Self {
             config,
             launcher: Arc::new(DriverCudaBatchLauncher),
+            worker_health: CudaWorkerHealth::default(),
         }
     }
 
     #[cfg(test)]
     fn with_launcher(config: CudaBackendConfig, launcher: Arc<dyn CudaBatchLauncher>) -> Self {
-        Self { config, launcher }
+        Self {
+            config,
+            launcher,
+            worker_health: CudaWorkerHealth::default(),
+        }
     }
 
     #[cfg(feature = "gpu")]
@@ -176,6 +239,11 @@ impl CudaMiningBackend {
         identity: Option<&ProtocolActivationIdentity>,
     ) -> Result<NonceSearchResult> {
         let work = build_protocol_pow_work(&header, target_bits, identity)?;
+        recover_unavailable_workers(
+            &self.config.device_indices,
+            self.launcher.as_ref(),
+            &self.worker_health,
+        )?;
         self.search_work(header, work, max_tries)
     }
 
@@ -193,7 +261,19 @@ impl CudaMiningBackend {
             .copied()
             .map(AcceleratorDeviceKey::cuda)
             .collect::<Vec<_>>();
-        let schedule = AcceleratorSchedule::build(&devices, max_tries)?;
+        let mut schedule = AcceleratorSchedule::build(&devices, max_tries)?;
+        for unavailable in self
+            .worker_health
+            .selected_unavailable(&self.config.device_indices)?
+        {
+            schedule = schedule
+                .redistribute_failed_device(AcceleratorDeviceKey::cuda(unavailable))
+                .map_err(|err| {
+                    anyhow!(
+                        "CUDA worker health excludes device {unavailable} but deterministic redistribution failed: {err}"
+                    )
+                })?;
+        }
         let active_lanes = schedule.lanes().len();
         let mut iterations = vec![0u64; active_lanes];
         let mut exhausted = vec![false; active_lanes];
@@ -233,13 +313,29 @@ impl CudaMiningBackend {
                 }
                 made_progress = true;
 
-                let hashes = self.launcher.launch(
-                    &self.config.module_image,
-                    lane.owner.device_index,
-                    pre_pow_hash,
-                    &nonces,
-                    self.config.block_size,
-                )?;
+                let hashes = loop {
+                    let owner = schedule.lanes()[lane_index].owner;
+                    match self.launcher.launch(
+                        &self.config.module_image,
+                        owner.device_index,
+                        pre_pow_hash,
+                        &nonces,
+                        self.config.block_size,
+                    ) {
+                        Ok(hashes) => break hashes,
+                        Err(launch_error) => {
+                            self.worker_health.mark_unavailable(owner.device_index)?;
+                            schedule = schedule.redistribute_failed_device(owner).map_err(
+                                |redistribution_error| {
+                                    anyhow!(
+                                        "CUDA worker {} launch failed: {launch_error}; deterministic worker redistribution failed: {redistribution_error}",
+                                        owner.device_index
+                                    )
+                                },
+                            )?;
+                        }
+                    }
+                };
                 if hashes.len() != nonces.len() {
                     return Err(anyhow!(
                         "CUDA launcher returned {} hash(es) for {} nonce(s); refusing incomplete accelerator result",
@@ -421,6 +517,57 @@ mod tests {
         }
     }
 
+    struct FailOnceLauncher {
+        hashes: BTreeMap<u64, [u8; 32]>,
+        calls: Mutex<Vec<LaunchCall>>,
+        fail_device: usize,
+        failed: Mutex<bool>,
+    }
+
+    impl FailOnceLauncher {
+        fn calls(&self) -> Vec<LaunchCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CudaBatchLauncher for FailOnceLauncher {
+        fn launch(
+            &self,
+            module_image: &[u8],
+            device_index: usize,
+            pre_pow_hash: [u8; 32],
+            nonces: &[u64],
+            block_size: u32,
+        ) -> Result<Vec<[u8; 32]>> {
+            self.calls.lock().unwrap().push(LaunchCall {
+                module_image: module_image.to_vec(),
+                device_index,
+                pre_pow_hash,
+                nonces: nonces.to_vec(),
+                block_size,
+            });
+            let mut failed = self.failed.lock().unwrap();
+            if device_index == self.fail_device && !*failed {
+                *failed = true;
+                return Err(anyhow!(
+                    "injected CUDA worker failure on device {device_index}"
+                ));
+            }
+            drop(failed);
+            nonces
+                .iter()
+                .map(|nonce| {
+                    self.hashes
+                        .get(nonce)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow!("fail-once CUDA launcher has no hash for nonce {nonce}")
+                        })
+                })
+                .collect()
+        }
+    }
+
     fn header(version: u32, target_bits: u32) -> BlockHeader {
         BlockHeader {
             version,
@@ -561,6 +708,72 @@ mod tests {
             .collect::<Vec<_>>();
         seen.sort_unstable();
         assert_eq!(seen, (0..7).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn failed_cuda_worker_is_isolated_replays_batch_and_recovers_next_job() {
+        let target_bits = 0x0300_0001;
+        let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+        let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+        let rejected_hash = [0xffu8; 32];
+        assert!(!compare_pow_hash_to_target(
+            &rejected_hash,
+            &work.material.target.target
+        ));
+
+        let launcher = Arc::new(FailOnceLauncher {
+            hashes: (0..7).map(|nonce| (nonce, rejected_hash)).collect(),
+            calls: Mutex::new(Vec::new()),
+            fail_device: 1,
+            failed: Mutex::new(false),
+        });
+        let backend =
+            CudaMiningBackend::with_launcher(test_config_devices(&[1, 3], 2), launcher.clone());
+
+        let first = backend
+            .mine_header(header.clone(), 7, 1, target_bits)
+            .unwrap();
+        assert!(!first.accepted);
+        assert_eq!(first.tries, 7);
+        assert_eq!(
+            backend
+                .worker_health
+                .selected_unavailable(&[1, 3])
+                .unwrap(),
+            BTreeSet::from([1usize])
+        );
+
+        let first_calls = launcher.calls();
+        assert_eq!(first_calls.len(), 5);
+        assert_eq!(first_calls[0].device_index, 1);
+        assert_eq!(first_calls[0].nonces, vec![0, 2]);
+        assert_eq!(first_calls[1].device_index, 3);
+        assert_eq!(first_calls[1].nonces, vec![0, 2]);
+        assert!(first_calls[2..]
+            .iter()
+            .all(|call| call.device_index == 3));
+
+        let first_call_count = first_calls.len();
+        let second = backend.mine_header(header, 7, 1, target_bits).unwrap();
+        assert!(!second.accepted);
+        assert_eq!(second.tries, 7);
+        assert!(backend
+            .worker_health
+            .selected_unavailable(&[1, 3])
+            .unwrap()
+            .is_empty());
+
+        let calls = launcher.calls();
+        let second_calls = &calls[first_call_count..];
+        assert_eq!(second_calls.len(), 4);
+        assert_eq!(second_calls[0].device_index, 1);
+        assert_eq!(second_calls[0].nonces, vec![0, 2]);
+        assert_eq!(second_calls[1].device_index, 3);
+        assert_eq!(second_calls[1].nonces, vec![1, 3]);
+        assert_eq!(second_calls[2].device_index, 1);
+        assert_eq!(second_calls[2].nonces, vec![4, 6]);
+        assert_eq!(second_calls[3].device_index, 3);
+        assert_eq!(second_calls[3].nonces, vec![5]);
     }
 
     #[test]
