@@ -557,12 +557,9 @@ mod tests {
             nonces
                 .iter()
                 .map(|nonce| {
-                    self.hashes
-                        .get(nonce)
-                        .copied()
-                        .ok_or_else(|| {
-                            anyhow!("fail-once CUDA launcher has no hash for nonce {nonce}")
-                        })
+                    self.hashes.get(nonce).copied().ok_or_else(|| {
+                        anyhow!("fail-once CUDA launcher has no hash for nonce {nonce}")
+                    })
                 })
                 .collect()
         }
@@ -613,14 +610,9 @@ mod tests {
             nonces
                 .iter()
                 .map(|nonce| {
-                    self.hashes
-                        .get(nonce)
-                        .copied()
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "persistent-failure CUDA launcher has no hash for nonce {nonce}"
-                            )
-                        })
+                    self.hashes.get(nonce).copied().ok_or_else(|| {
+                        anyhow!("persistent-failure CUDA launcher has no hash for nonce {nonce}")
+                    })
                 })
                 .collect()
         }
@@ -794,10 +786,7 @@ mod tests {
         assert!(!first.accepted);
         assert_eq!(first.tries, 7);
         assert_eq!(
-            backend
-                .worker_health
-                .selected_unavailable(&[1, 3])
-                .unwrap(),
+            backend.worker_health.selected_unavailable(&[1, 3]).unwrap(),
             BTreeSet::from([1usize])
         );
 
@@ -807,9 +796,7 @@ mod tests {
         assert_eq!(first_calls[0].nonces, vec![0, 2]);
         assert_eq!(first_calls[1].device_index, 3);
         assert_eq!(first_calls[1].nonces, vec![0, 2]);
-        assert!(first_calls[2..]
-            .iter()
-            .all(|call| call.device_index == 3));
+        assert!(first_calls[2..].iter().all(|call| call.device_index == 3));
 
         let first_call_count = first_calls.len();
         let second = backend.mine_header(header, 7, 1, target_bits).unwrap();
@@ -859,10 +846,7 @@ mod tests {
         assert!(!first.accepted);
         assert_eq!(first.tries, 7);
         assert_eq!(
-            backend
-                .worker_health
-                .selected_unavailable(&[1, 3])
-                .unwrap(),
+            backend.worker_health.selected_unavailable(&[1, 3]).unwrap(),
             BTreeSet::from([1usize])
         );
 
@@ -871,10 +855,7 @@ mod tests {
         assert!(!second.accepted);
         assert_eq!(second.tries, 7);
         assert_eq!(
-            backend
-                .worker_health
-                .selected_unavailable(&[1, 3])
-                .unwrap(),
+            backend.worker_health.selected_unavailable(&[1, 3]).unwrap(),
             BTreeSet::from([1usize])
         );
 
