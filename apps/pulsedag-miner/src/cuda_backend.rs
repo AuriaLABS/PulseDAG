@@ -887,9 +887,7 @@ mod tests {
             second_calls[0].pre_pow_hash,
             CUDA_RECOVERY_PROBE_PRE_POW_HASH
         );
-        assert!(second_calls[1..]
-            .iter()
-            .all(|call| call.device_index == 3));
+        assert!(second_calls[1..].iter().all(|call| call.device_index == 3));
 
         let mut observed = second_calls[1..]
             .iter()
