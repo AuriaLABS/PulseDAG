@@ -1,0 +1,127 @@
+name: v3 launch Task 38 mixed-vendor runtime phase 19
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/heterogeneous_backend.rs
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/opencl_backend.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-mixed-vendor-phase19.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - apps/pulsedag-miner/src/cuda_backend.rs
+      - apps/pulsedag-miner/src/heterogeneous_backend.rs
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/opencl_backend.rs
+      - apps/pulsedag-miner/src/accelerator_scheduler.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task38-mixed-vendor-phase19.yml
+
+permissions:
+  contents: read
+
+jobs:
+  mixed-vendor-contract:
+    name: Mixed CUDA+OpenCL software contract / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_mixed_vendor_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: Mixed-vendor deterministic scheduler contract
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner heterogeneous_backend::tests
+
+      - name: Preserve CUDA backend contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner cuda_backend::tests
+
+      - name: Preserve OpenCL runtime contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib opencl_backend::tests
+
+      - name: Preserve accelerator scheduler contract
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-accelerator-scheduler-probe
+
+      - name: Strict mixed-feature Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner -- -D warnings
+
+      - name: Audit Phase 19 scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path("apps/pulsedag-miner/src/main.rs").read_text()
+          mixed = Path("apps/pulsedag-miner/src/heterogeneous_backend.rs").read_text()
+
+          required = [
+              (main, 'BackendKind::Mixed'),
+              (main, 'mixed_mining_backend'),
+              (main, 'PULSEDAG_MINER_CUDA_DEVICES'),
+              (main, 'PULSEDAG_MINER_GPU_DEVICES'),
+              (mixed, 'AcceleratorSchedule::build'),
+              (mixed, 'AcceleratorBackendKind::Cuda'),
+              (mixed, 'AcceleratorBackendKind::OpenCl'),
+              (mixed, 'partition.nonce_at'),
+              (mixed, 'reverify_accelerator_hash'),
+          ]
+          for haystack, needle in required:
+              if needle not in haystack:
+                  raise SystemExit(f"missing Phase 19 software contract: {needle}")
+
+          if "GPU_MINING_NVIDIA_PASS=true" in main or "GPU_MINING_NVIDIA_PASS=true" in mixed:
+              raise SystemExit("Phase 19 must not claim NVIDIA physical pass")
+          if "GPU_MINING_AMD_PASS=true" in main or "GPU_MINING_AMD_PASS=true" in mixed:
+              raise SystemExit("Phase 19 must not claim AMD physical pass")
+          PY
+          echo "mixed_cuda_opencl_software_runtime=PASS"
+          echo "heterogeneous_schedule=PASS"
+          echo "canonical_nonce_partition_reuse=PASS"
+          echo "mixed_vendor_hardware_execution=NOT_CLAIMED"
+          echo "per_device_recovery_watchdog=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"

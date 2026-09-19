@@ -254,6 +254,20 @@ impl GpuMiningBackend {
         &self.selected_devices
     }
 
+    pub fn mixed_runtime_batch_size(&self) -> Result<usize> {
+        usize::try_from(self.config.batch_size)
+            .map_err(|_| anyhow!("OpenCL mixed runtime batch size does not fit in usize"))
+    }
+
+    pub fn launch_mixed_runtime_batch(
+        &self,
+        device_index: usize,
+        pre_pow_hash: [u8; 32],
+        nonces: &[u64],
+    ) -> Result<Vec<[u8; 32]>> {
+        opencl_backend::launch_mixed_runtime_batch(self, device_index, pre_pow_hash, nonces)
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(
         config: GpuBackendConfig,
