@@ -435,9 +435,7 @@ mod tests {
         let error = backend
             .mine_header(header, 2, 1, target_bits)
             .expect_err("non-canonical accelerator hash must fail closed");
-        assert!(error
-            .to_string()
-            .contains("canonical re-verification rejected"));
+        assert!(error.to_string().contains("accelerator hash mismatch"));
     }
 
     #[test]
