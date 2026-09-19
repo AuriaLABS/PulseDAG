@@ -568,6 +568,64 @@ mod tests {
         }
     }
 
+    struct PersistentFailureLauncher {
+        hashes: BTreeMap<u64, [u8; 32]>,
+        calls: Mutex<Vec<LaunchCall>>,
+        failed_device: usize,
+    }
+
+    impl PersistentFailureLauncher {
+        fn calls(&self) -> Vec<LaunchCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CudaBatchLauncher for PersistentFailureLauncher {
+        fn probe(&self, device_index: usize) -> Result<()> {
+            if device_index == self.failed_device {
+                return Err(anyhow!(
+                    "injected persistent CUDA probe failure on device {device_index}"
+                ));
+            }
+            Ok(())
+        }
+
+        fn launch(
+            &self,
+            module_image: &[u8],
+            device_index: usize,
+            pre_pow_hash: [u8; 32],
+            nonces: &[u64],
+            block_size: u32,
+        ) -> Result<Vec<[u8; 32]>> {
+            self.calls.lock().unwrap().push(LaunchCall {
+                module_image: module_image.to_vec(),
+                device_index,
+                pre_pow_hash,
+                nonces: nonces.to_vec(),
+                block_size,
+            });
+            if device_index == self.failed_device {
+                return Err(anyhow!(
+                    "injected persistent CUDA launch failure on device {device_index}"
+                ));
+            }
+            nonces
+                .iter()
+                .map(|nonce| {
+                    self.hashes
+                        .get(nonce)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "persistent-failure CUDA launcher has no hash for nonce {nonce}"
+                            )
+                        })
+                })
+                .collect()
+        }
+    }
+
     fn header(version: u32, target_bits: u32) -> BlockHeader {
         BlockHeader {
             version,
@@ -774,6 +832,63 @@ mod tests {
         assert_eq!(second_calls[2].nonces, vec![4, 6]);
         assert_eq!(second_calls[3].device_index, 3);
         assert_eq!(second_calls[3].nonces, vec![5]);
+    }
+
+    #[test]
+    fn unavailable_cuda_worker_stays_isolated_when_probe_still_fails() {
+        let target_bits = 0x0300_0001;
+        let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+        let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+        let rejected_hash = [0xffu8; 32];
+        assert!(!compare_pow_hash_to_target(
+            &rejected_hash,
+            &work.material.target.target
+        ));
+
+        let launcher = Arc::new(PersistentFailureLauncher {
+            hashes: (0..7).map(|nonce| (nonce, rejected_hash)).collect(),
+            calls: Mutex::new(Vec::new()),
+            failed_device: 1,
+        });
+        let backend =
+            CudaMiningBackend::with_launcher(test_config_devices(&[1, 3], 2), launcher.clone());
+
+        let first = backend
+            .mine_header(header.clone(), 7, 1, target_bits)
+            .unwrap();
+        assert!(!first.accepted);
+        assert_eq!(first.tries, 7);
+        assert_eq!(
+            backend
+                .worker_health
+                .selected_unavailable(&[1, 3])
+                .unwrap(),
+            BTreeSet::from([1usize])
+        );
+
+        let first_call_count = launcher.calls().len();
+        let second = backend.mine_header(header, 7, 1, target_bits).unwrap();
+        assert!(!second.accepted);
+        assert_eq!(second.tries, 7);
+        assert_eq!(
+            backend
+                .worker_health
+                .selected_unavailable(&[1, 3])
+                .unwrap(),
+            BTreeSet::from([1usize])
+        );
+
+        let calls = launcher.calls();
+        let second_calls = &calls[first_call_count..];
+        assert_eq!(second_calls.len(), 4);
+        assert!(second_calls.iter().all(|call| call.device_index == 3));
+
+        let mut observed = second_calls
+            .iter()
+            .flat_map(|call| call.nonces.iter().copied())
+            .collect::<Vec<_>>();
+        observed.sort_unstable();
+        assert_eq!(observed, (0..7).collect::<Vec<_>>());
     }
 
     #[test]
