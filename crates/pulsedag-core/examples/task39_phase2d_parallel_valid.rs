@@ -3,11 +3,10 @@ use pulsedag_core::{
     block_subsidy, build_candidate_block_v2, build_coinbase_transaction_v2,
     canonicalize_block_parents_v2, classify_merge_set_v1,
     commit_ghostdag_v1_metadata_for_activated_v2, compute_block_hash_v2,
-    drive_activated_v2_p2p_block_atomically, materialize_authoritative_state_v2,
-    merge_set_digest, ordered_dag_digest, rebuild_authoritative_state_v2, selection_digest,
-    state_digest, validate_pow_for_protocol, ActivatedV2P2pRuntime,
-    ActivatedV2P2pRuntimeOutcome, Block, CandidateBlockV2Spec, ChainState,
-    ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
+    drive_activated_v2_p2p_block_atomically, materialize_authoritative_state_v2, merge_set_digest,
+    ordered_dag_digest, rebuild_authoritative_state_v2, selection_digest, state_digest,
+    validate_pow_for_protocol, ActivatedV2P2pRuntime, ActivatedV2P2pRuntimeOutcome, Block,
+    CandidateBlockV2Spec, ChainState, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -228,10 +227,7 @@ fn transaction_outcomes_digest(
             }
         }
     }
-    digest_strings(
-        "PulseDAG:task39-phase2d-transaction-outcomes:v1",
-        values,
-    )
+    digest_strings("PulseDAG:task39-phase2d-transaction-outcomes:v1", values)
 }
 
 fn finalized_block(
@@ -293,7 +289,8 @@ fn finalized_block(
     )
     .map_err(|error| error.to_string())?;
 
-    let classification = classify_merge_set_v1(&block, state).map_err(|error| format!("{error:?}"))?;
+    let classification =
+        classify_merge_set_v1(&block, state).map_err(|error| format!("{error:?}"))?;
     block.header.blue_score = classification.blue_score;
     let selected_parent = classification
         .selected_parent
@@ -302,16 +299,16 @@ fn finalized_block(
         expected_difficulty_for_parent(state, &selected_parent).ok_or_else(|| {
             format!("missing difficulty context for generation parent {selected_parent}")
         })?;
-    block.hash =
-        compute_block_hash_v2(&block.header, &identity.chain_id).map_err(|error| error.to_string())?;
+    block.hash = compute_block_hash_v2(&block.header, &identity.chain_id)
+        .map_err(|error| error.to_string())?;
 
     let mut first_state = state.clone();
     commit_ghostdag_v1_metadata_for_activated_v2(&block, &mut first_state, identity)
         .map_err(|error| error.to_string())?;
     let first = rebuild_authoritative_state_v2(&first_state).map_err(|error| error.to_string())?;
     block.header.state_root = first.diagnostics.state_root;
-    block.hash =
-        compute_block_hash_v2(&block.header, &identity.chain_id).map_err(|error| error.to_string())?;
+    block.hash = compute_block_hash_v2(&block.header, &identity.chain_id)
+        .map_err(|error| error.to_string())?;
 
     let mut final_state = state.clone();
     commit_ghostdag_v1_metadata_for_activated_v2(&block, &mut final_state, identity)
@@ -404,13 +401,7 @@ fn generate_corpus(
                 &mut pow_stats,
             )?;
             sequence = sequence.saturating_add(1);
-            let side = finalized_block(
-                &state,
-                &identity,
-                vec![parent],
-                sequence,
-                &mut pow_stats,
-            )?;
+            let side = finalized_block(&state, &identity, vec![parent], sequence, &mut pow_stats)?;
             sequence = sequence.saturating_add(1);
             if main.hash == side.hash {
                 return Err("parallel generation produced identical block hashes".into());
@@ -437,13 +428,7 @@ fn generate_corpus(
             parallel_pairs = parallel_pairs.saturating_add(1);
             joins = joins.saturating_add(1);
         } else {
-            let block = finalized_block(
-                &state,
-                &identity,
-                vec![parent],
-                sequence,
-                &mut pow_stats,
-            )?;
+            let block = finalized_block(&state, &identity, vec![parent], sequence, &mut pow_stats)?;
             sequence = sequence.saturating_add(1);
             state = materialize_after_block(&state, &identity, &block)?;
             blocks.push(block);
@@ -537,7 +522,10 @@ fn record_outcome(outcome: &ActivatedV2P2pRuntimeOutcome, stats: &mut OutcomeSta
 
 fn observe(state: &ChainState) -> Result<Observation, String> {
     let replay = rebuild_authoritative_state_v2(state).map_err(|error| error.to_string())?;
-    let state_root = state.utxo.compute_state_root().map_err(|error| error.to_string())?;
+    let state_root = state
+        .utxo
+        .compute_state_root()
+        .map_err(|error| error.to_string())?;
     if state_root != replay.diagnostics.state_root {
         return Err(format!(
             "live/replayed state-root mismatch: {} != {}",
@@ -551,10 +539,8 @@ fn observe(state: &ChainState) -> Result<Observation, String> {
     let selection = selection_digest(state);
     let merge_set = merge_set_digest(state);
     let ordered = ordered_dag_digest(state);
-    let transaction_outcomes = transaction_outcomes_digest(
-        state,
-        replay.diagnostics.skipped_conflicting_transactions,
-    );
+    let transaction_outcomes =
+        transaction_outcomes_digest(state, replay.diagnostics.skipped_conflicting_transactions);
     let state_commitment = state_digest(state).map_err(|error| error.to_string())?;
     let selected_tip = state.dag.selected_chain.last().cloned();
     let canonical_bundle_digest = digest_strings(
@@ -596,11 +582,7 @@ fn observe(state: &ChainState) -> Result<Observation, String> {
     })
 }
 
-fn replay(
-    blocks: &[Block],
-    order: &[usize],
-    name: &'static str,
-) -> Result<ReplayRun, String> {
+fn replay(blocks: &[Block], order: &[usize], name: &'static str) -> Result<ReplayRun, String> {
     let started = Instant::now();
     let mut state = pulsedag_core::genesis::init_chain_state(CHAIN_ID.to_string());
     let identity = identity(&state);
@@ -652,11 +634,7 @@ fn replay(
             stats.rejected_events, stats.duplicate_events
         ));
     }
-    if stats
-        .accepted_events
-        .saturating_add(stats.promoted_blocks)
-        != blocks.len()
-    {
+    if stats.accepted_events.saturating_add(stats.promoted_blocks) != blocks.len() {
         return Err(format!(
             "replay {name} authoritative event accounting mismatch: accepted={} promoted_blocks={} corpus={}",
             stats.accepted_events,
@@ -732,7 +710,8 @@ fn run(args: Args) -> Result<Manifest, String> {
     }
     let mut fail_reasons = Vec::new();
     if !exact_equivalence {
-        fail_reasons.push("canonical and alternate arrival histories did not converge exactly".into());
+        fail_reasons
+            .push("canonical and alternate arrival histories did not converge exactly".into());
     }
     if parallel_pairs == 0 || joins != parallel_pairs {
         fail_reasons.push("parallel fork/join coverage was not exercised".into());
