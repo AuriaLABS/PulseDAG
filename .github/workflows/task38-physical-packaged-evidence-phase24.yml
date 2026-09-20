@@ -1,0 +1,281 @@
+name: v3 launch Task 38 physical packaged evidence collector phase 24
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/pulsedag-miner/**"
+      - "crates/pulsedag-core/**"
+      - "crates/pulsedag-api/**"
+      - "scripts/release/package_release_artifacts.py"
+      - "scripts/task38_collect_physical_gpu_evidence.py"
+      - "docs/task38-physical-packaged-evidence-phase24-scope.md"
+      - ".github/workflows/task38-physical-packaged-evidence-phase24.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/pulsedag-miner/**"
+      - "crates/pulsedag-core/**"
+      - "crates/pulsedag-api/**"
+      - "scripts/release/package_release_artifacts.py"
+      - "scripts/task38_collect_physical_gpu_evidence.py"
+      - "docs/task38-physical-packaged-evidence-phase24-scope.md"
+      - ".github/workflows/task38-physical-packaged-evidence-phase24.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-ptx-module:
+    name: exact-candidate CUDA PTX module
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Compile exact-candidate kHeavyHash PTX
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf task38-cuda-module
+          mkdir -p task38-cuda-module
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            nvidia/cuda:12.9.2-devel-ubuntu24.04 \
+            bash -lc '
+              set -euo pipefail
+              nvcc --version
+              nvcc -std=c++17 -O2 -arch=sm_60 --ptx \
+                apps/pulsedag-miner/cuda/kheavyhash_launch.cu \
+                -o /work/task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+            '
+          test -s task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+          grep -q "pulsedag_generate_matrix_kernel" task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+          grep -q "pulsedag_kheavyhash_kernel" task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          module = Path("task38-cuda-module/pulsedag-kheavyhash-launch.ptx")
+          source = Path("apps/pulsedag-miner/cuda/kheavyhash_launch.cu")
+          metadata = {
+              "schema": "pulsedag-task38-cuda-module-v1",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "repository": "AuriaLABS/PulseDAG",
+              "source": str(source).replace("\\", "/"),
+              "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+              "sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
+              "ptx_arch": "sm_60",
+              "compiler_container": "nvidia/cuda:12.9.2-devel-ubuntu24.04",
+          }
+          Path("task38-cuda-module/pulsedag-kheavyhash-launch.ptx.json").write_text(
+              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("candidate_bound_cuda_ptx=PASS")
+          PY
+
+      - name: Upload exact-candidate CUDA PTX
+        uses: actions/upload-artifact@v7
+        with:
+          name: task38-cuda-ptx-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 14
+          path: |
+            task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+            task38-cuda-module/pulsedag-kheavyhash-launch.ptx.json
+          if-no-files-found: error
+
+  evidence-package:
+    needs: cuda-ptx-module
+    name: physical evidence package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Collector self-test
+        run: python scripts/task38_collect_physical_gpu_evidence.py --self-test
+
+      - name: Download exact-candidate CUDA PTX
+        uses: actions/download-artifact@v5
+        with:
+          name: task38-cuda-ptx-${{ github.event.pull_request.head.sha || github.sha }}
+          path: task38-cuda-module
+
+      - name: Verify downloaded CUDA PTX binding
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test -s task38-cuda-module/pulsedag-kheavyhash-launch.ptx
+          test -s task38-cuda-module/pulsedag-kheavyhash-launch.ptx.json
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          module = Path("task38-cuda-module/pulsedag-kheavyhash-launch.ptx")
+          metadata = json.loads(
+              Path("task38-cuda-module/pulsedag-kheavyhash-launch.ptx.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          if metadata.get("candidate_sha") != os.environ["CANDIDATE_SHA"]:
+              raise SystemExit("downloaded CUDA PTX candidate SHA mismatch")
+          if metadata.get("sha256") != hashlib.sha256(module.read_bytes()).hexdigest():
+              raise SystemExit("downloaded CUDA PTX SHA256 mismatch")
+          print("candidate_bound_cuda_ptx_download=PASS")
+          PY
+
+      - name: Build packaged physical-equivalence probe
+        run: cargo build --locked --release -p pulsedag-miner --features gpu,cuda --bin pulsedag-gpu-equivalence-probe
+
+      - name: Probe help is hardware-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            probe="target/release/pulsedag-gpu-equivalence-probe.exe"
+          else
+            probe="target/release/pulsedag-gpu-equivalence-probe"
+          fi
+          output="$("${probe}" --help 2>&1)"
+          printf '%s\n' "${output}"
+          grep -q 'usage: pulsedag-gpu-equivalence-probe' <<<"${output}"
+
+      - name: Package exact physical-equivalence probe
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            probe="target/release/pulsedag-gpu-equivalence-probe.exe"
+          else
+            probe="target/release/pulsedag-gpu-equivalence-probe"
+          fi
+          python scripts/release/package_release_artifacts.py \
+            --binary "${probe}" \
+            --output-dir dist \
+            --tag v3-task38-phase24 \
+            --bin-name pulsedag-gpu-equivalence-probe \
+            --repository "${{ github.repository }}" \
+            --commit "${CANDIDATE_SHA}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --build-feature gpu \
+            --build-feature cuda \
+            --include-file task38-cuda-module/pulsedag-kheavyhash-launch.ptx \
+            --include-file task38-cuda-module/pulsedag-kheavyhash-launch.ptx.json
+
+      - name: Inspect exact package without GPU access
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(dist/pulsedag-gpu-equivalence-probe-*.tar.gz dist/pulsedag-gpu-equivalence-probe-*.zip)
+          test "${#archives[@]}" -eq 1
+          archive="${archives[0]}"
+          manifest="${archive}.json"
+          python scripts/task38_collect_physical_gpu_evidence.py \
+            --archive "${archive}" \
+            --artifact-manifest "${manifest}" \
+            --candidate-sha "${CANDIDATE_SHA}" \
+            --inspect-package
+
+      - name: Audit collector non-claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'physical_packaged_gpu_evidence=PASS' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'canonical_vectors_per_protocol' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'expected exactly one physical vector line' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'GPU_MINING_NVIDIA_PASS=NOT_CLAIMED' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'GPU_MINING_AMD_PASS=NOT_CLAIMED' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'PULSEDAG_CUDA_DRIVER_LIBRARY' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'PULSEDAG_OPENCL_LIBRARY' scripts/task38_collect_physical_gpu_evidence.py
+          grep -q 'CUDA_MODULE_METADATA_NAME' scripts/task38_collect_physical_gpu_evidence.py
+          ! grep -q 'parser.add_argument("--cuda-module"' scripts/task38_collect_physical_gpu_evidence.py
+          echo "candidate_bound_cuda_module=PASS"
+          echo "physical_evidence_package_ready=PASS"
+          echo "physical_gpu_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
+
+      - name: Upload physical-evidence-ready package
+        uses: actions/upload-artifact@v7
+        with:
+          name: task38-physical-probe-${{ matrix.name }}-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 14
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/*.json
+          if-no-files-found: error
