@@ -41,6 +41,7 @@ pub mod pow_v2;
 pub mod pqc;
 pub mod protocol;
 pub mod protocol_persistence;
+pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
 pub mod selection;
