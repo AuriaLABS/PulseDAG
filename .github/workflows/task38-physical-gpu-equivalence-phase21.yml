@@ -1,0 +1,103 @@
+name: v3 launch Task 38 physical GPU equivalence probe phase 21
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/cuda_runtime.rs"
+      - "apps/pulsedag-miner/src/protocol_pow.rs"
+      - "docs/task38-physical-gpu-equivalence-phase21-scope.md"
+      - ".github/workflows/task38-physical-gpu-equivalence-phase21.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/Cargo.toml"
+      - "apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/cuda_runtime.rs"
+      - "apps/pulsedag-miner/src/protocol_pow.rs"
+      - "docs/task38-physical-gpu-equivalence-phase21-scope.md"
+      - ".github/workflows/task38-physical-gpu-equivalence-phase21.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  physical-equivalence-probe-software-contract:
+    name: physical equivalence probe software contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_physical_equivalence_probe_candidate_sha=$EXPECTED_SHA"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Probe unit contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-gpu-equivalence-probe
+
+      - name: Probe CLI help is hardware-free
+        run: cargo run --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-gpu-equivalence-probe -- --help
+
+      - name: Strict probe Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-gpu-equivalence-probe -- -D warnings
+
+      - name: Preserve existing mixed runtime regressions
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner heterogeneous_backend::tests
+
+      - name: Audit physical-evidence guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PULSEDAG_CUDA_DRIVER_LIBRARY' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'PULSEDAG_OPENCL_LIBRARY' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'require-amd-opencl' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'describe_opencl_gpu' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'legacy_v1' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'activated_v2' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'u64::MAX' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'reverify_accelerator_hash' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_NVIDIA_PASS=NOT_CLAIMED.*GPU_MINING_AMD_PASS=NOT_CLAIMED' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          ! grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          ! grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          echo "physical_probe_software_contract=PASS"
+          echo "physical_gpu_execution=NOT_RUN_IN_CI"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
