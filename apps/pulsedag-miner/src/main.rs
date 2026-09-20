@@ -679,7 +679,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|mixed|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects one CUDA or OpenCL GPU device. CUDA homogeneous multi-device software scheduling may be requested with PULSEDAG_MINER_CUDA_DEVICES=0,1 (mutually exclusive with --gpu-device); OpenCL multi-device selection uses PULSEDAG_MINER_GPU_DEVICES. The mixed backend requires both gpu+cuda features plus --cuda-module PATH and builds one canonical CUDA+OpenCL schedule; select vendor device lists with PULSEDAG_MINER_CUDA_DEVICES and PULSEDAG_MINER_GPU_DEVICES. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|cuda|mixed|auto] [--cuda-module PATH] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The gpu backend is the canonical OpenCL kHeavyHash backend and requires the gpu feature; explicit gpu selection fails closed on OpenCL discovery, runtime, build, launch, or canonical re-verification errors. The explicit cuda backend requires the cuda feature plus --cuda-module PATH and never falls back to CPU on CUDA initialization, device, module, kernel, launch, or canonical re-verification errors. --gpu-device selects one CUDA or OpenCL GPU device. CUDA homogeneous multi-device software scheduling may be requested with PULSEDAG_MINER_CUDA_DEVICES=0,1 (mutually exclusive with --gpu-device); PULSEDAG_MINER_CUDA_WATCHDOG_MS sets the positive per-batch CUDA watchdog deadline in milliseconds (default 30000); OpenCL multi-device selection uses PULSEDAG_MINER_GPU_DEVICES and PULSEDAG_MINER_OPENCL_WATCHDOG_MS sets the positive per-batch OpenCL watchdog deadline in milliseconds (default 30000). The mixed backend requires both gpu+cuda features plus --cuda-module PATH and builds one canonical CUDA+OpenCL schedule; select vendor device lists with PULSEDAG_MINER_CUDA_DEVICES and PULSEDAG_MINER_GPU_DEVICES. Auto tries OpenCL then CPU when no CUDA module is supplied; when --cuda-module is supplied, auto tries CUDA first, then OpenCL, then CPU if accelerator initialization or device selection fails. Physical NVIDIA/AMD validation is not claimed by this software-only wiring."
 }
 
 fn mining_backend(cfg: &Config) -> Result<RuntimeBackendSelection> {
@@ -778,6 +778,8 @@ fn gpu_mining_backend(device_index: Option<usize>) -> Result<RuntimeBackendSelec
 
 #[cfg(feature = "cuda")]
 const CUDA_DEVICE_LIST_ENV: &str = "PULSEDAG_MINER_CUDA_DEVICES";
+#[cfg(feature = "cuda")]
+const CUDA_WATCHDOG_MS_ENV: &str = "PULSEDAG_MINER_CUDA_WATCHDOG_MS";
 
 #[cfg(feature = "cuda")]
 fn parse_cuda_device_indices(value: &str) -> Result<Vec<usize>> {
@@ -806,6 +808,23 @@ fn parse_cuda_device_indices(value: &str) -> Result<Vec<usize>> {
         ));
     }
     Ok(indices)
+}
+
+#[cfg(feature = "cuda")]
+fn requested_cuda_watchdog_timeout() -> Result<Duration> {
+    let Some(value) = std::env::var(CUDA_WATCHDOG_MS_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(cuda_driver_launch::DEFAULT_CUDA_LAUNCH_TIMEOUT);
+    };
+    let timeout_ms = value
+        .parse::<u64>()
+        .map_err(|_| anyhow!("invalid {CUDA_WATCHDOG_MS_ENV}: expected positive milliseconds"))?;
+    if timeout_ms == 0 {
+        return Err(anyhow!("{CUDA_WATCHDOG_MS_ENV} must be greater than zero"));
+    }
+    Ok(Duration::from_millis(timeout_ms))
 }
 
 #[cfg(feature = "cuda")]
@@ -850,21 +869,24 @@ fn cuda_mining_backend(
             format!("CUDA Driver/device probe failed for device index {selected_index}")
         })?;
     }
+    let launch_timeout = requested_cuda_watchdog_timeout()?;
     let config = if device_indices.len() == 1 {
         CudaBackendConfig::new(module_image, device_indices[0])?
     } else {
         CudaBackendConfig::for_devices(module_image, device_indices.clone())?
-    };
+    }
+    .with_launch_timeout(launch_timeout)?;
     let selected = device_indices
         .iter()
         .map(|index| index.to_string())
         .collect::<Vec<_>>()
         .join(",");
     println!(
-        "cuda_backend configured devices={} device_indices={} module={} homogeneous_multidevice_software=true hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED",
+        "cuda_backend configured devices={} device_indices={} module={} watchdog_ms={} homogeneous_multidevice_software=true hardware_execution=NOT_CLAIMED GPU_MINING_NVIDIA_PASS=NOT_CLAIMED",
         device_indices.len(),
         selected,
-        module_path.display()
+        module_path.display(),
+        launch_timeout.as_millis()
     );
     Ok(RuntimeBackendSelection {
         backend: Arc::new(CudaMiningBackend::new(config)),
@@ -908,11 +930,13 @@ fn mixed_mining_backend(
             format!("CUDA Driver/device probe failed for device index {selected_index}")
         })?;
     }
+    let launch_timeout = requested_cuda_watchdog_timeout()?;
     let cuda_config = if cuda_device_indices.len() == 1 {
         CudaBackendConfig::new(module_image, cuda_device_indices[0])?
     } else {
         CudaBackendConfig::for_devices(module_image, cuda_device_indices)?
-    };
+    }
+    .with_launch_timeout(launch_timeout)?;
     let cuda_backend = CudaMiningBackend::new(cuda_config);
 
     let opencl_backend =

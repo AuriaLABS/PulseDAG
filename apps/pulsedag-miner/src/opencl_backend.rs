@@ -10,8 +10,23 @@ use sha3::{Digest, Keccak256};
 use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
 
+const OPENCL_RECOVERY_PROBE_PRE_POW_HASH: [u8; 32] = [0x5a; 32];
+const OPENCL_RECOVERY_PROBE_NONCE: u64 = 0;
+
 trait OpenClBatchLauncher: Send + Sync {
-    fn probe(&self, _device_index: usize) -> Result<()> {
+    fn probe(&self, device_index: usize, work_size: usize) -> Result<()> {
+        let hashes = self.launch(
+            device_index,
+            OPENCL_RECOVERY_PROBE_PRE_POW_HASH,
+            &[OPENCL_RECOVERY_PROBE_NONCE],
+            work_size,
+        )?;
+        if hashes.len() != 1 {
+            return Err(anyhow!(
+                "OpenCL recovery capability probe returned {} hash(es); expected exactly 1",
+                hashes.len()
+            ));
+        }
         Ok(())
     }
 
@@ -28,10 +43,6 @@ trait OpenClBatchLauncher: Send + Sync {
 struct DriverOpenClBatchLauncher;
 
 impl OpenClBatchLauncher for DriverOpenClBatchLauncher {
-    fn probe(&self, device_index: usize) -> Result<()> {
-        opencl_driver_launch::probe_opencl_gpu(device_index)
-    }
-
     fn launch(
         &self,
         device_index: usize,
@@ -82,11 +93,12 @@ static PROCESS_OPENCL_WORKER_HEALTH: OnceLock<OpenClWorkerHealth> = OnceLock::ne
 
 fn recover_unavailable_workers(
     selected_device_indices: &[usize],
+    work_size: usize,
     launcher: &dyn OpenClBatchLauncher,
     worker_health: &OpenClWorkerHealth,
 ) -> Result<()> {
     for device_index in worker_health.selected_unavailable(selected_device_indices)? {
-        if launcher.probe(device_index).is_ok() {
+        if launcher.probe(device_index, work_size).is_ok() {
             worker_health.mark_recovered(device_index)?;
         }
     }
@@ -183,7 +195,12 @@ fn mine_canonical_with_runtime(
         .iter()
         .map(|device| device.device_index)
         .collect::<Vec<_>>();
-    recover_unavailable_workers(&device_indices, launcher, worker_health)?;
+    recover_unavailable_workers(
+        &device_indices,
+        backend.config().work_size,
+        launcher,
+        worker_health,
+    )?;
     search_work(
         header,
         work,
@@ -664,15 +681,130 @@ mod tests {
 
         let calls = launcher.calls();
         let second_calls = &calls[first_call_count..];
-        assert_eq!(second_calls.len(), 4);
+        assert_eq!(second_calls.len(), 5);
         assert_eq!(second_calls[0].device_index, 1);
-        assert_eq!(second_calls[0].nonces, vec![0, 2]);
-        assert_eq!(second_calls[1].device_index, 3);
-        assert_eq!(second_calls[1].nonces, vec![1, 3]);
-        assert_eq!(second_calls[2].device_index, 1);
-        assert_eq!(second_calls[2].nonces, vec![4, 6]);
-        assert_eq!(second_calls[3].device_index, 3);
-        assert_eq!(second_calls[3].nonces, vec![5]);
+        assert_eq!(
+            second_calls[0].pre_pow_hash,
+            OPENCL_RECOVERY_PROBE_PRE_POW_HASH
+        );
+        assert_eq!(second_calls[0].nonces, vec![OPENCL_RECOVERY_PROBE_NONCE]);
+        assert_eq!(second_calls[0].work_size, 64);
+        assert_eq!(second_calls[1].device_index, 1);
+        assert_eq!(second_calls[1].nonces, vec![0, 2]);
+        assert_eq!(second_calls[2].device_index, 3);
+        assert_eq!(second_calls[2].nonces, vec![1, 3]);
+        assert_eq!(second_calls[3].device_index, 1);
+        assert_eq!(second_calls[3].nonces, vec![4, 6]);
+        assert_eq!(second_calls[4].device_index, 3);
+        assert_eq!(second_calls[4].nonces, vec![5]);
+    }
+
+    struct PersistentFailDeviceLauncher {
+        hashes: BTreeMap<u64, [u8; 32]>,
+        calls: Mutex<Vec<LaunchCall>>,
+        fail_device: usize,
+    }
+
+    impl PersistentFailDeviceLauncher {
+        fn calls(&self) -> Vec<LaunchCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl OpenClBatchLauncher for PersistentFailDeviceLauncher {
+        fn launch(
+            &self,
+            device_index: usize,
+            pre_pow_hash: [u8; 32],
+            nonces: &[u64],
+            work_size: usize,
+        ) -> Result<Vec<[u8; 32]>> {
+            self.calls.lock().unwrap().push(LaunchCall {
+                device_index,
+                pre_pow_hash,
+                nonces: nonces.to_vec(),
+                work_size,
+            });
+            if device_index == self.fail_device {
+                return Err(anyhow!(
+                    "injected persistent OpenCL worker failure on device {device_index}"
+                ));
+            }
+            nonces
+                .iter()
+                .map(|nonce| {
+                    self.hashes.get(nonce).copied().ok_or_else(|| {
+                        anyhow!("persistent-failure launcher has no hash for nonce {nonce}")
+                    })
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn failed_opencl_worker_stays_quarantined_when_capability_probe_fails() {
+        let target_bits = 0x0300_0001;
+        let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+        let rejected_hash = [0xffu8; 32];
+        let launcher = PersistentFailDeviceLauncher {
+            hashes: (0..7).map(|nonce| (nonce, rejected_hash)).collect(),
+            calls: Mutex::new(Vec::new()),
+            fail_device: 1,
+        };
+        let backend = test_backend_devices(&[1, 3], 2, 64);
+        let worker_health = OpenClWorkerHealth::default();
+
+        let first = mine_canonical_with_runtime(
+            &backend,
+            header.clone(),
+            7,
+            target_bits,
+            None,
+            &launcher,
+            &worker_health,
+        )
+        .unwrap();
+        assert!(!first.accepted);
+        assert_eq!(first.tries, 7);
+        assert_eq!(
+            worker_health.selected_unavailable(&[1, 3]).unwrap(),
+            BTreeSet::from([1usize])
+        );
+
+        let first_call_count = launcher.calls().len();
+        let second = mine_canonical_with_runtime(
+            &backend,
+            header,
+            7,
+            target_bits,
+            None,
+            &launcher,
+            &worker_health,
+        )
+        .unwrap();
+        assert!(!second.accepted);
+        assert_eq!(second.tries, 7);
+        assert_eq!(
+            worker_health.selected_unavailable(&[1, 3]).unwrap(),
+            BTreeSet::from([1usize])
+        );
+
+        let calls = launcher.calls();
+        let second_calls = &calls[first_call_count..];
+        assert_eq!(second_calls[0].device_index, 1);
+        assert_eq!(
+            second_calls[0].pre_pow_hash,
+            OPENCL_RECOVERY_PROBE_PRE_POW_HASH
+        );
+        assert_eq!(second_calls[0].nonces, vec![OPENCL_RECOVERY_PROBE_NONCE]);
+        assert!(second_calls[1..].iter().all(|call| call.device_index == 3));
+
+        let mut successful_nonces = second_calls[1..]
+            .iter()
+            .flat_map(|call| call.nonces.iter().copied())
+            .collect::<Vec<_>>();
+        successful_nonces.sort_unstable();
+        assert_eq!(successful_nonces, (0..7).collect::<Vec<_>>());
     }
 
     #[test]

@@ -2,15 +2,20 @@ use anyhow::{anyhow, Context, Result};
 use libloading::Library;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::os::raw::{c_int, c_uint};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const CL_SUCCESS: c_int = 0;
+const CL_COMPLETE: c_int = 0;
 const CL_DEVICE_NOT_FOUND: c_int = -1;
 const CL_TRUE: c_uint = 1;
+const CL_QUEUED: c_int = 3;
 const CL_DEVICE_TYPE_GPU: u64 = 1 << 2;
 const CL_DEVICE_NAME: c_uint = 0x102B;
 const CL_DEVICE_VENDOR: c_uint = 0x102C;
 const CL_DEVICE_EXTENSIONS: c_uint = 0x1030;
 const CL_PROGRAM_BUILD_LOG: c_uint = 0x1183;
+const CL_EVENT_COMMAND_EXECUTION_STATUS: c_uint = 0x1283;
 const CL_MEM_READ_WRITE: u64 = 1 << 0;
 const CL_MEM_WRITE_ONLY: u64 = 1 << 1;
 const CL_MEM_READ_ONLY: u64 = 1 << 2;
@@ -20,6 +25,8 @@ const MATRIX_KERNEL_NAME: &[u8] = b"pulsedag_generate_matrix_kernel\0";
 const HASH_KERNEL_NAME: &[u8] = b"pulsedag_kheavyhash_kernel\0";
 
 pub const OPENCL_LIBRARY_ENV: &str = "PULSEDAG_OPENCL_LIBRARY";
+pub const OPENCL_WATCHDOG_MS_ENV: &str = "PULSEDAG_MINER_OPENCL_WATCHDOG_MS";
+pub const DEFAULT_OPENCL_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenClGpuIdentity {
@@ -45,6 +52,7 @@ type ClEvent = *mut c_void;
 type ClContextProperties = isize;
 type ClDeviceInfo = ClUint;
 type ClProgramBuildInfo = ClUint;
+type ClEventInfo = ClUint;
 
 type ClContextNotify =
     Option<unsafe extern "system" fn(*const c_char, *const c_void, usize, *mut c_void)>;
@@ -135,7 +143,10 @@ type ClEnqueueNDRangeKernel = unsafe extern "system" fn(
     *const ClEvent,
     *mut ClEvent,
 ) -> ClInt;
-type ClFinish = unsafe extern "system" fn(ClCommandQueue) -> ClInt;
+type ClFlush = unsafe extern "system" fn(ClCommandQueue) -> ClInt;
+type ClGetEventInfo =
+    unsafe extern "system" fn(ClEvent, ClEventInfo, usize, *mut c_void, *mut usize) -> ClInt;
+type ClReleaseEvent = unsafe extern "system" fn(ClEvent) -> ClInt;
 
 const SHARED_SOURCE: &str = include_str!("../opencl/kheavyhash_shared.h");
 const MATRIX_SOURCE: &str = include_str!("../opencl/kheavyhash_matrix.cl");
@@ -193,8 +204,30 @@ pub fn launch_kheavyhash_batch(
     if nonces.is_empty() {
         return Ok(Vec::new());
     }
+    launch_kheavyhash_batch_with_timeout(
+        device_index,
+        pre_pow_hash,
+        nonces,
+        work_size,
+        configured_opencl_launch_timeout()?,
+    )
+}
+
+pub fn launch_kheavyhash_batch_with_timeout(
+    device_index: usize,
+    pre_pow_hash: [u8; HASH_BYTES],
+    nonces: &[u64],
+    work_size: usize,
+    launch_timeout: Duration,
+) -> Result<Vec<[u8; HASH_BYTES]>> {
+    if nonces.is_empty() {
+        return Ok(Vec::new());
+    }
     if work_size == 0 {
         return Err(anyhow!("OpenCL work size must be non-zero"));
+    }
+    if launch_timeout.is_zero() {
+        return Err(anyhow!("OpenCL launch watchdog timeout must be non-zero"));
     }
 
     let nonce_bytes = nonces
@@ -229,6 +262,8 @@ pub fn launch_kheavyhash_batch(
     ensure_handle(context, status, "clCreateContext")?;
 
     let mut resources = Resources::new(&api, context);
+    let mut device_work_submitted = false;
+    let mut device_work_completed = false;
     let execution = (|| -> Result<Vec<[u8; HASH_BYTES]>> {
         let queue = unsafe { (api.cl_create_command_queue)(context, device, 0, &mut status) };
         ensure_handle(queue, status, "clCreateCommandQueue")?;
@@ -316,6 +351,7 @@ pub fn launch_kheavyhash_batch(
             },
             "clEnqueueNDRangeKernel(matrix)",
         )?;
+        device_work_submitted = true;
 
         set_mem_arg(&api, hash_kernel, 0, &pre_buffer, "hash.pre_pow_hash")?;
         set_mem_arg(&api, hash_kernel, 1, &matrix_buffer, "hash.matrix")?;
@@ -334,6 +370,7 @@ pub fn launch_kheavyhash_batch(
             },
             "clSetKernelArg(hash.count)",
         )?;
+        let mut completion_event = std::ptr::null_mut();
         ensure_opencl_success(
             unsafe {
                 (api.cl_enqueue_nd_range_kernel)(
@@ -345,13 +382,24 @@ pub fn launch_kheavyhash_batch(
                     &work_size,
                     0,
                     std::ptr::null(),
-                    std::ptr::null_mut(),
+                    &mut completion_event,
                 )
             },
             "clEnqueueNDRangeKernel(kheavyhash)",
         )?;
-        ensure_opencl_success(unsafe { (api.cl_finish)(queue) }, "clFinish")?;
+        if completion_event.is_null() {
+            return Err(anyhow!(
+                "clEnqueueNDRangeKernel(kheavyhash) returned a null completion event"
+            ));
+        }
+        resources.events.push(completion_event);
+        ensure_opencl_success(unsafe { (api.cl_flush)(queue) }, "clFlush")?;
+        poll_opencl_event_completion(&api, completion_event, launch_timeout)?;
+        device_work_completed = true;
 
+        // The kernel completion event is the watchdog fence. Only after it is
+        // complete do we issue a blocking host read, so a timeout can never
+        // return while the runtime still owns a pointer into a Rust host buffer.
         let mut raw = vec![0u8; output_bytes];
         ensure_opencl_success(
             unsafe {
@@ -381,11 +429,95 @@ pub fn launch_kheavyhash_batch(
     })();
 
     let cleanup = resources.cleanup();
+    let retain_runtime = opencl_runtime_must_outlive_call(
+        device_work_submitted,
+        device_work_completed,
+        cleanup.is_err(),
+    );
+    drop(resources);
+    if retain_runtime {
+        api.retain_library_for_process_lifetime();
+    }
+
     match (execution, cleanup) {
         (Ok(hashes), Ok(())) => Ok(hashes),
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),
     }
+}
+
+fn opencl_runtime_must_outlive_call(
+    device_work_submitted: bool,
+    device_work_completed: bool,
+    cleanup_failed: bool,
+) -> bool {
+    (device_work_submitted && !device_work_completed) || cleanup_failed
+}
+
+fn configured_opencl_launch_timeout() -> Result<Duration> {
+    let Some(value) = std::env::var(OPENCL_WATCHDOG_MS_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(DEFAULT_OPENCL_LAUNCH_TIMEOUT);
+    };
+    let timeout_ms = value
+        .parse::<u64>()
+        .map_err(|_| anyhow!("invalid {OPENCL_WATCHDOG_MS_ENV}: expected positive milliseconds"))?;
+    if timeout_ms == 0 {
+        return Err(anyhow!(
+            "{OPENCL_WATCHDOG_MS_ENV} must be greater than zero"
+        ));
+    }
+    Ok(Duration::from_millis(timeout_ms))
+}
+
+fn poll_opencl_event_status<F>(launch_timeout: Duration, mut query: F) -> Result<()>
+where
+    F: FnMut() -> Result<ClInt>,
+{
+    let started = Instant::now();
+    loop {
+        let execution_status = query()?;
+        if execution_status == CL_COMPLETE {
+            return Ok(());
+        }
+        if execution_status < CL_COMPLETE {
+            return Err(anyhow!(
+                "OpenCL command terminated abnormally with execution status {execution_status}"
+            ));
+        }
+        if started.elapsed() >= launch_timeout {
+            return Err(anyhow!(
+                "OpenCL launch watchdog timeout after {} ms",
+                launch_timeout.as_millis()
+            ));
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn poll_opencl_event_completion(
+    api: &OpenClApi,
+    event: ClEvent,
+    launch_timeout: Duration,
+) -> Result<()> {
+    poll_opencl_event_status(launch_timeout, || {
+        let mut execution_status = CL_QUEUED;
+        ensure_opencl_success(
+            unsafe {
+                (api.cl_get_event_info)(
+                    event,
+                    CL_EVENT_COMMAND_EXECUTION_STATUS,
+                    std::mem::size_of::<ClInt>(),
+                    (&mut execution_status as *mut ClInt).cast::<c_void>(),
+                    std::ptr::null_mut(),
+                )
+            },
+            "clGetEventInfo(CL_EVENT_COMMAND_EXECUTION_STATUS)",
+        )?;
+        Ok(execution_status)
+    })
 }
 
 fn select_gpu_device(api: &OpenClApi, requested_index: usize) -> Result<ClDeviceId> {
@@ -636,6 +768,7 @@ struct Resources<'a> {
     matrix_kernel: ClKernel,
     hash_kernel: ClKernel,
     buffers: Vec<ClMem>,
+    events: Vec<ClEvent>,
     cleaned: bool,
 }
 
@@ -649,12 +782,20 @@ impl<'a> Resources<'a> {
             matrix_kernel: std::ptr::null_mut(),
             hash_kernel: std::ptr::null_mut(),
             buffers: Vec::new(),
+            events: Vec::new(),
             cleaned: false,
         }
     }
 
     fn cleanup(&mut self) -> Result<()> {
         let mut first_error = None;
+        for event in self.events.drain(..).rev() {
+            record_cleanup(
+                &mut first_error,
+                unsafe { (self.api.cl_release_event)(event) },
+                "clReleaseEvent",
+            );
+        }
         for buffer in self.buffers.drain(..).rev() {
             record_cleanup(
                 &mut first_error,
@@ -740,10 +881,17 @@ struct OpenClApi {
     cl_enqueue_read_buffer: ClEnqueueReadBuffer,
     cl_set_kernel_arg: ClSetKernelArg,
     cl_enqueue_nd_range_kernel: ClEnqueueNDRangeKernel,
-    cl_finish: ClFinish,
+    cl_flush: ClFlush,
+    cl_get_event_info: ClGetEventInfo,
+    cl_release_event: ClReleaseEvent,
 }
 
 impl OpenClApi {
+    fn retain_library_for_process_lifetime(self) {
+        let Self { _library, .. } = self;
+        std::mem::forget(_library);
+    }
+
     fn load() -> Result<Self> {
         let candidates = opencl_library_candidates();
         if candidates.is_empty() {
@@ -805,7 +953,9 @@ impl OpenClApi {
                             ClEnqueueNDRangeKernel,
                             "clEnqueueNDRangeKernel"
                         ),
-                        cl_finish: symbol!(ClFinish, "clFinish"),
+                        cl_flush: symbol!(ClFlush, "clFlush"),
+                        cl_get_event_info: symbol!(ClGetEventInfo, "clGetEventInfo"),
+                        cl_release_event: symbol!(ClReleaseEvent, "clReleaseEvent"),
                         _library: library,
                     })
                 })()
@@ -819,5 +969,43 @@ impl OpenClApi {
             "OpenCL runtime library not found or incomplete ({})",
             last_error.unwrap_or_else(|| "no candidate library loaded".to_string())
         ))
+    }
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn opencl_runtime_is_retained_when_work_may_outlive_the_call() {
+        assert!(opencl_runtime_must_outlive_call(true, false, false));
+        assert!(opencl_runtime_must_outlive_call(true, true, true));
+        assert!(!opencl_runtime_must_outlive_call(true, true, false));
+        assert!(!opencl_runtime_must_outlive_call(false, false, false));
+    }
+
+    #[test]
+    fn opencl_event_poll_accepts_completion_after_progress_states() {
+        let mut states = [CL_QUEUED, 1, CL_COMPLETE].into_iter();
+        poll_opencl_event_status(Duration::from_secs(1), || {
+            Ok(states.next().unwrap_or(CL_COMPLETE))
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn opencl_event_poll_times_out_without_host_synchronization() {
+        let error = poll_opencl_event_status(Duration::ZERO, || Ok(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("OpenCL launch watchdog timeout"));
+    }
+
+    #[test]
+    fn opencl_event_poll_rejects_abnormal_completion_status() {
+        let error = poll_opencl_event_status(Duration::from_secs(1), || Ok(-5))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("terminated abnormally"));
     }
 }
