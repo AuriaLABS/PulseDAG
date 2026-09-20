@@ -72,10 +72,27 @@ jobs:
           fi
 
       - name: Verify standalone miner crate build surface
-        run: cargo check --locked -p pulsedag-miner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Linux" ] || [ "${{ runner.os }}" = "Windows" ]; then
+            cargo check --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner
+          else
+            cargo check --locked -p pulsedag-miner --bin pulsedag-miner
+          fi
 
-      - name: Build node and standalone miner
-        run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+      - name: Build release node
+        run: cargo build --locked --release --bin pulsedagd
+
+      - name: Build standalone miner
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Linux" ] || [ "${{ runner.os }}" = "Windows" ]; then
+            cargo build --locked --release -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner
+          else
+            cargo build --locked --release -p pulsedag-miner --bin pulsedag-miner
+          fi
 
       - name: Package release assets (node + standalone miner)
         shell: bash
@@ -108,6 +125,19 @@ jobs:
             --include-file README.md \
             --include-file docs/INSTALL_BINARIES_V2_3_0.md
 
+          miner_version="$("${miner_binary}" --version 2>&1)"
+          printf '%s\n' "${miner_version}"
+
+          miner_feature_args=()
+          if [ "${{ runner.os }}" = "Linux" ] || [ "${{ runner.os }}" = "Windows" ]; then
+            grep -q 'gpu_compiled=true' <<<"${miner_version}"
+            grep -q 'cuda_compiled=true' <<<"${miner_version}"
+            miner_feature_args+=(--build-feature gpu --build-feature cuda)
+          else
+            grep -q 'gpu_compiled=false' <<<"${miner_version}"
+            grep -q 'cuda_compiled=false' <<<"${miner_version}"
+          fi
+
           python scripts/release/package_release_artifacts.py \
             --binary "${miner_binary}" \
             --output-dir dist \
@@ -117,8 +147,30 @@ jobs:
             --commit "${{ github.sha }}" \
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
+            "${miner_feature_args[@]}" \
             --include-file README.md \
             --include-file docs/INSTALL_BINARIES_V2_3_0.md
+
+      - name: Enforce miner build-feature provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob
+          import json
+
+          manifests = []
+          for path in sorted(glob.glob('dist/pulsedag-miner-*.tar.gz.json') + glob.glob('dist/pulsedag-miner-*.zip.json')):
+              with open(path, 'r', encoding='utf-8') as handle:
+                  manifests.append((path, json.load(handle)))
+          if len(manifests) != 1:
+              raise SystemExit(f'expected exactly one miner manifest, found {len(manifests)}')
+          path, manifest = manifests[0]
+          expected = ['cuda', 'gpu'] if "${{ runner.os }}" in {'Linux', 'Windows'} else []
+          if manifest.get('build_features') != expected:
+              raise SystemExit(f"{path}: expected build_features {expected!r}, got {manifest.get('build_features')!r}")
+          print(f'{path}: expected build feature provenance PASS ({expected!r})')
+          PY
 
       - name: Verify packaged standalone miner assets on native runner
         shell: bash
