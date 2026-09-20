@@ -10,12 +10,14 @@ using CUcontext = void*;
 using CUmodule = void*;
 using CUfunction = void*;
 using CUstream = void*;
+using CUevent = void*;
 using CUdeviceptr = std::uint64_t;
 
 namespace {
 constexpr CUresult CUDA_SUCCESS = 0;
 constexpr CUresult CUDA_ERROR_INVALID_VALUE = 1;
 constexpr CUresult CUDA_ERROR_OUT_OF_MEMORY = 2;
+constexpr CUresult CUDA_ERROR_NOT_READY = 600;
 constexpr std::uintptr_t MATRIX_FUNCTION = 1;
 constexpr std::uintptr_t HASH_FUNCTION = 2;
 constexpr std::uintptr_t SMOKE_FUNCTION = 3;
@@ -229,6 +231,38 @@ extern "C" CUresult cuLaunchKernel(
     }
 
     return CUDA_ERROR_INVALID_VALUE;
+}
+
+extern "C" CUresult cuEventCreate(CUevent* event, unsigned int) {
+    if (event == nullptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    *event = reinterpret_cast<CUevent>(0x3000);
+    return CUDA_SUCCESS;
+}
+
+extern "C" CUresult cuEventRecord(CUevent event, CUstream) {
+    if (event == nullptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (fail_requested("PULSEDAG_TEST_CUDA_FAIL_EVENT_RECORD")) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    return CUDA_SUCCESS;
+}
+
+extern "C" CUresult cuEventQuery(CUevent event) {
+    if (event == nullptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (fail_requested("PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY")) {
+        return CUDA_ERROR_NOT_READY;
+    }
+    return CUDA_SUCCESS;
+}
+
+extern "C" CUresult cuEventDestroy_v2(CUevent event) {
+    return event == nullptr ? CUDA_ERROR_INVALID_VALUE : CUDA_SUCCESS;
 }
 
 extern "C" CUresult cuCtxSynchronize() {

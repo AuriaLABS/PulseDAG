@@ -10,6 +10,7 @@ use pulsedag_miner::{MiningBackend, NonceSearchResult};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const DEFAULT_CUDA_BATCH_SIZE: usize = 4_096;
 const DEFAULT_CUDA_BLOCK_SIZE: u32 = 256;
@@ -22,6 +23,7 @@ pub(crate) struct CudaBackendConfig {
     device_indices: Vec<usize>,
     batch_size: usize,
     block_size: u32,
+    launch_timeout: Duration,
 }
 
 impl CudaBackendConfig {
@@ -85,7 +87,16 @@ impl CudaBackendConfig {
             device_indices,
             batch_size,
             block_size,
+            launch_timeout: cuda_driver_launch::DEFAULT_CUDA_LAUNCH_TIMEOUT,
         })
+    }
+
+    pub(crate) fn with_launch_timeout(mut self, launch_timeout: Duration) -> Result<Self> {
+        if launch_timeout.is_zero() {
+            return Err(anyhow!("CUDA launch watchdog timeout must be non-zero"));
+        }
+        self.launch_timeout = launch_timeout;
+        Ok(self)
     }
 }
 
@@ -117,8 +128,10 @@ trait CudaBatchLauncher: Send + Sync {
     ) -> Result<Vec<[u8; 32]>>;
 }
 
-#[derive(Debug, Default)]
-struct DriverCudaBatchLauncher;
+#[derive(Debug)]
+struct DriverCudaBatchLauncher {
+    launch_timeout: Duration,
+}
 
 impl CudaBatchLauncher for DriverCudaBatchLauncher {
     fn launch(
@@ -129,12 +142,13 @@ impl CudaBatchLauncher for DriverCudaBatchLauncher {
         nonces: &[u64],
         block_size: u32,
     ) -> Result<Vec<[u8; 32]>> {
-        cuda_driver_launch::launch_kheavyhash_batch(
+        cuda_driver_launch::launch_kheavyhash_batch_with_timeout(
             module_image,
             device_index,
             pre_pow_hash,
             nonces,
             block_size,
+            self.launch_timeout,
         )
     }
 }
@@ -200,9 +214,10 @@ pub(crate) struct CudaMiningBackend {
 
 impl CudaMiningBackend {
     pub(crate) fn new(config: CudaBackendConfig) -> Self {
+        let launch_timeout = config.launch_timeout;
         Self {
             config,
-            launcher: Arc::new(DriverCudaBatchLauncher),
+            launcher: Arc::new(DriverCudaBatchLauncher { launch_timeout }),
             worker_health: CudaWorkerHealth::default(),
         }
     }
@@ -224,6 +239,20 @@ impl CudaMiningBackend {
     #[cfg(feature = "gpu")]
     pub(crate) fn mixed_runtime_batch_size(&self) -> usize {
         self.config.batch_size
+    }
+
+    #[cfg(feature = "gpu")]
+    pub(crate) fn probe_mixed_runtime_device(&self, device_index: usize) -> Result<()> {
+        if !self.config.device_indices.contains(&device_index) {
+            return Err(anyhow!(
+                "CUDA mixed runtime recovery probe requested unselected device index {device_index}"
+            ));
+        }
+        self.launcher.probe(
+            &self.config.module_image,
+            device_index,
+            self.config.block_size,
+        )
     }
 
     #[cfg(feature = "gpu")]
@@ -681,6 +710,10 @@ mod tests {
     fn zero_cuda_launch_shape_fails_closed() {
         assert!(CudaBackendConfig::with_launch_shape(vec![1], 0, 0, 64).is_err());
         assert!(CudaBackendConfig::with_launch_shape(vec![1], 0, 1, 0).is_err());
+        assert!(CudaBackendConfig::new(vec![1], 0)
+            .unwrap()
+            .with_launch_timeout(Duration::ZERO)
+            .is_err());
     }
 
     #[test]

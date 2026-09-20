@@ -9,6 +9,7 @@ use pulsedag_core::{
 };
 use pulsedag_miner::protocol_pow::{build_protocol_pow_work, ProtocolPowWork};
 use sha3::{Digest, Keccak256};
+use std::time::{Duration, Instant};
 
 fn header(version: u32, target_bits: u32) -> BlockHeader {
     BlockHeader {
@@ -109,4 +110,82 @@ fn wrong_cuda_pre_pow_hash_fails_closed_at_canonical_reverification() {
 
     let error = work.reverify_accelerator_hash(nonce, hash).unwrap_err();
     assert!(error.to_string().contains("accelerator hash mismatch"));
+}
+
+#[test]
+fn cuda_driver_watchdog_times_out_on_persistently_not_ready_event() {
+    if std::env::var("PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY").is_err()
+        || std::env::var("PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY").is_ok()
+    {
+        return;
+    }
+
+    let target_bits = 0x207f_ffff;
+    let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+    let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+    let started = Instant::now();
+    let error = cuda_driver_launch::launch_kheavyhash_batch_with_timeout(
+        b"mock-module-image",
+        0,
+        canonical_pre_pow_hash(&work),
+        &[0],
+        64,
+        Duration::from_millis(5),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("CUDA launch watchdog timeout"));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn cuda_driver_watchdog_reports_context_teardown_failure() {
+    if std::env::var("PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY").is_err()
+        || std::env::var("PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY").is_err()
+    {
+        return;
+    }
+
+    let target_bits = 0x207f_ffff;
+    let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+    let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+    let error = cuda_driver_launch::launch_kheavyhash_batch_with_timeout(
+        b"mock-module-image",
+        0,
+        canonical_pre_pow_hash(&work),
+        &[0],
+        64,
+        Duration::from_millis(5),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("CUDA launch watchdog timeout"));
+    assert!(error.contains("CUDA context teardown failed"));
+}
+
+#[test]
+fn cuda_driver_post_submit_event_failure_uses_context_teardown_path() {
+    if std::env::var("PULSEDAG_TEST_CUDA_FAIL_EVENT_RECORD").is_err()
+        || std::env::var("PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY").is_err()
+    {
+        return;
+    }
+
+    let target_bits = 0x207f_ffff;
+    let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
+    let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
+    let error = cuda_driver_launch::launch_kheavyhash_batch_with_timeout(
+        b"mock-module-image",
+        0,
+        canonical_pre_pow_hash(&work),
+        &[0],
+        64,
+        Duration::from_millis(5),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("cuEventRecord failed with CUDA status 1"));
+    assert!(error.contains("CUDA context teardown failed"));
 }

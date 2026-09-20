@@ -1,0 +1,208 @@
+name: v3 launch Task 38 accelerator watchdog phase 22
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - "apps/pulsedag-miner/src/cuda_backend.rs"
+      - "apps/pulsedag-miner/src/main.rs"
+      - "apps/pulsedag-miner/src/heterogeneous_backend.rs"
+      - "apps/pulsedag-miner/tests/cuda_driver_launch_contract.rs"
+      - "apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp"
+      - "docs/task38-cuda-watchdog-phase22-scope.md"
+      - ".github/workflows/task38-cuda-watchdog-phase22.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/src/cuda_driver_launch.rs"
+      - "apps/pulsedag-miner/src/opencl_driver_launch.rs"
+      - "apps/pulsedag-miner/src/opencl_backend.rs"
+      - "apps/pulsedag-miner/src/cuda_backend.rs"
+      - "apps/pulsedag-miner/src/main.rs"
+      - "apps/pulsedag-miner/src/heterogeneous_backend.rs"
+      - "apps/pulsedag-miner/tests/cuda_driver_launch_contract.rs"
+      - "apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp"
+      - "docs/task38-cuda-watchdog-phase22-scope.md"
+      - ".github/workflows/task38-cuda-watchdog-phase22.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-watchdog-software-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: Build deterministic CUDA Driver shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -fPIC -shared \
+            apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp \
+            -o /tmp/libcuda-pulsedag-mock.so
+          test -s /tmp/libcuda-pulsedag-mock.so
+
+      - name: Watchdog expires on persistent NOT_READY
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract cuda_driver_watchdog_times_out_on_persistently_not_ready_event
+
+      - name: Timeout still attempts context teardown
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY: "1"
+          PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract cuda_driver_watchdog_reports_context_teardown_failure
+
+      - name: Post-submit event failure uses context teardown path
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_FAIL_EVENT_RECORD: "1"
+          PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract cuda_driver_post_submit_event_failure_uses_context_teardown_path
+
+      - name: Preserve worker isolation and deterministic replay
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-miner failed_cuda_worker_is_isolated_replays_batch_and_recovers_next_job
+
+      - name: OpenCL watchdog poll contracts
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib watchdog_tests
+
+      - name: OpenCL recovery requires launch capability
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib failed_worker_is_isolated_replays_batch_and_recovers_next_job
+
+      - name: OpenCL persistent recovery failure stays quarantined
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib failed_opencl_worker_stays_quarantined_when_capability_probe_fails
+
+      - name: Mixed-vendor failed batch replay
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner mixed_runtime_replays_failed_device_batch_on_survivor_without_nonce_loss
+
+      - name: Mixed-vendor no-survivor fail-closed regression
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner mixed_runtime_fails_closed_when_no_healthy_device_remains
+
+      - name: Mixed-vendor replacement batch-size regression
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner mixed_runtime_rebatches_failed_range_for_smaller_replacement_device
+
+      - name: Mixed-vendor persistent quarantine and recovery probe
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner mixed_runtime_failed_device
+
+      - name: Strict CUDA and mixed Clippy
+        run: cargo clippy --locked -p pulsedag-miner --features gpu,cuda --lib --bin pulsedag-miner --test cuda_driver_launch_contract -- -D warnings
+
+      - name: Audit watchdog structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'cuEventQuery' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'CUDA_ERROR_NOT_READY' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'launch_kheavyhash_batch_with_timeout' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'PULSEDAG_MINER_CUDA_WATCHDOG_MS' apps/pulsedag-miner/src/main.rs
+          grep -q 'PULSEDAG_MINER_OPENCL_WATCHDOG_MS' apps/pulsedag-miner/src/main.rs
+          grep -q 'clGetEventInfo' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'CL_EVENT_COMMAND_EXECUTION_STATUS' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'clFlush' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'retain_library_for_process_lifetime' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'opencl_runtime_must_outlive_call' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'OPENCL_RECOVERY_PROBE_PRE_POW_HASH' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'failed_opencl_worker_stays_quarantined_when_capability_probe_fails' apps/pulsedag-miner/src/opencl_backend.rs
+          grep -q 'clEnqueueNDRangeKernel(kheavyhash) returned a null completion event' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'CL_TRUE' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          ! grep -q 'cl_finish' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          grep -q 'LaunchExecution::TimedOut' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'LaunchExecution::FailedAfterSubmission' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          ! grep -q 'cu_ctx_synchronize' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          echo "cuda_watchdog_deadline_detection_software=PASS"
+          echo "opencl_watchdog_deadline_detection_software=PASS"
+          echo "cuda_timeout_context_teardown_path=PASS"
+          echo "cuda_homogeneous_failure_quarantine_replay_regression=PASS"
+          grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          grep -q 'mixed_runtime_replays_failed_device_batch_on_survivor_without_nonce_loss' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          grep -q 'mixed_runtime_fails_closed_when_no_healthy_device_remains' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          grep -q 'mixed_runtime_rebatches_failed_range_for_smaller_replacement_device' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          grep -q 'probe_mixed_runtime_device' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'mixed_runtime_failed_device_requires_probe_before_next_job_recovery' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          grep -q 'mixed_runtime_failed_device_stays_quarantined_when_probe_fails' apps/pulsedag-miner/src/heterogeneous_backend.rs
+          echo "mixed_vendor_in_job_failure_redistribution=PASS"
+          echo "mixed_vendor_persistent_quarantine_recovery_software=PASS"
+          echo "hard_context_teardown_deadline=NOT_CLAIMED"
+          echo "physical_hung_kernel_reset=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
+
+  cross-platform-watchdog-build:
+    name: accelerator watchdog build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile accelerator watchdog surfaces
+        run: cargo check --locked -p pulsedag-miner --features gpu,cuda --lib --bin pulsedag-miner --test cuda_driver_launch_contract
+
+      - name: OpenCL hardware-free watchdog polling
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib watchdog_tests
+
+      - name: CUDA timeout validation is hardware-free
+        run: cargo test --locked -p pulsedag-miner --features gpu,cuda --lib zero_watchdog_timeout_fails_before_loading_cuda

@@ -2,14 +2,19 @@ use anyhow::{anyhow, Context, Result};
 use libloading::Library;
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uint};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const CUDA_SUCCESS: c_int = 0;
+const CUDA_ERROR_NOT_READY: c_int = 600;
+const CUDA_EVENT_DISABLE_TIMING: c_uint = 0x02;
 const CUDA_HASH_BYTES: usize = 32;
 const CUDA_MATRIX_BYTES: usize = 64 * 64 * std::mem::size_of::<u16>();
 const MATRIX_KERNEL_NAME: &[u8] = b"pulsedag_generate_matrix_kernel\0";
 const HASH_KERNEL_NAME: &[u8] = b"pulsedag_kheavyhash_kernel\0";
 
 pub const CUDA_DRIVER_LIBRARY_ENV: &str = "PULSEDAG_CUDA_DRIVER_LIBRARY";
+pub const DEFAULT_CUDA_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 type CuResult = c_int;
 type CuDevice = c_int;
@@ -17,6 +22,7 @@ type CuContext = *mut c_void;
 type CuModule = *mut c_void;
 type CuFunction = *mut c_void;
 type CuStream = *mut c_void;
+type CuEvent = *mut c_void;
 type CuDevicePtr = u64;
 
 type CuInit = unsafe extern "system" fn(c_uint) -> CuResult;
@@ -45,7 +51,17 @@ type CuLaunchKernel = unsafe extern "system" fn(
     *mut *mut c_void,
     *mut *mut c_void,
 ) -> CuResult;
-type CuCtxSynchronize = unsafe extern "system" fn() -> CuResult;
+type CuEventCreate = unsafe extern "system" fn(*mut CuEvent, c_uint) -> CuResult;
+type CuEventRecord = unsafe extern "system" fn(CuEvent, CuStream) -> CuResult;
+type CuEventQuery = unsafe extern "system" fn(CuEvent) -> CuResult;
+type CuEventDestroyV2 = unsafe extern "system" fn(CuEvent) -> CuResult;
+
+#[derive(Debug)]
+enum LaunchExecution {
+    Completed(Vec<[u8; 32]>),
+    TimedOut,
+    FailedAfterSubmission(anyhow::Error),
+}
 
 /// Validate that the NVIDIA Driver API is loadable and that the requested
 /// device ordinal exists. This does not create a context, load a module, launch
@@ -90,6 +106,24 @@ pub fn launch_kheavyhash_batch(
     nonces: &[u64],
     block_size: u32,
 ) -> Result<Vec<[u8; 32]>> {
+    launch_kheavyhash_batch_with_timeout(
+        module_image,
+        device_index,
+        pre_pow_hash,
+        nonces,
+        block_size,
+        DEFAULT_CUDA_LAUNCH_TIMEOUT,
+    )
+}
+
+pub fn launch_kheavyhash_batch_with_timeout(
+    module_image: &[u8],
+    device_index: usize,
+    pre_pow_hash: [u8; 32],
+    nonces: &[u64],
+    block_size: u32,
+    launch_timeout: Duration,
+) -> Result<Vec<[u8; 32]>> {
     if nonces.is_empty() {
         return Ok(Vec::new());
     }
@@ -98,6 +132,9 @@ pub fn launch_kheavyhash_batch(
     }
     if block_size == 0 {
         return Err(anyhow!("CUDA block size must be non-zero"));
+    }
+    if launch_timeout.is_zero() {
+        return Err(anyhow!("CUDA launch watchdog timeout must be non-zero"));
     }
     if pre_pow_hash == [0; 32] {
         return Err(anyhow!("CUDA pre_pow_hash must not be all-zero"));
@@ -134,16 +171,38 @@ pub fn launch_kheavyhash_batch(
         "cuCtxCreate_v2",
     )?;
 
-    let execution = launch_with_context(&api, module_image, pre_pow_hash, nonces, block_size);
+    let execution = launch_with_context(
+        &api,
+        module_image,
+        pre_pow_hash,
+        nonces,
+        block_size,
+        launch_timeout,
+    );
     let destroy = ensure_cuda_success(
         unsafe { (api.cu_ctx_destroy_v2)(context) },
         "cuCtxDestroy_v2",
     );
 
     match (execution, destroy) {
-        (Ok(hashes), Ok(())) => Ok(hashes),
+        (Ok(LaunchExecution::Completed(hashes)), Ok(())) => Ok(hashes),
+        (Ok(LaunchExecution::TimedOut), Ok(())) => Err(anyhow!(
+            "CUDA launch watchdog timeout after {} ms on device {}",
+            launch_timeout.as_millis(),
+            device_index
+        )),
+        (Ok(LaunchExecution::TimedOut), Err(cleanup_error)) => Err(anyhow!(
+            "CUDA launch watchdog timeout after {} ms on device {}; CUDA context teardown failed: {}",
+            launch_timeout.as_millis(),
+            device_index,
+            cleanup_error
+        )),
+        (Ok(LaunchExecution::FailedAfterSubmission(error)), Ok(())) => Err(error),
+        (Ok(LaunchExecution::FailedAfterSubmission(error)), Err(cleanup_error)) => Err(anyhow!(
+            "{error}; CUDA context teardown failed: {cleanup_error}"
+        )),
         (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Ok(LaunchExecution::Completed(_)), Err(error)) => Err(error),
     }
 }
 
@@ -153,7 +212,8 @@ fn launch_with_context(
     pre_pow_hash: [u8; 32],
     nonces: &[u64],
     block_size: u32,
-) -> Result<Vec<[u8; 32]>> {
+    launch_timeout: Duration,
+) -> Result<LaunchExecution> {
     let mut nul_terminated_image = Vec::with_capacity(module_image.len().saturating_add(1));
     nul_terminated_image.extend_from_slice(module_image);
     if nul_terminated_image.last().copied() != Some(0) {
@@ -168,13 +228,29 @@ fn launch_with_context(
         "cuModuleLoadData",
     )?;
 
-    let execution = launch_with_module(api, module, pre_pow_hash, nonces, block_size);
-    let unload = ensure_cuda_success(unsafe { (api.cu_module_unload)(module) }, "cuModuleUnload");
+    let execution = launch_with_module(
+        api,
+        module,
+        pre_pow_hash,
+        nonces,
+        block_size,
+        launch_timeout,
+    );
+    if matches!(
+        &execution,
+        Ok(LaunchExecution::TimedOut) | Ok(LaunchExecution::FailedAfterSubmission(_))
+    ) {
+        return execution;
+    }
 
+    let unload = ensure_cuda_success(unsafe { (api.cu_module_unload)(module) }, "cuModuleUnload");
     match (execution, unload) {
-        (Ok(hashes), Ok(())) => Ok(hashes),
+        (Ok(LaunchExecution::Completed(hashes)), Ok(())) => Ok(LaunchExecution::Completed(hashes)),
         (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Ok(LaunchExecution::Completed(_)), Err(error)) => Err(error),
+        (Ok(LaunchExecution::TimedOut), _) | (Ok(LaunchExecution::FailedAfterSubmission(_)), _) => {
+            unreachable!("incomplete CUDA execution returned past context-only cleanup guard")
+        }
     }
 }
 
@@ -184,7 +260,8 @@ fn launch_with_module(
     pre_pow_hash: [u8; 32],
     nonces: &[u64],
     block_size: u32,
-) -> Result<Vec<[u8; 32]>> {
+    launch_timeout: Duration,
+) -> Result<LaunchExecution> {
     let mut matrix_function = std::ptr::null_mut();
     ensure_cuda_success(
         unsafe {
@@ -222,8 +299,10 @@ fn launch_with_module(
     let mut d_matrix = 0;
     let mut d_nonces = 0;
     let mut d_outputs = 0;
+    let mut completion_event = std::ptr::null_mut();
+    let mut work_submitted = false;
 
-    let execution = (|| -> Result<Vec<[u8; 32]>> {
+    let execution = (|| -> Result<LaunchExecution> {
         ensure_cuda_success(
             unsafe { (api.cu_mem_alloc_v2)(&mut d_pre_pow_hash, CUDA_HASH_BYTES) },
             "cuMemAlloc_v2(pre_pow_hash)",
@@ -258,6 +337,13 @@ fn launch_with_module(
             "cuMemcpyHtoD_v2(nonces)",
         )?;
 
+        // Create the completion primitive before launching GPU work so a
+        // missing/broken watchdog mechanism fails closed before any kernel is started.
+        ensure_cuda_success(
+            unsafe { (api.cu_event_create)(&mut completion_event, CUDA_EVENT_DISABLE_TIMING) },
+            "cuEventCreate",
+        )?;
+
         let mut pre_arg = d_pre_pow_hash;
         let mut matrix_arg = d_matrix;
         let mut matrix_params = [
@@ -282,6 +368,7 @@ fn launch_with_module(
             },
             "cuLaunchKernel(matrix)",
         )?;
+        work_submitted = true;
 
         let count = u64::try_from(nonces.len())
             .map_err(|_| anyhow!("CUDA nonce count does not fit in u64"))?;
@@ -316,7 +403,25 @@ fn launch_with_module(
             },
             "cuLaunchKernel(kheavyhash)",
         )?;
-        ensure_cuda_success(unsafe { (api.cu_ctx_synchronize)() }, "cuCtxSynchronize")?;
+        ensure_cuda_success(
+            unsafe { (api.cu_event_record)(completion_event, std::ptr::null_mut()) },
+            "cuEventRecord",
+        )?;
+
+        let started = Instant::now();
+        loop {
+            let status = unsafe { (api.cu_event_query)(completion_event) };
+            if status == CUDA_SUCCESS {
+                break;
+            }
+            if status != CUDA_ERROR_NOT_READY {
+                ensure_cuda_success(status, "cuEventQuery")?;
+            }
+            if started.elapsed() >= launch_timeout {
+                return Ok(LaunchExecution::TimedOut);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
 
         let mut raw = vec![0u8; output_bytes];
         ensure_cuda_success(
@@ -326,16 +431,32 @@ fn launch_with_module(
             "cuMemcpyDtoH_v2(outputs)",
         )?;
 
-        Ok(raw
-            .chunks_exact(CUDA_HASH_BYTES)
-            .map(|chunk| {
-                let mut hash = [0u8; CUDA_HASH_BYTES];
-                hash.copy_from_slice(chunk);
-                hash
-            })
-            .collect())
+        Ok(LaunchExecution::Completed(
+            raw.chunks_exact(CUDA_HASH_BYTES)
+                .map(|chunk| {
+                    let mut hash = [0u8; CUDA_HASH_BYTES];
+                    hash.copy_from_slice(chunk);
+                    hash
+                })
+                .collect(),
+        ))
     })();
 
+    let execution = match execution {
+        Err(error) if work_submitted => Ok(LaunchExecution::FailedAfterSubmission(error)),
+        other => other,
+    };
+
+    if matches!(
+        &execution,
+        Ok(LaunchExecution::TimedOut) | Ok(LaunchExecution::FailedAfterSubmission(_))
+    ) {
+        return execution;
+    }
+
+    if !completion_event.is_null() {
+        let _ = unsafe { (api.cu_event_destroy_v2)(completion_event) };
+    }
     for device_ptr in [d_outputs, d_nonces, d_matrix, d_pre_pow_hash] {
         if device_ptr != 0 {
             let _ = unsafe { (api.cu_mem_free_v2)(device_ptr) };
@@ -376,7 +497,10 @@ struct CudaDriverApi {
     cu_memcpy_htod_v2: CuMemcpyHtoDV2,
     cu_memcpy_dtoh_v2: CuMemcpyDtoHV2,
     cu_launch_kernel: CuLaunchKernel,
-    cu_ctx_synchronize: CuCtxSynchronize,
+    cu_event_create: CuEventCreate,
+    cu_event_record: CuEventRecord,
+    cu_event_query: CuEventQuery,
+    cu_event_destroy_v2: CuEventDestroyV2,
 }
 
 impl CudaDriverApi {
@@ -440,9 +564,18 @@ impl CudaDriverApi {
                         cu_launch_kernel: *library
                             .get::<CuLaunchKernel>(b"cuLaunchKernel\0")
                             .context("CUDA Driver API missing cuLaunchKernel")?,
-                        cu_ctx_synchronize: *library
-                            .get::<CuCtxSynchronize>(b"cuCtxSynchronize\0")
-                            .context("CUDA Driver API missing cuCtxSynchronize")?,
+                        cu_event_create: *library
+                            .get::<CuEventCreate>(b"cuEventCreate\0")
+                            .context("CUDA Driver API missing cuEventCreate")?,
+                        cu_event_record: *library
+                            .get::<CuEventRecord>(b"cuEventRecord\0")
+                            .context("CUDA Driver API missing cuEventRecord")?,
+                        cu_event_query: *library
+                            .get::<CuEventQuery>(b"cuEventQuery\0")
+                            .context("CUDA Driver API missing cuEventQuery")?,
+                        cu_event_destroy_v2: *library
+                            .get::<CuEventDestroyV2>(b"cuEventDestroy_v2\0")
+                            .context("CUDA Driver API missing cuEventDestroy_v2")?,
                         _library: library,
                     })
                 })()
@@ -491,5 +624,16 @@ mod tests {
     fn all_zero_pre_pow_hash_fails_before_loading_cuda() {
         let error = launch_kheavyhash_batch(b"ptx", 0, [0; 32], &[0], 256).unwrap_err();
         assert_eq!(error.to_string(), "CUDA pre_pow_hash must not be all-zero");
+    }
+
+    #[test]
+    fn zero_watchdog_timeout_fails_before_loading_cuda() {
+        let error =
+            launch_kheavyhash_batch_with_timeout(b"ptx", 0, [1; 32], &[0], 256, Duration::ZERO)
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "CUDA launch watchdog timeout must be non-zero"
+        );
     }
 }
