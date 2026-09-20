@@ -1,0 +1,74 @@
+name: "v3 launch #1042 PulseScript VM foundation"
+
+on:
+  pull_request:
+    branches:
+      - main
+      - manual/issue-1041-programmability-activation-contract-v1
+    paths:
+      - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
+      - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
+      - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    name: PulseScript VM differential (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run PulseScript / VM vectors
+        run: cargo test --locked -p pulsedag-core pulsescript_vm_v1
+
+      - name: Verify formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Strict core Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
+
+      - name: Record deterministic non-claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PULSE_VM_MAX_CALL_DEPTH_V1: u16 = 0' crates/pulsedag-core/src/pulsescript_vm_v1.rs
+          grep -q 'PULSE_VM_MAX_STATE_ACCESSES_V1: u16 = 0' crates/pulsedag-core/src/pulsescript_vm_v1.rs
+          grep -q 'GOLDEN_TOOLCHAIN_FINGERPRINT_HEX' crates/pulsedag-core/src/pulsescript_vm_v1.rs
+          echo 'pulsescript_vm_foundation=PASS'
+          echo 'programmability_activation=NOT_CLAIMED'
+          echo 'contract_state_access=NOT_CLAIMED'
+          echo 'cross_contract_calls=NOT_CLAIMED'
