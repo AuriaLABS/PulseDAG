@@ -24,7 +24,9 @@ def main() -> None:
     p.add_argument('--tag', required=True); p.add_argument('--bin-name', default='pulsedagd')
     p.add_argument('--repository', default=''); p.add_argument('--commit', default=''); p.add_argument('--run-id', default=''); p.add_argument('--run-attempt', default='')
     p.add_argument('--include-file', action='append', default=[], help='Extra repo file to include at archive root folder')
+    p.add_argument('--build-feature', action='append', default=[], help='Cargo feature compiled into this binary; repeat for multiple features')
     a=p.parse_args(); b=a.binary.resolve(); out=a.output_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
+    build_features=sorted({feature.strip() for feature in a.build_feature if feature.strip()})
     if not b.exists(): raise SystemExit(f'Binary not found: {b}')
     target=detect_target(); base=f"{a.bin_name}-{a.tag}-{target}"; win=platform.system().lower()=='windows'; bname=f"{a.bin_name}.exe" if win else a.bin_name
     stage=out/base; shutil.rmtree(stage, ignore_errors=True); stage.mkdir(parents=True)
@@ -42,7 +44,7 @@ def main() -> None:
         with tarfile.open(arc,'w:gz') as t:
             for f in sorted(stage.iterdir()): t.add(f, arcname=f"{base}/{f.name}")
     sha=sha256_file(arc); (out/f"{arc.name}.sha256").write_text(f"{sha}  {arc.name}\n",encoding='utf-8')
-    (out/f"{arc.name}.json").write_text(json.dumps({"tag":a.tag,"archive":arc.name,"archive_sha256":sha,"archive_size_bytes":arc.stat().st_size,"target":target,"binary":bname,"included_files":included,"provenance":{"repository":a.repository,"commit":a.commit,"github_run_id":a.run_id,"github_run_attempt":a.run_attempt}},indent=2,sort_keys=True)+"\n",encoding='utf-8')
+    (out/f"{arc.name}.json").write_text(json.dumps({"tag":a.tag,"archive":arc.name,"archive_sha256":sha,"archive_size_bytes":arc.stat().st_size,"target":target,"binary":bname,"build_features":build_features,"included_files":included,"provenance":{"repository":a.repository,"commit":a.commit,"github_run_id":a.run_id,"github_run_attempt":a.run_attempt}},indent=2,sort_keys=True)+"\n",encoding='utf-8')
     shutil.rmtree(stage)
     print(f'Packaged: {arc}')
 

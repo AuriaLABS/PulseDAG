@@ -1,0 +1,151 @@
+name: v3 launch Task 38 packaged GPU miner phase 23
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/pulsedag-miner/**"
+      - "crates/pulsedag-core/**"
+      - "crates/pulsedag-api/**"
+      - "scripts/release/package_release_artifacts.py"
+      - "scripts/release/verify_release_artifacts.py"
+      - ".github/workflows/release-binaries.yml"
+      - ".github/workflows/task38-packaged-gpu-runtime-phase23.yml"
+      - "docs/task38-packaged-gpu-runtime-phase23-scope.md"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "apps/pulsedag-miner/**"
+      - "crates/pulsedag-core/**"
+      - "crates/pulsedag-api/**"
+      - "scripts/release/package_release_artifacts.py"
+      - "scripts/release/verify_release_artifacts.py"
+      - ".github/workflows/release-binaries.yml"
+      - ".github/workflows/task38-packaged-gpu-runtime-phase23.yml"
+      - "docs/task38-packaged-gpu-runtime-phase23-scope.md"
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-gpu-miner:
+    name: packaged GPU miner (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            expected_target: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            expected_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build GPU-capable release miner
+        run: cargo build --locked --release -p pulsedag-miner --features gpu,cuda --bin pulsedag-miner
+
+      - name: Prove compiled backend features
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            miner="target/release/pulsedag-miner.exe"
+          else
+            miner="target/release/pulsedag-miner"
+          fi
+          output="$("${miner}" --version 2>&1)"
+          printf '%s\n' "${output}"
+          grep -q 'gpu_compiled=true' <<<"${output}"
+          grep -q 'cuda_compiled=true' <<<"${output}"
+
+      - name: Package exact GPU-capable miner
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            miner="target/release/pulsedag-miner.exe"
+          else
+            miner="target/release/pulsedag-miner"
+          fi
+          python scripts/release/package_release_artifacts.py \
+            --binary "${miner}" \
+            --output-dir dist \
+            --tag v3-task38-phase23 \
+            --bin-name pulsedag-miner \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --build-feature gpu \
+            --build-feature cuda
+
+      - name: Verify packaged miner smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag v3-task38-phase23 \
+            --smoke \
+            --smoke-timeout-secs 10 \
+            --expect-binaries pulsedag-miner \
+            --expect-targets "${{ matrix.expected_target }}"
+
+      - name: Enforce manifest feature provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob
+          import json
+
+          paths = sorted(glob.glob('dist/pulsedag-miner-*.tar.gz.json') + glob.glob('dist/pulsedag-miner-*.zip.json'))
+          if len(paths) != 1:
+              raise SystemExit(f'expected exactly one miner manifest, found {len(paths)}')
+          with open(paths[0], 'r', encoding='utf-8') as handle:
+              manifest = json.load(handle)
+          if manifest.get('build_features') != ['cuda', 'gpu']:
+              raise SystemExit(f"unexpected build_features: {manifest.get('build_features')!r}")
+          print('packaged_gpu_feature_provenance=PASS')
+          print('GPU_MINING_NVIDIA_PASS=NOT_CLAIMED')
+          print('GPU_MINING_AMD_PASS=NOT_CLAIMED')
+          PY
