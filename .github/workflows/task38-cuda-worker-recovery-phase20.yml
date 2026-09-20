@@ -105,6 +105,8 @@ jobs:
           set -euo pipefail
           grep -q 'CudaWorkerHealth' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'recover_unavailable_workers' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'CUDA_RECOVERY_PROBE_PRE_POW_HASH' apps/pulsedag-miner/src/cuda_backend.rs
+          grep -q 'probe(module_image, device_index, block_size)' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'mark_unavailable' apps/pulsedag-miner/src/cuda_backend.rs
           grep -q 'failed_cuda_worker_is_isolated_replays_batch_and_recovers_next_job' apps/pulsedag-miner/src/cuda_backend.rs

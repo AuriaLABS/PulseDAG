@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 const DEFAULT_CUDA_BATCH_SIZE: usize = 4_096;
 const DEFAULT_CUDA_BLOCK_SIZE: u32 = 256;
+const CUDA_RECOVERY_PROBE_PRE_POW_HASH: [u8; 32] = [0x5a; 32];
+const CUDA_RECOVERY_PROBE_NONCE: u64 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CudaBackendConfig {
@@ -88,7 +90,20 @@ impl CudaBackendConfig {
 }
 
 trait CudaBatchLauncher: Send + Sync {
-    fn probe(&self, _device_index: usize) -> Result<()> {
+    fn probe(&self, module_image: &[u8], device_index: usize, block_size: u32) -> Result<()> {
+        let hashes = self.launch(
+            module_image,
+            device_index,
+            CUDA_RECOVERY_PROBE_PRE_POW_HASH,
+            &[CUDA_RECOVERY_PROBE_NONCE],
+            block_size,
+        )?;
+        if hashes.len() != 1 {
+            return Err(anyhow!(
+                "CUDA recovery capability probe returned {} hash(es); expected exactly 1",
+                hashes.len()
+            ));
+        }
         Ok(())
     }
 
@@ -106,10 +121,6 @@ trait CudaBatchLauncher: Send + Sync {
 struct DriverCudaBatchLauncher;
 
 impl CudaBatchLauncher for DriverCudaBatchLauncher {
-    fn probe(&self, device_index: usize) -> Result<()> {
-        cuda_driver_launch::probe_cuda_device(device_index)
-    }
-
     fn launch(
         &self,
         module_image: &[u8],
@@ -165,11 +176,16 @@ impl CudaWorkerHealth {
 
 fn recover_unavailable_workers(
     selected_device_indices: &[usize],
+    module_image: &[u8],
+    block_size: u32,
     launcher: &dyn CudaBatchLauncher,
     worker_health: &CudaWorkerHealth,
 ) -> Result<()> {
     for device_index in worker_health.selected_unavailable(selected_device_indices)? {
-        if launcher.probe(device_index).is_ok() {
+        if launcher
+            .probe(module_image, device_index, block_size)
+            .is_ok()
+        {
             worker_health.mark_recovered(device_index)?;
         }
     }
@@ -241,6 +257,8 @@ impl CudaMiningBackend {
         let work = build_protocol_pow_work(&header, target_bits, identity)?;
         recover_unavailable_workers(
             &self.config.device_indices,
+            &self.config.module_image,
+            self.config.block_size,
             self.launcher.as_ref(),
             &self.worker_health,
         )?;
@@ -580,15 +598,6 @@ mod tests {
     }
 
     impl CudaBatchLauncher for PersistentFailureLauncher {
-        fn probe(&self, device_index: usize) -> Result<()> {
-            if device_index == self.failed_device {
-                return Err(anyhow!(
-                    "injected persistent CUDA probe failure on device {device_index}"
-                ));
-            }
-            Ok(())
-        }
-
         fn launch(
             &self,
             module_image: &[u8],
@@ -812,15 +821,23 @@ mod tests {
 
         let calls = launcher.calls();
         let second_calls = &calls[first_call_count..];
-        assert_eq!(second_calls.len(), 4);
+        assert_eq!(second_calls.len(), 5);
         assert_eq!(second_calls[0].device_index, 1);
-        assert_eq!(second_calls[0].nonces, vec![0, 2]);
-        assert_eq!(second_calls[1].device_index, 3);
-        assert_eq!(second_calls[1].nonces, vec![1, 3]);
-        assert_eq!(second_calls[2].device_index, 1);
-        assert_eq!(second_calls[2].nonces, vec![4, 6]);
-        assert_eq!(second_calls[3].device_index, 3);
-        assert_eq!(second_calls[3].nonces, vec![5]);
+        assert_eq!(second_calls[0].nonces, vec![CUDA_RECOVERY_PROBE_NONCE]);
+        assert_eq!(
+            second_calls[0].pre_pow_hash,
+            CUDA_RECOVERY_PROBE_PRE_POW_HASH
+        );
+        assert_eq!(second_calls[0].module_image, b"test-cuda-module");
+        assert_eq!(second_calls[0].block_size, 64);
+        assert_eq!(second_calls[1].device_index, 1);
+        assert_eq!(second_calls[1].nonces, vec![0, 2]);
+        assert_eq!(second_calls[2].device_index, 3);
+        assert_eq!(second_calls[2].nonces, vec![1, 3]);
+        assert_eq!(second_calls[3].device_index, 1);
+        assert_eq!(second_calls[3].nonces, vec![4, 6]);
+        assert_eq!(second_calls[4].device_index, 3);
+        assert_eq!(second_calls[4].nonces, vec![5]);
     }
 
     #[test]
@@ -863,10 +880,16 @@ mod tests {
 
         let calls = launcher.calls();
         let second_calls = &calls[first_call_count..];
-        assert_eq!(second_calls.len(), 4);
-        assert!(second_calls.iter().all(|call| call.device_index == 3));
+        assert_eq!(second_calls.len(), 5);
+        assert_eq!(second_calls[0].device_index, 1);
+        assert_eq!(second_calls[0].nonces, vec![CUDA_RECOVERY_PROBE_NONCE]);
+        assert_eq!(
+            second_calls[0].pre_pow_hash,
+            CUDA_RECOVERY_PROBE_PRE_POW_HASH
+        );
+        assert!(second_calls[1..].iter().all(|call| call.device_index == 3));
 
-        let mut observed = second_calls
+        let mut observed = second_calls[1..]
             .iter()
             .flat_map(|call| call.nonces.iter().copied())
             .collect::<Vec<_>>();
