@@ -121,6 +121,25 @@ Result: `bool(true)`
 
 The same vector is executed by CI on Linux and Windows so compiler output, validation, rejection behavior and execution are compared across supported host families.
 
+## Adversarial boundedness vectors
+
+The integration corpus at `crates/pulsedag-core/tests/pulsescript_vm_v1_adversarial.rs` is executed on both Linux and Windows. It deterministically covers:
+
+- every one-byte opcode outside the frozen 14-opcode set and requires exact `UnknownOpcode` rejection;
+- every truncation boundary of the frozen golden bytecode;
+- all 256 possible single trailing bytes;
+- instruction-count rejection above 1,024 before instruction-body allocation;
+- bytecode-size rejection above 64 KiB before decoding;
+- non-canonical boolean encoding and out-of-range local slots;
+- stack exhaustion at the exact 256-value bound;
+- LF/CRLF source-limit equivalence and the 32 KiB raw-input ceiling;
+- exact compute-budget preflight;
+- checked subtraction underflow with stable rejection code;
+- Contract v3 compute-ceiling validation;
+- repeated malformed-input validation producing identical results.
+
+These are bounded deterministic vectors, not randomized consensus fuzzing. Their purpose is to make malformed input/resource-exhaustion behavior reproducible across supported host families.
+
 ## Explicitly deferred
 
 This slice does **not** claim completion of #1042. Still deferred include:
@@ -133,8 +152,8 @@ This slice does **not** claim completion of #1042. Still deferred include:
 - event/write-set integration with Contract State Transition v1;
 - cross-contract calls and reentrancy policy;
 - source maps/debug metadata;
-- fuzzing and adversarial corpora;
-- broader cross-platform differential evidence;
+- randomized/property fuzzing beyond the deterministic adversarial corpus;
+- broader cross-platform differential evidence beyond the Linux/Windows matrix;
 - activation and any node/runtime wiring.
 
 Current v3.0 programmability remains inactive. Completion or merge of this foundation does not imply #781/#794 or mainnet GO.
