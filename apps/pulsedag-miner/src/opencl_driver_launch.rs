@@ -7,6 +7,8 @@ const CL_SUCCESS: c_int = 0;
 const CL_DEVICE_NOT_FOUND: c_int = -1;
 const CL_TRUE: c_uint = 1;
 const CL_DEVICE_TYPE_GPU: u64 = 1 << 2;
+const CL_DEVICE_NAME: c_uint = 0x102B;
+const CL_DEVICE_VENDOR: c_uint = 0x102C;
 const CL_DEVICE_EXTENSIONS: c_uint = 0x1030;
 const CL_PROGRAM_BUILD_LOG: c_uint = 0x1183;
 const CL_MEM_READ_WRITE: u64 = 1 << 0;
@@ -18,6 +20,13 @@ const MATRIX_KERNEL_NAME: &[u8] = b"pulsedag_generate_matrix_kernel\0";
 const HASH_KERNEL_NAME: &[u8] = b"pulsedag_kheavyhash_kernel\0";
 
 pub const OPENCL_LIBRARY_ENV: &str = "PULSEDAG_OPENCL_LIBRARY";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenClGpuIdentity {
+    pub device_index: usize,
+    pub vendor: String,
+    pub name: String,
+}
 
 type ClInt = c_int;
 type ClUint = c_uint;
@@ -157,6 +166,19 @@ pub fn probe_opencl_gpu(device_index: usize) -> Result<()> {
     let api = OpenClApi::load()?;
     let device = select_gpu_device(&api, device_index)?;
     require_fp64(&api, device)
+}
+
+/// Return stable vendor/name identity for one selected OpenCL GPU after the
+/// same fp64 capability guard used by the production launcher.
+pub fn describe_opencl_gpu(device_index: usize) -> Result<OpenClGpuIdentity> {
+    let api = OpenClApi::load()?;
+    let device = select_gpu_device(&api, device_index)?;
+    require_fp64(&api, device)?;
+    Ok(OpenClGpuIdentity {
+        device_index,
+        vendor: device_info_string(&api, device, CL_DEVICE_VENDOR)?,
+        name: device_info_string(&api, device, CL_DEVICE_NAME)?,
+    })
 }
 
 /// Execute canonical matrix generation followed by the kHeavyHash nonce batch.

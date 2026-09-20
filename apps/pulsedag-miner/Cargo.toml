@@ -14,6 +14,11 @@ name = "pulsedag-cuda-probe"
 path = "src/bin/cuda_probe.rs"
 required-features = ["cuda"]
 
+[[bin]]
+name = "pulsedag-gpu-equivalence-probe"
+path = "src/bin/pulsedag_gpu_equivalence_probe.rs"
+required-features = ["gpu", "cuda"]
+
 [dependencies]
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
