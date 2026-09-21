@@ -155,8 +155,7 @@ fn pulsescript_vm_v1_integer_boundary_matrix_matches_wide_oracle() {
                 );
             }
 
-            let source =
-                format!("pulsescript-v1\npush_u64 {lhs}\npush_u64 {rhs}\neq_u64\nhalt\n");
+            let source = format!("pulsescript-v1\npush_u64 {lhs}\npush_u64 {rhs}\neq_u64\nhalt\n");
             let mut body = Vec::new();
             push_u64(&mut body, lhs);
             push_u64(&mut body, rhs);
@@ -211,11 +210,19 @@ fn pulsescript_vm_v1_local_slots_preserve_values_and_do_not_alias() {
         );
         let mut body = Vec::new();
         push_u64(&mut body, 17);
-        body.extend_from_slice(&[0x40, slot, 0x02, 1, 0x40, other, 0x41, slot, 0x30, 0x31, 0xff]);
+        body.extend_from_slice(&[
+            0x40, slot, 0x02, 1, 0x40, other, 0x41, slot, 0x30, 0x31, 0xff,
+        ]);
         check_vector(
             &source,
             &wire(8, &body),
-            analysis(8, 10, 2, u16::from(slot.max(other)) + 1, PulseValueTypeV1::U64),
+            analysis(
+                8,
+                10,
+                2,
+                u16::from(slot.max(other)) + 1,
+                PulseValueTypeV1::U64,
+            ),
             Ok(PulseValueV1::U64(17)),
         );
 
@@ -272,7 +279,10 @@ fn pulsescript_vm_v1_local_type_freeze_rejects_both_directions_in_every_slot() {
             };
             assert_eq!(error.rejection_code(), 8);
             assert_eq!(compile_pulsescript_v1(&source).unwrap_err(), error);
-            assert_eq!(validate_pulse_bytecode_v1(&wire(6, &body)), Err(error.clone()));
+            assert_eq!(
+                validate_pulse_bytecode_v1(&wire(6, &body)),
+                Err(error.clone())
+            );
             assert_eq!(
                 execute_pulse_bytecode_v1(&wire(6, &body), &budget(20)),
                 Err(error)
