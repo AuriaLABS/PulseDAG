@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulsedag_core::{
-    types::{compute_merkle_root, Block, BlockHeader, Hash, Transaction},
+    types::{
+        compute_merkle_root, compute_merkle_root_from_txids, Block, BlockHeader, Hash, Transaction,
+    },
     GHOSTDAG_V1_MAX_PARENTS,
 };
 use serde::{Deserialize, Serialize};
@@ -41,9 +43,15 @@ pub enum CompactRelayFallbackReasonV1 {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompactBlockReconstructionRequestStateV1 {
+    pub request: CompactTransactionRequestV1,
+    known_transactions: HashMap<Hash, Transaction>,
+}
+
+#[derive(Debug, Clone)]
 pub enum CompactBlockReconstructionPlanV1 {
     Complete(Block),
-    RequestTransactions(CompactTransactionRequestV1),
+    RequestTransactions(CompactBlockReconstructionRequestStateV1),
     FullBlockFallback {
         block_hash: Hash,
         reason: CompactRelayFallbackReasonV1,
@@ -244,6 +252,13 @@ pub fn plan_compact_block_reconstruction_v1(
     validate_compact_block_announcement_v1(announcement)?;
     let (transactions, missing) = reconstruct_known_transactions(announcement, known_transactions)?;
 
+    if compute_merkle_root_from_txids(&announcement.txids) != announcement.header.merkle_root {
+        return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
+            block_hash: announcement.block_hash.clone(),
+            reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
+        });
+    }
+
     if missing.len() > P2P_WIRE_MAX_REQUEST_ITEMS_V1 {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
             block_hash: announcement.block_hash.clone(),
@@ -252,11 +267,24 @@ pub fn plan_compact_block_reconstruction_v1(
     }
 
     if !missing.is_empty() {
+        let known_transactions = announcement
+            .txids
+            .iter()
+            .filter_map(|txid| {
+                known_transactions
+                    .get(txid)
+                    .cloned()
+                    .map(|transaction| (txid.clone(), transaction))
+            })
+            .collect();
         return Ok(CompactBlockReconstructionPlanV1::RequestTransactions(
-            CompactTransactionRequestV1 {
-                version: COMPACT_DAG_RELAY_VERSION_V1,
-                block_hash: announcement.block_hash.clone(),
-                txids: missing,
+            CompactBlockReconstructionRequestStateV1 {
+                request: CompactTransactionRequestV1 {
+                    version: COMPACT_DAG_RELAY_VERSION_V1,
+                    block_hash: announcement.block_hash.clone(),
+                    txids: missing,
+                },
+                known_transactions,
             },
         ));
     }
@@ -327,37 +355,39 @@ pub fn build_compact_transaction_response_v1(
 
 pub fn complete_compact_block_reconstruction_v1(
     announcement: &CompactBlockAnnouncementV1,
-    known_transactions: &HashMap<Hash, Transaction>,
+    state: &CompactBlockReconstructionRequestStateV1,
     response: &CompactTransactionResponseV1,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
+    validate_compact_block_announcement_v1(announcement)?;
+    validate_compact_transaction_request_v1(&state.request)?;
     require_version(response.version)?;
 
-    let request = match plan_compact_block_reconstruction_v1(announcement, known_transactions)? {
-        CompactBlockReconstructionPlanV1::RequestTransactions(request) => request,
-        CompactBlockReconstructionPlanV1::Complete(_) => {
-            return Err(CompactRelayErrorV1::UnexpectedResponseForCompleteBlock);
-        }
-        fallback @ CompactBlockReconstructionPlanV1::FullBlockFallback { .. } => {
-            return Ok(fallback);
-        }
-    };
-
-    if response.block_hash != request.block_hash {
+    if state.request.block_hash != announcement.block_hash {
         return Err(CompactRelayErrorV1::ResponseBlockMismatch {
-            expected: request.block_hash,
+            expected: announcement.block_hash.clone(),
+            observed: state.request.block_hash.clone(),
+        });
+    }
+    if response.block_hash != state.request.block_hash {
+        return Err(CompactRelayErrorV1::ResponseBlockMismatch {
+            expected: state.request.block_hash.clone(),
             observed: response.block_hash.clone(),
         });
     }
-    if response.transactions.len() != request.txids.len() {
+    if response.transactions.len() != state.request.txids.len() {
         return Err(CompactRelayErrorV1::ResponseCountMismatch {
-            expected: request.txids.len(),
+            expected: state.request.txids.len(),
             observed: response.transactions.len(),
         });
     }
 
-    let mut combined = known_transactions.clone();
-    for (index, (expected_txid, transaction)) in
-        request.txids.iter().zip(&response.transactions).enumerate()
+    let mut combined = state.known_transactions.clone();
+    for (index, (expected_txid, transaction)) in state
+        .request
+        .txids
+        .iter()
+        .zip(&response.transactions)
+        .enumerate()
     {
         if transaction.txid != *expected_txid {
             return Err(CompactRelayErrorV1::ResponseTransactionMismatch {
@@ -463,9 +493,9 @@ mod tests {
         let known = known(&block, &[0]);
 
         match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
-            CompactBlockReconstructionPlanV1::RequestTransactions(request) => {
-                assert_eq!(request.block_hash, block.hash);
-                assert_eq!(request.txids, vec!["tx-a", "tx-b"]);
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => {
+                assert_eq!(state.request.block_hash, block.hash);
+                assert_eq!(state.request.txids, vec!["tx-a", "tx-b"]);
             }
             other => panic!("unexpected plan: {other:?}"),
         }
@@ -478,21 +508,16 @@ mod tests {
         let known_transactions = known(&block, &[0]);
         let available = known(&block, &[1, 2]);
 
-        let request =
+        let state =
             match plan_compact_block_reconstruction_v1(&announcement, &known_transactions).unwrap() {
-                CompactBlockReconstructionPlanV1::RequestTransactions(request) => request,
+                CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
                 other => panic!("unexpected plan: {other:?}"),
             };
-        let response = build_compact_transaction_response_v1(&request, &available)
+        let response = build_compact_transaction_response_v1(&state.request, &available)
             .unwrap()
             .expect("all requested transactions available");
 
-        match complete_compact_block_reconstruction_v1(
-            &announcement,
-            &known_transactions,
-            &response,
-        )
-        .unwrap()
+        match complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap()
         {
             CompactBlockReconstructionPlanV1::Complete(reconstructed) => {
                 assert_eq!(
@@ -506,6 +531,52 @@ mod tests {
             }
             other => panic!("unexpected completion plan: {other:?}"),
         }
+    }
+
+    #[test]
+    fn response_uses_original_request_when_mempool_changes_in_flight() {
+        let block = block(&["coinbase", "tx-a", "tx-b"]);
+        let announcement = build_compact_block_announcement_v1(&block).unwrap();
+        let known_at_request = known(&block, &[0]);
+        let state = match plan_compact_block_reconstruction_v1(&announcement, &known_at_request)
+            .unwrap()
+        {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected plan: {other:?}"),
+        };
+
+        let available = known(&block, &[1, 2]);
+        let response = build_compact_transaction_response_v1(&state.request, &available)
+            .unwrap()
+            .expect("all originally requested transactions available");
+
+        let mut changed_mempool = known_at_request;
+        changed_mempool.extend(available);
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &changed_mempool).unwrap(),
+            CompactBlockReconstructionPlanV1::Complete(_)
+        ));
+
+        assert!(matches!(
+            complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap(),
+            CompactBlockReconstructionPlanV1::Complete(_)
+        ));
+    }
+
+    #[test]
+    fn forged_merkle_root_falls_back_before_requesting_missing_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.merkle_root = "forged".into();
+        let known = known(&block, &[0]);
+
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &known).unwrap(),
+            CompactBlockReconstructionPlanV1::FullBlockFallback {
+                reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -589,6 +660,10 @@ mod tests {
         let block = block(&["coinbase", "tx-a"]);
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
         let known = known(&block, &[0]);
+        let state = match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected plan: {other:?}"),
+        };
         let response = CompactTransactionResponseV1 {
             version: COMPACT_DAG_RELAY_VERSION_V1,
             block_hash: block.hash.clone(),
@@ -596,7 +671,7 @@ mod tests {
         };
 
         assert!(matches!(
-            complete_compact_block_reconstruction_v1(&announcement, &known, &response),
+            complete_compact_block_reconstruction_v1(&announcement, &state, &response),
             Err(CompactRelayErrorV1::ResponseTransactionMismatch { .. })
         ));
     }
