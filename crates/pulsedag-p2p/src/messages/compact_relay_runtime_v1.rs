@@ -251,15 +251,18 @@ impl CompactRelayRuntimeSessionBookV1 {
     ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayRuntimeSessionErrorV1> {
         require_peer_id(peer_id)?;
         let block_hash = announcement.block_hash.clone();
+        let key = (peer_id.to_string(), block_hash.clone());
         let state = self
             .in_flight
-            .remove(&(peer_id.to_string(), block_hash.clone()))
+            .get(&key)
             .ok_or_else(|| CompactRelayRuntimeSessionErrorV1::InFlightMissing {
                 peer_id: peer_id.to_string(),
                 block_hash,
             })?;
 
-        complete_compact_block_reconstruction_v1(announcement, &state, response).map_err(Into::into)
+        let completed = complete_compact_block_reconstruction_v1(announcement, state, response)?;
+        self.in_flight.remove(&key);
+        Ok(completed)
     }
 }
 
@@ -533,6 +536,56 @@ mod tests {
         assert!(matches!(
             sessions
                 .complete_in_flight(PEER, &announcement, &response)
+                .unwrap(),
+            CompactBlockReconstructionPlanV1::Complete(_)
+        ));
+        assert_eq!(sessions.in_flight_count(PEER), 0);
+    }
+
+    #[test]
+    fn invalid_response_preserves_in_flight_state_for_valid_retry() {
+        let mut sessions = configured();
+        authorize(&mut sessions, PEER);
+        let candidate = block("block-retry");
+        let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
+        let state = request_state(&candidate);
+        let request = state.request.clone();
+        sessions.register_in_flight(PEER, state).unwrap();
+
+        let invalid = CompactTransactionResponseV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: candidate.hash.clone(),
+            transactions: vec![transaction("wrong")],
+        };
+        assert!(matches!(
+            sessions.complete_in_flight(PEER, &announcement, &invalid),
+            Err(CompactRelayRuntimeSessionErrorV1::Compact(
+                CompactRelayErrorV1::ResponseCountMismatch { .. }
+                    | CompactRelayErrorV1::ResponseTransactionMismatch { .. }
+            ))
+        ));
+        assert_eq!(sessions.in_flight_count(PEER), 1);
+
+        let requested = request
+            .txids
+            .iter()
+            .map(|txid| {
+                candidate
+                    .transactions
+                    .iter()
+                    .find(|transaction| &transaction.txid == txid)
+                    .unwrap()
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        let valid = CompactTransactionResponseV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: candidate.hash.clone(),
+            transactions: requested,
+        };
+        assert!(matches!(
+            sessions
+                .complete_in_flight(PEER, &announcement, &valid)
                 .unwrap(),
             CompactBlockReconstructionPlanV1::Complete(_)
         ));
