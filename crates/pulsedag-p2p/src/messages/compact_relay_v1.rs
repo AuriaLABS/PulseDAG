@@ -54,14 +54,29 @@ pub enum CompactBlockReconstructionPlanV1 {
 pub enum CompactRelayErrorV1 {
     UnsupportedVersion(u16),
     UnsupportedHeaderVersion(u32),
-    HeaderParentCountTooLarge { observed: usize, maximum: usize },
+    HeaderParentCountTooLarge {
+        observed: usize,
+        maximum: usize,
+    },
     EmptyTransactionInventory,
     LocalBlockMerkleRootMismatch,
-    TransactionInventoryTooLarge { observed: usize, maximum: usize },
+    TransactionInventoryTooLarge {
+        observed: usize,
+        maximum: usize,
+    },
     DuplicateTransactionId(Hash),
-    KnownTransactionIdMismatch { requested: Hash, observed: Hash },
-    ResponseBlockMismatch { expected: Hash, observed: Hash },
-    ResponseCountMismatch { expected: usize, observed: usize },
+    KnownTransactionIdMismatch {
+        requested: Hash,
+        observed: Hash,
+    },
+    ResponseBlockMismatch {
+        expected: Hash,
+        observed: Hash,
+    },
+    ResponseCountMismatch {
+        expected: usize,
+        observed: usize,
+    },
     ResponseTransactionMismatch {
         index: usize,
         expected: Hash,
@@ -227,8 +242,7 @@ pub fn plan_compact_block_reconstruction_v1(
     known_transactions: &HashMap<Hash, Transaction>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
     validate_compact_block_announcement_v1(announcement)?;
-    let (transactions, missing) =
-        reconstruct_known_transactions(announcement, known_transactions)?;
+    let (transactions, missing) = reconstruct_known_transactions(announcement, known_transactions)?;
 
     if missing.len() > P2P_WIRE_MAX_REQUEST_ITEMS_V1 {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
@@ -342,11 +356,8 @@ pub fn complete_compact_block_reconstruction_v1(
     }
 
     let mut combined = known_transactions.clone();
-    for (index, (expected_txid, transaction)) in request
-        .txids
-        .iter()
-        .zip(&response.transactions)
-        .enumerate()
+    for (index, (expected_txid, transaction)) in
+        request.txids.iter().zip(&response.transactions).enumerate()
     {
         if transaction.txid != *expected_txid {
             return Err(CompactRelayErrorV1::ResponseTransactionMismatch {
@@ -469,9 +480,9 @@ mod tests {
 
         let request =
             match plan_compact_block_reconstruction_v1(&announcement, &known_transactions).unwrap() {
-            CompactBlockReconstructionPlanV1::RequestTransactions(request) => request,
-            other => panic!("unexpected plan: {other:?}"),
-        };
+                CompactBlockReconstructionPlanV1::RequestTransactions(request) => request,
+                other => panic!("unexpected plan: {other:?}"),
+            };
         let response = build_compact_transaction_response_v1(&request, &available)
             .unwrap()
             .expect("all requested transactions available");
