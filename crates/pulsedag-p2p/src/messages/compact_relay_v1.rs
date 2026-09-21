@@ -510,17 +510,17 @@ mod tests {
         let known_transactions = known(&block, &[0]);
         let available = known(&block, &[1, 2]);
 
-        let state =
-            match plan_compact_block_reconstruction_v1(&announcement, &known_transactions).unwrap() {
-                CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
-                other => panic!("unexpected plan: {other:?}"),
-            };
+        let state = match plan_compact_block_reconstruction_v1(&announcement, &known_transactions)
+            .unwrap()
+        {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected plan: {other:?}"),
+        };
         let response = build_compact_transaction_response_v1(&state.request, &available)
             .unwrap()
             .expect("all requested transactions available");
 
-        match complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap()
-        {
+        match complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap() {
             CompactBlockReconstructionPlanV1::Complete(reconstructed) => {
                 assert_eq!(
                     reconstructed
@@ -540,12 +540,11 @@ mod tests {
         let block = block(&["coinbase", "tx-a", "tx-b"]);
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
         let known_at_request = known(&block, &[0]);
-        let state = match plan_compact_block_reconstruction_v1(&announcement, &known_at_request)
-            .unwrap()
-        {
-            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
-            other => panic!("unexpected plan: {other:?}"),
-        };
+        let state =
+            match plan_compact_block_reconstruction_v1(&announcement, &known_at_request).unwrap() {
+                CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+                other => panic!("unexpected plan: {other:?}"),
+            };
 
         let available = known(&block, &[1, 2]);
         let response = build_compact_transaction_response_v1(&state.request, &available)
