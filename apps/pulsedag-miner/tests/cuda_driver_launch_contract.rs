@@ -146,8 +146,8 @@ fn cuda_driver_watchdog_reports_context_teardown_failure() {
         return;
     }
 
-    let unload_marker = std::env::var_os("PULSEDAG_TEST_CUDA_UNLOAD_MARKER")
-        .map(std::path::PathBuf::from);
+    let unload_marker =
+        std::env::var_os("PULSEDAG_TEST_CUDA_UNLOAD_MARKER").map(std::path::PathBuf::from);
     if let Some(path) = unload_marker.as_ref() {
         let _ = std::fs::remove_file(path);
     }
