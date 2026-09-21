@@ -34,6 +34,8 @@ def parse_marker_line(line: str) -> dict[str, str]:
         if "=" not in token:
             continue
         key, value = token.split("=", 1)
+        if key in fields:
+            raise RuntimeError(f"duplicate marker field {key!r}")
         fields[key] = value
     return fields
 
@@ -526,6 +528,21 @@ def run_self_test() -> None:
                         raise
                 else:
                     raise RuntimeError("self-test accepted incompatible host architecture")
+
+        # Reject duplicate keys within a single marker line; conflicting values
+        # must never be resolved by last-write-wins parsing.
+        for duplicate_line in (
+            "physical_opencl_identity=PASS amd_identity=NOT_CLAIMED amd_identity=PASS",
+            "physical_cuda_identity=PASS device_index=0 device_index=1",
+            "physical_gpu_equivalence_probe=PASS protocols=2 protocols=1",
+        ):
+            try:
+                parse_marker_line(duplicate_line)
+            except RuntimeError as exc:
+                if "duplicate marker field" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("self-test accepted duplicate marker field")
 
         # Reject duplicates/conflicts across either captured stream, for both vendors.
         for vendor, unused_backend in (("cuda", "opencl"), ("opencl", "cuda")):
