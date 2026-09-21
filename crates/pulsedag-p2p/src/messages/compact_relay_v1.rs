@@ -529,8 +529,9 @@ mod tests {
     fn excessive_parent_fanout_fails_closed_before_reconstruction() {
         let block = block(&["coinbase", "tx-a"]);
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
-        announcement.header.parents =
-            (0..=GHOSTDAG_V1_MAX_PARENTS).map(|index| format!("parent-{index}")).collect();
+        announcement.header.parents = (0..=GHOSTDAG_V1_MAX_PARENTS)
+            .map(|index| format!("parent-{index}"))
+            .collect();
 
         assert_eq!(
             validate_compact_block_announcement_v1(&announcement),
