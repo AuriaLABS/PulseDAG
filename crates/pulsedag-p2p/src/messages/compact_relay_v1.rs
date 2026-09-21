@@ -464,10 +464,11 @@ mod tests {
     fn requested_transactions_complete_reconstruction_deterministically() {
         let block = block(&["coinbase", "tx-a", "tx-b"]);
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
-        let known = known(&block, &[0]);
+        let known_transactions = known(&block, &[0]);
         let available = known(&block, &[1, 2]);
 
-        let request = match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
+        let request =
+            match plan_compact_block_reconstruction_v1(&announcement, &known_transactions).unwrap() {
             CompactBlockReconstructionPlanV1::RequestTransactions(request) => request,
             other => panic!("unexpected plan: {other:?}"),
         };
@@ -475,7 +476,13 @@ mod tests {
             .unwrap()
             .expect("all requested transactions available");
 
-        match complete_compact_block_reconstruction_v1(&announcement, &known, &response).unwrap() {
+        match complete_compact_block_reconstruction_v1(
+            &announcement,
+            &known_transactions,
+            &response,
+        )
+        .unwrap()
+        {
             CompactBlockReconstructionPlanV1::Complete(reconstructed) => {
                 assert_eq!(
                     reconstructed
@@ -529,8 +536,9 @@ mod tests {
     fn excessive_parent_fanout_fails_closed_before_reconstruction() {
         let block = block(&["coinbase", "tx-a"]);
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
-        announcement.header.parents =
-            (0..=GHOSTDAG_V1_MAX_PARENTS).map(|index| format!("parent-{index}")).collect();
+        announcement.header.parents = (0..=GHOSTDAG_V1_MAX_PARENTS)
+            .map(|index| format!("parent-{index}"))
+            .collect();
 
         assert_eq!(
             validate_compact_block_announcement_v1(&announcement),
