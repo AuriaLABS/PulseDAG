@@ -179,6 +179,7 @@ mod tests {
     use crate::messages::compact_relay_carrier_v1::{
         CompactRelayCapabilitiesV1, CompactRelayCarrierV1,
     };
+    use crate::messages::{CompactTransactionRequestV1, COMPACT_DAG_RELAY_VERSION_V1};
     use crate::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -258,7 +259,7 @@ mod tests {
 
     #[test]
     fn outbound_data_requires_protocol_route_and_compact_session() {
-        let route_only = route_state();
+        let mut route_only = route_state();
         validate_compact_relay_send(
             &route_only,
             REMOTE_PEER,
@@ -266,9 +267,22 @@ mod tests {
         )
         .unwrap();
 
-        let data = CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
-            CHAIN_ID,
-        ));
+        let data = CompactRelayWireV1::GetTransactions(CompactTransactionRequestV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: "block-hash".to_string(),
+            txids: vec!["tx-a".to_string()],
+        });
+        assert!(validate_compact_relay_send(&route_only, REMOTE_PEER, &data).is_err());
+
+        route_only
+            .compact_relay_runtime
+            .note_inbound(
+                REMOTE_PEER,
+                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
+                    CHAIN_ID,
+                )),
+            )
+            .unwrap();
         validate_compact_relay_send(&route_only, REMOTE_PEER, &data).unwrap();
 
         let unauthorized = InnerState {
