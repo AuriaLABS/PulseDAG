@@ -102,6 +102,11 @@ impl CompactRelayControllerV1 {
             CompactRelayWireV1::Announce(announcement) => {
                 match plan_compact_block_reconstruction_v1(announcement, known_transactions)? {
                     CompactBlockReconstructionPlanV1::Complete(block) => {
+                        sessions.abandon_in_flight(peer_id, &announcement.block_hash);
+                        self.pending_announcements.remove(&(
+                            peer_id.to_string(),
+                            announcement.block_hash.clone(),
+                        ));
                         Ok(vec![CompactRelayControllerActionV1::SubmitCanonicalBlock {
                             peer_id: peer_id.to_string(),
                             block,
@@ -121,10 +126,15 @@ impl CompactRelayControllerV1 {
                     }
                     CompactBlockReconstructionPlanV1::FullBlockFallback {
                         block_hash, ..
-                    } => Ok(vec![CompactRelayControllerActionV1::RequestFullBlock {
-                        peer_id: peer_id.to_string(),
-                        block_hash,
-                    }]),
+                    } => {
+                        sessions.abandon_in_flight(peer_id, &block_hash);
+                        self.pending_announcements
+                            .remove(&(peer_id.to_string(), block_hash.clone()));
+                        Ok(vec![CompactRelayControllerActionV1::RequestFullBlock {
+                            peer_id: peer_id.to_string(),
+                            block_hash,
+                        }])
+                    }
                 }
             }
             CompactRelayWireV1::GetTransactions(request) => {
@@ -373,6 +383,86 @@ mod tests {
         ));
         assert_eq!(controller.pending_count(PEER), 0);
         assert_eq!(sessions.in_flight_count(PEER), 0);
+    }
+
+    #[test]
+    fn repeated_complete_announcement_clears_stale_request_and_late_response() {
+        let (mut controller, mut sessions) = configured();
+        authorize(&mut controller, &mut sessions);
+        let block = block();
+        let announcement = build_compact_block_announcement_v1(&block).unwrap();
+        let initially_known =
+            [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
+                .into_iter()
+                .collect();
+
+        let actions = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::Announce(announcement.clone()),
+                &initially_known,
+            )
+            .unwrap();
+        let request = match actions.as_slice() {
+            [CompactRelayControllerActionV1::Send {
+                wire: CompactRelayWireV1::GetTransactions(request),
+                ..
+            }] => request.clone(),
+            other => panic!("unexpected actions: {other:?}"),
+        };
+        assert_eq!(controller.pending_count(PEER), 1);
+        assert_eq!(sessions.in_flight_count(PEER), 1);
+
+        let all_known = block
+            .transactions
+            .iter()
+            .cloned()
+            .map(|transaction| (transaction.txid.clone(), transaction))
+            .collect();
+
+        let actions = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::Announce(announcement),
+                &all_known,
+            )
+            .unwrap();
+        assert!(matches!(
+            actions.as_slice(),
+            [CompactRelayControllerActionV1::SubmitCanonicalBlock { block: rebuilt, .. }]
+                if rebuilt == &block
+        ));
+        assert_eq!(controller.pending_count(PEER), 0);
+        assert_eq!(sessions.in_flight_count(PEER), 0);
+
+        let transactions = request
+            .txids
+            .iter()
+            .map(|txid| all_known.get(txid).unwrap().clone())
+            .collect();
+        let late_response = super::super::compact_relay_v1::CompactTransactionResponseV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: block.hash.clone(),
+            transactions,
+        };
+
+        let error = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::Transactions(late_response),
+                &all_known,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CompactRelayControllerErrorV1::PendingAnnouncementMissing {
+                peer_id,
+                block_hash,
+            } if peer_id == PEER && block_hash == block.hash
+        ));
     }
 
     #[test]
