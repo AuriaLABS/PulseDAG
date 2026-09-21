@@ -10,10 +10,10 @@ It does **not** authorize a version bump, tag, GitHub Release, public-testnet la
 Predecessor gates remain mandatory:
 
 - `v2.4.0` Task31 exact-candidate evidence and activation decision;
-- `v2.5.0` scale / GPU / public-testnet acceptance program;
+- `v2.5.0` scale/resilience core program; physical NVIDIA/AMD acceptance is explicitly deferred for v3.0.0 by the launch-control decision in #781/#794 and the closure disposition of #1038;
 - bounded programmability work from `v2.6.0` only where it fits the 3.0 freeze below.
 
-`v2.5.0` and `v2.6.0` remain the approved future planning documents for scale and full programmability. This file does not replace them. It constrains what may enter a later `v3.0.0` genesis so PulseDAG is not a GHOSTDAG + kHeavyHash clone with a delayed general VM.
+`v2.5.0` and `v2.6.0` remain approved planning sources for scale and full programmability, but #781 is authoritative for v3.0.0 launch eligibility when older planning gates conflict with the coordinated-launch policy. In particular, physical GPU validation is not a v3.0.0 GO prerequisite. This file constrains what may enter a later `v3.0.0` genesis so PulseDAG is not a GHOSTDAG + kHeavyHash clone with a delayed general VM.
 
 ## Thesis
 
@@ -29,6 +29,7 @@ Activation intent for a future 3.0 genesis:
 
 - Consensus determinism and fail-closed validation remain primary.
 - Miner remains external. No pool, vardiff, share accounting, or payout logic in `pulsedagd` or the official miner.
+- CPU mining is the launch-supported production mining path for v3.0.0. NVIDIA/AMD GPU code may remain present, but physical GPU production support stays unadvertised and `GPU_MINING_NVIDIA_PASS` / `GPU_MINING_AMD_PASS` remain `NOT_CLAIMED` until separate physical validation is completed.
 - No silent mutation of Transaction Protocol v2 or UTXO semantics.
 - No EVM compatibility claim.
 - No default high cadence without the measured envelope required by `ROADMAP_V2_5_0.md`.
@@ -135,6 +136,7 @@ Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 - Pool/stratum inside the node or official miner.
 - Changing PoW away from domain-separated kHeavyHash before a live network exists.
 - Default high cadence without measured evidence.
+- Representing NVIDIA or AMD GPU mining as production-validated before separate physical hardware evidence exists.
 - Opaque treasury or reflection-style tokenomics in consensus.
 
 ## Suggested sequencing
