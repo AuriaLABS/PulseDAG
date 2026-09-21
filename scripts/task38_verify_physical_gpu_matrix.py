@@ -118,6 +118,10 @@ def validate_evidence(path: Path, candidate_sha: str) -> dict:
     if system not in SUPPORTED_SYSTEMS:
         raise RuntimeError(f"{path}: unsupported host system {system!r}")
 
+    machine = host.get("machine")
+    if not isinstance(machine, str) or machine.lower() not in {"amd64", "x86_64", "x64"}:
+        raise RuntimeError(f"{path}: unsupported physical host architecture {machine!r}")
+
     manifest = data.get("artifact_manifest") or {}
     if manifest.get("tag") != EXPECTED_TAG:
         raise RuntimeError(f"{path}: artifact tag mismatch")
@@ -246,12 +250,21 @@ def validate_evidence(path: Path, candidate_sha: str) -> dict:
         if fields.get("cuda_opencl_same_input") != expected_cross:
             raise RuntimeError(f"{path}: {case} cross-backend mismatch")
 
-    cuda_identity = any(line.startswith("physical_cuda_identity=PASS ") for line in lines)
+    cuda_lines = [
+        line for line in lines if line.startswith("physical_cuda_identity=")
+    ]
+    if len(cuda_lines) > 1:
+        raise RuntimeError(f"{path}: multiple CUDA identity lines")
+    if cuda_lines and not cuda_lines[0].startswith("physical_cuda_identity=PASS "):
+        raise RuntimeError(f"{path}: invalid CUDA identity marker")
+    cuda_identity = bool(cuda_lines)
     opencl_lines = [
-        line for line in lines if line.startswith("physical_opencl_identity=PASS ")
+        line for line in lines if line.startswith("physical_opencl_identity=")
     ]
     if len(opencl_lines) > 1:
         raise RuntimeError(f"{path}: multiple OpenCL identity lines")
+    if opencl_lines and not opencl_lines[0].startswith("physical_opencl_identity=PASS "):
+        raise RuntimeError(f"{path}: invalid OpenCL identity marker")
     opencl_identity = bool(opencl_lines)
     opencl_fields = parse_marker_line(opencl_lines[0]) if opencl_lines else {}
     amd_identity = opencl_fields.get("amd_identity") == "PASS"
@@ -491,6 +504,61 @@ def run_self_test() -> None:
         )
         if summary["final_flags"]["GPU_MINING_NVIDIA_PASS"] != "NOT_CLAIMED":
             raise RuntimeError("self-test final NVIDIA non-claim changed")
+
+
+        # Match the collector's native x86 aliases on both packaged platforms.
+        for system in sorted(SUPPORTED_SYSTEMS):
+            for machine in ("x86_64", "AMD64", "x64"):
+                payload = synthetic_evidence(candidate, system, "both", amd=True, run_id="c")
+                payload["host"]["machine"] = machine
+                path = root / "native-host.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                validate_evidence(path, candidate)
+            for machine in ("aarch64", "arm64", "i686", "", None, 64):
+                payload = synthetic_evidence(candidate, system, "both", amd=True, run_id="c")
+                payload["host"]["machine"] = machine
+                path = root / "invalid-host.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                try:
+                    validate_evidence(path, candidate)
+                except RuntimeError as exc:
+                    if "host architecture" not in str(exc):
+                        raise
+                else:
+                    raise RuntimeError("self-test accepted incompatible host architecture")
+
+        # Reject duplicates/conflicts across either captured stream, for both vendors.
+        for vendor, unused_backend in (("cuda", "opencl"), ("opencl", "cuda")):
+            prefix = f"physical_{vendor}_identity="
+            for stream in ("stdout", "stderr"):
+                for marker in ("PASS device_index=1", "FAIL", "NOT_RUN"):
+                    payload = synthetic_evidence(candidate, "Linux", "both", amd=True, run_id="d")
+                    payload[stream] += f"\n{prefix}{marker}\n"
+                    path = root / "duplicate-identity.json"
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    try:
+                        validate_evidence(path, candidate)
+                    except RuntimeError as exc:
+                        if "identity lines" not in str(exc):
+                            raise
+                    else:
+                        raise RuntimeError("self-test accepted duplicate/conflicting identity")
+            for backend in ("both", unused_backend):
+                payload = synthetic_evidence(candidate, "Linux", backend, amd=True, run_id="e")
+                payload["stdout"] = "\n".join(
+                    line for line in payload["stdout"].splitlines()
+                    if not line.startswith(prefix)
+                )
+                payload["stderr"] = f"{prefix}FAIL\n"
+                path = root / "failed-identity.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                try:
+                    validate_evidence(path, candidate)
+                except RuntimeError as exc:
+                    if "identity marker" not in str(exc):
+                        raise
+                else:
+                    raise RuntimeError("self-test accepted failed identity marker")
 
         broken = synthetic_evidence(candidate, "Windows", "cuda", amd=False, run_id="4")
         broken["final_flags"]["GPU_MINING_NVIDIA_PASS"] = "true"
