@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use pulsedag_core::types::{compute_merkle_root, Block, BlockHeader, Hash, Transaction};
+use pulsedag_core::{
+    types::{compute_merkle_root, Block, BlockHeader, Hash, Transaction},
+    GHOSTDAG_V1_MAX_PARENTS,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1};
@@ -51,6 +54,7 @@ pub enum CompactBlockReconstructionPlanV1 {
 pub enum CompactRelayErrorV1 {
     UnsupportedVersion(u16),
     UnsupportedHeaderVersion(u32),
+    HeaderParentCountTooLarge { observed: usize, maximum: usize },
     EmptyTransactionInventory,
     LocalBlockMerkleRootMismatch,
     TransactionInventoryTooLarge { observed: usize, maximum: usize },
@@ -75,6 +79,10 @@ impl fmt::Display for CompactRelayErrorV1 {
             Self::UnsupportedHeaderVersion(version) => {
                 write!(formatter, "unsupported compact DAG relay header version {version}")
             }
+            Self::HeaderParentCountTooLarge { observed, maximum } => write!(
+                formatter,
+                "compact DAG relay parent count exceeds bound: observed={observed} maximum={maximum}"
+            ),
             Self::EmptyTransactionInventory => {
                 write!(formatter, "compact block transaction inventory is empty")
             }
@@ -156,6 +164,12 @@ pub fn validate_compact_block_announcement_v1(
         return Err(CompactRelayErrorV1::UnsupportedHeaderVersion(
             announcement.header.version,
         ));
+    }
+    if announcement.header.parents.len() > GHOSTDAG_V1_MAX_PARENTS {
+        return Err(CompactRelayErrorV1::HeaderParentCountTooLarge {
+            observed: announcement.header.parents.len(),
+            maximum: GHOSTDAG_V1_MAX_PARENTS,
+        });
     }
     validate_txids(&announcement.txids)
 }
@@ -509,6 +523,22 @@ mod tests {
             }
             other => panic!("unexpected plan: {other:?}"),
         }
+    }
+
+    #[test]
+    fn excessive_parent_fanout_fails_closed_before_reconstruction() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.parents =
+            (0..=GHOSTDAG_V1_MAX_PARENTS).map(|index| format!("parent-{index}")).collect();
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::HeaderParentCountTooLarge {
+                observed: GHOSTDAG_V1_MAX_PARENTS + 1,
+                maximum: GHOSTDAG_V1_MAX_PARENTS,
+            })
+        );
     }
 
     #[test]
