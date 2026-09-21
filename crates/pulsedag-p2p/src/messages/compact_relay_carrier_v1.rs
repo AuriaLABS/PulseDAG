@@ -325,7 +325,7 @@ fn decode_wire(
             CompactRelayWireV1::GetTransactions(CompactTransactionRequestV1 {
                 version: decoded.version,
                 block_hash: decoded.block_hash,
-                txids: decoded.txids,
+                txids: decoded.txids.0,
             })
         }
         CompactRelayKindV1::Transactions => {
