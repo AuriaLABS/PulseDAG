@@ -29,9 +29,10 @@ jobs:
             os: windows-latest
 
     steps:
-      - name: Checkout candidate
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -50,10 +51,15 @@ jobs:
 
       - name: Record exact candidate
         shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/v3-wallet-custody
-          git rev-parse HEAD | tee ci-evidence/v3-wallet-custody/candidate-sha.txt
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "${ACTUAL_SHA}" | tee ci-evidence/v3-wallet-custody/candidate-sha.txt
 
       - name: Format check
         run: cargo fmt --all -- --check
