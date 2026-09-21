@@ -629,6 +629,15 @@ fn unlocked_session(
 }
 
 fn run_restore(args: RestoreArgs, secrets: RestoreSecrets) -> CliResult<RestoreOutput> {
+    if WalletKeystoreFile::permission_policy_preflight()
+        == pulsedag_wallet::WalletKeystorePermissionStatus::NotEnforcedOnThisPlatform
+    {
+        return Err(invalid_input(
+            "restrictive keystore permissions are not enforced on this platform",
+        )
+        .into());
+    }
+
     ensure_parent_exists(&args.keystore)?;
     let network = WalletNetworkContext::new(&args.network_profile, &args.chain_id)?;
     let seed = wallet_seed_from_mnemonic(&secrets.mnemonic, secrets.bip39_passphrase.as_ref())?;
@@ -1595,6 +1604,93 @@ mod tests {
 
         let mut empty_mnemonic = Cursor::new("password\n\n\n");
         assert!(read_restore_secrets_from(&mut empty_mnemonic).is_err());
+    }
+
+    #[test]
+    fn secret_canaries_are_not_reflected_in_parser_errors_or_public_restore_output() {
+        let password_canary = "PR1169_PASSWORD_CANARY";
+        let mnemonic_canary = "PR1169_MNEMONIC_CANARY";
+        let passphrase_canary = "PR1169_BIP39_PASSPHRASE_CANARY";
+
+        for (flag, canary) in [
+            ("--password", password_canary),
+            ("--mnemonic", mnemonic_canary),
+            ("--bip39-passphrase", passphrase_canary),
+        ] {
+            let error = parse_command_from(args(&[
+                "restore",
+                "--keystore",
+                "wallet.json",
+                "--network-profile",
+                "public-testnet",
+                "--chain-id",
+                "pulsedag-public-testnet",
+                flag,
+                canary,
+            ]))
+            .expect_err("secret-bearing command-line option must be rejected")
+            .to_string();
+            assert!(!error.contains(canary));
+        }
+
+        let output = RestoreOutput {
+            network_profile: "public-testnet".to_string(),
+            chain_id: "pulsedag-public-testnet".to_string(),
+            account: 0,
+            anchor_address: "pulse1publicrestoreoutput".to_string(),
+            keystore: "wallet.json".to_string(),
+        };
+        let encoded = serde_json::to_string(&output).expect("serialize public restore output");
+        for canary in [password_canary, mnemonic_canary, passphrase_canary] {
+            assert!(!encoded.contains(canary));
+        }
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn restore_refuses_unenforced_private_permissions_before_publish() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let parent = std::env::temp_dir().join(format!(
+            "pulsedag-wallet-pr1169-{}-{nonce}",
+            std::process::id()
+        ));
+        let target = parent.join("wallet.json");
+        let _ = fs::remove_dir_all(&parent);
+
+        let password_canary = "PR1169_PASSWORD_CANARY";
+        let mnemonic_canary = "PR1169_MNEMONIC_CANARY";
+        let passphrase_canary = "PR1169_BIP39_PASSPHRASE_CANARY";
+        let error = run_restore(
+            RestoreArgs {
+                keystore: target.clone(),
+                network_profile: "public-testnet".to_string(),
+                chain_id: "pulsedag-public-testnet".to_string(),
+            },
+            RestoreSecrets {
+                password: SecretString::new(password_canary.to_string()),
+                mnemonic: SecretString::new(mnemonic_canary.to_string()),
+                bip39_passphrase: Some(SecretString::new(passphrase_canary.to_string())),
+            },
+        )
+        .expect_err("restore must fail closed when restrictive permissions are unavailable")
+        .to_string();
+
+        assert!(error.contains(
+            "restrictive keystore permissions are not enforced on this platform"
+        ));
+        for canary in [password_canary, mnemonic_canary, passphrase_canary] {
+            assert!(!error.contains(canary));
+        }
+        assert!(!target.exists());
+        assert!(!parent.exists());
     }
 
     #[test]
