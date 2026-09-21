@@ -81,11 +81,12 @@ jobs:
           PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY: "1"
         run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract cuda_driver_watchdog_times_out_on_persistently_not_ready_event
 
-      - name: Timeout still attempts context teardown
+      - name: Failed timeout teardown retains CUDA Driver library
         env:
           PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
           PULSEDAG_TEST_CUDA_EVENT_ALWAYS_NOT_READY: "1"
           PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY: "1"
+          PULSEDAG_TEST_CUDA_UNLOAD_MARKER: /tmp/pulsedag-cuda-driver-unloaded
         run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract cuda_driver_watchdog_reports_context_teardown_failure
 
       - name: Post-submit event failure uses context teardown path
@@ -143,10 +144,13 @@ jobs:
           ! grep -q 'cl_finish' apps/pulsedag-miner/src/opencl_driver_launch.rs
           grep -q 'LaunchExecution::TimedOut' apps/pulsedag-miner/src/cuda_driver_launch.rs
           grep -q 'LaunchExecution::FailedAfterSubmission' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'retain_library_for_process_lifetime' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          grep -q 'PULSEDAG_TEST_CUDA_UNLOAD_MARKER' apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
           ! grep -q 'cu_ctx_synchronize' apps/pulsedag-miner/src/cuda_driver_launch.rs
           echo "cuda_watchdog_deadline_detection_software=PASS"
           echo "opencl_watchdog_deadline_detection_software=PASS"
           echo "cuda_timeout_context_teardown_path=PASS"
+          echo "cuda_failed_teardown_library_lifetime=PASS"
           echo "cuda_homogeneous_failure_quarantine_replay_regression=PASS"
           grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/heterogeneous_backend.rs
           grep -q 'mixed_runtime_replays_failed_device_batch_on_survivor_without_nonce_loss' apps/pulsedag-miner/src/heterogeneous_backend.rs
