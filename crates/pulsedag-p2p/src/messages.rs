@@ -39,9 +39,9 @@ pub use compact_relay_v1::{
     build_compact_block_announcement_v1, build_compact_transaction_response_v1,
     complete_compact_block_reconstruction_v1, plan_compact_block_reconstruction_v1,
     validate_compact_block_announcement_v1, validate_compact_transaction_request_v1,
-    CompactBlockAnnouncementV1, CompactBlockReconstructionPlanV1, CompactRelayErrorV1,
-    CompactRelayFallbackReasonV1, CompactTransactionRequestV1, CompactTransactionResponseV1,
-    COMPACT_DAG_RELAY_VERSION_V1,
+    CompactBlockAnnouncementV1, CompactBlockReconstructionPlanV1,
+    CompactBlockReconstructionRequestStateV1, CompactRelayErrorV1, CompactRelayFallbackReasonV1,
+    CompactTransactionRequestV1, CompactTransactionResponseV1, COMPACT_DAG_RELAY_VERSION_V1,
 };
 pub use dag_sync_v2::{
     DagFrontierEntryV1, DagFrontierResponseV1, DagSyncContractError, SelectedChainLocatorV1,
