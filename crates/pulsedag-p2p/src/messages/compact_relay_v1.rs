@@ -383,7 +383,6 @@ pub fn complete_compact_block_reconstruction_v1(
         });
     }
 
-    let mut combined = state.known_transactions.clone();
     for (index, (expected_txid, transaction)) in state
         .request
         .txids
@@ -398,6 +397,10 @@ pub fn complete_compact_block_reconstruction_v1(
                 observed: transaction.txid.clone(),
             });
         }
+    }
+
+    let mut combined = state.known_transactions.clone();
+    for (expected_txid, transaction) in state.request.txids.iter().zip(&response.transactions) {
         combined.insert(expected_txid.clone(), transaction.clone());
     }
 
@@ -674,6 +677,32 @@ mod tests {
             validate_compact_block_announcement_v1(&announcement),
             Err(CompactRelayErrorV1::DuplicateTransactionId("tx-a".into()))
         );
+    }
+
+    #[test]
+    fn mismatched_response_is_rejected_before_saved_body_state_is_used() {
+        let block = block(&["coinbase", "tx-a"]);
+        let announcement = build_compact_block_announcement_v1(&block).unwrap();
+        let mut saved = known(&block, &[0]);
+        saved.get_mut("coinbase").unwrap().txid = "corrupt-saved-body".into();
+        let state = CompactBlockReconstructionRequestStateV1 {
+            request: CompactTransactionRequestV1 {
+                version: COMPACT_DAG_RELAY_VERSION_V1,
+                block_hash: block.hash.clone(),
+                txids: vec!["tx-a".into()],
+            },
+            known_transactions: saved,
+        };
+        let response = CompactTransactionResponseV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: block.hash.clone(),
+            transactions: vec![transaction("wrong-response")],
+        };
+
+        assert!(matches!(
+            complete_compact_block_reconstruction_v1(&announcement, &state, &response),
+            Err(CompactRelayErrorV1::ResponseTransactionMismatch { .. })
+        ));
     }
 
     #[test]
