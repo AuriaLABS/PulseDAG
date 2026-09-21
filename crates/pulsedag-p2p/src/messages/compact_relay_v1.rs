@@ -220,29 +220,26 @@ pub fn build_compact_block_announcement_v1(
     Ok(announcement)
 }
 
-fn reconstruct_known_transactions(
+fn missing_known_transaction_ids(
     announcement: &CompactBlockAnnouncementV1,
     known_transactions: &HashMap<Hash, Transaction>,
-) -> Result<(Vec<Transaction>, Vec<Hash>), CompactRelayErrorV1> {
-    let mut transactions = Vec::with_capacity(announcement.txids.len());
+) -> Result<Vec<Hash>, CompactRelayErrorV1> {
     let mut missing = Vec::new();
 
     for txid in &announcement.txids {
         match known_transactions.get(txid) {
-            Some(transaction) => {
-                if transaction.txid != *txid {
-                    return Err(CompactRelayErrorV1::KnownTransactionIdMismatch {
-                        requested: txid.clone(),
-                        observed: transaction.txid.clone(),
-                    });
-                }
-                transactions.push(transaction.clone());
+            Some(transaction) if transaction.txid != *txid => {
+                return Err(CompactRelayErrorV1::KnownTransactionIdMismatch {
+                    requested: txid.clone(),
+                    observed: transaction.txid.clone(),
+                });
             }
+            Some(_) => {}
             None => missing.push(txid.clone()),
         }
     }
 
-    Ok((transactions, missing))
+    Ok(missing)
 }
 
 pub fn plan_compact_block_reconstruction_v1(
@@ -250,7 +247,6 @@ pub fn plan_compact_block_reconstruction_v1(
     known_transactions: &HashMap<Hash, Transaction>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
     validate_compact_block_announcement_v1(announcement)?;
-    let (transactions, missing) = reconstruct_known_transactions(announcement, known_transactions)?;
 
     if compute_merkle_root_from_txids(&announcement.txids) != announcement.header.merkle_root {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
@@ -258,6 +254,8 @@ pub fn plan_compact_block_reconstruction_v1(
             reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
         });
     }
+
+    let missing = missing_known_transaction_ids(announcement, known_transactions)?;
 
     if missing.len() > P2P_WIRE_MAX_REQUEST_ITEMS_V1 {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
@@ -289,12 +287,16 @@ pub fn plan_compact_block_reconstruction_v1(
         ));
     }
 
-    if compute_merkle_root(&transactions) != announcement.header.merkle_root {
-        return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
-            block_hash: announcement.block_hash.clone(),
-            reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
-        });
-    }
+    let transactions = announcement
+        .txids
+        .iter()
+        .map(|txid| {
+            known_transactions
+                .get(txid)
+                .expect("all announced transactions were verified present")
+                .clone()
+        })
+        .collect();
 
     Ok(CompactBlockReconstructionPlanV1::Complete(Block {
         hash: announcement.block_hash.clone(),
@@ -560,6 +562,26 @@ mod tests {
         assert!(matches!(
             complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap(),
             CompactBlockReconstructionPlanV1::Complete(_)
+        ));
+    }
+
+    #[test]
+    fn forged_merkle_root_falls_back_before_touching_known_transaction_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.merkle_root = "forged".into();
+
+        let mut known = HashMap::new();
+        let mut mismatched = block.transactions[0].clone();
+        mismatched.txid = "wrong-known-body".into();
+        known.insert("coinbase".into(), mismatched);
+
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &known).unwrap(),
+            CompactBlockReconstructionPlanV1::FullBlockFallback {
+                reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
+                ..
+            }
         ));
     }
 
