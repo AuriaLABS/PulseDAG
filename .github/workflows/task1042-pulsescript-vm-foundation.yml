@@ -5,9 +5,11 @@ on:
     branches:
       - main
       - manual/issue-1041-programmability-activation-contract-v1
+      - codex/issue-1042-pulsescript-vm-foundation
     paths:
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
       - "crates/pulsedag-core/src/lib.rs"
+      - "crates/pulsedag-core/tests/pulsescript_vm_v1_adversarial.rs"
       - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
       - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
   push:
@@ -16,6 +18,7 @@ on:
     paths:
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
       - "crates/pulsedag-core/src/lib.rs"
+      - "crates/pulsedag-core/tests/pulsescript_vm_v1_adversarial.rs"
       - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
       - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
 
@@ -52,6 +55,9 @@ jobs:
 
       - name: Run PulseScript / VM vectors
         run: cargo test --locked -p pulsedag-core pulsescript_vm_v1
+
+      - name: Run adversarial malformed/resource vectors
+        run: cargo test --locked -p pulsedag-core --test pulsescript_vm_v1_adversarial
 
       - name: Verify formatting
         if: runner.os == 'Linux'
