@@ -1,4 +1,5 @@
 pub mod capability_carrier_v1;
+pub mod compact_relay_carrier_v1;
 pub mod compact_relay_v1;
 pub mod dag_sync_v2;
 pub mod fast_sync_carrier_v1;
@@ -27,14 +28,20 @@ pub use capability_carrier_v1::{
     DecodedNetworkMessageWithCapabilitiesV1, ProtocolCapabilityCarrierErrorV1,
     PROTOCOL_CAPABILITY_EXTENSION_FIELD_V1,
 };
+pub use compact_relay_carrier_v1::{
+    attach_compact_relay_carrier_v1, decode_network_message_with_compact_relay_for_peer_v1,
+    decode_network_message_with_compact_relay_v1, encode_network_message_with_compact_relay_v1,
+    CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
+    CompactRelayWireV1, DecodedNetworkMessageWithCompactRelayV1, COMPACT_RELAY_EXTENSION_FIELD_V1,
+    COMPACT_RELAY_MAX_TARGET_PEER_ID_BYTES_V1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
+};
 pub use compact_relay_v1::{
     build_compact_block_announcement_v1, build_compact_transaction_response_v1,
     complete_compact_block_reconstruction_v1, plan_compact_block_reconstruction_v1,
     validate_compact_block_announcement_v1, validate_compact_transaction_request_v1,
     CompactBlockAnnouncementV1, CompactBlockReconstructionPlanV1,
     CompactBlockReconstructionRequestStateV1, CompactRelayErrorV1, CompactRelayFallbackReasonV1,
-    CompactTransactionRequestV1, CompactTransactionResponseV1,
-    COMPACT_DAG_RELAY_VERSION_V1,
+    CompactTransactionRequestV1, CompactTransactionResponseV1, COMPACT_DAG_RELAY_VERSION_V1,
 };
 pub use dag_sync_v2::{
     DagFrontierEntryV1, DagFrontierResponseV1, DagSyncContractError, SelectedChainLocatorV1,
