@@ -1380,7 +1380,9 @@ impl P2pHandle for MemoryP2pHandle {
             .configure_local_capabilities(&chain_id, capabilities)
             .map_err(|error| {
                 PulseError::Internal(format!("invalid protocol-v2 p2p capabilities: {error:?}"))
-            })
+            })?;
+        inner.compact_relay_runtime.reset_local();
+        Ok(())
     }
 
     fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
@@ -6601,7 +6603,9 @@ impl P2pHandle for Libp2pHandle {
             .configure_local_capabilities(&chain_id, capabilities)
             .map_err(|error| {
                 PulseError::Internal(format!("invalid protocol-v2 p2p capabilities: {error:?}"))
-            })
+            })?;
+        inner.compact_relay_runtime.reset_local();
+        Ok(())
     }
 
     fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
