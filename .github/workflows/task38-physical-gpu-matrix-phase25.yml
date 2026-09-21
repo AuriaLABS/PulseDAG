@@ -1,0 +1,87 @@
+name: v3 launch Task 38 physical evidence matrix phase 25
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/task38_verify_physical_gpu_matrix.py"
+      - "docs/task38-physical-gpu-matrix-phase25-scope.md"
+      - ".github/workflows/task38-physical-gpu-matrix-phase25.yml"
+      - "scripts/task38_collect_physical_gpu_evidence.py"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/task38_verify_physical_gpu_matrix.py"
+      - "docs/task38-physical-gpu-matrix-phase25-scope.md"
+      - ".github/workflows/task38-physical-gpu-matrix-phase25.yml"
+      - "scripts/task38_collect_physical_gpu_evidence.py"
+
+permissions:
+  contents: read
+
+jobs:
+  verifier:
+    name: physical evidence matrix verifier (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Compile verifier
+        run: python -m py_compile scripts/task38_verify_physical_gpu_matrix.py
+
+      - name: Run fail-closed matrix self-test
+        run: python scripts/task38_verify_physical_gpu_matrix.py --self-test
+
+      - name: Audit non-claims and Phase 24 binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'pulsedag-task38-physical-packaged-gpu-evidence-v1' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'pulsedag-task38-physical-gpu-matrix-v1' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'cross_vendor_same_host' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'GPU_MINING_NVIDIA_PASS=NOT_CLAIMED' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'GPU_MINING_AMD_PASS=NOT_CLAIMED' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'premature NVIDIA final PASS claim' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'probe output contains premature final PASS' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'combined_output = ' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'self-test accepted premature final PASS in stderr' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'self-test accepted duplicate PASS summary in stderr' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'packaged CUDA module digest missing or invalid' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'EXPECTED_CUDA_METADATA_SCHEMA = "pulsedag-task38-cuda-module-v1"' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'git_object_bytes(candidate_sha, EXPECTED_CUDA_SOURCE)' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'self-test accepted non-canonical uppercase candidate SHA' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'source digest does not match candidate Git object' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'repository runtime override is active' scripts/task38_verify_physical_gpu_matrix.py
+          grep -q 'opencl_fields.get("amd_identity") == "PASS"' scripts/task38_verify_physical_gpu_matrix.py
+          echo "physical_matrix_verifier_contract=PASS"
+          echo "physical_gpu_execution=NOT_EXECUTED_BY_CI"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+          echo "GPU_MINING_AMD_PASS=NOT_CLAIMED"
