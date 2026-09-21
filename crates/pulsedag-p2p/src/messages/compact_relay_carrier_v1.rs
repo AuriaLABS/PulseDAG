@@ -1,7 +1,10 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use pulsedag_core::types::{BlockHeader, Hash, Transaction};
+use pulsedag_core::{
+    types::{BlockHeader, Hash, Transaction},
+    GHOSTDAG_V1_MAX_PARENTS,
+};
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
@@ -228,10 +231,39 @@ where
 }
 
 #[derive(Debug, Deserialize)]
+struct CompactBlockHeaderDecodeV1 {
+    version: u32,
+    parents: BoundedVecV1<Hash, { GHOSTDAG_V1_MAX_PARENTS }>,
+    timestamp: u64,
+    difficulty: u32,
+    nonce: u64,
+    merkle_root: Hash,
+    state_root: Hash,
+    blue_score: u64,
+    height: u64,
+}
+
+impl CompactBlockHeaderDecodeV1 {
+    fn into_header(self) -> BlockHeader {
+        BlockHeader {
+            version: self.version,
+            parents: self.parents.0,
+            timestamp: self.timestamp,
+            difficulty: self.difficulty,
+            nonce: self.nonce,
+            merkle_root: self.merkle_root,
+            state_root: self.state_root,
+            blue_score: self.blue_score,
+            height: self.height,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct CompactBlockAnnouncementDecodeV1 {
     version: u16,
     block_hash: Hash,
-    header: BlockHeader,
+    header: CompactBlockHeaderDecodeV1,
     txids: BoundedVecV1<Hash, { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 }>,
 }
 
@@ -310,7 +342,7 @@ fn decode_wire(
             CompactRelayWireV1::Announce(CompactBlockAnnouncementV1 {
                 version: decoded.version,
                 block_hash: decoded.block_hash,
-                header: decoded.header,
+                header: decoded.header.into_header(),
                 txids: decoded.txids.0,
             })
         }
@@ -698,6 +730,40 @@ mod tests {
             }),
         );
         let encoded = serde_json::to_vec(&value).unwrap();
+
+        assert!(matches!(
+            decode_network_message_with_compact_relay_for_peer_v1(&encoded, LOCAL_PEER),
+            Err(CompactRelayCarrierErrorV1::Json(message))
+                if message.contains("sequence exceeds maximum item count")
+        ));
+    }
+
+    #[test]
+    fn oversized_announcement_parent_set_is_rejected_while_streaming() {
+        let mut value = serde_json::to_value(tips()).unwrap();
+        let mut header = serde_json::to_value(block().header).unwrap();
+        header.as_object_mut().unwrap().insert(
+            "parents".to_string(),
+            serde_json::json!(vec![""; GHOSTDAG_V1_MAX_PARENTS + 1]),
+        );
+        value.as_object_mut().unwrap().insert(
+            COMPACT_RELAY_EXTENSION_FIELD_V1.to_string(),
+            serde_json::json!({
+                "target_peer_id": LOCAL_PEER,
+                "chain_id": CHAIN_ID,
+                "wire": {
+                    "compact_relay_type": "announce",
+                    "payload": {
+                        "version": COMPACT_DAG_RELAY_VERSION_V1,
+                        "block_hash": "block-hash",
+                        "header": header,
+                        "txids": ["coinbase"]
+                    }
+                }
+            }),
+        );
+        let encoded = serde_json::to_vec(&value).unwrap();
+        assert!(encoded.len() < COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1);
 
         assert!(matches!(
             decode_network_message_with_compact_relay_for_peer_v1(&encoded, LOCAL_PEER),
