@@ -644,9 +644,13 @@ def run_self_test() -> None:
         )
         forged_path = root / "forged-amd.json"
         forged_path.write_text(json.dumps(forged_amd), encoding="utf-8")
-        forged_record = validate_evidence(forged_path, candidate)
-        if forged_record["amd"]:
-            raise RuntimeError("self-test trusted AMD marker embedded in identity text")
+        try:
+            validate_evidence(forged_path, candidate)
+        except RuntimeError as exc:
+            if "duplicate marker field" not in str(exc):
+                raise
+        else:
+            raise RuntimeError("self-test accepted AMD marker embedded in identity text")
 
         active_override = synthetic_evidence(
             candidate, "Windows", "cuda", amd=False, run_id="9"
