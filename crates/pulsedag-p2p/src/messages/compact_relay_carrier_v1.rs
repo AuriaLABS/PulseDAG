@@ -1,6 +1,9 @@
+use std::fmt;
+use std::marker::PhantomData;
+
 use pulsedag_core::types::{BlockHeader, Hash, Transaction};
-use serde::Deserialize;
-use serde::Serialize;
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
 use super::{
@@ -171,26 +174,79 @@ struct CompactRelayTargetExtensionV1<'a> {
     compact_relay: Option<CompactRelayTargetV1<'a>>,
 }
 
+#[derive(Debug)]
+struct BoundedVecV1<T, const MAXIMUM: usize>(Vec<T>);
+
+struct BoundedVecVisitorV1<T, const MAXIMUM: usize> {
+    marker: PhantomData<T>,
+}
+
+impl<'de, T, const MAXIMUM: usize> Visitor<'de> for BoundedVecVisitorV1<T, MAXIMUM>
+where
+    T: Deserialize<'de>,
+{
+    type Value = BoundedVecV1<T, MAXIMUM>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a sequence with at most {MAXIMUM} items")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let capacity = sequence.size_hint().unwrap_or(0).min(MAXIMUM);
+        let mut values = Vec::with_capacity(capacity);
+        while values.len() < MAXIMUM {
+            match sequence.next_element::<T>()? {
+                Some(value) => values.push(value),
+                None => return Ok(BoundedVecV1(values)),
+            }
+        }
+
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(format!(
+                "sequence exceeds maximum item count {MAXIMUM}"
+            )));
+        }
+        Ok(BoundedVecV1(values))
+    }
+}
+
+impl<'de, T, const MAXIMUM: usize> Deserialize<'de> for BoundedVecV1<T, MAXIMUM>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(BoundedVecVisitorV1::<T, MAXIMUM> {
+            marker: PhantomData,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CompactBlockAnnouncementDecodeV1 {
     version: u16,
     block_hash: Hash,
     header: BlockHeader,
-    txids: Vec<Hash>,
+    txids: BoundedVecV1<Hash, { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 }>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CompactTransactionRequestDecodeV1 {
     version: u16,
     block_hash: Hash,
-    txids: Vec<Hash>,
+    txids: BoundedVecV1<Hash, { P2P_WIRE_MAX_REQUEST_ITEMS_V1 }>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CompactTransactionResponseDecodeV1 {
     version: u16,
     block_hash: Hash,
-    transactions: Vec<Transaction>,
+    transactions: BoundedVecV1<Transaction, { P2P_WIRE_MAX_REQUEST_ITEMS_V1 }>,
 }
 
 fn parse_payload<'de, T>(raw: &'de RawValue, field: &str) -> Result<T, CompactRelayCarrierErrorV1>
@@ -255,7 +311,7 @@ fn decode_wire(
                 version: decoded.version,
                 block_hash: decoded.block_hash,
                 header: decoded.header,
-                txids: decoded.txids,
+                txids: decoded.txids.0,
             })
         }
         CompactRelayKindV1::GetTransactions => {
@@ -283,7 +339,7 @@ fn decode_wire(
             CompactRelayWireV1::Transactions(CompactTransactionResponseV1 {
                 version: decoded.version,
                 block_hash: decoded.block_hash,
-                transactions: decoded.transactions,
+                transactions: decoded.transactions.0,
             })
         }
     };
@@ -645,9 +701,66 @@ mod tests {
 
         assert!(matches!(
             decode_network_message_with_compact_relay_for_peer_v1(&encoded, LOCAL_PEER),
-            Err(CompactRelayCarrierErrorV1::Compact(
-                CompactRelayErrorV1::TransactionInventoryTooLarge { .. }
-            ))
+            Err(CompactRelayCarrierErrorV1::Json(message))
+                if message.contains("sequence exceeds maximum item count")
+        ));
+    }
+
+    #[test]
+    fn oversized_announcement_inventory_is_rejected_while_streaming() {
+        let mut value = serde_json::to_value(tips()).unwrap();
+        value.as_object_mut().unwrap().insert(
+            COMPACT_RELAY_EXTENSION_FIELD_V1.to_string(),
+            serde_json::json!({
+                "target_peer_id": LOCAL_PEER,
+                "chain_id": CHAIN_ID,
+                "wire": {
+                    "compact_relay_type": "announce",
+                    "payload": {
+                        "version": COMPACT_DAG_RELAY_VERSION_V1,
+                        "block_hash": "block-hash",
+                        "header": block().header,
+                        "txids": vec![""; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1]
+                    }
+                }
+            }),
+        );
+        let encoded = serde_json::to_vec(&value).unwrap();
+        assert!(encoded.len() < COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1);
+
+        assert!(matches!(
+            decode_network_message_with_compact_relay_for_peer_v1(&encoded, LOCAL_PEER),
+            Err(CompactRelayCarrierErrorV1::Json(message))
+                if message.contains("sequence exceeds maximum item count")
+        ));
+    }
+
+    #[test]
+    fn oversized_transaction_response_is_rejected_while_streaming() {
+        let minimal = transaction("x");
+        let mut value = serde_json::to_value(tips()).unwrap();
+        value.as_object_mut().unwrap().insert(
+            COMPACT_RELAY_EXTENSION_FIELD_V1.to_string(),
+            serde_json::json!({
+                "target_peer_id": LOCAL_PEER,
+                "chain_id": CHAIN_ID,
+                "wire": {
+                    "compact_relay_type": "transactions",
+                    "payload": {
+                        "version": COMPACT_DAG_RELAY_VERSION_V1,
+                        "block_hash": "block-hash",
+                        "transactions": vec![minimal; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1]
+                    }
+                }
+            }),
+        );
+        let encoded = serde_json::to_vec(&value).unwrap();
+        assert!(encoded.len() < COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1);
+
+        assert!(matches!(
+            decode_network_message_with_compact_relay_for_peer_v1(&encoded, LOCAL_PEER),
+            Err(CompactRelayCarrierErrorV1::Json(message))
+                if message.contains("sequence exceeds maximum item count")
         ));
     }
 
