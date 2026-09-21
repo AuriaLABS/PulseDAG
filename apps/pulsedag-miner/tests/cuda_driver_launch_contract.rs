@@ -146,6 +146,12 @@ fn cuda_driver_watchdog_reports_context_teardown_failure() {
         return;
     }
 
+    let unload_marker = std::env::var_os("PULSEDAG_TEST_CUDA_UNLOAD_MARKER")
+        .map(std::path::PathBuf::from);
+    if let Some(path) = unload_marker.as_ref() {
+        let _ = std::fs::remove_file(path);
+    }
+
     let target_bits = 0x207f_ffff;
     let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
     let work = build_protocol_pow_work(&header, target_bits, None).unwrap();
@@ -162,6 +168,12 @@ fn cuda_driver_watchdog_reports_context_teardown_failure() {
 
     assert!(error.contains("CUDA launch watchdog timeout"));
     assert!(error.contains("CUDA context teardown failed"));
+    if let Some(path) = unload_marker.as_ref() {
+        assert!(
+            !path.exists(),
+            "CUDA Driver library was unloaded after failed context teardown"
+        );
+    }
 }
 
 #[test]
