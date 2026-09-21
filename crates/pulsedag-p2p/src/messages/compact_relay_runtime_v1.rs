@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction, TxOutput};
+use pulsedag_core::types::Hash;
 
 use super::{
     attach_compact_relay_carrier_v1, complete_compact_block_reconstruction_v1,
     decode_network_message_with_compact_relay_for_peer_v1, CompactBlockAnnouncementV1,
     CompactBlockReconstructionPlanV1, CompactBlockReconstructionRequestStateV1,
     CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
-    CompactRelayErrorV1, CompactRelayWireV1, CompactTransactionResponseV1, NetworkMessage,
+    CompactRelayErrorV1, CompactRelayWireV1, CompactTransactionResponseV1,
 };
 
 pub const COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1: usize = 64;
@@ -250,7 +250,7 @@ impl CompactRelayRuntimeSessionBookV1 {
         response: &CompactTransactionResponseV1,
     ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayRuntimeSessionErrorV1> {
         require_peer_id(peer_id)?;
-        let block_hash = response.block_hash.clone();
+        let block_hash = announcement.block_hash.clone();
         let state = self
             .in_flight
             .remove(&(peer_id.to_string(), block_hash.clone()))
@@ -329,7 +329,10 @@ mod tests {
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
         COMPACT_DAG_RELAY_VERSION_V1,
     };
-    use pulsedag_core::types::compute_merkle_root;
+    use pulsedag_core::types::{
+        compute_merkle_root, Block, BlockHeader, Transaction, TxOutput,
+    };
+    use crate::messages::NetworkMessage;
 
     const CHAIN_ID: &str = "compact-relay-runtime-testnet";
     const LOCAL_PEER: &str = "peer-compact-runtime-local";
