@@ -8,7 +8,7 @@ use super::{P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1};
 
 pub const COMPACT_DAG_RELAY_VERSION_V1: u16 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactBlockAnnouncementV1 {
     pub version: u16,
     pub block_hash: Hash,
@@ -16,14 +16,14 @@ pub struct CompactBlockAnnouncementV1 {
     pub txids: Vec<Hash>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactTransactionRequestV1 {
     pub version: u16,
     pub block_hash: Hash,
     pub txids: Vec<Hash>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompactTransactionResponseV1 {
     pub version: u16,
     pub block_hash: Hash,
@@ -50,7 +50,9 @@ pub enum CompactBlockReconstructionPlanV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactRelayErrorV1 {
     UnsupportedVersion(u16),
+    UnsupportedHeaderVersion(u32),
     EmptyTransactionInventory,
+    LocalBlockMerkleRootMismatch,
     TransactionInventoryTooLarge { observed: usize, maximum: usize },
     DuplicateTransactionId(Hash),
     KnownTransactionIdMismatch { requested: Hash, observed: Hash },
@@ -70,8 +72,14 @@ impl fmt::Display for CompactRelayErrorV1 {
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported compact DAG relay version {version}")
             }
+            Self::UnsupportedHeaderVersion(version) => {
+                write!(formatter, "unsupported compact DAG relay header version {version}")
+            }
             Self::EmptyTransactionInventory => {
                 write!(formatter, "compact block transaction inventory is empty")
+            }
+            Self::LocalBlockMerkleRootMismatch => {
+                write!(formatter, "local block Merkle root does not match its transaction body")
             }
             Self::TransactionInventoryTooLarge { observed, maximum } => write!(
                 formatter,
@@ -144,6 +152,11 @@ pub fn validate_compact_block_announcement_v1(
     announcement: &CompactBlockAnnouncementV1,
 ) -> Result<(), CompactRelayErrorV1> {
     require_version(announcement.version)?;
+    if !super::supported_header_version(announcement.header.version) {
+        return Err(CompactRelayErrorV1::UnsupportedHeaderVersion(
+            announcement.header.version,
+        ));
+    }
     validate_txids(&announcement.txids)
 }
 
@@ -156,13 +169,18 @@ pub fn build_compact_block_announcement_v1(
         .map(|transaction| transaction.txid.clone())
         .collect::<Vec<_>>();
     validate_txids(&txids)?;
+    if compute_merkle_root(&block.transactions) != block.header.merkle_root {
+        return Err(CompactRelayErrorV1::LocalBlockMerkleRootMismatch);
+    }
 
-    Ok(CompactBlockAnnouncementV1 {
+    let announcement = CompactBlockAnnouncementV1 {
         version: COMPACT_DAG_RELAY_VERSION_V1,
         block_hash: block.hash.clone(),
         header: block.header.clone(),
         txids,
-    })
+    };
+    validate_compact_block_announcement_v1(&announcement)?;
+    Ok(announcement)
 }
 
 fn reconstruct_known_transactions(
@@ -491,6 +509,18 @@ mod tests {
             }
             other => panic!("unexpected plan: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unsupported_header_version_fails_closed_before_reconstruction() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.version = 99;
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::UnsupportedHeaderVersion(99))
+        );
     }
 
     #[test]
