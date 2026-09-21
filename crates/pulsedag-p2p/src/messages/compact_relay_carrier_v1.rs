@@ -1,6 +1,6 @@
 use pulsedag_core::types::{BlockHeader, Hash, Transaction};
 use serde::Deserialize;
-use serde::{Serialize};
+use serde::Serialize;
 use serde_json::{value::RawValue, Value};
 
 use super::{
@@ -35,7 +35,10 @@ impl CompactRelayCapabilitiesV1 {
         }
     }
 
-    pub fn validate_for_chain(&self, expected_chain_id: &str) -> Result<(), CompactRelayCarrierErrorV1> {
+    pub fn validate_for_chain(
+        &self,
+        expected_chain_id: &str,
+    ) -> Result<(), CompactRelayCarrierErrorV1> {
         if self.contract_version != COMPACT_DAG_RELAY_VERSION_V1 {
             return Err(CompactRelayCarrierErrorV1::UnsupportedVersion(
                 self.contract_version,
@@ -83,21 +86,14 @@ impl CompactRelayWireV1 {
         }
     }
 
-    fn validate_for_chain(
-        &self,
-        chain_id: &str,
-    ) -> Result<(), CompactRelayCarrierErrorV1> {
+    fn validate_for_chain(&self, chain_id: &str) -> Result<(), CompactRelayCarrierErrorV1> {
         match self {
             Self::CapabilityProbe => Ok(()),
             Self::Capabilities(capabilities) => capabilities.validate_for_chain(chain_id),
-            Self::Announce(announcement) => {
-                validate_compact_block_announcement_v1(announcement)
-                    .map_err(CompactRelayCarrierErrorV1::Compact)
-            }
-            Self::GetTransactions(request) => {
-                validate_compact_transaction_request_v1(request)
-                    .map_err(CompactRelayCarrierErrorV1::Compact)
-            }
+            Self::Announce(announcement) => validate_compact_block_announcement_v1(announcement)
+                .map_err(CompactRelayCarrierErrorV1::Compact),
+            Self::GetTransactions(request) => validate_compact_transaction_request_v1(request)
+                .map_err(CompactRelayCarrierErrorV1::Compact),
             Self::Transactions(response) => validate_response_shape(response),
         }
     }
@@ -197,10 +193,7 @@ struct CompactTransactionResponseDecodeV1 {
     transactions: Vec<Transaction>,
 }
 
-fn parse_payload<'de, T>(
-    raw: &'de RawValue,
-    field: &str,
-) -> Result<T, CompactRelayCarrierErrorV1>
+fn parse_payload<'de, T>(raw: &'de RawValue, field: &str) -> Result<T, CompactRelayCarrierErrorV1>
 where
     T: Deserialize<'de>,
 {
@@ -257,8 +250,7 @@ fn decode_wire(
                     "compact-relay announcement payload is missing".to_string(),
                 )
             })?;
-            let decoded: CompactBlockAnnouncementDecodeV1 =
-                parse_payload(payload, "announcement")?;
+            let decoded: CompactBlockAnnouncementDecodeV1 = parse_payload(payload, "announcement")?;
             CompactRelayWireV1::Announce(CompactBlockAnnouncementV1 {
                 version: decoded.version,
                 block_hash: decoded.block_hash,
@@ -345,9 +337,7 @@ fn validate_carrier_for_message(
     carrier.wire.validate_for_chain(&carrier.chain_id)
 }
 
-fn extension_present_and_bounded(
-    bytes: &[u8],
-) -> Result<bool, CompactRelayCarrierErrorV1> {
+fn extension_present_and_bounded(bytes: &[u8]) -> Result<bool, CompactRelayCarrierErrorV1> {
     let extension: CompactRelayExtensionRawV1<'_> = serde_json::from_slice(bytes)
         .map_err(|error| CompactRelayCarrierErrorV1::Json(error.to_string()))?;
     let present = extension.compact_relay.is_some();
