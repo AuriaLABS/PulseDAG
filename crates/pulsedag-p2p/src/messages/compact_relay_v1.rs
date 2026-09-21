@@ -530,12 +530,13 @@ mod tests {
         let refs = txids.iter().map(String::as_str).collect::<Vec<_>>();
         let block = block(&refs);
 
-        assert_eq!(
+        assert!(matches!(
             build_compact_block_announcement_v1(&block),
             Err(CompactRelayErrorV1::TransactionInventoryTooLarge {
-                observed: P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1,
-                maximum: P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-            })
-        );
+                observed,
+                maximum
+            }) if observed == P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1
+                && maximum == P2P_WIRE_MAX_INVENTORY_ITEMS_V1
+        ));
     }
 }
