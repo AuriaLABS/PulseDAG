@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use pulsedag_core::types::{Block, Hash, Transaction};
 
-use super::compact_relay_carrier_v1::{
-    CompactRelayCapabilitiesV1, CompactRelayWireV1,
-};
+use super::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
 use super::compact_relay_runtime_v1::{
     CompactRelayRuntimeSessionBookV1, CompactRelayRuntimeSessionErrorV1,
 };
@@ -37,10 +35,7 @@ pub enum CompactRelayControllerActionV1 {
 pub enum CompactRelayControllerErrorV1 {
     Runtime(CompactRelayRuntimeSessionErrorV1),
     Compact(CompactRelayErrorV1),
-    PendingAnnouncementMissing {
-        peer_id: String,
-        block_hash: Hash,
-    },
+    PendingAnnouncementMissing { peer_id: String, block_hash: Hash },
 }
 
 impl From<CompactRelayRuntimeSessionErrorV1> for CompactRelayControllerErrorV1 {
@@ -103,14 +98,14 @@ impl CompactRelayControllerV1 {
                 match plan_compact_block_reconstruction_v1(announcement, known_transactions)? {
                     CompactBlockReconstructionPlanV1::Complete(block) => {
                         sessions.abandon_in_flight(peer_id, &announcement.block_hash);
-                        self.pending_announcements.remove(&(
-                            peer_id.to_string(),
-                            announcement.block_hash.clone(),
-                        ));
-                        Ok(vec![CompactRelayControllerActionV1::ReconstructedBlockReady {
-                            peer_id: peer_id.to_string(),
-                            block,
-                        }])
+                        self.pending_announcements
+                            .remove(&(peer_id.to_string(), announcement.block_hash.clone()));
+                        Ok(vec![
+                            CompactRelayControllerActionV1::ReconstructedBlockReady {
+                                peer_id: peer_id.to_string(),
+                                block,
+                            },
+                        ])
                     }
                     CompactBlockReconstructionPlanV1::RequestTransactions(state) => {
                         let request = state.request.clone();
@@ -124,9 +119,7 @@ impl CompactRelayControllerV1 {
                             wire: CompactRelayWireV1::GetTransactions(request),
                         }])
                     }
-                    CompactBlockReconstructionPlanV1::FullBlockFallback {
-                        block_hash, ..
-                    } => {
+                    CompactBlockReconstructionPlanV1::FullBlockFallback { block_hash, .. } => {
                         sessions.abandon_in_flight(peer_id, &block_hash);
                         self.pending_announcements
                             .remove(&(peer_id.to_string(), block_hash.clone()));
@@ -151,25 +144,27 @@ impl CompactRelayControllerV1 {
             }
             CompactRelayWireV1::Transactions(response) => {
                 let key = (peer_id.to_string(), response.block_hash.clone());
-                let announcement = self
-                    .pending_announcements
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| {
-                        CompactRelayControllerErrorV1::PendingAnnouncementMissing {
-                            peer_id: peer_id.to_string(),
-                            block_hash: response.block_hash.clone(),
-                        }
-                    })?;
+                let announcement =
+                    self.pending_announcements
+                        .get(&key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CompactRelayControllerErrorV1::PendingAnnouncementMissing {
+                                peer_id: peer_id.to_string(),
+                                block_hash: response.block_hash.clone(),
+                            }
+                        })?;
 
                 let result = sessions.complete_in_flight(peer_id, &announcement, response);
                 match result {
                     Ok(CompactBlockReconstructionPlanV1::Complete(block)) => {
                         self.pending_announcements.remove(&key);
-                        Ok(vec![CompactRelayControllerActionV1::ReconstructedBlockReady {
-                            peer_id: peer_id.to_string(),
-                            block,
-                        }])
+                        Ok(vec![
+                            CompactRelayControllerActionV1::ReconstructedBlockReady {
+                                peer_id: peer_id.to_string(),
+                                block,
+                            },
+                        ])
                     }
                     Ok(CompactBlockReconstructionPlanV1::RequestTransactions(state)) => {
                         let request = state.request.clone();
@@ -197,10 +192,10 @@ impl CompactRelayControllerV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::compact_relay_v1::{
         build_compact_block_announcement_v1, COMPACT_DAG_RELAY_VERSION_V1,
     };
+    use super::*;
     use pulsedag_core::types::{compute_merkle_root, BlockHeader, TxOutput};
 
     const CHAIN_ID: &str = "compact-relay-controller-testnet";
@@ -243,10 +238,7 @@ mod tests {
         }
     }
 
-    fn configured() -> (
-        CompactRelayControllerV1,
-        CompactRelayRuntimeSessionBookV1,
-    ) {
+    fn configured() -> (CompactRelayControllerV1, CompactRelayRuntimeSessionBookV1) {
         let controller = CompactRelayControllerV1::default();
         let mut sessions = CompactRelayRuntimeSessionBookV1::default();
         sessions
@@ -263,9 +255,7 @@ mod tests {
             .handle_wire(
                 sessions,
                 PEER,
-                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
-                    CHAIN_ID,
-                )),
+                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(CHAIN_ID)),
                 &HashMap::new(),
             )
             .unwrap();
@@ -326,9 +316,12 @@ mod tests {
         authorize(&mut controller, &mut sessions);
         let block = block();
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
-        let known = [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
-            .into_iter()
-            .collect();
+        let known = [(
+            block.transactions[0].txid.clone(),
+            block.transactions[0].clone(),
+        )]
+        .into_iter()
+        .collect();
 
         let actions = controller
             .handle_wire(
@@ -388,10 +381,12 @@ mod tests {
         authorize(&mut controller, &mut sessions);
         let block = block();
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
-        let initially_known =
-            [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
-                .into_iter()
-                .collect();
+        let initially_known = [(
+            block.transactions[0].txid.clone(),
+            block.transactions[0].clone(),
+        )]
+        .into_iter()
+        .collect();
 
         let actions = controller
             .handle_wire(
@@ -520,9 +515,12 @@ mod tests {
         authorize(&mut controller, &mut sessions);
         let block = block();
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
-        let known = [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
-            .into_iter()
-            .collect();
+        let known = [(
+            block.transactions[0].txid.clone(),
+            block.transactions[0].clone(),
+        )]
+        .into_iter()
+        .collect();
 
         let actions = controller
             .handle_wire(
@@ -596,9 +594,12 @@ mod tests {
         authorize(&mut controller, &mut sessions);
         let block = block();
         let announcement = build_compact_block_announcement_v1(&block).unwrap();
-        let known = [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
-            .into_iter()
-            .collect();
+        let known = [(
+            block.transactions[0].txid.clone(),
+            block.transactions[0].clone(),
+        )]
+        .into_iter()
+        .collect();
         controller
             .handle_wire(
                 &mut sessions,
