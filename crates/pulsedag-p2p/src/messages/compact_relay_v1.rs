@@ -3,8 +3,10 @@ use std::fmt;
 
 use pulsedag_core::{
     types::{
-        compute_merkle_root, compute_merkle_root_from_txids, Block, BlockHeader, Hash, Transaction,
+        compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block, BlockHeader,
+        Hash, Transaction,
     },
+    compute_block_hash_v2, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
     GHOSTDAG_V1_MAX_PARENTS,
 };
 use serde::{Deserialize, Serialize};
@@ -66,6 +68,15 @@ pub enum CompactRelayErrorV1 {
         observed: usize,
         maximum: usize,
     },
+    HeaderParentSetEmpty,
+    EmptyHeaderParent,
+    DuplicateHeaderParent(Hash),
+    ChainContextRequiredForHeaderVersion(u32),
+    InvalidHeaderShape(String),
+    BlockHashMismatch {
+        expected: Hash,
+        observed: Hash,
+    },
     EmptyTransactionInventory,
     LocalBlockMerkleRootMismatch,
     TransactionInventoryTooLarge {
@@ -105,6 +116,26 @@ impl fmt::Display for CompactRelayErrorV1 {
             Self::HeaderParentCountTooLarge { observed, maximum } => write!(
                 formatter,
                 "compact DAG relay parent count exceeds bound: observed={observed} maximum={maximum}"
+            ),
+            Self::HeaderParentSetEmpty => {
+                write!(formatter, "compact DAG relay header has no parents")
+            }
+            Self::EmptyHeaderParent => {
+                write!(formatter, "compact DAG relay header contains an empty parent hash")
+            }
+            Self::DuplicateHeaderParent(parent) => {
+                write!(formatter, "duplicate compact DAG relay parent hash {parent}")
+            }
+            Self::ChainContextRequiredForHeaderVersion(version) => write!(
+                formatter,
+                "compact DAG relay header version {version} requires chain context"
+            ),
+            Self::InvalidHeaderShape(message) => {
+                write!(formatter, "invalid compact DAG relay header shape: {message}")
+            }
+            Self::BlockHashMismatch { expected, observed } => write!(
+                formatter,
+                "compact DAG relay block hash mismatch: expected={expected} observed={observed}"
             ),
             Self::EmptyTransactionInventory => {
                 write!(formatter, "compact block transaction inventory is empty")
@@ -179,8 +210,51 @@ fn validate_txids(txids: &[Hash]) -> Result<(), CompactRelayErrorV1> {
     Ok(())
 }
 
-pub fn validate_compact_block_announcement_v1(
+fn validate_header_parents(header: &BlockHeader) -> Result<(), CompactRelayErrorV1> {
+    if header.parents.len() > GHOSTDAG_V1_MAX_PARENTS {
+        return Err(CompactRelayErrorV1::HeaderParentCountTooLarge {
+            observed: header.parents.len(),
+            maximum: GHOSTDAG_V1_MAX_PARENTS,
+        });
+    }
+    if header.parents.is_empty() {
+        return Err(CompactRelayErrorV1::HeaderParentSetEmpty);
+    }
+
+    let mut seen = HashSet::with_capacity(header.parents.len());
+    for parent in &header.parents {
+        if parent.is_empty() {
+            return Err(CompactRelayErrorV1::EmptyHeaderParent);
+        }
+        if !seen.insert(parent.clone()) {
+            return Err(CompactRelayErrorV1::DuplicateHeaderParent(parent.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn expected_block_hash(
+    header: &BlockHeader,
+    chain_id: Option<&str>,
+) -> Result<Hash, CompactRelayErrorV1> {
+    match header.version {
+        BLOCK_HEADER_VERSION_V1 => Ok(compute_block_hash(header)),
+        BLOCK_HEADER_VERSION_V2 => {
+            let chain_id = chain_id
+                .filter(|value| !value.is_empty())
+                .ok_or(CompactRelayErrorV1::ChainContextRequiredForHeaderVersion(
+                    header.version,
+                ))?;
+            compute_block_hash_v2(header, chain_id)
+                .map_err(|error| CompactRelayErrorV1::InvalidHeaderShape(error.to_string()))
+        }
+        version => Err(CompactRelayErrorV1::UnsupportedHeaderVersion(version)),
+    }
+}
+
+fn validate_compact_block_announcement_inner_v1(
     announcement: &CompactBlockAnnouncementV1,
+    chain_id: Option<&str>,
 ) -> Result<(), CompactRelayErrorV1> {
     require_version(announcement.version)?;
     if !super::supported_header_version(announcement.header.version) {
@@ -188,17 +262,35 @@ pub fn validate_compact_block_announcement_v1(
             announcement.header.version,
         ));
     }
-    if announcement.header.parents.len() > GHOSTDAG_V1_MAX_PARENTS {
-        return Err(CompactRelayErrorV1::HeaderParentCountTooLarge {
-            observed: announcement.header.parents.len(),
-            maximum: GHOSTDAG_V1_MAX_PARENTS,
+    validate_header_parents(&announcement.header)?;
+    validate_txids(&announcement.txids)?;
+
+    let expected = expected_block_hash(&announcement.header, chain_id)?;
+    if announcement.block_hash != expected {
+        return Err(CompactRelayErrorV1::BlockHashMismatch {
+            expected,
+            observed: announcement.block_hash.clone(),
         });
     }
-    validate_txids(&announcement.txids)
+    Ok(())
 }
 
-pub fn build_compact_block_announcement_v1(
+pub fn validate_compact_block_announcement_v1(
+    announcement: &CompactBlockAnnouncementV1,
+) -> Result<(), CompactRelayErrorV1> {
+    validate_compact_block_announcement_inner_v1(announcement, None)
+}
+
+pub fn validate_compact_block_announcement_for_chain_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    chain_id: &str,
+) -> Result<(), CompactRelayErrorV1> {
+    validate_compact_block_announcement_inner_v1(announcement, Some(chain_id))
+}
+
+fn build_compact_block_announcement_inner_v1(
     block: &Block,
+    chain_id: Option<&str>,
 ) -> Result<CompactBlockAnnouncementV1, CompactRelayErrorV1> {
     let txids = block
         .transactions
@@ -216,8 +308,21 @@ pub fn build_compact_block_announcement_v1(
         header: block.header.clone(),
         txids,
     };
-    validate_compact_block_announcement_v1(&announcement)?;
+    validate_compact_block_announcement_inner_v1(&announcement, chain_id)?;
     Ok(announcement)
+}
+
+pub fn build_compact_block_announcement_v1(
+    block: &Block,
+) -> Result<CompactBlockAnnouncementV1, CompactRelayErrorV1> {
+    build_compact_block_announcement_inner_v1(block, None)
+}
+
+pub fn build_compact_block_announcement_for_chain_v1(
+    block: &Block,
+    chain_id: &str,
+) -> Result<CompactBlockAnnouncementV1, CompactRelayErrorV1> {
+    build_compact_block_announcement_inner_v1(block, Some(chain_id))
 }
 
 fn missing_known_transaction_ids(
@@ -242,11 +347,12 @@ fn missing_known_transaction_ids(
     Ok(missing)
 }
 
-pub fn plan_compact_block_reconstruction_v1(
+fn plan_compact_block_reconstruction_inner_v1(
     announcement: &CompactBlockAnnouncementV1,
     known_transactions: &HashMap<Hash, Transaction>,
+    chain_id: Option<&str>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
-    validate_compact_block_announcement_v1(announcement)?;
+    validate_compact_block_announcement_inner_v1(announcement, chain_id)?;
 
     if compute_merkle_root_from_txids(&announcement.txids) != announcement.header.merkle_root {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
@@ -305,6 +411,21 @@ pub fn plan_compact_block_reconstruction_v1(
     }))
 }
 
+pub fn plan_compact_block_reconstruction_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    known_transactions: &HashMap<Hash, Transaction>,
+) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
+    plan_compact_block_reconstruction_inner_v1(announcement, known_transactions, None)
+}
+
+pub fn plan_compact_block_reconstruction_for_chain_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    known_transactions: &HashMap<Hash, Transaction>,
+    chain_id: &str,
+) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
+    plan_compact_block_reconstruction_inner_v1(announcement, known_transactions, Some(chain_id))
+}
+
 pub fn validate_compact_transaction_request_v1(
     request: &CompactTransactionRequestV1,
 ) -> Result<(), CompactRelayErrorV1> {
@@ -355,12 +476,13 @@ pub fn build_compact_transaction_response_v1(
     }))
 }
 
-pub fn complete_compact_block_reconstruction_v1(
+fn complete_compact_block_reconstruction_inner_v1(
     announcement: &CompactBlockAnnouncementV1,
     state: &CompactBlockReconstructionRequestStateV1,
     response: &CompactTransactionResponseV1,
+    chain_id: Option<&str>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
-    validate_compact_block_announcement_v1(announcement)?;
+    validate_compact_block_announcement_inner_v1(announcement, chain_id)?;
     validate_compact_transaction_request_v1(&state.request)?;
     require_version(response.version)?;
 
@@ -404,13 +526,37 @@ pub fn complete_compact_block_reconstruction_v1(
         combined.insert(expected_txid.clone(), transaction.clone());
     }
 
-    plan_compact_block_reconstruction_v1(announcement, &combined)
+    plan_compact_block_reconstruction_inner_v1(announcement, &combined, chain_id)
+}
+
+pub fn complete_compact_block_reconstruction_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    state: &CompactBlockReconstructionRequestStateV1,
+    response: &CompactTransactionResponseV1,
+) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
+    complete_compact_block_reconstruction_inner_v1(announcement, state, response, None)
+}
+
+pub fn complete_compact_block_reconstruction_for_chain_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    state: &CompactBlockReconstructionRequestStateV1,
+    response: &CompactTransactionResponseV1,
+    chain_id: &str,
+) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
+    complete_compact_block_reconstruction_inner_v1(
+        announcement,
+        state,
+        response,
+        Some(chain_id),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pulsedag_core::types::TxOutput;
+
+    const CHAIN_ID: &str = "compact-relay-testnet";
 
     fn transaction(txid: &str) -> Transaction {
         Transaction {
@@ -431,19 +577,20 @@ mod tests {
             .iter()
             .map(|txid| transaction(txid))
             .collect::<Vec<_>>();
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         Block {
-            hash: "block-hash".into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
@@ -600,6 +747,88 @@ mod tests {
                 reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn forged_block_hash_fails_closed_before_requesting_missing_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.block_hash = "forged-block-hash".into();
+        let known = known(&block, &[0]);
+
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &known),
+            Err(CompactRelayErrorV1::BlockHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_parent_set_fails_closed_before_reconstruction() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.parents.clear();
+        announcement.block_hash = compute_block_hash(&announcement.header);
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::HeaderParentSetEmpty)
+        );
+    }
+
+    #[test]
+    fn empty_parent_hash_fails_closed_before_reconstruction() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.parents[0].clear();
+        announcement.block_hash = compute_block_hash(&announcement.header);
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::EmptyHeaderParent)
+        );
+    }
+
+    #[test]
+    fn duplicate_parent_hash_fails_closed_before_reconstruction() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.parents[1] = announcement.header.parents[0].clone();
+        announcement.block_hash = compute_block_hash(&announcement.header);
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::DuplicateHeaderParent(
+                announcement.header.parents[0].clone()
+            ))
+        );
+    }
+
+    #[test]
+    fn v2_announcement_requires_chain_context_and_validates_with_it() {
+        let mut block = block(&["coinbase", "tx-a"]);
+        block.header.version = BLOCK_HEADER_VERSION_V2;
+        block.hash = compute_block_hash_v2(&block.header, CHAIN_ID).unwrap();
+        let announcement =
+            build_compact_block_announcement_for_chain_v1(&block, CHAIN_ID).unwrap();
+
+        assert_eq!(
+            validate_compact_block_announcement_v1(&announcement),
+            Err(CompactRelayErrorV1::ChainContextRequiredForHeaderVersion(
+                BLOCK_HEADER_VERSION_V2
+            ))
+        );
+        assert!(
+            validate_compact_block_announcement_for_chain_v1(&announcement, CHAIN_ID).is_ok()
+        );
+        assert!(matches!(
+            plan_compact_block_reconstruction_for_chain_v1(
+                &announcement,
+                &known(&block, &[0]),
+                CHAIN_ID
+            )
+            .unwrap(),
+            CompactBlockReconstructionPlanV1::RequestTransactions(_)
         ));
     }
 
