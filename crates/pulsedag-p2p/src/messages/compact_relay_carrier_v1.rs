@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
 use super::{
-    validate_compact_block_announcement_v1, validate_compact_transaction_request_v1,
+    validate_compact_block_announcement_for_chain_v1, validate_compact_transaction_request_v1,
     CompactBlockAnnouncementV1, CompactRelayErrorV1, CompactTransactionRequestV1,
     CompactTransactionResponseV1, NetworkMessage, COMPACT_DAG_RELAY_VERSION_V1,
     P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
@@ -96,8 +96,10 @@ impl CompactRelayWireV1 {
         match self {
             Self::CapabilityProbe => Ok(()),
             Self::Capabilities(capabilities) => capabilities.validate_for_chain(chain_id),
-            Self::Announce(announcement) => validate_compact_block_announcement_v1(announcement)
-                .map_err(CompactRelayCarrierErrorV1::Compact),
+            Self::Announce(announcement) => {
+                validate_compact_block_announcement_for_chain_v1(announcement, chain_id)
+                    .map_err(CompactRelayCarrierErrorV1::Compact)
+            }
             Self::GetTransactions(request) => validate_compact_transaction_request_v1(request)
                 .map_err(CompactRelayCarrierErrorV1::Compact),
             Self::Transactions(response) => validate_response_shape(response),
