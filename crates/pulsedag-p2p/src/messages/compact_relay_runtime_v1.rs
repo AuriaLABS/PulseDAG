@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use pulsedag_core::{types::Hash, MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1};
 
 use super::{
-    attach_compact_relay_carrier_v1, complete_compact_block_reconstruction_v1,
+    attach_compact_relay_carrier_v1, complete_compact_block_reconstruction_for_chain_v1,
     decode_network_message_with_compact_relay_for_peer_v1, CompactBlockAnnouncementV1,
     CompactBlockReconstructionPlanV1, CompactBlockReconstructionRequestStateV1,
     CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
@@ -302,7 +302,18 @@ impl CompactRelayRuntimeSessionBookV1 {
             }
         })?;
 
-        let completed = complete_compact_block_reconstruction_v1(announcement, state, response)?;
+        let chain_id = self
+            .local_capabilities
+            .as_ref()
+            .ok_or(CompactRelayRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .chain_id
+            .clone();
+        let completed = complete_compact_block_reconstruction_for_chain_v1(
+            announcement,
+            state,
+            response,
+            &chain_id,
+        )?;
         self.in_flight.remove(&key);
         Ok(completed)
     }
@@ -375,7 +386,9 @@ mod tests {
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
         COMPACT_DAG_RELAY_VERSION_V1, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
     };
-    use pulsedag_core::types::{compute_merkle_root, Block, BlockHeader, Transaction, TxOutput};
+    use pulsedag_core::types::{
+        compute_block_hash, compute_merkle_root, Block, BlockHeader, Transaction, TxOutput,
+    };
 
     const CHAIN_ID: &str = "compact-relay-runtime-testnet";
     const LOCAL_PEER: &str = "peer-compact-runtime-local";
@@ -417,19 +430,20 @@ mod tests {
             transaction(&format!("{hash}-a")),
             transaction(&format!("{hash}-b")),
         ];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         Block {
-            hash: hash.into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
@@ -527,19 +541,20 @@ mod tests {
         let transactions = (0..P2P_WIRE_MAX_INVENTORY_ITEMS_V1)
             .map(|index| transaction(&format!("{hash}-tx-{index}")))
             .collect::<Vec<_>>();
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         let candidate = Block {
-            hash: hash.into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         };
         let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
