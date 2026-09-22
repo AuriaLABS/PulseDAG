@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use pulsedag_core::types::Hash;
+use pulsedag_core::{types::Hash, MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1};
 
 use super::{
-    attach_compact_relay_carrier_v1, complete_compact_block_reconstruction_v1,
+    attach_compact_relay_carrier_v1, complete_compact_block_reconstruction_for_chain_v1,
     decode_network_message_with_compact_relay_for_peer_v1, CompactBlockAnnouncementV1,
     CompactBlockReconstructionPlanV1, CompactBlockReconstructionRequestStateV1,
     CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
@@ -11,6 +11,9 @@ use super::{
 };
 
 pub const COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1: usize = 64;
+pub const COMPACT_RELAY_MAX_RETAINED_BYTES_PER_PEER_V1: u64 = 48 * 1_024 * 1_024;
+pub const COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1: u64 = 192 * 1_024 * 1_024;
+const COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1: u64 = 4 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactRelayRuntimeSessionErrorV1 {
@@ -22,6 +25,15 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
     ProtocolRouteUnauthorized { peer_id: String },
     EmptyPeerId,
     InFlightLimitExceeded { peer_id: String, maximum: usize },
+    InFlightRetainedBytesPerPeerLimitExceeded {
+        peer_id: String,
+        observed: u64,
+        maximum: u64,
+    },
+    InFlightRetainedBytesGlobalLimitExceeded {
+        observed: u64,
+        maximum: u64,
+    },
     InFlightAlreadyExists { peer_id: String, block_hash: Hash },
     InFlightMissing { peer_id: String, block_hash: Hash },
 }
@@ -72,6 +84,30 @@ pub struct CompactRelayRuntimeSessionBookV1 {
 }
 
 impl CompactRelayRuntimeSessionBookV1 {
+    fn retained_state_upper_bound_bytes(
+        state: &CompactBlockReconstructionRequestStateV1,
+    ) -> u64 {
+        let transaction_bytes = u64::try_from(state.retained_known_transaction_count())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
+        transaction_bytes.saturating_add(COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1)
+    }
+
+    fn retained_bytes_for_peer(&self, peer_id: &str) -> u64 {
+        self.in_flight
+            .iter()
+            .filter(|((owner, _), _)| owner == peer_id)
+            .fold(0_u64, |total, (_, state)| {
+                total.saturating_add(Self::retained_state_upper_bound_bytes(state))
+            })
+    }
+
+    fn retained_bytes_global(&self) -> u64 {
+        self.in_flight.values().fold(0_u64, |total, state| {
+            total.saturating_add(Self::retained_state_upper_bound_bytes(state))
+        })
+    }
+
     pub fn configure_local(
         &mut self,
         expected_chain_id: &str,
@@ -207,6 +243,32 @@ impl CompactRelayRuntimeSessionBookV1 {
             });
         }
 
+        let candidate_bytes = Self::retained_state_upper_bound_bytes(&state);
+        let peer_retained = self
+            .retained_bytes_for_peer(peer_id)
+            .saturating_add(candidate_bytes);
+        if peer_retained > COMPACT_RELAY_MAX_RETAINED_BYTES_PER_PEER_V1 {
+            return Err(
+                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded {
+                    peer_id: peer_id.to_string(),
+                    observed: peer_retained,
+                    maximum: COMPACT_RELAY_MAX_RETAINED_BYTES_PER_PEER_V1,
+                },
+            );
+        }
+
+        let global_retained = self
+            .retained_bytes_global()
+            .saturating_add(candidate_bytes);
+        if global_retained > COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1 {
+            return Err(
+                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesGlobalLimitExceeded {
+                    observed: global_retained,
+                    maximum: COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1,
+                },
+            );
+        }
+
         self.in_flight.insert(key, state);
         Ok(())
     }
@@ -240,7 +302,18 @@ impl CompactRelayRuntimeSessionBookV1 {
             }
         })?;
 
-        let completed = complete_compact_block_reconstruction_v1(announcement, state, response)?;
+        let chain_id = self
+            .local_capabilities
+            .as_ref()
+            .ok_or(CompactRelayRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .chain_id
+            .clone();
+        let completed = complete_compact_block_reconstruction_for_chain_v1(
+            announcement,
+            state,
+            response,
+            &chain_id,
+        )?;
         self.in_flight.remove(&key);
         Ok(completed)
     }
@@ -311,9 +384,11 @@ mod tests {
     use crate::messages::NetworkMessage;
     use crate::messages::{
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
-        COMPACT_DAG_RELAY_VERSION_V1,
+        COMPACT_DAG_RELAY_VERSION_V1, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
     };
-    use pulsedag_core::types::{compute_merkle_root, Block, BlockHeader, Transaction, TxOutput};
+    use pulsedag_core::types::{
+        compute_block_hash, compute_merkle_root, Block, BlockHeader, Transaction, TxOutput,
+    };
 
     const CHAIN_ID: &str = "compact-relay-runtime-testnet";
     const LOCAL_PEER: &str = "peer-compact-runtime-local";
@@ -355,19 +430,20 @@ mod tests {
             transaction(&format!("{hash}-a")),
             transaction(&format!("{hash}-b")),
         ];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         Block {
-            hash: hash.into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
@@ -459,6 +535,84 @@ mod tests {
             sessions.register_in_flight(PEER, request_state(&overflow)),
             Err(CompactRelayRuntimeSessionErrorV1::InFlightLimitExceeded { .. })
         ));
+    }
+
+    fn high_retention_request_state(hash: &str) -> CompactBlockReconstructionRequestStateV1 {
+        let transactions = (0..P2P_WIRE_MAX_INVENTORY_ITEMS_V1)
+            .map(|index| transaction(&format!("{hash}-tx-{index}")))
+            .collect::<Vec<_>>();
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
+        let candidate = Block {
+            hash: compute_block_hash(&header),
+            header,
+            transactions,
+        };
+        let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
+        let known = candidate
+            .transactions
+            .iter()
+            .take(P2P_WIRE_MAX_INVENTORY_ITEMS_V1 - 1)
+            .cloned()
+            .map(|transaction| (transaction.txid.clone(), transaction))
+            .collect();
+        match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected reconstruction plan: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retained_reconstruction_bytes_are_bounded_per_peer() {
+        let mut sessions = configured();
+        authorize(&mut sessions, PEER);
+
+        sessions
+            .register_in_flight(PEER, high_retention_request_state("heavy-a"))
+            .unwrap();
+        assert!(matches!(
+            sessions.register_in_flight(PEER, high_retention_request_state("heavy-b")),
+            Err(
+                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded {
+                    ..
+                }
+            )
+        ));
+        assert_eq!(sessions.in_flight_count(PEER), 1);
+    }
+
+    #[test]
+    fn retained_reconstruction_bytes_are_bounded_globally() {
+        let mut sessions = configured();
+        for index in 0..7 {
+            let peer = format!("peer-heavy-{index}");
+            authorize(&mut sessions, &peer);
+            let result = sessions.register_in_flight(
+                &peer,
+                high_retention_request_state(&format!("heavy-global-{index}")),
+            );
+            if index < 6 {
+                result.unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(
+                        CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesGlobalLimitExceeded {
+                            ..
+                        }
+                    )
+                ));
+            }
+        }
     }
 
     #[test]
