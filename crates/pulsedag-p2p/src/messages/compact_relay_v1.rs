@@ -712,6 +712,7 @@ mod tests {
         let block = block(&["coinbase", "tx-a"]);
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
         announcement.header.merkle_root = "forged".into();
+        announcement.block_hash = compute_block_hash(&announcement.header);
 
         let mut known = HashMap::new();
         let mut mismatched = block.transactions[0].clone();
@@ -732,6 +733,7 @@ mod tests {
         let block = block(&["coinbase", "tx-a"]);
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
         announcement.header.merkle_root = "forged".into();
+        announcement.block_hash = compute_block_hash(&announcement.header);
         let known = known(&block, &[0]);
 
         assert!(matches!(
@@ -847,6 +849,7 @@ mod tests {
         let block = block(&["coinbase", "tx-a"]);
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
         announcement.header.merkle_root = "forged".into();
+        announcement.block_hash = compute_block_hash(&announcement.header);
         let known = known(&block, &[0, 1]);
 
         match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
