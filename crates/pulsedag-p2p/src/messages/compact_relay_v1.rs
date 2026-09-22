@@ -48,6 +48,12 @@ pub struct CompactBlockReconstructionRequestStateV1 {
     known_transactions: HashMap<Hash, Transaction>,
 }
 
+impl CompactBlockReconstructionRequestStateV1 {
+    pub(crate) fn retained_known_transaction_count(&self) -> usize {
+        self.known_transactions.len()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CompactBlockReconstructionPlanV1 {
     Complete(Block),
