@@ -497,6 +497,7 @@ mod tests {
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
         announcement.header.merkle_root = "forged".into();
         announcement.block_hash = compute_block_hash(&announcement.header);
+        let expected_hash = announcement.block_hash.clone();
 
         let actions = controller
             .handle_wire(
@@ -511,7 +512,7 @@ mod tests {
             [CompactRelayControllerActionV1::RequestFullBlock {
                 peer_id,
                 block_hash,
-            }] if peer_id == PEER && block_hash == &block.hash
+            }] if peer_id == PEER && block_hash == &expected_hash
         ));
     }
 
