@@ -320,7 +320,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn outbound_data_requires_protocol_route_and_compact_session() {
         let mut route_only = route_state();
