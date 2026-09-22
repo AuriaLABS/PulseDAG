@@ -36,7 +36,7 @@ use crate::live_fast_sync_v1::{
 };
 use crate::live_protocol_sync_v1::{
     authorized_protocol_sync_from_tip, encode_protocol_sync_for_transport,
-    validate_protocol_sync_send,
+    protocol_sync_peer_is_authorized, validate_protocol_sync_send,
 };
 use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
 use crate::messages::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
@@ -5538,6 +5538,25 @@ async fn run_libp2p_runtime(
                             &fast_sync,
                         );
                         (wire, topic_name, "fast-sync-v1", message_id)
+                    }
+                    OutboundMessage::CompactRelay {
+                        peer_id,
+                        wire: compact_relay,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&compact_relay)
+                            .unwrap_or_else(|_| compact_relay.kind().to_string());
+                        let message_id = format!(
+                            "sync:compact-relay-v1:{peer_id}:{}:{payload_id}",
+                            compact_relay.kind()
+                        );
+                        let wire = encode_compact_relay_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &compact_relay,
+                        );
+                        (wire, topic_name, "compact-relay-v1", message_id)
                     }
                     OutboundMessage::CompactRelay {
                         peer_id,
