@@ -4472,13 +4472,19 @@ fn decode_network_message_for_transport(
             .local_capabilities()
             .is_some()
         {
-            return guard
+            let was_protocol_authorized = protocol_sync_peer_is_authorized(&guard, peer_id);
+            let decoded = guard
                 .protocol_capability_transport
                 .decode_from_peer(peer_id, bytes)
-                .map(|decoded| decoded.message)
                 .map_err(|error| {
                     format!("protocol capability transport decode failed: {error:?}")
-                });
+                })?;
+            if was_protocol_authorized
+                && !protocol_sync_peer_is_authorized(&guard, peer_id)
+            {
+                guard.compact_relay_runtime.peer_disconnected(peer_id);
+            }
+            return Ok(decoded.message);
         }
     }
     Ok(legacy_message)
