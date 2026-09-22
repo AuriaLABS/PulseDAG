@@ -39,9 +39,7 @@ use crate::live_protocol_sync_v1::{
     validate_protocol_sync_send,
 };
 use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
-use crate::messages::compact_relay_carrier_v1::{
-    CompactRelayCapabilitiesV1, CompactRelayWireV1,
-};
+use crate::messages::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
@@ -1334,9 +1332,7 @@ impl P2pHandle for MemoryP2pHandle {
             .compact_relay_runtime
             .configure_local(&chain_id, capabilities)
             .map_err(|error| {
-                PulseError::Internal(format!(
-                    "invalid compact-relay p2p capabilities: {error:?}"
-                ))
+                PulseError::Internal(format!("invalid compact-relay p2p capabilities: {error:?}"))
             })
     }
 
@@ -6552,9 +6548,7 @@ impl P2pHandle for Libp2pHandle {
             .compact_relay_runtime
             .configure_local(&chain_id, capabilities)
             .map_err(|error| {
-                PulseError::Internal(format!(
-                    "invalid compact-relay p2p capabilities: {error:?}"
-                ))
+                PulseError::Internal(format!("invalid compact-relay p2p capabilities: {error:?}"))
             })
     }
 

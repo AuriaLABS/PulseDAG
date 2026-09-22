@@ -142,11 +142,7 @@ pub(super) fn authorized_compact_relay_from_tip(
         if !protocol_sync_peer_is_authorized(&guard, peer_id) {
             return Ok(None);
         }
-        if guard
-            .compact_relay_runtime
-            .local_capabilities()
-            .is_none()
-        {
+        if guard.compact_relay_runtime.local_capabilities().is_none() {
             return Ok(None);
         }
         guard.peer_id.clone()
@@ -289,9 +285,7 @@ mod tests {
             .compact_relay_runtime
             .note_inbound(
                 REMOTE_PEER,
-                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
-                    CHAIN_ID,
-                )),
+                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(CHAIN_ID)),
             )
             .unwrap();
         state
@@ -348,9 +342,7 @@ mod tests {
             .compact_relay_runtime
             .note_inbound(
                 REMOTE_PEER,
-                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
-                    CHAIN_ID,
-                )),
+                &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(CHAIN_ID)),
             )
             .unwrap();
         validate_compact_relay_send(&route_only, REMOTE_PEER, &data).unwrap();
@@ -470,17 +462,16 @@ mod tests {
             &CompactRelayCarrierV1 {
                 target_peer_id: LOCAL_PEER.to_string(),
                 chain_id: CHAIN_ID.to_string(),
-                wire: CompactRelayWireV1::Capabilities(
-                    CompactRelayCapabilitiesV1::canonical(CHAIN_ID),
-                ),
+                wire: CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
+                    CHAIN_ID,
+                )),
             },
         )
         .unwrap();
 
-        let decoded =
-            authorized_compact_relay_from_tip(&encoded, Some(REMOTE_PEER), &inner)
-                .unwrap()
-                .expect("addressed compact relay");
+        let decoded = authorized_compact_relay_from_tip(&encoded, Some(REMOTE_PEER), &inner)
+            .unwrap()
+            .expect("addressed compact relay");
         assert_eq!(decoded.0, REMOTE_PEER);
         assert!(matches!(decoded.1, CompactRelayWireV1::Capabilities(_)));
         assert!(inner
