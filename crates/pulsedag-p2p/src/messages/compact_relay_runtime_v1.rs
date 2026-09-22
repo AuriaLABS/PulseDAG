@@ -373,7 +373,7 @@ mod tests {
     use crate::messages::NetworkMessage;
     use crate::messages::{
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
-        COMPACT_DAG_RELAY_VERSION_V1,
+        COMPACT_DAG_RELAY_VERSION_V1, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
     };
     use pulsedag_core::types::{compute_merkle_root, Block, BlockHeader, Transaction, TxOutput};
 
@@ -578,14 +578,14 @@ mod tests {
     #[test]
     fn retained_reconstruction_bytes_are_bounded_globally() {
         let mut sessions = configured();
-        for index in 0..6 {
+        for index in 0..7 {
             let peer = format!("peer-heavy-{index}");
             authorize(&mut sessions, &peer);
             let result = sessions.register_in_flight(
                 &peer,
                 high_retention_request_state(&format!("heavy-global-{index}")),
             );
-            if index < 5 {
+            if index < 6 {
                 result.unwrap();
             } else {
                 assert!(matches!(
