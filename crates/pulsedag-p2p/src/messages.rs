@@ -36,8 +36,10 @@ pub use compact_relay_carrier_v1::{
     COMPACT_RELAY_MAX_TARGET_PEER_ID_BYTES_V1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 pub use compact_relay_v1::{
-    build_compact_block_announcement_v1, build_compact_transaction_response_v1,
-    complete_compact_block_reconstruction_v1, plan_compact_block_reconstruction_v1,
+    build_compact_block_announcement_for_chain_v1, build_compact_block_announcement_v1,
+    build_compact_transaction_response_v1, complete_compact_block_reconstruction_for_chain_v1,
+    complete_compact_block_reconstruction_v1, plan_compact_block_reconstruction_for_chain_v1,
+    plan_compact_block_reconstruction_v1, validate_compact_block_announcement_for_chain_v1,
     validate_compact_block_announcement_v1, validate_compact_transaction_request_v1,
     CompactBlockAnnouncementV1, CompactBlockReconstructionPlanV1,
     CompactBlockReconstructionRequestStateV1, CompactRelayErrorV1, CompactRelayFallbackReasonV1,
