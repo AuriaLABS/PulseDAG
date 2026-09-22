@@ -18,25 +18,12 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
     Compact(CompactRelayErrorV1),
     LocalCapabilitiesMissing,
     LocalCapabilitySurfaceMismatch,
-    PeerCapabilitySessionMissing {
-        peer_id: String,
-    },
-    ProtocolRouteUnauthorized {
-        peer_id: String,
-    },
+    PeerCapabilitySessionMissing { peer_id: String },
+    ProtocolRouteUnauthorized { peer_id: String },
     EmptyPeerId,
-    InFlightLimitExceeded {
-        peer_id: String,
-        maximum: usize,
-    },
-    InFlightAlreadyExists {
-        peer_id: String,
-        block_hash: Hash,
-    },
-    InFlightMissing {
-        peer_id: String,
-        block_hash: Hash,
-    },
+    InFlightLimitExceeded { peer_id: String, maximum: usize },
+    InFlightAlreadyExists { peer_id: String, block_hash: Hash },
+    InFlightMissing { peer_id: String, block_hash: Hash },
 }
 
 impl From<CompactRelayCarrierErrorV1> for CompactRelayRuntimeSessionErrorV1 {
@@ -136,9 +123,7 @@ impl CompactRelayRuntimeSessionBookV1 {
             CompactRelayWireV1::Capabilities(remote) => {
                 remote.validate_for_chain(&local.chain_id)?;
                 if remote != local {
-                    return Err(
-                        CompactRelayRuntimeSessionErrorV1::LocalCapabilitySurfaceMismatch,
-                    );
+                    return Err(CompactRelayRuntimeSessionErrorV1::LocalCapabilitySurfaceMismatch);
                 }
                 self.remote_capabilities
                     .insert(peer_id.to_string(), remote.clone());
@@ -175,9 +160,9 @@ impl CompactRelayRuntimeSessionBookV1 {
         match wire {
             CompactRelayWireV1::CapabilityProbe => Ok(()),
             CompactRelayWireV1::Capabilities(outbound) if outbound == local => Ok(()),
-            CompactRelayWireV1::Capabilities(_) => Err(
-                CompactRelayRuntimeSessionErrorV1::LocalCapabilitySurfaceMismatch,
-            ),
+            CompactRelayWireV1::Capabilities(_) => {
+                Err(CompactRelayRuntimeSessionErrorV1::LocalCapabilitySurfaceMismatch)
+            }
             _ if self.peer_session_authorized(peer_id) => Ok(()),
             _ => Err(
                 CompactRelayRuntimeSessionErrorV1::PeerCapabilitySessionMissing {
@@ -204,12 +189,10 @@ impl CompactRelayRuntimeSessionBookV1 {
         let block_hash = state.request.block_hash.clone();
         let key = (peer_id.to_string(), block_hash.clone());
         if self.in_flight.contains_key(&key) {
-            return Err(
-                CompactRelayRuntimeSessionErrorV1::InFlightAlreadyExists {
-                    peer_id: peer_id.to_string(),
-                    block_hash,
-                },
-            );
+            return Err(CompactRelayRuntimeSessionErrorV1::InFlightAlreadyExists {
+                peer_id: peer_id.to_string(),
+                block_hash,
+            });
         }
 
         let count = self
@@ -218,12 +201,10 @@ impl CompactRelayRuntimeSessionBookV1 {
             .filter(|(owner, _)| owner == peer_id)
             .count();
         if count >= COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1 {
-            return Err(
-                CompactRelayRuntimeSessionErrorV1::InFlightLimitExceeded {
-                    peer_id: peer_id.to_string(),
-                    maximum: COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1,
-                },
-            );
+            return Err(CompactRelayRuntimeSessionErrorV1::InFlightLimitExceeded {
+                peer_id: peer_id.to_string(),
+                maximum: COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1,
+            });
         }
 
         self.in_flight.insert(key, state);
@@ -252,13 +233,12 @@ impl CompactRelayRuntimeSessionBookV1 {
         require_peer_id(peer_id)?;
         let block_hash = announcement.block_hash.clone();
         let key = (peer_id.to_string(), block_hash.clone());
-        let state = self
-            .in_flight
-            .get(&key)
-            .ok_or_else(|| CompactRelayRuntimeSessionErrorV1::InFlightMissing {
+        let state = self.in_flight.get(&key).ok_or_else(|| {
+            CompactRelayRuntimeSessionErrorV1::InFlightMissing {
                 peer_id: peer_id.to_string(),
                 block_hash,
-            })?;
+            }
+        })?;
 
         let completed = complete_compact_block_reconstruction_v1(announcement, state, response)?;
         self.in_flight.remove(&key);
@@ -328,14 +308,12 @@ pub fn decode_authorized_compact_relay_tip_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::NetworkMessage;
     use crate::messages::{
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
         COMPACT_DAG_RELAY_VERSION_V1,
     };
-    use pulsedag_core::types::{
-        compute_merkle_root, Block, BlockHeader, Transaction, TxOutput,
-    };
-    use crate::messages::NetworkMessage;
+    use pulsedag_core::types::{compute_merkle_root, Block, BlockHeader, Transaction, TxOutput};
 
     const CHAIN_ID: &str = "compact-relay-runtime-testnet";
     const LOCAL_PEER: &str = "peer-compact-runtime-local";
@@ -353,10 +331,7 @@ mod tests {
 
     fn authorize(sessions: &mut CompactRelayRuntimeSessionBookV1, peer_id: &str) {
         sessions
-            .note_inbound(
-                peer_id,
-                &CompactRelayWireV1::Capabilities(capabilities()),
-            )
+            .note_inbound(peer_id, &CompactRelayWireV1::Capabilities(capabilities()))
             .unwrap();
     }
 
@@ -399,9 +374,12 @@ mod tests {
 
     fn request_state(block: &Block) -> CompactBlockReconstructionRequestStateV1 {
         let announcement = build_compact_block_announcement_v1(block).unwrap();
-        let known = [(block.transactions[0].txid.clone(), block.transactions[0].clone())]
-            .into_iter()
-            .collect();
+        let known = [(
+            block.transactions[0].txid.clone(),
+            block.transactions[0].clone(),
+        )]
+        .into_iter()
+        .collect();
         match plan_compact_block_reconstruction_v1(&announcement, &known).unwrap() {
             CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
             other => panic!("unexpected reconstruction plan: {other:?}"),
@@ -426,11 +404,7 @@ mod tests {
 
         let announcement = build_compact_block_announcement_v1(&block("block-a")).unwrap();
         sessions
-            .validate_outbound(
-                PEER,
-                true,
-                &CompactRelayWireV1::Announce(announcement),
-            )
+            .validate_outbound(PEER, true, &CompactRelayWireV1::Announce(announcement))
             .unwrap();
 
         sessions.peer_disconnected(PEER);
@@ -442,11 +416,7 @@ mod tests {
         let sessions = configured();
         let announcement = build_compact_block_announcement_v1(&block("block-b")).unwrap();
         assert!(matches!(
-            sessions.validate_outbound(
-                PEER,
-                true,
-                &CompactRelayWireV1::Announce(announcement)
-            ),
+            sessions.validate_outbound(PEER, true, &CompactRelayWireV1::Announce(announcement)),
             Err(CompactRelayRuntimeSessionErrorV1::PeerCapabilitySessionMissing { .. })
         ));
     }
@@ -608,15 +578,10 @@ mod tests {
         )
         .unwrap();
 
-        let decoded = decode_authorized_compact_relay_tip_v1(
-            &encoded,
-            Some(PEER),
-            PEER,
-            &mut receiver,
-            true,
-        )
-        .unwrap()
-        .expect("targeted compact relay carrier");
+        let decoded =
+            decode_authorized_compact_relay_tip_v1(&encoded, Some(PEER), PEER, &mut receiver, true)
+                .unwrap()
+                .expect("targeted compact relay carrier");
         assert_eq!(decoded.0, PEER);
         assert!(matches!(decoded.1, CompactRelayWireV1::CapabilityProbe));
     }
