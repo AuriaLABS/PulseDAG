@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -26,6 +27,20 @@ constexpr std::uint64_t SMOKE_MAGIC = 0x50554c5345444147ULL;
 bool fail_requested(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+#if defined(__GNUC__)
+__attribute__((destructor))
+#endif
+void record_library_unload() {
+    const char* marker = std::getenv("PULSEDAG_TEST_CUDA_UNLOAD_MARKER");
+    if (marker == nullptr || marker[0] == '\0') {
+        return;
+    }
+    if (std::FILE* file = std::fopen(marker, "wb")) {
+        std::fputs("unloaded\n", file);
+        std::fclose(file);
+    }
 }
 }
 
