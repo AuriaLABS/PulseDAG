@@ -11,7 +11,7 @@ use super::compact_relay_runtime_v1::{
     COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1,
 };
 use super::compact_relay_v1::{
-    build_compact_transaction_response_v1, plan_compact_block_reconstruction_v1,
+    build_compact_transaction_response_v1, plan_compact_block_reconstruction_for_chain_v1,
     CompactBlockAnnouncementV1, CompactBlockReconstructionPlanV1, CompactRelayErrorV1,
 };
 
@@ -140,7 +140,16 @@ impl CompactRelayControllerV1 {
                     .telemetry
                     .announcements_received_total
                     .saturating_add(1);
-                match plan_compact_block_reconstruction_v1(announcement, known_transactions)? {
+                let chain_id = sessions
+                    .local_capabilities()
+                    .ok_or(CompactRelayRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+                    .chain_id
+                    .clone();
+                match plan_compact_block_reconstruction_for_chain_v1(
+                    announcement,
+                    known_transactions,
+                    &chain_id,
+                )? {
                     CompactBlockReconstructionPlanV1::Complete(block) => {
                         self.telemetry.reconstructed_blocks_ready_total = self
                             .telemetry
@@ -319,7 +328,7 @@ mod tests {
         build_compact_block_announcement_v1, COMPACT_DAG_RELAY_VERSION_V1,
     };
     use super::*;
-    use pulsedag_core::types::{compute_merkle_root, BlockHeader, TxOutput};
+    use pulsedag_core::types::{compute_block_hash, compute_merkle_root, BlockHeader, TxOutput};
 
     const CHAIN_ID: &str = "compact-relay-controller-testnet";
     const PEER: &str = "peer-controller";
@@ -344,19 +353,20 @@ mod tests {
             transaction("tx-a"),
             transaction("tx-b"),
         ];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         Block {
-            hash: "block-controller".into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
@@ -592,6 +602,7 @@ mod tests {
         let block = block();
         let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
         announcement.header.merkle_root = "forged".into();
+        announcement.block_hash = compute_block_hash(&announcement.header);
 
         let actions = controller
             .handle_wire(
