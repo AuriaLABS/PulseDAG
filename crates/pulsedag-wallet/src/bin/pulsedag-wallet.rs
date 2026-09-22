@@ -1683,9 +1683,9 @@ mod tests {
         .expect_err("restore must fail closed when restrictive permissions are unavailable")
         .to_string();
 
-        assert!(error.contains(
-            "restrictive keystore permissions are not enforced on this platform"
-        ));
+        assert!(
+            error.contains("restrictive keystore permissions are not enforced on this platform")
+        );
         for canary in [password_canary, mnemonic_canary, passphrase_canary] {
             assert!(!error.contains(canary));
         }
