@@ -222,16 +222,14 @@ impl CompactRelayControllerV1 {
                     .body_responses_received_total
                     .saturating_add(1);
                 let key = (peer_id.to_string(), response.block_hash.clone());
-                let announcement =
-                    self.pending_announcements
-                        .get(&key)
-                        .cloned()
-                        .ok_or_else(|| {
-                            CompactRelayControllerErrorV1::PendingAnnouncementMissing {
-                                peer_id: peer_id.to_string(),
-                                block_hash: response.block_hash.clone(),
-                            }
-                        })?;
+                let Some(announcement) = self.pending_announcements.get(&key).cloned() else {
+                    self.telemetry.invalid_response_total =
+                        self.telemetry.invalid_response_total.saturating_add(1);
+                    return Err(CompactRelayControllerErrorV1::PendingAnnouncementMissing {
+                        peer_id: peer_id.to_string(),
+                        block_hash: response.block_hash.clone(),
+                    });
+                };
 
                 let result = sessions.complete_in_flight(peer_id, &announcement, response);
                 match result {
@@ -535,6 +533,7 @@ mod tests {
             transactions,
         };
 
+        let invalid_before = controller.telemetry().invalid_response_total;
         let error = controller
             .handle_wire(
                 &mut sessions,
@@ -550,6 +549,10 @@ mod tests {
                 block_hash,
             } if peer_id == PEER && block_hash == block.hash
         ));
+        assert_eq!(
+            controller.telemetry().invalid_response_total,
+            invalid_before.saturating_add(1)
+        );
     }
 
     #[test]
