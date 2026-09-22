@@ -184,25 +184,35 @@ pub fn launch_kheavyhash_batch_with_timeout(
         "cuCtxDestroy_v2",
     );
 
-    match (execution, destroy) {
-        (Ok(LaunchExecution::Completed(hashes)), Ok(())) => Ok(hashes),
-        (Ok(LaunchExecution::TimedOut), Ok(())) => Err(anyhow!(
+    if let Err(cleanup_error) = destroy {
+        // A failed context teardown means CUDA may still own live context/work
+        // state. Keep the userspace Driver API loaded for process lifetime so
+        // deferred driver activity cannot outlive its function pointers.
+        api.retain_library_for_process_lifetime();
+        return match execution {
+            Ok(LaunchExecution::Completed(_)) => {
+                Err(anyhow!("CUDA context teardown failed: {cleanup_error}"))
+            }
+            Ok(LaunchExecution::TimedOut) => Err(anyhow!(
+                "CUDA launch watchdog timeout after {} ms on device {}; CUDA context teardown failed: {}",
+                launch_timeout.as_millis(),
+                device_index,
+                cleanup_error
+            )),
+            Ok(LaunchExecution::FailedAfterSubmission(error)) | Err(error) => Err(anyhow!(
+                "{error}; CUDA context teardown failed: {cleanup_error}"
+            )),
+        };
+    }
+
+    match execution {
+        Ok(LaunchExecution::Completed(hashes)) => Ok(hashes),
+        Ok(LaunchExecution::TimedOut) => Err(anyhow!(
             "CUDA launch watchdog timeout after {} ms on device {}",
             launch_timeout.as_millis(),
             device_index
         )),
-        (Ok(LaunchExecution::TimedOut), Err(cleanup_error)) => Err(anyhow!(
-            "CUDA launch watchdog timeout after {} ms on device {}; CUDA context teardown failed: {}",
-            launch_timeout.as_millis(),
-            device_index,
-            cleanup_error
-        )),
-        (Ok(LaunchExecution::FailedAfterSubmission(error)), Ok(())) => Err(error),
-        (Ok(LaunchExecution::FailedAfterSubmission(error)), Err(cleanup_error)) => Err(anyhow!(
-            "{error}; CUDA context teardown failed: {cleanup_error}"
-        )),
-        (Err(error), _) => Err(error),
-        (Ok(LaunchExecution::Completed(_)), Err(error)) => Err(error),
+        Ok(LaunchExecution::FailedAfterSubmission(error)) | Err(error) => Err(error),
     }
 }
 
@@ -504,6 +514,11 @@ struct CudaDriverApi {
 }
 
 impl CudaDriverApi {
+    fn retain_library_for_process_lifetime(self) {
+        let Self { _library, .. } = self;
+        std::mem::forget(_library);
+    }
+
     fn load() -> Result<Self> {
         let candidates = cuda_driver_library_candidates();
         if candidates.is_empty() {
