@@ -8,12 +8,12 @@ use super::{
     CompactBlockReconstructionPlanV1, CompactBlockReconstructionRequestStateV1,
     CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
     CompactRelayErrorV1, CompactRelayWireV1, CompactTransactionResponseV1,
+    COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 
 pub const COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1: usize = 64;
 pub const COMPACT_RELAY_MAX_RETAINED_BYTES_PER_PEER_V1: u64 = 48 * 1_024 * 1_024;
 pub const COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1: u64 = 192 * 1_024 * 1_024;
-const COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1: u64 = 4 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactRelayRuntimeSessionErrorV1 {
@@ -90,7 +90,9 @@ impl CompactRelayRuntimeSessionBookV1 {
         let transaction_bytes = u64::try_from(state.retained_known_transaction_count())
             .unwrap_or(u64::MAX)
             .saturating_mul(MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
-        transaction_bytes.saturating_add(COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1)
+        transaction_bytes.saturating_add(
+            u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1).unwrap_or(u64::MAX),
+        )
     }
 
     fn retained_bytes_for_peer(&self, peer_id: &str) -> u64 {
