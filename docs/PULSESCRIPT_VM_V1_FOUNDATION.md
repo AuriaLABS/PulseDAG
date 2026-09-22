@@ -140,6 +140,18 @@ The integration corpus at `crates/pulsedag-core/tests/pulsescript_vm_v1_adversar
 
 These are bounded deterministic vectors, not randomized consensus fuzzing. Their purpose is to make malformed input/resource-exhaustion behavior reproducible across supported host families.
 
+## Independent opcode conformance vectors
+
+The integration corpus at `crates/pulsedag-core/tests/pulsescript_vm_v1_conformance.rs` freezes expected wire bytes and compute costs independently of the production opcode table. It runs on Linux and Windows alongside the foundation and adversarial corpora.
+
+- A 13-by-13 integer boundary matrix exercises add/subtract/multiply/equality (676 programs). Arithmetic expectations use a wider `u128` oracle and explicit conversion back to `u64`; overflow/underflow must reject at instruction 2 with code 22.
+- All boolean binary truth-table entries and both unary negations are covered (10 programs).
+- All 64 local slots exercise distinct-slot isolation, integer dup/drop, same-type boolean replacement and boolean dup (128 programs).
+- Both local type-change directions reject in all 64 slots through compilation, bytecode validation and execution (128 programs), with exact instruction/type diagnostics and rejection code 8.
+- Every well-typed vector checks literal canonical bytecode, full static analysis, exact compute-budget preflight and execution result/resource usage. The 814 well-typed programs compile under LF, CRLF, lone CR and commented/whitespace variants with identical bytecode, analysis and fingerprints.
+
+This is a finite deterministic conformance matrix, not randomized or property-based fuzzing. It changes no VM semantics, versions, fingerprints or activation state.
+
 ## Explicitly deferred
 
 This slice does **not** claim completion of #1042. Still deferred include:
