@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use pulsedag_core::types::{Block, Hash, Transaction};
 
-use super::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
+use super::compact_relay_carrier_v1::{
+    compact_relay_wire_fits_minimal_transport_v1, CompactRelayCapabilitiesV1,
+    CompactRelayWireV1,
+};
 use super::compact_relay_runtime_v1::{
     CompactRelayRuntimeSessionBookV1, CompactRelayRuntimeSessionErrorV1,
     COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1,
@@ -193,16 +196,43 @@ impl CompactRelayControllerV1 {
                     .saturating_add(1);
                 match build_compact_transaction_response_v1(request, known_transactions)? {
                     Some(response) => {
-                        self.telemetry.body_responses_sent_total =
-                            self.telemetry.body_responses_sent_total.saturating_add(1);
-                        self.telemetry.body_transactions_sent_total = self
-                            .telemetry
-                            .body_transactions_sent_total
-                            .saturating_add(saturating_len(response.transactions.len()));
-                        Ok(vec![CompactRelayControllerActionV1::Send {
-                            peer_id: peer_id.to_string(),
-                            wire: CompactRelayWireV1::Transactions(response),
-                        }])
+                        let wire = CompactRelayWireV1::Transactions(response);
+                        let chain_id = sessions
+                            .local_capabilities()
+                            .ok_or(CompactRelayRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+                            .chain_id
+                            .as_str();
+                        if compact_relay_wire_fits_minimal_transport_v1(
+                            peer_id,
+                            chain_id,
+                            &wire,
+                        ) {
+                            let transaction_count = match &wire {
+                                CompactRelayWireV1::Transactions(response) => {
+                                    saturating_len(response.transactions.len())
+                                }
+                                _ => unreachable!("constructed Transactions wire"),
+                            };
+                            self.telemetry.body_responses_sent_total =
+                                self.telemetry.body_responses_sent_total.saturating_add(1);
+                            self.telemetry.body_transactions_sent_total = self
+                                .telemetry
+                                .body_transactions_sent_total
+                                .saturating_add(transaction_count);
+                            Ok(vec![CompactRelayControllerActionV1::Send {
+                                peer_id: peer_id.to_string(),
+                                wire,
+                            }])
+                        } else {
+                            self.telemetry.full_block_service_fallback_total = self
+                                .telemetry
+                                .full_block_service_fallback_total
+                                .saturating_add(1);
+                            Ok(vec![CompactRelayControllerActionV1::ServeFullBlock {
+                                peer_id: peer_id.to_string(),
+                                block_hash: request.block_hash.clone(),
+                            }])
+                        }
                     }
                     None => {
                         self.telemetry.full_block_service_fallback_total = self
@@ -578,6 +608,45 @@ mod tests {
                 block_hash,
             }] if peer_id == PEER && block_hash == &block.hash
         ));
+    }
+
+    #[test]
+    fn oversized_transaction_response_uses_full_block_service() {
+        let (mut controller, mut sessions) = configured();
+        authorize(&mut controller, &mut sessions);
+
+        let txid = "tx-large".to_string();
+        let mut large = transaction(&txid);
+        large.outputs[0].address = "x".repeat(
+            super::super::compact_relay_carrier_v1::COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
+        );
+        let known = [(txid.clone(), large)].into_iter().collect();
+        let request = super::super::compact_relay_v1::CompactTransactionRequestV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: "oversized-response-block".into(),
+            txids: vec![txid],
+        };
+
+        let fallback_before = controller.telemetry().full_block_service_fallback_total;
+        let actions = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::GetTransactions(request),
+                &known,
+            )
+            .unwrap();
+        assert!(matches!(
+            actions.as_slice(),
+            [CompactRelayControllerActionV1::ServeFullBlock {
+                peer_id,
+                block_hash,
+            }] if peer_id == PEER && block_hash == "oversized-response-block"
+        ));
+        assert_eq!(
+            controller.telemetry().full_block_service_fallback_total,
+            fallback_before.saturating_add(1)
+        );
     }
 
     #[test]
