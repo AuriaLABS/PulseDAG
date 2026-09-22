@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulsedag_core::{
+    compute_block_hash_v2,
     types::{
-        compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block, BlockHeader,
-        Hash, Transaction,
+        compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block,
+        BlockHeader, Hash, Transaction,
     },
-    compute_block_hash_v2, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
-    GHOSTDAG_V1_MAX_PARENTS,
+    BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2, GHOSTDAG_V1_MAX_PARENTS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -240,11 +240,9 @@ fn expected_block_hash(
     match header.version {
         BLOCK_HEADER_VERSION_V1 => Ok(compute_block_hash(header)),
         BLOCK_HEADER_VERSION_V2 => {
-            let chain_id = chain_id
-                .filter(|value| !value.is_empty())
-                .ok_or(CompactRelayErrorV1::ChainContextRequiredForHeaderVersion(
-                    header.version,
-                ))?;
+            let chain_id = chain_id.filter(|value| !value.is_empty()).ok_or(
+                CompactRelayErrorV1::ChainContextRequiredForHeaderVersion(header.version),
+            )?;
             compute_block_hash_v2(header, chain_id)
                 .map_err(|error| CompactRelayErrorV1::InvalidHeaderShape(error.to_string()))
         }
@@ -543,12 +541,7 @@ pub fn complete_compact_block_reconstruction_for_chain_v1(
     response: &CompactTransactionResponseV1,
     chain_id: &str,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
-    complete_compact_block_reconstruction_inner_v1(
-        announcement,
-        state,
-        response,
-        Some(chain_id),
-    )
+    complete_compact_block_reconstruction_inner_v1(announcement, state, response, Some(chain_id))
 }
 
 #[cfg(test)]
@@ -809,8 +802,7 @@ mod tests {
         let mut block = block(&["coinbase", "tx-a"]);
         block.header.version = BLOCK_HEADER_VERSION_V2;
         block.hash = compute_block_hash_v2(&block.header, CHAIN_ID).unwrap();
-        let announcement =
-            build_compact_block_announcement_for_chain_v1(&block, CHAIN_ID).unwrap();
+        let announcement = build_compact_block_announcement_for_chain_v1(&block, CHAIN_ID).unwrap();
 
         assert_eq!(
             validate_compact_block_announcement_v1(&announcement),
@@ -818,9 +810,7 @@ mod tests {
                 BLOCK_HEADER_VERSION_V2
             ))
         );
-        assert!(
-            validate_compact_block_announcement_for_chain_v1(&announcement, CHAIN_ID).is_ok()
-        );
+        assert!(validate_compact_block_announcement_for_chain_v1(&announcement, CHAIN_ID).is_ok());
         assert!(matches!(
             plan_compact_block_reconstruction_for_chain_v1(
                 &announcement,
