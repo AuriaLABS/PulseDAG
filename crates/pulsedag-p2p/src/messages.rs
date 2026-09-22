@@ -38,7 +38,8 @@ pub use compact_relay_carrier_v1::{
     COMPACT_RELAY_MAX_TARGET_PEER_ID_BYTES_V1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 pub use compact_relay_controller_v1::{
-    CompactRelayControllerActionV1, CompactRelayControllerErrorV1, CompactRelayControllerV1,
+    CompactRelayControllerActionV1, CompactRelayControllerErrorV1,
+    CompactRelayControllerTelemetryV1, CompactRelayControllerV1,
 };
 pub use compact_relay_runtime_v1::{
     decode_authorized_compact_relay_tip_v1, encode_authorized_compact_relay_tip_v1,

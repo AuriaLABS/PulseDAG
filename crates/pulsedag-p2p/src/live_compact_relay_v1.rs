@@ -5,6 +5,68 @@ use crate::messages::compact_relay_carrier_v1::{
     CompactRelayCarrierV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 
+fn saturating_bytes(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+impl CompactRelayTransportTelemetryV1 {
+    fn note_outbound(&mut self, wire: &CompactRelayWireV1, encoded_bytes: usize) {
+        self.outbound_carriers_encoded_total =
+            self.outbound_carriers_encoded_total.saturating_add(1);
+        self.outbound_encoded_bytes_total = self
+            .outbound_encoded_bytes_total
+            .saturating_add(saturating_bytes(encoded_bytes));
+        match wire {
+            CompactRelayWireV1::CapabilityProbe | CompactRelayWireV1::Capabilities(_) => {
+                self.outbound_capability_messages_total =
+                    self.outbound_capability_messages_total.saturating_add(1);
+            }
+            CompactRelayWireV1::Announce(_) => {
+                self.outbound_announcements_total =
+                    self.outbound_announcements_total.saturating_add(1);
+            }
+            CompactRelayWireV1::GetTransactions(_) => {
+                self.outbound_body_requests_total =
+                    self.outbound_body_requests_total.saturating_add(1);
+            }
+            CompactRelayWireV1::Transactions(_) => {
+                self.outbound_body_responses_total =
+                    self.outbound_body_responses_total.saturating_add(1);
+            }
+        }
+    }
+
+    fn note_inbound(&mut self, wire: &CompactRelayWireV1, encoded_bytes: usize) {
+        self.inbound_carriers_accepted_total =
+            self.inbound_carriers_accepted_total.saturating_add(1);
+        self.inbound_accepted_bytes_total = self
+            .inbound_accepted_bytes_total
+            .saturating_add(saturating_bytes(encoded_bytes));
+        match wire {
+            CompactRelayWireV1::CapabilityProbe | CompactRelayWireV1::Capabilities(_) => {
+                self.inbound_capability_messages_total =
+                    self.inbound_capability_messages_total.saturating_add(1);
+            }
+            CompactRelayWireV1::Announce(_) => {
+                self.inbound_announcements_total =
+                    self.inbound_announcements_total.saturating_add(1);
+            }
+            CompactRelayWireV1::GetTransactions(_) => {
+                self.inbound_body_requests_total =
+                    self.inbound_body_requests_total.saturating_add(1);
+            }
+            CompactRelayWireV1::Transactions(_) => {
+                self.inbound_body_responses_total =
+                    self.inbound_body_responses_total.saturating_add(1);
+            }
+        }
+    }
+
+    fn note_decode_failure(&mut self) {
+        self.decode_failures_total = self.decode_failures_total.saturating_add(1);
+    }
+}
+
 fn encode_compact_relay_for_state(
     state: &InnerState,
     peer_id: &str,
@@ -126,6 +188,11 @@ pub(super) fn encode_compact_relay_for_transport(
             COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1
         )));
     }
+    if let Ok(mut guard) = inner.lock() {
+        guard
+            .compact_relay_transport
+            .note_outbound(wire, encoded.len());
+    }
     Ok(encoded)
 }
 
@@ -148,8 +215,16 @@ pub(super) fn authorized_compact_relay_from_tip(
         guard.peer_id.clone()
     };
 
-    let decoded = decode_network_message_with_compact_relay_for_peer_v1(bytes, &local_peer_id)
-        .map_err(|error| format!("compact-relay carrier decode failed: {error:?}"))?;
+    let decoded = match decode_network_message_with_compact_relay_for_peer_v1(bytes, &local_peer_id)
+    {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            if let Ok(mut guard) = inner.lock() {
+                guard.compact_relay_transport.note_decode_failure();
+            }
+            return Err(format!("compact-relay carrier decode failed: {error:?}"));
+        }
+    };
     let Some(carrier) = decoded.compact_relay else {
         return Ok(None);
     };
@@ -159,12 +234,18 @@ pub(super) fn authorized_compact_relay_from_tip(
         if !protocol_sync_peer_is_authorized(&guard, peer_id) {
             return Ok(None);
         }
-        guard
+        if let Err(error) = guard
             .compact_relay_runtime
             .note_inbound(peer_id, &carrier.wire)
-            .map_err(|error| {
-                format!("compact-relay inbound session validation failed: {error:?}")
-            })?;
+        {
+            guard.compact_relay_transport.note_decode_failure();
+            return Err(format!(
+                "compact-relay inbound session validation failed: {error:?}"
+            ));
+        }
+        guard
+            .compact_relay_transport
+            .note_inbound(&carrier.wire, bytes.len());
     }
     Ok(Some((peer_id.to_string(), carrier.wire)))
 }
@@ -373,6 +454,52 @@ mod tests {
         let legacy: NetworkMessage = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(legacy.kind(), "Tips");
         assert_eq!(legacy.chain_id(), CHAIN_ID);
+    }
+
+    #[test]
+    fn transport_telemetry_counts_actual_encoded_bytes_and_message_classes() {
+        let inner = Arc::new(Mutex::new(authorized_state()));
+        let request = CompactRelayWireV1::GetTransactions(CompactTransactionRequestV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: "telemetry-block".into(),
+            txids: vec!["tx-a".into()],
+        });
+        let encoded =
+            encode_compact_relay_for_transport(&inner, CHAIN_ID, REMOTE_PEER, &request).unwrap();
+        {
+            let guard = inner.lock().unwrap();
+            let telemetry = &guard.compact_relay_transport;
+            assert_eq!(telemetry.outbound_carriers_encoded_total, 1);
+            assert_eq!(telemetry.outbound_body_requests_total, 1);
+            assert_eq!(telemetry.outbound_encoded_bytes_total, encoded.len() as u64);
+            assert_eq!(telemetry.inbound_carriers_accepted_total, 0);
+        }
+
+        let mut remote = ProtocolCapabilityTransportV1::default();
+        remote
+            .configure_local_capabilities(CHAIN_ID, protocol_capabilities())
+            .unwrap();
+        let base = remote.encode_tip_message(&tips_message()).unwrap();
+        let inbound = attach_compact_relay_carrier_v1(
+            &base,
+            &CompactRelayCarrierV1 {
+                target_peer_id: LOCAL_PEER.to_string(),
+                chain_id: CHAIN_ID.to_string(),
+                wire: CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
+                    CHAIN_ID,
+                )),
+            },
+        )
+        .unwrap();
+        authorized_compact_relay_from_tip(&inbound, Some(REMOTE_PEER), &inner)
+            .unwrap()
+            .unwrap();
+
+        let guard = inner.lock().unwrap();
+        let telemetry = &guard.compact_relay_transport;
+        assert_eq!(telemetry.inbound_carriers_accepted_total, 1);
+        assert_eq!(telemetry.inbound_capability_messages_total, 1);
+        assert_eq!(telemetry.inbound_accepted_bytes_total, inbound.len() as u64);
     }
 
     #[test]

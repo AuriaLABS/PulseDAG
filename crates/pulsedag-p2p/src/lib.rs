@@ -39,7 +39,9 @@ use crate::live_protocol_sync_v1::{
     validate_protocol_sync_send,
 };
 use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
-use crate::messages::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
+use crate::messages::compact_relay_carrier_v1::{
+    CompactRelayCapabilitiesV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
+};
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
@@ -487,6 +489,45 @@ struct RemoteTipInventoryEntry {
     last_seen_unix: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactRelayTransportTelemetryV1 {
+    pub outbound_carriers_encoded_total: u64,
+    pub inbound_carriers_accepted_total: u64,
+    pub outbound_encoded_bytes_total: u64,
+    pub inbound_accepted_bytes_total: u64,
+    pub outbound_capability_messages_total: u64,
+    pub inbound_capability_messages_total: u64,
+    pub outbound_announcements_total: u64,
+    pub inbound_announcements_total: u64,
+    pub outbound_body_requests_total: u64,
+    pub inbound_body_requests_total: u64,
+    pub outbound_body_responses_total: u64,
+    pub inbound_body_responses_total: u64,
+    pub decode_failures_total: u64,
+    pub max_carrier_bytes: usize,
+}
+
+impl Default for CompactRelayTransportTelemetryV1 {
+    fn default() -> Self {
+        Self {
+            outbound_carriers_encoded_total: 0,
+            inbound_carriers_accepted_total: 0,
+            outbound_encoded_bytes_total: 0,
+            inbound_accepted_bytes_total: 0,
+            outbound_capability_messages_total: 0,
+            inbound_capability_messages_total: 0,
+            outbound_announcements_total: 0,
+            inbound_announcements_total: 0,
+            outbound_body_requests_total: 0,
+            inbound_body_requests_total: 0,
+            outbound_body_responses_total: 0,
+            inbound_body_responses_total: 0,
+            decode_failures_total: 0,
+            max_carrier_bytes: COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct P2pStatus {
     pub chain_id: String,
@@ -513,6 +554,7 @@ pub struct P2pStatus {
     pub queue_starvation_relief_picks: usize,
     pub queue_backpressure_drops: usize,
     pub inbound_messages: usize,
+    pub compact_relay_transport: CompactRelayTransportTelemetryV1,
     pub runtime_started: bool,
     pub runtime_mode_detail: String,
     pub swarm_events_seen: usize,
@@ -973,6 +1015,7 @@ struct InnerState {
     chain_id: String,
     protocol_capability_transport: ProtocolCapabilityTransportV1,
     compact_relay_runtime: CompactRelayRuntimeSessionBookV1,
+    compact_relay_transport: CompactRelayTransportTelemetryV1,
     connected_peers: Vec<String>,
     seen_message_ids: HashSet<String>,
     queued_messages: usize,
@@ -1695,6 +1738,7 @@ impl P2pHandle for MemoryP2pHandle {
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             queue_backpressure_drops: inner.queue_backpressure_drops,
             inbound_messages: inner.inbound_messages,
+            compact_relay_transport: inner.compact_relay_transport.clone(),
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
@@ -6910,6 +6954,7 @@ impl P2pHandle for Libp2pHandle {
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             queue_backpressure_drops: inner.queue_backpressure_drops,
             inbound_messages: inner.inbound_messages,
+            compact_relay_transport: inner.compact_relay_transport.clone(),
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
