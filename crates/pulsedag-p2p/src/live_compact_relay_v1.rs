@@ -441,6 +441,31 @@ mod tests {
     }
 
     #[test]
+    fn protocol_route_revocation_clears_compact_session() {
+        let inner = Arc::new(Mutex::new(authorized_state()));
+        assert!(inner
+            .lock()
+            .unwrap()
+            .compact_relay_runtime
+            .peer_session_authorized(REMOTE_PEER));
+
+        let legacy_tips = serde_json::to_vec(&tips_message()).unwrap();
+        decode_network_message_for_transport(
+            &legacy_tips,
+            Some(REMOTE_PEER),
+            CHAIN_ID,
+            &inner,
+        )
+        .unwrap();
+
+        let guard = inner.lock().unwrap();
+        assert!(!protocol_sync_peer_is_authorized(&guard, REMOTE_PEER));
+        assert!(!guard
+            .compact_relay_runtime
+            .peer_session_authorized(REMOTE_PEER));
+    }
+
+    #[test]
     fn outbound_carrier_remains_legacy_tips_decodable() {
         let inner = Arc::new(Mutex::new(authorized_state()));
         let encoded = encode_compact_relay_for_transport(
