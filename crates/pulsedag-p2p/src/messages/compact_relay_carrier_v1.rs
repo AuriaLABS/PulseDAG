@@ -469,24 +469,6 @@ pub fn attach_compact_relay_carrier_v1(
     Ok(encoded)
 }
 
-pub fn compact_relay_wire_fits_minimal_transport_v1(
-    target_peer_id: &str,
-    chain_id: &str,
-    wire: &CompactRelayWireV1,
-) -> bool {
-    let message = NetworkMessage::Tips {
-        chain_id: chain_id.to_string(),
-        tips: Vec::new(),
-        inventory: None,
-    };
-    let carrier = CompactRelayCarrierV1 {
-        target_peer_id: target_peer_id.to_string(),
-        chain_id: chain_id.to_string(),
-        wire: wire.clone(),
-    };
-    encode_network_message_with_compact_relay_v1(&message, Some(&carrier)).is_ok()
-}
-
 pub fn encode_network_message_with_compact_relay_v1(
     message: &NetworkMessage,
     carrier: Option<&CompactRelayCarrierV1>,
