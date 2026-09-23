@@ -651,7 +651,10 @@ mod tests {
         assert_eq!(compact.chain_id, CHAIN_ID);
         match compact.wire {
             CompactRelayWireV1::Announce(announcement) => {
-                assert_eq!(announcement.block_hash, compute_block_hash(&announcement.header));
+                assert_eq!(
+                    announcement.block_hash,
+                    compute_block_hash(&announcement.header)
+                );
                 assert_eq!(announcement.txids, vec!["coinbase", "tx-a", "tx-b"]);
             }
             other => panic!("unexpected compact wire: {}", other.kind()),
