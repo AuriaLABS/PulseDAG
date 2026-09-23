@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulsedag_core::{
-    canonical_pow_v2_adapter, compute_block_hash_v2,
+    canonical_pow_v2_adapter, compute_block_hash_v2, current_ts, dev_max_future_drift_secs,
     types::{
         compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block,
         BlockHeader, Hash, Transaction,
@@ -83,6 +83,10 @@ pub enum CompactRelayErrorV1 {
     ChainContextRequiredForHeaderVersion(u32),
     InvalidHeaderShape(String),
     ZeroHeaderTimestamp,
+    HeaderTimestampTooFarInFuture {
+        observed: u64,
+        maximum: u64,
+    },
     InvalidProofOfWork(String),
     BlockHashMismatch {
         expected: Hash,
@@ -147,6 +151,10 @@ impl fmt::Display for CompactRelayErrorV1 {
             Self::ZeroHeaderTimestamp => {
                 write!(formatter, "compact DAG relay header timestamp must be non-zero")
             }
+            Self::HeaderTimestampTooFarInFuture { observed, maximum } => write!(
+                formatter,
+                "compact DAG relay header timestamp is too far in the future: observed={observed} maximum={maximum}"
+            ),
             Self::InvalidProofOfWork(message) => {
                 write!(formatter, "invalid compact DAG relay proof of work: {message}")
             }
@@ -306,6 +314,13 @@ fn validate_compact_block_announcement_shape_inner_v1(
     validate_header_parents(&announcement.header)?;
     if announcement.header.timestamp == 0 {
         return Err(CompactRelayErrorV1::ZeroHeaderTimestamp);
+    }
+    let maximum_timestamp = current_ts().saturating_add(dev_max_future_drift_secs());
+    if announcement.header.timestamp > maximum_timestamp {
+        return Err(CompactRelayErrorV1::HeaderTimestampTooFarInFuture {
+            observed: announcement.header.timestamp,
+            maximum: maximum_timestamp,
+        });
     }
     validate_txids(&announcement.txids)?;
 
@@ -545,7 +560,7 @@ fn complete_compact_block_reconstruction_inner_v1(
     response: &CompactTransactionResponseV1,
     chain_id: Option<&str>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
-    validate_compact_block_announcement_inner_v1(announcement, chain_id)?;
+    validate_compact_block_announcement_shape_inner_v1(announcement, chain_id)?;
     validate_compact_transaction_request_v1(&state.request)?;
     require_version(response.version)?;
 
@@ -784,6 +799,21 @@ mod tests {
                 .unwrap_err(),
             CompactRelayErrorV1::ZeroHeaderTimestamp
         );
+    }
+
+    #[test]
+    fn far_future_timestamp_fails_closed_before_requesting_missing_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.timestamp = current_ts()
+            .saturating_add(dev_max_future_drift_secs())
+            .saturating_add(1);
+        announcement.block_hash = compute_block_hash(&announcement.header);
+
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &known(&block, &[0])),
+            Err(CompactRelayErrorV1::HeaderTimestampTooFarInFuture { .. })
+        ));
     }
 
     #[test]
