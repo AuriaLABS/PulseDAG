@@ -8,12 +8,12 @@ use super::{
     CompactBlockReconstructionPlanV1, CompactBlockReconstructionRequestStateV1,
     CompactRelayCapabilitiesV1, CompactRelayCarrierErrorV1, CompactRelayCarrierV1,
     CompactRelayErrorV1, CompactRelayWireV1, CompactTransactionResponseV1,
+    COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 
 pub const COMPACT_RELAY_MAX_INFLIGHT_PER_PEER_V1: usize = 64;
 pub const COMPACT_RELAY_MAX_RETAINED_BYTES_PER_PEER_V1: u64 = 48 * 1_024 * 1_024;
 pub const COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1: u64 = 192 * 1_024 * 1_024;
-const COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1: u64 = 4 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactRelayRuntimeSessionErrorV1 {
@@ -21,10 +21,17 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
     Compact(CompactRelayErrorV1),
     LocalCapabilitiesMissing,
     LocalCapabilitySurfaceMismatch,
-    PeerCapabilitySessionMissing { peer_id: String },
-    ProtocolRouteUnauthorized { peer_id: String },
+    PeerCapabilitySessionMissing {
+        peer_id: String,
+    },
+    ProtocolRouteUnauthorized {
+        peer_id: String,
+    },
     EmptyPeerId,
-    InFlightLimitExceeded { peer_id: String, maximum: usize },
+    InFlightLimitExceeded {
+        peer_id: String,
+        maximum: usize,
+    },
     InFlightRetainedBytesPerPeerLimitExceeded {
         peer_id: String,
         observed: u64,
@@ -34,8 +41,14 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
         observed: u64,
         maximum: u64,
     },
-    InFlightAlreadyExists { peer_id: String, block_hash: Hash },
-    InFlightMissing { peer_id: String, block_hash: Hash },
+    InFlightAlreadyExists {
+        peer_id: String,
+        block_hash: Hash,
+    },
+    InFlightMissing {
+        peer_id: String,
+        block_hash: Hash,
+    },
 }
 
 impl From<CompactRelayCarrierErrorV1> for CompactRelayRuntimeSessionErrorV1 {
@@ -84,13 +97,14 @@ pub struct CompactRelayRuntimeSessionBookV1 {
 }
 
 impl CompactRelayRuntimeSessionBookV1 {
-    fn retained_state_upper_bound_bytes(
-        state: &CompactBlockReconstructionRequestStateV1,
-    ) -> u64 {
+    fn retained_state_upper_bound_bytes(state: &CompactBlockReconstructionRequestStateV1) -> u64 {
         let transaction_bytes = u64::try_from(state.retained_known_transaction_count())
             .unwrap_or(u64::MAX)
             .saturating_mul(MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
-        transaction_bytes.saturating_add(COMPACT_RELAY_RETAINED_STATE_OVERHEAD_BYTES_V1)
+        let metadata_bytes = u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
+        transaction_bytes.saturating_add(metadata_bytes)
     }
 
     fn retained_bytes_for_peer(&self, peer_id: &str) -> u64 {
@@ -257,9 +271,7 @@ impl CompactRelayRuntimeSessionBookV1 {
             );
         }
 
-        let global_retained = self
-            .retained_bytes_global()
-            .saturating_add(candidate_bytes);
+        let global_retained = self.retained_bytes_global().saturating_add(candidate_bytes);
         if global_retained > COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1 {
             return Err(
                 CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesGlobalLimitExceeded {
@@ -572,6 +584,25 @@ mod tests {
     }
 
     #[test]
+    fn retained_state_budget_reserves_controller_announcement_clone() {
+        let candidate = block("metadata-only");
+        let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
+        let state = match plan_compact_block_reconstruction_v1(&announcement, &HashMap::new()).unwrap()
+        {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected reconstruction plan: {other:?}"),
+        };
+
+        assert_eq!(state.retained_known_transaction_count(), 0);
+        assert_eq!(
+            CompactRelayRuntimeSessionBookV1::retained_state_upper_bound_bytes(&state),
+            u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1)
+                .unwrap()
+                .saturating_mul(2)
+        );
+    }
+
+    #[test]
     fn retained_reconstruction_bytes_are_bounded_per_peer() {
         let mut sessions = configured();
         authorize(&mut sessions, PEER);
@@ -582,9 +613,7 @@ mod tests {
         assert!(matches!(
             sessions.register_in_flight(PEER, high_retention_request_state("heavy-b")),
             Err(
-                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded {
-                    ..
-                }
+                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded { .. }
             )
         ));
         assert_eq!(sessions.in_flight_count(PEER), 1);
