@@ -298,7 +298,7 @@ mod tests {
     use crate::messages::{CompactTransactionRequestV1, COMPACT_DAG_RELAY_VERSION_V1};
     use crate::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
     use pulsedag_core::{
-        types::{compute_merkle_root, BlockHeader, TxOutput},
+        types::{compute_block_hash, compute_merkle_root, BlockHeader, TxOutput},
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
         GHOSTDAG_V1_FINALITY_POLICY_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
     };
@@ -384,19 +384,20 @@ mod tests {
             fee: 0,
             nonce: 0,
         }];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 1,
+            height: 1,
+        };
         Block {
-            hash: "compact-live-block".into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 1,
-                height: 1,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
@@ -450,13 +451,8 @@ mod tests {
             .peer_session_authorized(REMOTE_PEER));
 
         let legacy_tips = serde_json::to_vec(&tips_message()).unwrap();
-        decode_network_message_for_transport(
-            &legacy_tips,
-            Some(REMOTE_PEER),
-            CHAIN_ID,
-            &inner,
-        )
-        .unwrap();
+        decode_network_message_for_transport(&legacy_tips, Some(REMOTE_PEER), CHAIN_ID, &inner)
+            .unwrap();
 
         let guard = inner.lock().unwrap();
         assert!(!protocol_sync_peer_is_authorized(&guard, REMOTE_PEER));
