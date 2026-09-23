@@ -478,24 +478,6 @@ pub fn attach_compact_relay_carrier_v1(
     Ok(encoded)
 }
 
-pub fn compact_relay_wire_fits_minimal_transport_v1(
-    target_peer_id: &str,
-    chain_id: &str,
-    wire: &CompactRelayWireV1,
-) -> bool {
-    let message = NetworkMessage::Tips {
-        chain_id: chain_id.to_string(),
-        tips: Vec::new(),
-        inventory: None,
-    };
-    let carrier = CompactRelayCarrierV1 {
-        target_peer_id: target_peer_id.to_string(),
-        chain_id: chain_id.to_string(),
-        wire: wire.clone(),
-    };
-    encode_network_message_with_compact_relay_v1(&message, Some(&carrier)).is_ok()
-}
-
 pub fn encode_network_message_with_compact_relay_v1(
     message: &NetworkMessage,
     carrier: Option<&CompactRelayCarrierV1>,
@@ -572,7 +554,7 @@ pub fn decode_network_message_with_compact_relay_for_peer_v1(
 mod tests {
     use super::*;
     use crate::messages::build_compact_block_announcement_v1;
-    use pulsedag_core::types::{compute_merkle_root, Block, TxOutput};
+    use pulsedag_core::types::{compute_block_hash, compute_merkle_root, Block, TxOutput};
 
     const CHAIN_ID: &str = "compact-relay-testnet";
     const LOCAL_PEER: &str = "peer-compact-local";
@@ -597,19 +579,20 @@ mod tests {
             transaction("tx-a"),
             transaction("tx-b"),
         ];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
         Block {
-            hash: "block-hash".into(),
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["parent-a".into(), "parent-b".into()],
-                timestamp: 1,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: compute_merkle_root(&transactions),
-                state_root: "state".into(),
-                blue_score: 2,
-                height: 2,
-            },
+            hash: compute_block_hash(&header),
+            header,
             transactions,
         }
     }
