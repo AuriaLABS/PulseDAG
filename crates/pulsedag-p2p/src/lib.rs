@@ -4479,9 +4479,7 @@ fn decode_network_message_for_transport(
                 .map_err(|error| {
                     format!("protocol capability transport decode failed: {error:?}")
                 })?;
-            if was_protocol_authorized
-                && !protocol_sync_peer_is_authorized(&guard, peer_id)
-            {
+            if was_protocol_authorized && !protocol_sync_peer_is_authorized(&guard, peer_id) {
                 guard.compact_relay_runtime.peer_disconnected(peer_id);
             }
             return Ok(decoded.message);
