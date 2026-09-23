@@ -82,6 +82,7 @@ pub enum CompactRelayErrorV1 {
     DuplicateHeaderParent(Hash),
     ChainContextRequiredForHeaderVersion(u32),
     InvalidHeaderShape(String),
+    ZeroHeaderTimestamp,
     InvalidProofOfWork(String),
     BlockHashMismatch {
         expected: Hash,
@@ -142,6 +143,9 @@ impl fmt::Display for CompactRelayErrorV1 {
             ),
             Self::InvalidHeaderShape(message) => {
                 write!(formatter, "invalid compact DAG relay header shape: {message}")
+            }
+            Self::ZeroHeaderTimestamp => {
+                write!(formatter, "compact DAG relay header timestamp must be non-zero")
             }
             Self::InvalidProofOfWork(message) => {
                 write!(formatter, "invalid compact DAG relay proof of work: {message}")
@@ -289,7 +293,7 @@ fn validate_header_pow(
     }
 }
 
-fn validate_compact_block_announcement_inner_v1(
+fn validate_compact_block_announcement_shape_inner_v1(
     announcement: &CompactBlockAnnouncementV1,
     chain_id: Option<&str>,
 ) -> Result<(), CompactRelayErrorV1> {
@@ -300,6 +304,9 @@ fn validate_compact_block_announcement_inner_v1(
         ));
     }
     validate_header_parents(&announcement.header)?;
+    if announcement.header.timestamp == 0 {
+        return Err(CompactRelayErrorV1::ZeroHeaderTimestamp);
+    }
     validate_txids(&announcement.txids)?;
 
     let expected = expected_block_hash(&announcement.header, chain_id)?;
@@ -309,8 +316,15 @@ fn validate_compact_block_announcement_inner_v1(
             observed: announcement.block_hash.clone(),
         });
     }
-    validate_header_pow(&announcement.header, chain_id)?;
     Ok(())
+}
+
+fn validate_compact_block_announcement_inner_v1(
+    announcement: &CompactBlockAnnouncementV1,
+    chain_id: Option<&str>,
+) -> Result<(), CompactRelayErrorV1> {
+    validate_compact_block_announcement_shape_inner_v1(announcement, chain_id)?;
+    validate_header_pow(&announcement.header, chain_id)
 }
 
 pub fn validate_compact_block_announcement_v1(
@@ -390,7 +404,7 @@ fn plan_compact_block_reconstruction_inner_v1(
     known_transactions: &HashMap<Hash, Transaction>,
     chain_id: Option<&str>,
 ) -> Result<CompactBlockReconstructionPlanV1, CompactRelayErrorV1> {
-    validate_compact_block_announcement_inner_v1(announcement, chain_id)?;
+    validate_compact_block_announcement_shape_inner_v1(announcement, chain_id)?;
 
     if compute_merkle_root_from_txids(&announcement.txids) != announcement.header.merkle_root {
         return Ok(CompactBlockReconstructionPlanV1::FullBlockFallback {
@@ -398,6 +412,8 @@ fn plan_compact_block_reconstruction_inner_v1(
             reason: CompactRelayFallbackReasonV1::MerkleRootMismatch,
         });
     }
+
+    validate_header_pow(&announcement.header, chain_id)?;
 
     let missing = missing_known_transaction_ids(announcement, known_transactions)?;
 
@@ -754,6 +770,20 @@ mod tests {
             complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap(),
             CompactBlockReconstructionPlanV1::Complete(_)
         ));
+    }
+
+    #[test]
+    fn zero_timestamp_fails_closed_before_requesting_missing_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.timestamp = 0;
+        announcement.block_hash = compute_block_hash(&announcement.header);
+
+        assert_eq!(
+            plan_compact_block_reconstruction_v1(&announcement, &known(&block, &[0]))
+                .unwrap_err(),
+            CompactRelayErrorV1::ZeroHeaderTimestamp
+        );
     }
 
     #[test]
