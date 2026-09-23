@@ -13,7 +13,8 @@ use super::{
     validate_compact_block_announcement_for_chain_v1, validate_compact_transaction_request_v1,
     CompactBlockAnnouncementV1, CompactRelayErrorV1, CompactTransactionRequestV1,
     CompactTransactionResponseV1, NetworkMessage, COMPACT_DAG_RELAY_VERSION_V1,
-    P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
+    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 pub const COMPACT_RELAY_EXTENSION_FIELD_V1: &str = "pulsedag_compact_relay_v1";
@@ -307,6 +308,14 @@ fn validate_response_shape(
         return Err(CompactRelayCarrierErrorV1::TransactionResponseTooLarge {
             observed: response.transactions.len(),
             maximum: P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+        });
+    }
+    let encoded = serde_json::to_vec(response)
+        .map_err(|error| CompactRelayCarrierErrorV1::Json(error.to_string()))?;
+    if encoded.len() > COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1 {
+        return Err(CompactRelayCarrierErrorV1::CarrierTooLarge {
+            observed: encoded.len(),
+            maximum: COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1,
         });
     }
     Ok(())
