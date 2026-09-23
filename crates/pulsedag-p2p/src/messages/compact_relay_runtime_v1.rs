@@ -21,10 +21,17 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
     Compact(CompactRelayErrorV1),
     LocalCapabilitiesMissing,
     LocalCapabilitySurfaceMismatch,
-    PeerCapabilitySessionMissing { peer_id: String },
-    ProtocolRouteUnauthorized { peer_id: String },
+    PeerCapabilitySessionMissing {
+        peer_id: String,
+    },
+    ProtocolRouteUnauthorized {
+        peer_id: String,
+    },
     EmptyPeerId,
-    InFlightLimitExceeded { peer_id: String, maximum: usize },
+    InFlightLimitExceeded {
+        peer_id: String,
+        maximum: usize,
+    },
     InFlightRetainedBytesPerPeerLimitExceeded {
         peer_id: String,
         observed: u64,
@@ -34,8 +41,14 @@ pub enum CompactRelayRuntimeSessionErrorV1 {
         observed: u64,
         maximum: u64,
     },
-    InFlightAlreadyExists { peer_id: String, block_hash: Hash },
-    InFlightMissing { peer_id: String, block_hash: Hash },
+    InFlightAlreadyExists {
+        peer_id: String,
+        block_hash: Hash,
+    },
+    InFlightMissing {
+        peer_id: String,
+        block_hash: Hash,
+    },
 }
 
 impl From<CompactRelayCarrierErrorV1> for CompactRelayRuntimeSessionErrorV1 {
@@ -84,15 +97,12 @@ pub struct CompactRelayRuntimeSessionBookV1 {
 }
 
 impl CompactRelayRuntimeSessionBookV1 {
-    fn retained_state_upper_bound_bytes(
-        state: &CompactBlockReconstructionRequestStateV1,
-    ) -> u64 {
+    fn retained_state_upper_bound_bytes(state: &CompactBlockReconstructionRequestStateV1) -> u64 {
         let transaction_bytes = u64::try_from(state.retained_known_transaction_count())
             .unwrap_or(u64::MAX)
             .saturating_mul(MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
-        transaction_bytes.saturating_add(
-            u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1).unwrap_or(u64::MAX),
-        )
+        transaction_bytes
+            .saturating_add(u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1).unwrap_or(u64::MAX))
     }
 
     fn retained_bytes_for_peer(&self, peer_id: &str) -> u64 {
@@ -259,9 +269,7 @@ impl CompactRelayRuntimeSessionBookV1 {
             );
         }
 
-        let global_retained = self
-            .retained_bytes_global()
-            .saturating_add(candidate_bytes);
+        let global_retained = self.retained_bytes_global().saturating_add(candidate_bytes);
         if global_retained > COMPACT_RELAY_MAX_RETAINED_BYTES_GLOBAL_V1 {
             return Err(
                 CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesGlobalLimitExceeded {
@@ -584,9 +592,7 @@ mod tests {
         assert!(matches!(
             sessions.register_in_flight(PEER, high_retention_request_state("heavy-b")),
             Err(
-                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded {
-                    ..
-                }
+                CompactRelayRuntimeSessionErrorV1::InFlightRetainedBytesPerPeerLimitExceeded { .. }
             )
         ));
         assert_eq!(sessions.in_flight_count(PEER), 1);
