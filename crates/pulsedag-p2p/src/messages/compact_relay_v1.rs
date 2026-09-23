@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulsedag_core::{
-    canonical_pow_v2_adapter, compute_block_hash_v2, validate_pow_header,
+    canonical_pow_v2_adapter, compute_block_hash_v2,
     types::{
         compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block,
         BlockHeader, Hash, Transaction,
     },
-    BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2, GHOSTDAG_V1_MAX_PARENTS,
+    validate_pow_header, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2, GHOSTDAG_V1_MAX_PARENTS,
 };
 use serde::{Deserialize, Serialize};
 
