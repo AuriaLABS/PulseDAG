@@ -622,14 +622,14 @@ mod tests {
     #[test]
     fn retained_reconstruction_bytes_are_bounded_globally() {
         let mut sessions = configured();
-        for index in 0..7 {
+        for index in 0..6 {
             let peer = format!("peer-heavy-{index}");
             authorize(&mut sessions, &peer);
             let result = sessions.register_in_flight(
                 &peer,
                 high_retention_request_state(&format!("heavy-global-{index}")),
             );
-            if index < 6 {
+            if index < 5 {
                 result.unwrap();
             } else {
                 assert!(matches!(
