@@ -5600,25 +5600,6 @@ async fn run_libp2p_runtime(
                         );
                         (wire, topic_name, "compact-relay-v1", message_id)
                     }
-                    OutboundMessage::CompactRelay {
-                        peer_id,
-                        wire: compact_relay,
-                    } => {
-                        let topic_name = format!("{}-sync", cfg.chain_id);
-                        let payload_id = serde_json::to_string(&compact_relay)
-                            .unwrap_or_else(|_| compact_relay.kind().to_string());
-                        let message_id = format!(
-                            "sync:compact-relay-v1:{peer_id}:{}:{payload_id}",
-                            compact_relay.kind()
-                        );
-                        let wire = encode_compact_relay_for_transport(
-                            &inner,
-                            &cfg.chain_id,
-                            &peer_id,
-                            &compact_relay,
-                        );
-                        (wire, topic_name, "compact-relay-v1", message_id)
-                    }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block-headers:{}", hashes.join(","));
@@ -6223,6 +6204,25 @@ async fn run_libp2p_real_runtime(
                             &fast_sync,
                         );
                         (wire, topic_name, "fast-sync-v1", message_id)
+                    }
+                    OutboundMessage::CompactRelay {
+                        peer_id,
+                        wire: compact_relay,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&compact_relay)
+                            .unwrap_or_else(|_| compact_relay.kind().to_string());
+                        let message_id = format!(
+                            "sync:compact-relay-v1:{peer_id}:{}:{payload_id}",
+                            compact_relay.kind()
+                        );
+                        let wire = encode_compact_relay_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &compact_relay,
+                        );
+                        (wire, topic_name, "compact-relay-v1", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
