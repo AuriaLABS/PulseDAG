@@ -9,12 +9,12 @@ use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
+use super::compact_relay_v1::COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1;
 use super::{
     validate_compact_block_announcement_for_chain_v1, validate_compact_transaction_request_v1,
     CompactBlockAnnouncementV1, CompactRelayErrorV1, CompactTransactionRequestV1,
     CompactTransactionResponseV1, NetworkMessage, COMPACT_DAG_RELAY_VERSION_V1,
-    COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 pub const COMPACT_RELAY_EXTENSION_FIELD_V1: &str = "pulsedag_compact_relay_v1";
