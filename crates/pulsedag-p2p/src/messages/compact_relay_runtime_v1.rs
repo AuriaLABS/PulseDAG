@@ -101,8 +101,10 @@ impl CompactRelayRuntimeSessionBookV1 {
         let transaction_bytes = u64::try_from(state.retained_known_transaction_count())
             .unwrap_or(u64::MAX)
             .saturating_mul(MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
-        transaction_bytes
-            .saturating_add(u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1).unwrap_or(u64::MAX))
+        let metadata_bytes = u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2);
+        transaction_bytes.saturating_add(metadata_bytes)
     }
 
     fn retained_bytes_for_peer(&self, peer_id: &str) -> u64 {
@@ -579,6 +581,25 @@ mod tests {
             CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
             other => panic!("unexpected reconstruction plan: {other:?}"),
         }
+    }
+
+    #[test]
+    fn retained_state_budget_reserves_controller_announcement_clone() {
+        let candidate = block("metadata-only");
+        let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
+        let state = match plan_compact_block_reconstruction_v1(&announcement, &HashMap::new()).unwrap()
+        {
+            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+            other => panic!("unexpected reconstruction plan: {other:?}"),
+        };
+
+        assert_eq!(state.retained_known_transaction_count(), 0);
+        assert_eq!(
+            CompactRelayRuntimeSessionBookV1::retained_state_upper_bound_bytes(&state),
+            u64::try_from(COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1)
+                .unwrap()
+                .saturating_mul(2)
+        );
     }
 
     #[test]
