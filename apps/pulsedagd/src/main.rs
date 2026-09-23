@@ -6044,6 +6044,21 @@ async fn main() -> Result<()> {
                             ),
                         );
                     }
+                    InboundEvent::CompactRelay { peer_id, wire } => {
+                        let kind = wire.kind();
+                        info!(
+                            peer = %peer_id,
+                            compact_relay_kind = kind,
+                            "received live compact-relay transport event; controller orchestration is deferred"
+                        );
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "compact_relay_transport",
+                            &format!(
+                                "peer={peer_id} kind={kind} action=deferred_to_compact_relay_controller"
+                            ),
+                        );
+                    }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()
