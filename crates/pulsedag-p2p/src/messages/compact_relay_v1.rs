@@ -2,18 +2,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulsedag_core::{
-    compute_block_hash_v2,
+    canonical_pow_v2_adapter, compute_block_hash_v2,
     types::{
         compute_block_hash, compute_merkle_root, compute_merkle_root_from_txids, Block,
         BlockHeader, Hash, Transaction,
     },
-    BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2, GHOSTDAG_V1_MAX_PARENTS,
+    validate_pow_header, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2, GHOSTDAG_V1_MAX_PARENTS,
 };
 use serde::{Deserialize, Serialize};
 
 use super::{P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1};
 
 pub const COMPACT_DAG_RELAY_VERSION_V1: u16 = 1;
+/// Compact transaction responses deliberately leave substantial room inside the
+/// 60 KiB live carrier for protocol-capability and current-tip metadata.
+pub const COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1: usize = 24 * 1_024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactBlockAnnouncementV1 {
@@ -73,6 +76,7 @@ pub enum CompactRelayErrorV1 {
     DuplicateHeaderParent(Hash),
     ChainContextRequiredForHeaderVersion(u32),
     InvalidHeaderShape(String),
+    InvalidProofOfWork(String),
     BlockHashMismatch {
         expected: Hash,
         observed: Hash,
@@ -132,6 +136,9 @@ impl fmt::Display for CompactRelayErrorV1 {
             ),
             Self::InvalidHeaderShape(message) => {
                 write!(formatter, "invalid compact DAG relay header shape: {message}")
+            }
+            Self::InvalidProofOfWork(message) => {
+                write!(formatter, "invalid compact DAG relay proof of work: {message}")
             }
             Self::BlockHashMismatch { expected, observed } => write!(
                 formatter,
@@ -250,6 +257,32 @@ fn expected_block_hash(
     }
 }
 
+fn validate_header_pow(
+    header: &BlockHeader,
+    chain_id: Option<&str>,
+) -> Result<(), CompactRelayErrorV1> {
+    match header.version {
+        BLOCK_HEADER_VERSION_V1 => validate_pow_header(header)
+            .map_err(|reason| CompactRelayErrorV1::InvalidProofOfWork(format!("{reason:?}"))),
+        BLOCK_HEADER_VERSION_V2 => {
+            let chain_id = chain_id.filter(|value| !value.is_empty()).ok_or(
+                CompactRelayErrorV1::ChainContextRequiredForHeaderVersion(header.version),
+            )?;
+            let attempt = canonical_pow_v2_adapter()
+                .evaluate_header(header, chain_id)
+                .map_err(|error| CompactRelayErrorV1::InvalidHeaderShape(error.to_string()))?;
+            if attempt.comparison.accepted() {
+                Ok(())
+            } else {
+                Err(CompactRelayErrorV1::InvalidProofOfWork(
+                    "pow hash is above target".to_string(),
+                ))
+            }
+        }
+        version => Err(CompactRelayErrorV1::UnsupportedHeaderVersion(version)),
+    }
+}
+
 fn validate_compact_block_announcement_inner_v1(
     announcement: &CompactBlockAnnouncementV1,
     chain_id: Option<&str>,
@@ -270,6 +303,7 @@ fn validate_compact_block_announcement_inner_v1(
             observed: announcement.block_hash.clone(),
         });
     }
+    validate_header_pow(&announcement.header, chain_id)?;
     Ok(())
 }
 
@@ -467,11 +501,20 @@ pub fn build_compact_transaction_response_v1(
         transactions.push(transaction.clone());
     }
 
-    Ok(Some(CompactTransactionResponseV1 {
+    let response = CompactTransactionResponseV1 {
         version: COMPACT_DAG_RELAY_VERSION_V1,
         block_hash: request.block_hash.clone(),
         transactions,
-    }))
+    };
+    let encoded = serde_json::to_vec(&response).map_err(|error| {
+        CompactRelayErrorV1::InvalidHeaderShape(format!(
+            "compact transaction response serialization failed: {error}"
+        ))
+    })?;
+    if encoded.len() > COMPACT_RELAY_MAX_RESPONSE_PAYLOAD_BYTES_V1 {
+        return Ok(None);
+    }
+    Ok(Some(response))
 }
 
 fn complete_compact_block_reconstruction_inner_v1(
@@ -705,6 +748,40 @@ mod tests {
             complete_compact_block_reconstruction_v1(&announcement, &state, &response).unwrap(),
             CompactBlockReconstructionPlanV1::Complete(_)
         ));
+    }
+
+    #[test]
+    fn invalid_pow_fails_closed_before_requesting_missing_bodies() {
+        let block = block(&["coinbase", "tx-a"]);
+        let mut announcement = build_compact_block_announcement_v1(&block).unwrap();
+        announcement.header.difficulty = 0x0100_0001;
+        announcement.header.nonce = 0;
+        announcement.block_hash = compute_block_hash(&announcement.header);
+        assert!(validate_pow_header(&announcement.header).is_err());
+
+        assert!(matches!(
+            plan_compact_block_reconstruction_v1(&announcement, &known(&block, &[0])),
+            Err(CompactRelayErrorV1::InvalidProofOfWork(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_compact_transaction_response_falls_back() {
+        let request = CompactTransactionRequestV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: "large-response-block".into(),
+            txids: vec!["large-a".into(), "large-b".into()],
+        };
+        let mut available = HashMap::new();
+        for txid in &request.txids {
+            let mut tx = transaction(txid);
+            tx.outputs[0].address = "x".repeat(16 * 1_024);
+            available.insert(txid.clone(), tx);
+        }
+
+        assert!(build_compact_transaction_response_v1(&request, &available)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
