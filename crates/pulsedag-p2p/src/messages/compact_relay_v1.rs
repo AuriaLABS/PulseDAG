@@ -795,8 +795,7 @@ mod tests {
         announcement.block_hash = compute_block_hash(&announcement.header);
 
         assert_eq!(
-            plan_compact_block_reconstruction_v1(&announcement, &known(&block, &[0]))
-                .unwrap_err(),
+            plan_compact_block_reconstruction_v1(&announcement, &known(&block, &[0])).unwrap_err(),
             CompactRelayErrorV1::ZeroHeaderTimestamp
         );
     }
