@@ -3816,6 +3816,81 @@ async fn main() -> Result<()> {
                             }
                         };
 
+                        if matches!(
+                            &inbound_protocol,
+                            InboundP2pBlockProtocol::Legacy
+                        ) {
+                            match storage.protocol_monetary_activation_record() {
+                                Ok(None) => {}
+                                Ok(Some(record)) => {
+                                    let reason = format!(
+                                        "v3 monetary activation {} is present but inbound P2P selected the legacy protocol; refusing legacy monetary fallback for {}",
+                                        record.binding_fingerprint,
+                                        block.hash
+                                    );
+                                    warn!(
+                                        block_hash = %block.hash,
+                                        "rejected legacy inbound block while v3 monetary activation is present"
+                                    );
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_monetary_legacy_fallback_rejected",
+                                        &reason,
+                                    );
+                                    block_requests.resolve(&block.hash);
+                                    let mut rt = runtime.write().await;
+                                    rt.blockdata_received =
+                                        rt.blockdata_received.saturating_add(1);
+                                    rt.rejected_p2p_blocks =
+                                        rt.rejected_p2p_blocks.saturating_add(1);
+                                    rt.pulsedag_blocks_rejected_total =
+                                        rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                    rt.record_rejected_block_reason(
+                                        "monetary_legacy_fallback_fail_closed",
+                                    );
+                                    rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                    rt.sync_pipeline
+                                        .fallback_after_failure(reason, now_unix());
+                                    continue;
+                                }
+                                Err(error) => {
+                                    let reason = format!(
+                                        "cannot validate v3 monetary activation before legacy inbound block {}: {}",
+                                        block.hash, error
+                                    );
+                                    warn!(
+                                        block_hash = %block.hash,
+                                        error = %error,
+                                        "rejected legacy inbound block because monetary sidecar validation failed"
+                                    );
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_monetary_sidecar_rejected",
+                                        &reason,
+                                    );
+                                    block_requests.resolve(&block.hash);
+                                    let mut rt = runtime.write().await;
+                                    rt.blockdata_received =
+                                        rt.blockdata_received.saturating_add(1);
+                                    rt.rejected_p2p_blocks =
+                                        rt.rejected_p2p_blocks.saturating_add(1);
+                                    rt.pulsedag_blocks_rejected_total =
+                                        rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                    rt.record_rejected_block_reason(
+                                        "monetary_sidecar_fail_closed",
+                                    );
+                                    rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                    rt.sync_pipeline
+                                        .fallback_after_failure(reason, now_unix());
+                                    continue;
+                                }
+                            }
+                        }
+
                         if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
                             let monetary_activation =
                                 match storage.protocol_monetary_activation_record() {
