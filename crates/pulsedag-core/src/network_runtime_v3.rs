@@ -45,6 +45,28 @@ fn audit_authoritative_monetary_state(
         })
 }
 
+/// Verify a restored/live activated-v2 runtime snapshot before it is allowed to
+/// operate under a persisted v3 monetary activation.
+pub fn validate_monetary_v3_p2p_runtime_snapshot(
+    state: &ChainState,
+    runtime: &ActivatedV2P2pRuntime,
+    identity: &ProtocolActivationIdentity,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<(), PulseError> {
+    if state.contracts.config.enabled {
+        return Err(invalid_monetary_runtime(
+            "v3.0.0 monetary runtime requires smart-contract execution to remain inactive",
+        ));
+    }
+    if identity.chain_id != state.chain_id || identity.genesis_hash != state.dag.genesis_hash {
+        return Err(invalid_monetary_runtime(
+            "protocol identity does not match the restored chain state",
+        ));
+    }
+    validate_runtime_transient_monetary_envelopes(state, runtime, identity)?;
+    audit_authoritative_monetary_state(state, cadence_segments)
+}
+
 /// Drive the activated-v2 transient P2P runtime under the frozen v3 monetary
 /// contract.
 ///
@@ -75,14 +97,8 @@ where
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
-    if state.contracts.config.enabled {
-        return Err(invalid_monetary_runtime(
-            "v3.0.0 monetary runtime requires smart-contract execution to remain inactive",
-        ));
-    }
+    validate_monetary_v3_p2p_runtime_snapshot(state, runtime, identity, cadence_segments)?;
     validate_monetary_v3_p2p_staging_envelope(&block, state, identity)?;
-    validate_runtime_transient_monetary_envelopes(state, runtime, identity)?;
-    audit_authoritative_monetary_state(state, cadence_segments)?;
 
     drive_activated_v2_p2p_block_with_runtime_persistence(
         block,
