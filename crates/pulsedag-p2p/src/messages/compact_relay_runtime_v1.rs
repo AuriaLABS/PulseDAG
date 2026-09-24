@@ -405,7 +405,6 @@ mod tests {
     };
 
     const CHAIN_ID: &str = "compact-relay-runtime-testnet";
-    const LOCAL_PEER: &str = "peer-compact-runtime-local";
     const PEER: &str = "peer-compact-runtime-remote";
 
     fn capabilities() -> CompactRelayCapabilitiesV1 {
