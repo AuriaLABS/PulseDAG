@@ -112,7 +112,8 @@ pub use tx_rejection::{
 };
 pub use tx_submission::compute_submission_id_v2;
 pub use mining_template_v3::{
-    build_monetary_mining_template_v3, MonetaryMiningTemplateV3,
+    build_monetary_mining_template_v3, finalize_monetary_mining_template_v3,
+    FinalizedMonetaryMiningCandidateV3, MonetaryMiningTemplateV3,
     MONETARY_MINING_TEMPLATE_SCHEMA_V3,
 };
 pub use monetary_audit_v3::{
