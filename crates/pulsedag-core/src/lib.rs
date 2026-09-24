@@ -190,8 +190,10 @@ pub use htlc_v1::{
 
 pub use vault_v1::{
     created_pulse_height_from_tip, emergency_unlock_height, evaluate_vault_spend_v1,
-    owner_unlock_height, pulses_remaining_owner, validate_vault_output_v1, VaultAdmissionV1,
-    VaultSpendPathV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1, VAULT_TEMPLATE_ID_V1,
+    owner_unlock_height, pulses_remaining_owner, validate_vault_output_v1,
+    vault_spend_signing_message_v1, verify_vault_spend_signature_v1, VaultAdmissionV1,
+    VaultSpendPathV1, VaultSpendWitnessV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1,
+    VAULT_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{

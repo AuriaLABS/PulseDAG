@@ -11,7 +11,7 @@ This document defines the first Pulse Layer covenant template. It does **not** a
 
 Until an explicit activation contract exists, nodes MUST treat `vault_v1` outputs as unknown/non-standard and fail closed. Presence of this document or of inactive `covenant_v1` modules on `main` is not activation.
 
-The in-tree matcher (`crates/pulsedag-core/src/vault_v1.rs`) cites PulseClock `pulse_height` only. Default `VaultAdmissionV1::INACTIVE` rejects every spend. This file still does **not** set `covenants_enabled` or admit the template into mempool/consensus.
+The in-tree matcher (`crates/pulsedag-core/src/vault_v1.rs`) cites PulseClock `pulse_height` only and verifies an Ed25519 signature over `PulseDAG:covenant:vault:v1` + `chain_id` + outpoint + path. Default `VaultAdmissionV1::INACTIVE` rejects every spend. This file still does **not** set `covenants_enabled` or admit the template into mempool/consensus.
 
 ## Purpose
 
