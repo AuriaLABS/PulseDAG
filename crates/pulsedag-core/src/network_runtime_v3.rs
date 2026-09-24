@@ -1,6 +1,8 @@
 use crate::{
     audit_monetary_state_v3,
     errors::PulseError,
+    validate_live_reward_settlement_v3,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v3::validate_monetary_v3_p2p_staging_envelope,
     network_runtime_v2::{
@@ -42,7 +44,13 @@ fn audit_authoritative_monetary_state(
         .map(|_| ())
         .map_err(|error| {
             invalid_monetary_runtime(format!("authoritative monetary audit failed: {error}"))
-        })
+        })?;
+    validate_live_reward_settlement_v3(
+        state,
+        cadence_segments,
+        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    )?;
+    Ok(())
 }
 
 /// Verify a restored/live activated-v2 runtime snapshot before it is allowed to
