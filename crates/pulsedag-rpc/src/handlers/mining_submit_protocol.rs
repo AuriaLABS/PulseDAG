@@ -438,6 +438,20 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 None,
             );
         }
+        if record.reward_finality_policy_version
+            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                format!(
+                    "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+                    record.reward_finality_policy_version,
+                    pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                ),
+                None,
+            );
+        }
         if chain.contracts.config.enabled {
             return rejected_response(
                 &req,
