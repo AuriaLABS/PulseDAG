@@ -1738,10 +1738,7 @@ mod tests {
             data["compact_relay_transport"]["inbound_accepted_bytes_total"],
             987
         );
-        assert_eq!(
-            data["compact_relay_transport"]["decode_failures_total"],
-            4
-        );
+        assert_eq!(data["compact_relay_transport"]["decode_failures_total"], 4);
         assert_eq!(
             data["compact_relay_transport"]["max_carrier_bytes"],
             60 * 1_024
