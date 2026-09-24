@@ -36,6 +36,7 @@ pub mod mining_v2;
 pub mod monetary_v3;
 pub mod monetary_audit_v3;
 pub mod network_block_v2;
+pub mod network_block_v3;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
 pub mod network_staging_v2;
@@ -340,6 +341,10 @@ pub use mining_v2::{
 pub use network_block_v2::{
     accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
     prepare_activated_v2_p2p_block_state, ActivatedV2P2pDisposition,
+};
+pub use network_block_v3::{
+    accept_monetary_v3_p2p_block_atomically, preflight_monetary_v3_p2p_block,
+    prepare_monetary_v3_p2p_block_state, validate_monetary_v3_p2p_staging_envelope,
 };
 pub use network_context_v2::{
     validate_activated_v2_p2p_block_context, ActivatedV2P2pContextDisposition,
