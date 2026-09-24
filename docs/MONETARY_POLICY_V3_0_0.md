@@ -30,7 +30,7 @@ SHA-256:
 
 `14605483aa65a17d654ffc4db1571b1416eb45b3f9b56af452d88c9023311366`
 
-This digest binds the economic rules only. Final launch evidence must additionally bind the exact source/tree SHA, network identities, deterministic genesis identities, cadence schedule, settlement/finality identity and artifact digests.
+This digest binds the economic rules only. The exact cadence table has a separate canonical SHA-256 produced by `monetary_cadence_fingerprint_v3`; persistence binds **protocol fingerprint + policy fingerprint + cadence fingerprint**. Final launch evidence must additionally bind the exact source/tree SHA, network identities, deterministic genesis identities, settlement/finality identity and artifact digests.
 
 ## Exact issuance rule
 
@@ -53,7 +53,7 @@ Consensus economic time is derived from a versioned list of:
 
 A cadence change must activate at an exact canonical monetary score. Changing from 1 BPS to 2 BPS or 4 BPS changes reward granularity only; equal economic time must map to equal cumulative issuance.
 
-The production mainnet/testnet cadence tables are separate network-freeze inputs and remain invalid to invent before #781 freezes them.
+The production mainnet/testnet cadence tables are separate network-freeze inputs and remain invalid to invent before #781 freezes them. Until then, RPC policy metadata reports `production_cadence_frozen=false` and no production cadence fingerprint.
 
 ## Smart-contract boundary
 
@@ -64,12 +64,12 @@ v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Therefore pro
 This policy core does **not** by itself close #1045. Before closure the exact v3 candidate must also prove:
 
 - zero-allocation deterministic production genesis;
-- mining templates consume state-derived authorized issuance, not legacy `block_subsidy(height)`;
-- coinbase validation consumes the same authorized issuance;
+- the live mining RPC is switched from legacy height subsidy to the claim-based v3 template/state finalizer; the non-live `MonetaryMiningTemplateV3` foundation already embeds **zero** reward amount and defers settlement to canonical score;
+- the live block-admission path invokes state-derived v3 reward validation; `validate_ordered_monetary_reward_v3` and `audit_monetary_state_v3` already reject hidden inputless issuance and prove exact cumulative supply;
 - coinbase maturity and settlement/finality are enforced;
 - protocol and persisted activation identity bind the policy fingerprint;
 - exact accepted-state total-supply accounting passes;
-- wallet/RPC/explorer denomination semantics are explicit;
+- downstream explorer integration consumes the frozen denomination contract (core/wallet/RPC now share integer atoms, `PDG`, 8 decimals, and exact no-float formatting/parsing);
 - no legacy or alternate hidden issuance path is reachable;
 - golden vectors and the final policy digest are bound to the exact #781 release/network identities.
 

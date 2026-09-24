@@ -29,8 +29,10 @@ pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
+pub mod mining_template_v3;
 pub mod mining_v2;
 pub mod monetary_v3;
+pub mod monetary_audit_v3;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
@@ -109,6 +111,14 @@ pub use tx_rejection::{
     classify_transaction_version, classify_typed_transaction_error, TransactionRejectionClass,
 };
 pub use tx_submission::compute_submission_id_v2;
+pub use mining_template_v3::{
+    build_monetary_mining_template_v3, MonetaryMiningTemplateV3,
+    MONETARY_MINING_TEMPLATE_SCHEMA_V3,
+};
+pub use monetary_audit_v3::{
+    audit_monetary_state_v3, MonetaryStateAuditV3, MonetaryStateAuditV3Error,
+};
+
 pub use validation_v3::{
     validate_ordered_monetary_reward_v3, MonetaryValidationV3Error, ValidatedMonetaryRewardV3,
 };

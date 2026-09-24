@@ -6,7 +6,7 @@ use crate::{
     ordering_v2::derive_ordered_dag_v2,
     reward_settlement_v3::{validate_reward_claim_transaction_v3, RewardSettlementV3Error},
     state::ChainState,
-    types::Hash,
+    types::{Block, Hash},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,54 @@ pub enum MonetaryValidationV3Error {
     Monetary(#[from] MonetaryV3Error),
 }
 
+pub(crate) fn validate_monetary_reward_at_canonical_score_v3(
+    chain_id: &str,
+    block: &Block,
+    monetary_score: u64,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<ValidatedMonetaryRewardV3, MonetaryValidationV3Error> {
+    if monetary_score == 0 {
+        return Err(MonetaryValidationV3Error::GenesisRewardForbidden);
+    }
+
+    let claim = block
+        .transactions
+        .first()
+        .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
+            block_hash: block.hash.clone(),
+        })?;
+    validate_reward_claim_transaction_v3(claim, chain_id)?;
+
+    let mut eligible_fees_atoms = 0u64;
+    for transaction in block.transactions.iter().skip(1) {
+        if transaction.inputs.is_empty() {
+            return Err(MonetaryValidationV3Error::HiddenIssuancePath {
+                block_hash: block.hash.clone(),
+                txid: transaction.txid.clone(),
+            });
+        }
+        eligible_fees_atoms = eligible_fees_atoms
+            .checked_add(transaction.fee)
+            .ok_or(MonetaryValidationV3Error::FeeOverflow)?;
+    }
+
+    let authorized_settlement_atoms =
+        max_coinbase_claim_atoms(monetary_score, eligible_fees_atoms, cadence_segments)?;
+    let authorized_subsidy_atoms = authorized_settlement_atoms
+        .checked_sub(eligible_fees_atoms)
+        .ok_or(MonetaryValidationV3Error::FeeOverflow)?;
+
+    Ok(ValidatedMonetaryRewardV3 {
+        block_hash: block.hash.clone(),
+        monetary_score,
+        claim_txid: claim.txid.clone(),
+        beneficiary: claim.outputs[0].address.clone(),
+        authorized_subsidy_atoms,
+        eligible_fees_atoms,
+        authorized_settlement_atoms,
+    })
+}
+
 /// Validate one accepted canonical v3 reward directly against state-derived
 /// monetary position.
 ///
@@ -65,47 +113,15 @@ pub fn validate_ordered_monetary_reward_v3(
         .iter()
         .position(|hash| hash == block_hash)
         .ok_or_else(|| MonetaryValidationV3Error::BlockNotOrdered(block_hash.to_string()))?;
-    if position == 0 {
-        return Err(MonetaryValidationV3Error::GenesisRewardForbidden);
-    }
-    let monetary_score = u64::try_from(position).map_err(|_| MonetaryValidationV3Error::FeeOverflow)?;
+    let monetary_score =
+        u64::try_from(position).map_err(|_| MonetaryValidationV3Error::FeeOverflow)?;
 
-    let claim = block
-        .transactions
-        .first()
-        .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
-            block_hash: block_hash.to_string(),
-        })?;
-    validate_reward_claim_transaction_v3(claim, &state.chain_id)?;
-
-    let mut eligible_fees_atoms = 0u64;
-    for transaction in block.transactions.iter().skip(1) {
-        if transaction.inputs.is_empty() {
-            return Err(MonetaryValidationV3Error::HiddenIssuancePath {
-                block_hash: block_hash.to_string(),
-                txid: transaction.txid.clone(),
-            });
-        }
-        eligible_fees_atoms = eligible_fees_atoms
-            .checked_add(transaction.fee)
-            .ok_or(MonetaryValidationV3Error::FeeOverflow)?;
-    }
-
-    let authorized_settlement_atoms =
-        max_coinbase_claim_atoms(monetary_score, eligible_fees_atoms, cadence_segments)?;
-    let authorized_subsidy_atoms = authorized_settlement_atoms
-        .checked_sub(eligible_fees_atoms)
-        .ok_or(MonetaryValidationV3Error::FeeOverflow)?;
-
-    Ok(ValidatedMonetaryRewardV3 {
-        block_hash: block_hash.to_string(),
+    validate_monetary_reward_at_canonical_score_v3(
+        &state.chain_id,
+        block,
         monetary_score,
-        claim_txid: claim.txid.clone(),
-        beneficiary: claim.outputs[0].address.clone(),
-        authorized_subsidy_atoms,
-        eligible_fees_atoms,
-        authorized_settlement_atoms,
-    })
+        cadence_segments,
+    )
 }
 
 #[cfg(test)]
