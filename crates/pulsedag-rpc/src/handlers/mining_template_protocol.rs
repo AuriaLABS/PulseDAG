@@ -795,7 +795,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
+        genesis::init_chain_state, genesis_v3::init_chain_state_v3, MonetaryCadenceSegment,
+        ProtocolMonetaryActivationRecordV2, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
         GHOSTDAG_V1_ORDERING_VERSION,
     };
 
@@ -853,6 +854,59 @@ mod tests {
         assert_eq!(data.parent_tips, data.block.header.parents);
         assert_eq!(data.template_selected_parent, data.selected_tip);
         assert_eq!(data.mempool_tx_count, 0);
+    }
+
+    #[test]
+    fn monetary_activation_builds_amountless_claim_template() {
+        let frozen_ts = pulsedag_core::current_ts().saturating_sub(10).max(1);
+        let state =
+            init_chain_state_v3("task1045-rpc-monetary-template".to_string(), frozen_ts).unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 1_000_000_000,
+        }];
+        let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            identity.clone(),
+            &cadence,
+            "reward-finality-test-v1",
+        )
+        .unwrap();
+        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
+
+        let (data, duplicate_filtered) = activated_v2_template_data(
+            &state,
+            &identity,
+            Some(&record),
+            "pulse1task1045miner".to_string(),
+            timestamp,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(duplicate_filtered, 0);
+        assert_eq!(data.mode, "external-miner-template-v3-monetary");
+        assert_eq!(data.block.transactions[0].outputs[0].amount, 0);
+        assert!(data.reward_settlement_deferred);
+        assert_eq!(
+            data.monetary_policy_fingerprint.as_deref(),
+            Some(pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3)
+        );
+        assert_eq!(
+            data.monetary_cadence_fingerprint.as_deref(),
+            Some(record.monetary_cadence_fingerprint.as_str())
+        );
+        assert_eq!(
+            data.monetary_binding_fingerprint.as_deref(),
+            Some(record.binding_fingerprint.as_str())
+        );
     }
 
     #[test]
