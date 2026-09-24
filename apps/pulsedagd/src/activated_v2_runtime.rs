@@ -11,10 +11,12 @@ use crate::block_protocol::resolve_activated_v2_runtime_restore_identity;
 /// Restore the transient activated-v2 P2P runtime only when the local P2P
 /// capabilities explicitly select the exact canonical activated-v2 identity.
 ///
-/// Sidecar presence is deliberately not consulted when capabilities are absent,
-/// preserving the historical startup path. Once activated-v2 capabilities are
-/// explicit, the storage restore is strict: a missing/corrupt/mismatched sidecar
-/// is a startup error rather than an implicit fallback or first activation.
+/// The monetary sidecar never activates consensus by itself. However, once a
+/// monetary activation record exists, missing activated-v2 capabilities are an
+/// inconsistent configuration and legacy startup fallback is refused. With
+/// explicit activated-v2 capabilities, storage restore is strict: a
+/// missing/corrupt/mismatched sidecar is a startup error rather than an implicit
+/// fallback or first activation.
 pub fn restore_activated_v2_p2p_runtime_for_startup(
     storage: &Storage,
     capabilities: Option<&ProtocolCapabilitiesV1>,
@@ -36,8 +38,8 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
                 );
             }
             Err(error) => {
-                return Err(anyhow::Error::new(error).context(
-                    "cannot validate v3 monetary activation while resolving legacy startup fallback",
+                return Err(anyhow::anyhow!(
+                    "cannot validate v3 monetary activation while resolving legacy startup fallback: {error}"
                 ));
             }
         }
