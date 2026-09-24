@@ -356,7 +356,10 @@ pub use network_runtime_v2::{
     ActivatedV2P2pDriveResult, ActivatedV2P2pRuntime, ActivatedV2P2pRuntimeOutcome,
     ActivatedV2P2pRuntimePersistence, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
 };
-pub use network_runtime_v3::drive_monetary_v3_p2p_block_with_runtime_persistence;
+pub use network_runtime_v3::{
+    drive_monetary_v3_p2p_block_with_runtime_persistence,
+    validate_monetary_v3_p2p_runtime_snapshot,
+};
 pub use network_staging_v2::{
     promote_activated_v2_p2p_anchor_atomically, stage_activated_v2_p2p_block,
     ActivatedV2P2pPromotion, ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
