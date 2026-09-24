@@ -250,6 +250,7 @@ pub(super) fn authorized_compact_relay_from_tip(
     Ok(Some((peer_id.to_string(), carrier.wire)))
 }
 
+#[allow(dead_code)]
 pub(super) fn dispatch_reconstructed_compact_block_v1(
     chain_id: &str,
     peer_id: &str,
