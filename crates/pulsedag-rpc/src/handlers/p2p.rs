@@ -515,6 +515,25 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(status.inbound_messages),
             );
             payload.insert(
+                "compact_relay_transport".into(),
+                serde_json::json!({
+                    "outbound_carriers_encoded_total": status.compact_relay_transport.outbound_carriers_encoded_total,
+                    "inbound_carriers_accepted_total": status.compact_relay_transport.inbound_carriers_accepted_total,
+                    "outbound_encoded_bytes_total": status.compact_relay_transport.outbound_encoded_bytes_total,
+                    "inbound_accepted_bytes_total": status.compact_relay_transport.inbound_accepted_bytes_total,
+                    "outbound_capability_messages_total": status.compact_relay_transport.outbound_capability_messages_total,
+                    "inbound_capability_messages_total": status.compact_relay_transport.inbound_capability_messages_total,
+                    "outbound_announcements_total": status.compact_relay_transport.outbound_announcements_total,
+                    "inbound_announcements_total": status.compact_relay_transport.inbound_announcements_total,
+                    "outbound_body_requests_total": status.compact_relay_transport.outbound_body_requests_total,
+                    "inbound_body_requests_total": status.compact_relay_transport.inbound_body_requests_total,
+                    "outbound_body_responses_total": status.compact_relay_transport.outbound_body_responses_total,
+                    "inbound_body_responses_total": status.compact_relay_transport.inbound_body_responses_total,
+                    "decode_failures_total": status.compact_relay_transport.decode_failures_total,
+                    "max_carrier_bytes": status.compact_relay_transport.max_carrier_bytes
+                }),
+            );
+            payload.insert(
                 "runtime_started".into(),
                 serde_json::json!(status.runtime_started),
             );
@@ -1454,6 +1473,16 @@ mod tests {
             queue_starvation_relief_picks: 1,
             queue_backpressure_drops: 0,
             inbound_messages: 8,
+            compact_relay_transport: pulsedag_p2p::CompactRelayTransportTelemetryV1 {
+                outbound_carriers_encoded_total: 3,
+                inbound_carriers_accepted_total: 2,
+                outbound_encoded_bytes_total: 1_234,
+                inbound_accepted_bytes_total: 987,
+                outbound_announcements_total: 2,
+                inbound_announcements_total: 1,
+                decode_failures_total: 4,
+                ..Default::default()
+            },
             runtime_started: true,
             runtime_mode_detail: "in-process-dispatch".into(),
             swarm_events_seen: 9,
@@ -1693,6 +1722,30 @@ mod tests {
         assert!(data["tx_propagation_counters"].is_object());
         assert!(data["block_propagation_counters"].is_object());
         assert!(data["duplicate_suppression_counters"].is_object());
+        assert_eq!(
+            data["compact_relay_transport"]["outbound_carriers_encoded_total"],
+            3
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["inbound_carriers_accepted_total"],
+            2
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["outbound_encoded_bytes_total"],
+            1_234
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["inbound_accepted_bytes_total"],
+            987
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["decode_failures_total"],
+            4
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["max_carrier_bytes"],
+            60 * 1_024
+        );
         assert!(data["sync_candidates"].is_array());
         assert!(data["peer_recovery"].is_array());
         assert_eq!(data["peer_recovery"][0]["eligible_for_sync"], true);
