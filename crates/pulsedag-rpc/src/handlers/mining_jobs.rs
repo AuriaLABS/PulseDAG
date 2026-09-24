@@ -1,6 +1,10 @@
 use crate::{
     api::{ApiResponse, ClaimMiningJobRequest, RpcStateLike, SubmitMiningJobRequest},
     handlers::mining_accounting::credit_block,
+    handlers::monetary_activation_guard::{
+        ensure_legacy_mining_disabled_when_monetary_v3_active,
+        MONETARY_V3_LEGACY_MINING_DISABLED,
+    },
     handlers::mining_pool::load_worker_config,
     handlers::pow_metrics::PowMetricsData,
 };
@@ -58,6 +62,14 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<ClaimMiningJobRequest>,
 ) -> Json<ApiResponse<ClaimMiningJobData>> {
+    if let Err(error) =
+        ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mining/jobs/claim")
+    {
+        return Json(ApiResponse::err(
+            MONETARY_V3_LEGACY_MINING_DISABLED,
+            error,
+        ));
+    }
     let _ = cleanup_expired_jobs();
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
@@ -127,6 +139,14 @@ pub async fn post_submit_mining_job<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitMiningJobRequest>,
 ) -> Json<ApiResponse<SubmitMiningJobData>> {
+    if let Err(error) =
+        ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mining/jobs/submit")
+    {
+        return Json(ApiResponse::err(
+            MONETARY_V3_LEGACY_MINING_DISABLED,
+            error,
+        ));
+    }
     let Some(mut record) = load_job(&req.job_id) else {
         return Json(ApiResponse::err(
             "UNKNOWN_JOB",
