@@ -43,6 +43,8 @@ pub enum RewardSettlementV3Error {
     FinalityPrefixDigestMismatch,
     #[error("finality policy version must not be empty")]
     EmptyFinalityPolicyVersion,
+    #[error("finality policy mismatch: expected {expected}, observed {observed}")]
+    FinalityPolicyMismatch { expected: String, observed: String },
     #[error("chain id must not be empty")]
     EmptyChainId,
     #[error("block {block_hash} is missing its v3 reward claim")]
@@ -317,6 +319,7 @@ pub fn bind_reward_finality_boundary_v3(
 pub fn validate_reward_finality_boundary_v3(
     state: &ChainState,
     boundary: &RewardFinalityBoundaryV3,
+    expected_policy_version: &str,
 ) -> Result<(), RewardSettlementV3Error> {
     if boundary.schema_version != REWARD_FINALITY_BINDING_SCHEMA_VERSION_V3 {
         return Err(RewardSettlementV3Error::InvalidRewardClaim(format!(
@@ -324,8 +327,14 @@ pub fn validate_reward_finality_boundary_v3(
             boundary.schema_version
         )));
     }
-    if boundary.policy_version.trim().is_empty() {
+    if boundary.policy_version.trim().is_empty() || expected_policy_version.trim().is_empty() {
         return Err(RewardSettlementV3Error::EmptyFinalityPolicyVersion);
+    }
+    if boundary.policy_version != expected_policy_version {
+        return Err(RewardSettlementV3Error::FinalityPolicyMismatch {
+            expected: expected_policy_version.to_string(),
+            observed: boundary.policy_version.clone(),
+        });
     }
 
     let ordered = derive_ordered_dag_v2(state)?;
@@ -364,10 +373,14 @@ fn block_fees_atoms(block: &crate::types::Block) -> Result<u64, RewardSettlement
 pub fn derive_reward_settlement_snapshot_v3(
     state: &ChainState,
     cadence_segments: &[MonetaryCadenceSegment],
+    expected_finality_policy_version: &str,
     finality_boundary: Option<&RewardFinalityBoundaryV3>,
 ) -> Result<RewardSettlementSnapshotV3, RewardSettlementV3Error> {
     if state.chain_id.is_empty() {
         return Err(RewardSettlementV3Error::EmptyChainId);
+    }
+    if expected_finality_policy_version.trim().is_empty() {
+        return Err(RewardSettlementV3Error::EmptyFinalityPolicyVersion);
     }
 
     let ordered = derive_ordered_dag_v2(state)?;
@@ -377,7 +390,11 @@ pub fn derive_reward_settlement_snapshot_v3(
     validate_ordered_genesis(state, &ordered)?;
 
     if let Some(boundary) = finality_boundary {
-        validate_reward_finality_boundary_v3(state, boundary)?;
+        validate_reward_finality_boundary_v3(
+            state,
+            boundary,
+            expected_finality_policy_version,
+        )?;
     }
     let finalized_through = finality_boundary.map(|boundary| boundary.finalized_through_score);
     let current_monetary_score = ordered.blocks.len().saturating_sub(1) as u64;
@@ -520,6 +537,7 @@ mod tests {
         activation_score: 0,
         target_interval_ns: 3_600_000_000_000,
     }];
+    const FINALITY_TEST_POLICY: &str = FINALITY_TEST_POLICY;
 
     fn reward_block(
         chain_id: &str,
@@ -629,22 +647,48 @@ mod tests {
     fn old_finality_binding_cannot_survive_a_reordered_prefix() {
         let first = diamond_state("reward-finality", true);
         let reordered = diamond_state("reward-finality", false);
-        let boundary = bind_reward_finality_boundary_v3(&first, 1, "finality-test-v1").unwrap();
+        let boundary = bind_reward_finality_boundary_v3(&first, 1, FINALITY_TEST_POLICY).unwrap();
         assert_eq!(boundary.finalized_block_hash, "a");
         assert!(matches!(
-            validate_reward_finality_boundary_v3(&reordered, &boundary),
+            validate_reward_finality_boundary_v3(
+                &reordered,
+                &boundary,
+                FINALITY_TEST_POLICY,
+            ),
             Err(RewardSettlementV3Error::FinalityBlockMismatch { .. })
                 | Err(RewardSettlementV3Error::FinalityPrefixDigestMismatch)
         ));
     }
 
     #[test]
+    fn settlement_rejects_boundary_from_different_finality_policy() {
+        let state = diamond_state("reward-finality-policy", true);
+        let boundary =
+            bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
+
+        assert!(matches!(
+            derive_reward_settlement_snapshot_v3(
+                &state,
+                &ONE_SECOND,
+                "different-finality-policy-v1",
+                Some(&boundary),
+            ),
+            Err(RewardSettlementV3Error::FinalityPolicyMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn settlement_requires_both_finality_and_economic_maturity() {
         let state = diamond_state("reward-settlement", true);
-        let boundary = bind_reward_finality_boundary_v3(&state, 1, "finality-test-v1").unwrap();
+        let boundary = bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
 
         let immature =
-            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, Some(&boundary)).unwrap();
+            derive_reward_settlement_snapshot_v3(
+                &state,
+                &ONE_SECOND,
+                FINALITY_TEST_POLICY,
+                Some(&boundary),
+            ).unwrap();
         assert_eq!(immature.claims[0].monetary_score, 1);
         assert_eq!(immature.claims[0].status, RewardClaimStatusV3::FinalizedImmature);
         assert!(materializable_reward_utxos_v3(&immature).is_empty());
@@ -652,6 +696,7 @@ mod tests {
         let mature = derive_reward_settlement_snapshot_v3(
             &state,
             &ONE_HOUR_PER_SCORE,
+            FINALITY_TEST_POLICY,
             Some(&boundary),
         )
         .unwrap();
@@ -659,7 +704,12 @@ mod tests {
         assert!(!materializable_reward_utxos_v3(&mature).is_empty());
 
         let no_finality =
-            derive_reward_settlement_snapshot_v3(&state, &ONE_HOUR_PER_SCORE, None).unwrap();
+            derive_reward_settlement_snapshot_v3(
+                &state,
+                &ONE_HOUR_PER_SCORE,
+                FINALITY_TEST_POLICY,
+                None,
+            ).unwrap();
         assert_eq!(no_finality.claims[0].status, RewardClaimStatusV3::Provisional);
         assert!(materializable_reward_utxos_v3(&no_finality).is_empty());
     }
@@ -667,7 +717,12 @@ mod tests {
     #[test]
     fn settlement_supply_matches_exact_cumulative_schedule() {
         let state = diamond_state("reward-supply", true);
-        let snapshot = derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, None).unwrap();
+        let snapshot = derive_reward_settlement_snapshot_v3(
+            &state,
+            &ONE_SECOND,
+            FINALITY_TEST_POLICY,
+            None,
+        ).unwrap();
         assert_eq!(
             snapshot.total_authorized_subsidy_atoms,
             snapshot.scheduled_supply_atoms
@@ -701,7 +756,12 @@ mod tests {
             .push(hidden);
 
         assert!(matches!(
-            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, None),
+            derive_reward_settlement_snapshot_v3(
+            &state,
+            &ONE_SECOND,
+            FINALITY_TEST_POLICY,
+            None,
+        ),
             Err(RewardSettlementV3Error::MultipleRewardClaims { .. })
         ));
     }
@@ -734,10 +794,11 @@ mod tests {
             .unwrap()
             .transactions
             .push(fee_tx);
-        let boundary = bind_reward_finality_boundary_v3(&state, 1, "finality-test-v1").unwrap();
+        let boundary = bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
         let snapshot = derive_reward_settlement_snapshot_v3(
             &state,
             &ONE_HOUR_PER_SCORE,
+            FINALITY_TEST_POLICY,
             Some(&boundary),
         )
         .unwrap();

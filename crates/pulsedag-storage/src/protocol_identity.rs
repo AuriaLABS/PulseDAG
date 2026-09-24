@@ -94,12 +94,17 @@ impl Storage {
         &self,
         expected: &ProtocolActivationIdentity,
         expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
     ) -> Result<(), PulseError> {
         let record = self
             .protocol_monetary_activation_record()?
             .ok_or_else(|| storage_error("missing v3 monetary activation sidecar"))?;
         record
-            .verify_expected(expected, expected_cadence)
+            .verify_expected(
+                expected,
+                expected_cadence,
+                expected_reward_finality_policy_version,
+            )
             .map_err(storage_error)
     }
 
@@ -161,6 +166,7 @@ impl Storage {
         state: &pulsedag_core::ChainState,
         identity: &ProtocolActivationIdentity,
         cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
     ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
         identity.validate().map_err(storage_error)?;
         if identity.chain_id != state.chain_id {
@@ -176,12 +182,18 @@ impl Storage {
                 "v3 monetary activation identity DAG ordering does not match chain state",
             ));
         }
+        if state.contracts.config.enabled {
+            return Err(storage_error(
+                "v3.0.0 monetary activation requires smart-contract execution to remain inactive",
+            ));
+        }
 
         let protocol_record =
             ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
         let monetary_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
             identity.clone(),
             cadence_segments,
+            reward_finality_policy_version,
         )
         .map_err(storage_error)?;
         let meta_cf = self
@@ -412,6 +424,7 @@ mod tests {
         activation_score: 0,
         target_interval_ns: 1_000_000_000,
     }];
+    const V3_TEST_FINALITY: &str = "reward-finality-test-v1";
 
     #[test]
     fn monetary_snapshot_and_both_sidecars_round_trip_atomically() {
@@ -433,6 +446,7 @@ mod tests {
                 &state,
                 &expected,
                 &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
             )
             .unwrap();
         let loaded = storage
@@ -451,7 +465,11 @@ mod tests {
         );
         assert!(storage.monetary_protocol_snapshot_sidecar_complete().unwrap());
         storage
-            .verify_persisted_monetary_identity(&expected, &V3_TEST_CADENCE)
+            .verify_persisted_monetary_identity(
+                &expected,
+                &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
+            )
             .unwrap();
 
         drop(storage);
@@ -474,7 +492,11 @@ mod tests {
         );
 
         assert!(storage
-            .verify_persisted_monetary_identity(&expected, &V3_TEST_CADENCE)
+            .verify_persisted_monetary_identity(
+                &expected,
+                &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
+            )
             .is_err());
 
         drop(storage);
@@ -500,6 +522,7 @@ mod tests {
                 &state,
                 &expected,
                 &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
             )
             .unwrap();
 
@@ -508,7 +531,75 @@ mod tests {
             target_interval_ns: 500_000_000,
         }];
         assert!(storage
-            .verify_persisted_monetary_identity(&expected, &alternate)
+            .verify_persisted_monetary_identity(
+                &expected,
+                &alternate,
+                V3_TEST_FINALITY,
+            )
+            .is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn persisted_monetary_finality_policy_substitution_fails_closed() {
+        let path = temp_db_path("monetary-finality-drift");
+        let storage = Storage::open(&path).unwrap();
+        let state = init_chain_state_v3(
+            "pulsedag-v3-storage-finality".to_string(),
+            1_800_000_004,
+        )
+        .unwrap();
+        let expected = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        storage
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &expected,
+                &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
+            )
+            .unwrap();
+
+        assert!(storage
+            .verify_persisted_monetary_identity(
+                &expected,
+                &V3_TEST_CADENCE,
+                "reward-finality-other-v1",
+            )
+            .is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn monetary_persistence_rejects_enabled_smart_contracts() {
+        let path = temp_db_path("monetary-contracts-enabled");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = init_chain_state_v3(
+            "pulsedag-v3-storage-contracts".to_string(),
+            1_800_000_005,
+        )
+        .unwrap();
+        state.contracts.config.enabled = true;
+        let expected = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+
+        assert!(storage
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &expected,
+                &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
+            )
             .is_err());
 
         drop(storage);
@@ -534,6 +625,7 @@ mod tests {
                 &state,
                 &expected,
                 &V3_TEST_CADENCE,
+                V3_TEST_FINALITY,
             )
             .unwrap();
 

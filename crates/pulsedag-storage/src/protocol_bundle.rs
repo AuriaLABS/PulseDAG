@@ -226,13 +226,22 @@ impl Storage {
         &self,
         expected: &ProtocolActivationIdentity,
         expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
     ) -> Result<(ProtocolMonetarySnapshotExportBundleV3, SnapshotVerificationReport), PulseError> {
-        self.verify_persisted_monetary_identity(expected, expected_cadence)?;
+        self.verify_persisted_monetary_identity(
+            expected,
+            expected_cadence,
+            expected_reward_finality_policy_version,
+        )?;
         let monetary_record = self
             .protocol_monetary_activation_record()?
             .ok_or_else(|| storage_error("verified monetary activation sidecar disappeared before export"))?;
         monetary_record
-            .verify_expected(expected, expected_cadence)
+            .verify_expected(
+                expected,
+                expected_cadence,
+                expected_reward_finality_policy_version,
+            )
             .map_err(storage_error)?;
 
         let (protocol_bundle, report) = self.export_protocol_snapshot_bundle_v2(expected)?;
@@ -258,6 +267,7 @@ impl Storage {
         bundle: &ProtocolMonetarySnapshotExportBundleV3,
         expected: &ProtocolActivationIdentity,
         expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
     ) -> Result<SnapshotVerificationReport, PulseError> {
         if bundle.format_version != MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION {
             return Err(storage_error(format!(
@@ -267,7 +277,11 @@ impl Storage {
         }
         bundle
             .monetary_record
-            .verify_expected(expected, expected_cadence)
+            .verify_expected(
+                expected,
+                expected_cadence,
+                expected_reward_finality_policy_version,
+            )
             .map_err(storage_error)?;
         if bundle.protocol_bundle.activation_record.fingerprint
             != bundle.monetary_record.protocol_fingerprint
@@ -287,9 +301,14 @@ impl Storage {
         bundle: ProtocolMonetarySnapshotExportBundleV3,
         expected: &ProtocolActivationIdentity,
         expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
     ) -> Result<SnapshotVerificationReport, PulseError> {
-        let report =
-            self.verify_monetary_protocol_snapshot_bundle_v3(&bundle, expected, expected_cadence)?;
+        let report = self.verify_monetary_protocol_snapshot_bundle_v3(
+            &bundle,
+            expected,
+            expected_cadence,
+            expected_reward_finality_policy_version,
+        )?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -529,6 +548,7 @@ mod tests {
         activation_score: 0,
         target_interval_ns: 1_000_000_000,
     }];
+    const MONETARY_TEST_FINALITY: &str = "reward-finality-test-v1";
 
     #[test]
     fn monetary_protocol_bundle_v3_round_trips_both_sidecars_atomically() {
@@ -544,12 +564,14 @@ mod tests {
                 &state,
                 &expected,
                 &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
             )
             .unwrap();
         let (bundle, report) = source
             .export_monetary_protocol_snapshot_bundle_v3(
                 &expected,
                 &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
             )
             .unwrap();
         assert!(report.restore_guarantees_explicit);
@@ -567,6 +589,7 @@ mod tests {
                 bundle,
                 &expected,
                 &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
             )
             .unwrap();
 
@@ -594,12 +617,14 @@ mod tests {
                 &state,
                 &expected,
                 &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
             )
             .unwrap();
         let (bundle, _) = source
             .export_monetary_protocol_snapshot_bundle_v3(
                 &expected,
                 &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
             )
             .unwrap();
 
@@ -612,6 +637,7 @@ mod tests {
                 bundle,
                 &expected,
                 &alternate,
+                MONETARY_TEST_FINALITY,
             )
             .is_err());
         assert!(target.protocol_monetary_activation_record().unwrap().is_none());
