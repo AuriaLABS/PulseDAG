@@ -41,6 +41,7 @@ pub mod pow_v2;
 pub mod pqc;
 pub mod protocol;
 pub mod protocol_persistence;
+pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
@@ -164,6 +165,12 @@ pub use consensus_metadata::{
 pub use finality_v2::{
     derive_finality_boundary_v1, FinalityBoundaryV1, FinalityV2Error,
     GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+};
+
+pub use pulseclock_v1::{
+    observe_pulse_v1, observe_pulse_v1_at, PulseClockV1Error, PulseObservationV1, PULSE_DOMAIN_V1,
+    PULSE_FINALITY_DEPTH_UNPUBLISHED_V1, PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1, PULSE_VERSION_V1,
+    PULSE_WINDOW_K_V1,
 };
 
 pub use ordering::{
