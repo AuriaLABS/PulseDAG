@@ -393,6 +393,8 @@ pub fn decode_authorized_compact_relay_tip_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use crate::messages::NetworkMessage;
     use crate::messages::{
         build_compact_block_announcement_v1, plan_compact_block_reconstruction_v1,
