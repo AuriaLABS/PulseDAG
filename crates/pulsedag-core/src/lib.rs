@@ -27,6 +27,7 @@ pub mod mempool_resource_v1;
 pub mod mempool_v3;
 pub mod mined_block_v2;
 pub mod mined_block_v3;
+pub mod live_reward_settlement_v3;
 pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
@@ -137,6 +138,10 @@ pub use types::*;
 pub use retarget::{
     consensus_difficulty_snapshot, expected_difficulty, expected_target_u64,
     ConsensusDifficultySnapshot, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
+};
+
+pub use live_reward_settlement_v3::{
+    derive_live_reward_finality_boundary_v3, validate_live_reward_settlement_v3,
 };
 
 pub use reward_settlement_v3::{
