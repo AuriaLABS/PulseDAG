@@ -1,12 +1,16 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
+    monetary_v3::{monetary_policy_fingerprint_v3, MONETARY_POLICY_FINGERPRINT_V3},
     protocol::{ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1},
     state::ChainState,
     tx::TRANSACTION_VERSION_V1,
 };
 
 pub const PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION: u32 = 1;
+pub const PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION: u32 = 2;
+pub const PROTOCOL_MONETARY_BINDING_DOMAIN_V2: &[u8] = b"PulseDAG:protocol-monetary-activation:v2";
 
 /// Versioned persistence envelope for the protocol activation identity.
 ///
@@ -87,6 +91,92 @@ impl ProtocolActivationRecordV1 {
                 "persisted protocol activation fingerprint {} does not match expected {}",
                 self.fingerprint, expected_fingerprint
             ));
+        }
+        Ok(())
+    }
+}
+
+fn encode_monetary_binding_field(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u32::try_from(value.len()).expect("protocol monetary binding field exceeds u32::MAX");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value);
+}
+
+/// v3 persistence identity that cryptographically binds the existing protocol
+/// activation identity to the frozen monetary-policy fingerprint. This record
+/// is additive: legacy/v2 restore semantics remain unchanged until an explicit
+/// v3 activation path requires this schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolMonetaryActivationRecordV2 {
+    pub schema_version: u32,
+    pub identity: ProtocolActivationIdentity,
+    pub protocol_fingerprint: String,
+    pub monetary_policy_fingerprint: String,
+    pub binding_fingerprint: String,
+}
+
+impl ProtocolMonetaryActivationRecordV2 {
+    pub fn from_identity(identity: ProtocolActivationIdentity) -> Result<Self, String> {
+        identity.validate()?;
+        let protocol_fingerprint = identity.fingerprint()?;
+        let monetary_policy_fingerprint = monetary_policy_fingerprint_v3();
+        let binding_fingerprint =
+            Self::compute_binding_fingerprint(&protocol_fingerprint, &monetary_policy_fingerprint);
+        Ok(Self {
+            schema_version: PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION,
+            identity,
+            protocol_fingerprint,
+            monetary_policy_fingerprint,
+            binding_fingerprint,
+        })
+    }
+
+    fn compute_binding_fingerprint(
+        protocol_fingerprint: &str,
+        monetary_policy_fingerprint: &str,
+    ) -> String {
+        let mut bytes = Vec::with_capacity(192);
+        encode_monetary_binding_field(&mut bytes, PROTOCOL_MONETARY_BINDING_DOMAIN_V2);
+        encode_monetary_binding_field(&mut bytes, protocol_fingerprint.as_bytes());
+        encode_monetary_binding_field(&mut bytes, monetary_policy_fingerprint.as_bytes());
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    pub fn validate_internal(&self) -> Result<(), String> {
+        if self.schema_version != PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported protocol monetary activation record schema version {}; expected {}",
+                self.schema_version, PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION
+            ));
+        }
+        self.identity.validate()?;
+        let expected_protocol = self.identity.fingerprint()?;
+        if self.protocol_fingerprint != expected_protocol {
+            return Err("protocol fingerprint mismatch in monetary activation record".into());
+        }
+        if self.monetary_policy_fingerprint != MONETARY_POLICY_FINGERPRINT_V3
+            || self.monetary_policy_fingerprint != monetary_policy_fingerprint_v3()
+        {
+            return Err("monetary policy fingerprint mismatch in activation record".into());
+        }
+        let expected_binding = Self::compute_binding_fingerprint(
+            &self.protocol_fingerprint,
+            &self.monetary_policy_fingerprint,
+        );
+        if self.binding_fingerprint != expected_binding {
+            return Err("protocol/monetary binding fingerprint mismatch".into());
+        }
+        Ok(())
+    }
+
+    pub fn verify_expected(&self, expected: &ProtocolActivationIdentity) -> Result<(), String> {
+        self.validate_internal()?;
+        expected.validate()?;
+        if &self.identity != expected {
+            return Err(
+                "persisted protocol monetary activation identity does not match expected identity"
+                    .into(),
+            );
         }
         Ok(())
     }
