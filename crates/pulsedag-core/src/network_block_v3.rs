@@ -2,6 +2,8 @@ use crate::{
     accept::{AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult},
     audit_monetary_state_v3,
     errors::PulseError,
+    validate_live_reward_settlement_v3,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v2::{
         accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
@@ -86,6 +88,11 @@ pub fn prepare_monetary_v3_p2p_block_state(
     audit_monetary_state_v3(&prepared, cadence_segments).map_err(|error| {
         invalid_monetary_network_block(format!("accepted-state monetary audit failed: {error}"))
     })?;
+    validate_live_reward_settlement_v3(
+        &prepared,
+        cadence_segments,
+        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    )?;
 
     Ok(prepared)
 }
@@ -159,6 +166,11 @@ where
                     "accepted-state monetary audit failed: {error}"
                 ))
             })?;
+            validate_live_reward_settlement_v3(
+                prepared,
+                cadence_segments,
+                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            )?;
             persist(accepted_block, prepared)
         },
         broadcast,
