@@ -371,7 +371,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn finalizer_binds_state_root_without_embedding_issuance() {
         let state = init_chain_state("monetary-mining-v3-finalize".into());
         let identity = identity(&state);
