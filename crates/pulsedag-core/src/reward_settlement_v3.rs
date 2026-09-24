@@ -13,7 +13,7 @@ use crate::{
     types::{Hash, OutPoint, Transaction, TxOutput, Utxo},
 };
 
-pub const REWARD_CLAIM_TRANSACTION_VERSION_V3: u32 = TRANSACTION_VERSION_V2;
+pub const REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3: u32 = TRANSACTION_VERSION_V2;
 pub const REWARD_SETTLEMENT_SCHEMA_VERSION_V3: u32 = 1;
 pub const REWARD_FINALITY_BINDING_SCHEMA_VERSION_V3: u32 = 1;
 
@@ -134,9 +134,9 @@ fn validate_reward_claim_shape_v3(
     if chain_id.is_empty() {
         return Err(RewardSettlementV3Error::EmptyChainId);
     }
-    if tx.version != REWARD_CLAIM_TRANSACTION_VERSION_V3 {
+    if tx.version != REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3 {
         return Err(RewardSettlementV3Error::InvalidRewardClaim(format!(
-            "transaction version must be {REWARD_CLAIM_TRANSACTION_VERSION_V3}, got {}",
+            "transaction version must be {REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3}, got {}",
             tx.version
         )));
     }
@@ -191,7 +191,7 @@ pub fn build_reward_claim_transaction_v3(
 ) -> Result<Transaction, RewardSettlementV3Error> {
     let mut tx = Transaction {
         txid: String::new(),
-        version: REWARD_CLAIM_TRANSACTION_VERSION_V3,
+        version: REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3,
         inputs: Vec::new(),
         outputs: vec![TxOutput {
             address: beneficiary.to_string(),
@@ -398,7 +398,7 @@ pub fn derive_reward_settlement_snapshot_v3(
             .transactions
             .iter()
             .skip(1)
-            .any(|tx| tx.version == REWARD_CLAIM_TRANSACTION_VERSION_V3 && tx.inputs.is_empty())
+            .any(|tx| tx.version == REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3 && tx.inputs.is_empty())
         {
             return Err(RewardSettlementV3Error::MultipleRewardClaims {
                 block_hash: block_hash.clone(),
