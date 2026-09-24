@@ -26,7 +26,8 @@ pub use fast_sync_transfer::{
     MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES,
 };
 pub use protocol_bundle::{
-    ProtocolSnapshotExportBundleV2, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
+    ProtocolMonetarySnapshotExportBundleV3, ProtocolSnapshotExportBundleV2,
+    MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
 };
 pub use protocol_identity::{
     PROTOCOL_ACTIVATION_STORAGE_KEY, PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
