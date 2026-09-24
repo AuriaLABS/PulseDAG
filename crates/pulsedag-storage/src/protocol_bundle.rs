@@ -595,7 +595,11 @@ mod tests {
 
         assert!(target.monetary_protocol_snapshot_sidecar_complete().unwrap());
         target
-            .verify_persisted_monetary_identity(&expected, &MONETARY_TEST_CADENCE)
+            .verify_persisted_monetary_identity(
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
             .unwrap();
 
         drop(source);

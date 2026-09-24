@@ -537,7 +537,7 @@ mod tests {
         activation_score: 0,
         target_interval_ns: 3_600_000_000_000,
     }];
-    const FINALITY_TEST_POLICY: &str = FINALITY_TEST_POLICY;
+    const FINALITY_TEST_POLICY: &str = "finality-test-v1";
 
     fn reward_block(
         chain_id: &str,
