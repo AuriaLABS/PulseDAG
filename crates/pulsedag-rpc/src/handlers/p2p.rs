@@ -1394,8 +1394,7 @@ mod tests {
     #[derive(Clone)]
     struct TestP2pHandle {
         status: P2pStatus,
-        local_protocol_capabilities:
-            Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
+        local_protocol_capabilities: Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
     }
 
     impl P2pHandle for TestP2pHandle {
