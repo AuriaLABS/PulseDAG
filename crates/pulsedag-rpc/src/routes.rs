@@ -45,6 +45,7 @@ use crate::{
         orphans::get_orphans,
         p2p::{get_p2p_peers, get_p2p_propagation, get_p2p_status, get_p2p_topics},
         policy::get_policy,
+        pulse::get_pulse,
         pow::get_pow_info,
         pow_auto_run::post_pow_auto_run,
         pow_check::post_pow_check_header,
@@ -646,6 +647,7 @@ where
         .route("/readiness", get(get_readiness::<S>))
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
+        .route("/pulse", get(get_pulse::<S>))
 }
 
 fn public_routes<S>() -> Router<S>
@@ -711,6 +713,7 @@ where
         .route("/readiness", get(get_readiness::<S>))
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
+        .route("/pulse", get(get_pulse::<S>))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))

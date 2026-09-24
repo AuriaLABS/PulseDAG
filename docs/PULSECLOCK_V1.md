@@ -1,6 +1,6 @@
 # PulseClock v1
 
-Status: **PLANNING SPEC**
+Status: **OBSERVATIONAL RUNTIME IN TREE** (not consensus-activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1157, #794
@@ -72,7 +72,7 @@ Timestamp policy remains the existing header policy. PulseClock does not invent 
 
 ## Observational API
 
-Planning surface. Not an authorization to change `API_V1.md` on the Task31 candidate.
+Observational read surface on later and current node builds. Shipping this endpoint does **not** activate covenants, change Task31 protocol identity, or authorize `contracts_enabled=true`.
 
 `GET /api/v1/pulse`
 
