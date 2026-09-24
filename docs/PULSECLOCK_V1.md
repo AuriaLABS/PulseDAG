@@ -79,15 +79,19 @@ Observational read surface on later and current node builds. Shipping this endpo
 ```json
 {
   "pulse_version": 1,
+  "domain": "PulseDAG:pulse:v1",
   "chain_id": "<hex or textual chain id>",
   "selected_tip": "<block hash>",
   "pulse_height": 0,
   "pulse_time": 0,
   "window_k": 11,
-  "uncertainty_secs": 0,
+  "sample_count": 1,
+  "uncertainty_secs": 600,
   "finality_lag": 0
 }
 ```
+
+`sample_count` is the number of admitted selected-chain timestamps actually used. When it is below 3, `uncertainty_secs` is the policy maximum (600). The genesis-only observation is therefore `pulse_time=0`, `uncertainty_secs=600`, not a zero-uncertainty clock.
 
 Fail closed if selected tip or blue-score metadata is unavailable. Do not fall back to host time.
 
@@ -128,7 +132,7 @@ A majority of recent blue timestamps skewed to the policy edge MUST be visible a
 ## Evidence required before any later activation
 
 - Golden vectors: fixed DAG fixtures → exact pulse tuples.
-- Reorg fixtures: selected-tip change → new tuple, then stable.
+- Reorg fixtures: selected-tip change → new tuple, then stable. Covered by `selected_parent_reorg_changes_tuple_then_stays_stable` and `orphan_that_does_not_change_selected_tip_keeps_tuple`.
 - Skew fixtures: clipped median remains deterministic.
 - Replay: `pulsedag verify` reconstructs historical pulse tuples from stored selected-chain metadata without host time.
 

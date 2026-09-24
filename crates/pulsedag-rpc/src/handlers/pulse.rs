@@ -13,6 +13,7 @@ pub struct PulseV1Data {
     pub pulse_height: u64,
     pub pulse_time: i64,
     pub window_k: u32,
+    pub sample_count: u32,
     pub uncertainty_secs: u32,
     pub finality_lag: u64,
 }
@@ -27,6 +28,7 @@ impl From<PulseObservationV1> for PulseV1Data {
             pulse_height: pulse.pulse_height,
             pulse_time: pulse.pulse_time,
             window_k: pulse.window_k,
+            sample_count: pulse.sample_count,
             uncertainty_secs: pulse.uncertainty_secs,
             finality_lag: pulse.finality_lag,
         }

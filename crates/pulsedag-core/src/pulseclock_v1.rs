@@ -328,4 +328,59 @@ mod tests {
         assert_eq!(pulse.pulse_time, 10);
         assert_eq!(pulse.uncertainty_secs, 600);
     }
+
+    #[test]
+    fn selected_parent_reorg_changes_tuple_then_stays_stable() {
+        let mut state = with_genesis_time();
+        let genesis = state.dag.genesis_hash.clone();
+        extend_selected(&mut state, block("a1", &genesis, 1, 1, 1_700_000_010));
+        extend_selected(&mut state, block("a2", "a1", 2, 2, 1_700_000_020));
+
+        let before = observe_pulse_v1(&state).unwrap();
+        assert_eq!(before.selected_tip, "a2");
+        assert_eq!(before.pulse_height, 2);
+        // 3 samples: clip 1_700_000_000 and 020; remaining 010. uncertainty 1.
+        assert_eq!(before.pulse_time, 1_700_000_010);
+        assert_eq!(before.uncertainty_secs, 1);
+
+        // Competing branch with higher blue_score wins the preferred tip.
+        extend_selected(&mut state, block("b1", &genesis, 1, 1, 1_700_001_000));
+        extend_selected(&mut state, block("b2", "b1", 2, 2, 1_700_001_010));
+        extend_selected(&mut state, block("b3", "b2", 3, 3, 1_700_001_020));
+
+        let after = observe_pulse_v1(&state).unwrap();
+        assert_eq!(after.selected_tip, "b3");
+        assert_eq!(after.pulse_height, 3);
+        assert_ne!(
+            (before.selected_tip.clone(), before.pulse_time, before.pulse_height),
+            (after.selected_tip.clone(), after.pulse_time, after.pulse_height)
+        );
+        // genesis + b1..b3: clip 1_700_000_000 and 1_020; remaining 1000,1010.
+        assert_eq!(after.pulse_time, 1_700_001_005);
+        assert_eq!(after.uncertainty_secs, 5);
+
+        let again = observe_pulse_v1_at(&state, &after.selected_tip).unwrap();
+        assert_eq!(after, again);
+
+        // Observation at the abandoned tip stays the pre-reorg tuple.
+        let abandoned = observe_pulse_v1_at(&state, &before.selected_tip).unwrap();
+        assert_eq!(abandoned.selected_tip, before.selected_tip);
+        assert_eq!(abandoned.pulse_height, before.pulse_height);
+        assert_eq!(abandoned.pulse_time, before.pulse_time);
+        assert_eq!(abandoned.uncertainty_secs, before.uncertainty_secs);
+    }
+
+    #[test]
+    fn orphan_that_does_not_change_selected_tip_keeps_tuple() {
+        let mut state = with_genesis_time();
+        let genesis = state.dag.genesis_hash.clone();
+        extend_selected(&mut state, block("a1", &genesis, 1, 1, 1_700_000_010));
+        extend_selected(&mut state, block("a2", "a1", 2, 2, 1_700_000_020));
+        let before = observe_pulse_v1(&state).unwrap();
+
+        extend_selected(&mut state, block("orphan", &genesis, 1, 1, 1_700_009_999));
+        let after = observe_pulse_v1(&state).unwrap();
+        assert_eq!(after, before);
+        assert_eq!(after.selected_tip, "a2");
+    }
 }
