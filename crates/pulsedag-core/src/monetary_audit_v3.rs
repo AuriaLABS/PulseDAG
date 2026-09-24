@@ -5,6 +5,7 @@ use crate::{
     monetary_v3::{
         monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3,
         total_supply_atoms_for_score, MonetaryCadenceSegment, MonetaryV3Error,
+        GENESIS_ISSUANCE_ATOMS,
     },
     ordering_v2::{derive_ordered_dag_v2, OrderingV2Error},
     state::ChainState,
@@ -134,7 +135,7 @@ pub fn audit_monetary_state_v3(
         scheduled_supply_atoms,
         authorized_subsidy_atoms,
         eligible_fee_transfers_atoms,
-        genesis_issuance_atoms: 0,
+        genesis_issuance_atoms: GENESIS_ISSUANCE_ATOMS,
         hidden_issuance_paths: 0,
     })
 }

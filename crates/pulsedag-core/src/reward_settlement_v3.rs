@@ -407,7 +407,7 @@ pub fn derive_reward_settlement_snapshot_v3(
             .transactions
             .iter()
             .skip(1)
-            .any(|tx| tx.version == REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3 && tx.inputs.is_empty())
+            .any(|tx| tx.inputs.is_empty())
         {
             return Err(RewardSettlementV3Error::MultipleRewardClaims {
                 block_hash: block_hash.clone(),
@@ -676,6 +676,34 @@ mod tests {
             snapshot.scheduled_supply_atoms,
             total_supply_atoms_for_score(snapshot.current_monetary_score, &ONE_SECOND).unwrap()
         );
+    }
+
+    #[test]
+    fn settlement_rejects_any_additional_inputless_transaction() {
+        let mut state = diamond_state("reward-hidden-issuance", true);
+        let hidden = Transaction {
+            txid: "hidden-v3".into(),
+            version: 3,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                address: "pulse1hidden".into(),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 99,
+        };
+        state
+            .dag
+            .blocks
+            .get_mut("a")
+            .unwrap()
+            .transactions
+            .push(hidden);
+
+        assert!(matches!(
+            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, None),
+            Err(RewardSettlementV3Error::MultipleRewardClaims { .. })
+        ));
     }
 
     #[test]
