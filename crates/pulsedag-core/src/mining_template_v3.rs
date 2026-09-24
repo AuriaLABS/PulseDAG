@@ -3,15 +3,20 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::PulseError,
     mining_protocol::derive_activated_v2_mining_parent_context,
+    mining_state_v2::{
+        finalize_activated_v2_mining_candidate_state, ActivatedV2MiningStateContext,
+    },
     monetary_v3::{
         monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, MonetaryCadenceSegment,
     },
-    protocol::ProtocolActivationIdentity,
+    protocol::{ProtocolActivationIdentity, BLOCK_HEADER_VERSION_V2},
     retarget::expected_difficulty_for_parent,
-    reward_settlement_v3::build_reward_claim_transaction_v3,
+    reward_settlement_v3::{
+        build_reward_claim_transaction_v3, validate_reward_claim_transaction_v3,
+    },
     state::ChainState,
     tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
-    types::{compute_merkle_root, Hash, Transaction},
+    types::{compute_merkle_root, Block, BlockHeader, Hash, Transaction},
 };
 
 pub const MONETARY_MINING_TEMPLATE_SCHEMA_V3: u32 = 1;
@@ -32,6 +37,17 @@ pub struct MonetaryMiningTemplateV3 {
     pub transactions: Vec<Transaction>,
     pub reward_claim_txid: Hash,
     pub eligible_fees_atoms: u64,
+    pub reward_settlement_deferred: bool,
+    pub ready_for_nonce_search: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizedMonetaryMiningCandidateV3 {
+    pub block: Block,
+    pub state: ActivatedV2MiningStateContext,
+    pub protocol_fingerprint: String,
+    pub monetary_policy_fingerprint: String,
+    pub monetary_cadence_fingerprint: String,
     pub reward_settlement_deferred: bool,
     pub ready_for_nonce_search: bool,
 }
@@ -162,6 +178,112 @@ pub fn build_monetary_mining_template_v3(
     })
 }
 
+/// Bind an amountless v3 monetary template to the authoritative state root and
+/// block hash before nonce search.
+///
+/// Issuance is still not embedded in the candidate: the first transaction is a
+/// zero-amount reward claim and settlement remains deferred until canonical DAG
+/// order is accepted. This function only closes the mining-template/state-root
+/// gap and deliberately reuses the activated-v2 header/state replay machinery.
+///
+/// The supplied fingerprints and cadence are re-derived and checked so a caller
+/// cannot finalize a template under a different monetary or protocol identity.
+pub fn finalize_monetary_mining_template_v3(
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+    cadence_segments: &[MonetaryCadenceSegment],
+    template: &MonetaryMiningTemplateV3,
+) -> Result<FinalizedMonetaryMiningCandidateV3, PulseError> {
+    if template.schema_version != MONETARY_MINING_TEMPLATE_SCHEMA_V3 {
+        return Err(invalid_template(format!(
+            "unsupported schema version {}, expected {}",
+            template.schema_version, MONETARY_MINING_TEMPLATE_SCHEMA_V3
+        )));
+    }
+    if template.ready_for_nonce_search {
+        return Err(invalid_template(
+            "pre-state template must not already be marked ready for nonce search",
+        ));
+    }
+    if !template.reward_settlement_deferred {
+        return Err(invalid_template(
+            "reward settlement must remain deferred until canonical ordering",
+        ));
+    }
+
+    let expected_protocol_fingerprint = identity
+        .fingerprint()
+        .map_err(|error| invalid_template(format!("protocol identity: {error}")))?;
+    if template.protocol_fingerprint != expected_protocol_fingerprint {
+        return Err(invalid_template("protocol fingerprint mismatch"));
+    }
+
+    let expected_policy_fingerprint = monetary_policy_fingerprint_v3();
+    if template.monetary_policy_fingerprint != expected_policy_fingerprint {
+        return Err(invalid_template("monetary policy fingerprint mismatch"));
+    }
+
+    let expected_cadence_fingerprint = monetary_cadence_fingerprint_v3(cadence_segments)
+        .map_err(|error| invalid_template(error.to_string()))?;
+    if template.monetary_cadence_fingerprint != expected_cadence_fingerprint {
+        return Err(invalid_template("monetary cadence fingerprint mismatch"));
+    }
+
+    let claim = template
+        .transactions
+        .first()
+        .ok_or_else(|| invalid_template("template has no reward claim"))?;
+    validate_reward_claim_transaction_v3(claim, &identity.chain_id)
+        .map_err(|error| invalid_template(error.to_string()))?;
+    if claim.txid != template.reward_claim_txid {
+        return Err(invalid_template("reward claim txid mismatch"));
+    }
+    if claim.outputs.len() != 1 || claim.outputs[0].amount != 0 {
+        return Err(invalid_template(
+            "reward claim must remain amountless before ordered settlement",
+        ));
+    }
+    if template.transactions.iter().skip(1).any(|tx| tx.inputs.is_empty()) {
+        return Err(invalid_template(
+            "template contains an additional inputless transaction",
+        ));
+    }
+
+    let merkle_root = compute_merkle_root(&template.transactions);
+    if merkle_root != template.merkle_root {
+        return Err(invalid_template("template merkle root mismatch"));
+    }
+
+    let mut block = Block {
+        hash: String::new(),
+        header: BlockHeader {
+            version: BLOCK_HEADER_VERSION_V2,
+            parents: template.parents.clone(),
+            timestamp: template.timestamp,
+            difficulty: template.difficulty,
+            nonce: 0,
+            merkle_root,
+            state_root: "00".repeat(32),
+            blue_score: template.blue_score,
+            height: template.height,
+        },
+        transactions: template.transactions.clone(),
+    };
+
+    let finalized_state =
+        finalize_activated_v2_mining_candidate_state(&mut block, state, identity)?;
+
+    Ok(FinalizedMonetaryMiningCandidateV3 {
+        block,
+        state: finalized_state,
+        protocol_fingerprint: expected_protocol_fingerprint,
+        monetary_policy_fingerprint: expected_policy_fingerprint,
+        monetary_cadence_fingerprint: expected_cadence_fingerprint,
+        reward_settlement_deferred: true,
+        ready_for_nonce_search: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +368,81 @@ mod tests {
 
         assert_eq!(template.eligible_fees_atoms, 9);
         assert_eq!(template.transactions[0].outputs[0].amount, 0);
+    }
+
+    #[test]
+    #[test]
+    fn finalizer_binds_state_root_without_embedding_issuance() {
+        let state = init_chain_state("monetary-mining-v3-finalize".into());
+        let identity = identity(&state);
+        let parent_ts = state.dag.blocks[&state.dag.genesis_hash].header.timestamp;
+        let template = build_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &ONE_SECOND,
+            "pulse1miner",
+            10,
+            parent_ts.saturating_add(1),
+            vec![],
+        )
+        .unwrap();
+
+        let finalized =
+            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &template)
+                .unwrap();
+
+        assert!(finalized.ready_for_nonce_search);
+        assert!(finalized.reward_settlement_deferred);
+        assert_ne!(finalized.block.header.state_root, "00".repeat(32));
+        assert_eq!(finalized.block.transactions[0].outputs[0].amount, 0);
+        assert_eq!(finalized.state.block_hash, finalized.block.hash);
+        assert_eq!(
+            finalized.monetary_policy_fingerprint,
+            crate::MONETARY_POLICY_FINGERPRINT_V3
+        );
+    }
+
+    #[test]
+    fn finalizer_rejects_identity_or_cadence_substitution() {
+        let state = init_chain_state("monetary-mining-v3-bindings".into());
+        let identity = identity(&state);
+        let parent_ts = state.dag.blocks[&state.dag.genesis_hash].header.timestamp;
+        let template = build_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &ONE_SECOND,
+            "pulse1miner",
+            11,
+            parent_ts.saturating_add(1),
+            vec![],
+        )
+        .unwrap();
+
+        let alternate = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 2_000_000_000,
+        }];
+        assert!(finalize_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &alternate,
+            &template
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("cadence fingerprint"));
+
+        let mut tampered = template.clone();
+        tampered.monetary_policy_fingerprint = "00".repeat(32);
+        assert!(finalize_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &ONE_SECOND,
+            &tampered
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("policy fingerprint"));
     }
 
     #[test]
