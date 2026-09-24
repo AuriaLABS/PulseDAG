@@ -376,4 +376,45 @@ mod tests {
             "verified_record_v1"
         );
     }
+
+    #[test]
+    fn monetary_record_binds_protocol_and_frozen_policy() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-mainnet-candidate",
+            "genesis-v3",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let record = ProtocolMonetaryActivationRecordV2::from_identity(expected.clone()).unwrap();
+
+        assert_eq!(
+            record.schema_version,
+            PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION
+        );
+        assert_eq!(
+            record.monetary_policy_fingerprint,
+            MONETARY_POLICY_FINGERPRINT_V3
+        );
+        assert_eq!(record.protocol_fingerprint, expected.fingerprint().unwrap());
+        assert!(record.validate_internal().is_ok());
+        assert!(record.verify_expected(&expected).is_ok());
+    }
+
+    #[test]
+    fn monetary_record_fails_closed_on_policy_or_binding_drift() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-mainnet-candidate",
+            "genesis-v3",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+
+        let mut wrong_policy =
+            ProtocolMonetaryActivationRecordV2::from_identity(expected.clone()).unwrap();
+        wrong_policy.monetary_policy_fingerprint = "00".repeat(32);
+        assert!(wrong_policy.validate_internal().is_err());
+
+        let mut wrong_binding = ProtocolMonetaryActivationRecordV2::from_identity(expected).unwrap();
+        wrong_binding.binding_fingerprint = "11".repeat(32);
+        assert!(wrong_binding.validate_internal().is_err());
+    }
+
 }
