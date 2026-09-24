@@ -63,6 +63,7 @@ pub mod tx_v3;
 pub mod types;
 pub mod validation;
 pub mod validation_v2;
+pub mod validation_v3;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -103,6 +104,10 @@ pub use tx_rejection::{
     classify_transaction_version, classify_typed_transaction_error, TransactionRejectionClass,
 };
 pub use tx_submission::compute_submission_id_v2;
+pub use validation_v3::{
+    validate_ordered_monetary_reward_v3, MonetaryValidationV3Error, ValidatedMonetaryRewardV3,
+};
+
 pub use tx_v3::{
     canonical_transaction_bytes_v3, canonical_unsigned_transaction_bytes_v3, compute_txid_v3,
     signing_message_v3, TRANSACTION_VERSION_V3,
