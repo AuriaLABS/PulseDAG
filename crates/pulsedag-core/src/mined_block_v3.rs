@@ -2,6 +2,8 @@ use crate::{
     accept::{AcceptSource, AtomicBlockAcceptance},
     audit_monetary_state_v3,
     errors::PulseError,
+    validate_live_reward_settlement_v3,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     mined_block_v2::accept_activated_v2_mined_block_atomically,
     monetary_v3::MonetaryCadenceSegment,
     protocol::ProtocolActivationIdentity,
