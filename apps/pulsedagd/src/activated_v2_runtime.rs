@@ -85,8 +85,8 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
-        materialize_authoritative_state_v2, CONSENSUS_METADATA_SCHEMA_VERSION,
-        GHOSTDAG_V1_ORDERING_VERSION,
+        init_chain_state_v3, materialize_authoritative_state_v2, MonetaryCadenceSegment,
+        CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
     };
     use pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION;
 
@@ -141,6 +141,39 @@ mod tests {
         assert!(runtime.pending_is_empty());
         assert!(runtime.staging().is_empty());
         assert!(identity.is_none());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn monetary_sidecar_without_activated_capabilities_refuses_legacy_startup() {
+        let path = temp_db_path("monetary-without-capabilities");
+        let storage = Storage::open(&path).unwrap();
+        let state =
+            init_chain_state_v3("task1045-daemon-no-legacy-fallback".to_string(), 1_800_000_000)
+                .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 1_000_000_000,
+        }];
+        storage
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &identity,
+                &cadence,
+                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            )
+            .unwrap();
+
+        let error = restore_activated_v2_p2p_runtime_for_startup(&storage, None, state)
+            .expect_err("monetary sidecar must never permit legacy startup fallback");
+        assert!(error.to_string().contains("refusing legacy startup fallback"));
+
+        drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
 
