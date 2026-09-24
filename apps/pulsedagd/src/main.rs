@@ -3817,7 +3817,122 @@ async fn main() -> Result<()> {
                         };
 
                         if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
-                            let drive =
+                            let monetary_activation =
+                                match storage.protocol_monetary_activation_record() {
+                                    Ok(record) => record,
+                                    Err(error) => {
+                                        let reason = format!(
+                                            "v3 monetary activation sidecar is invalid for inbound block {}: {}",
+                                            block.hash, error
+                                        );
+                                        warn!(
+                                            block_hash = %block.hash,
+                                            error = %error,
+                                            "rejected inbound p2p block because monetary activation sidecar failed closed"
+                                        );
+                                        let _ = storage.append_runtime_event(
+                                            "warn",
+                                            "peer_block_monetary_sidecar_rejected",
+                                            &reason,
+                                        );
+                                        block_requests.resolve(&block.hash);
+                                        let mut rt = runtime.write().await;
+                                        rt.blockdata_received =
+                                            rt.blockdata_received.saturating_add(1);
+                                        rt.rejected_p2p_blocks =
+                                            rt.rejected_p2p_blocks.saturating_add(1);
+                                        rt.pulsedag_blocks_rejected_total =
+                                            rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                        rt.record_rejected_block_reason(
+                                            "monetary_sidecar_fail_closed",
+                                        );
+                                        rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                        rt.sync_state = "degraded".to_string();
+                                        rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                        rt.sync_pipeline
+                                            .fallback_after_failure(reason, now_unix());
+                                        continue;
+                                    }
+                                };
+
+                            if let Some(monetary) = monetary_activation.as_ref() {
+                                if monetary.identity != identity {
+                                    let reason = format!(
+                                        "v3 monetary activation identity mismatch for inbound block {}",
+                                        block.hash
+                                    );
+                                    warn!(
+                                        block_hash = %block.hash,
+                                        "rejected inbound p2p block because monetary identity mismatched activated protocol"
+                                    );
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_monetary_identity_rejected",
+                                        &reason,
+                                    );
+                                    block_requests.resolve(&block.hash);
+                                    let mut rt = runtime.write().await;
+                                    rt.blockdata_received =
+                                        rt.blockdata_received.saturating_add(1);
+                                    rt.rejected_p2p_blocks =
+                                        rt.rejected_p2p_blocks.saturating_add(1);
+                                    rt.pulsedag_blocks_rejected_total =
+                                        rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                    rt.record_rejected_block_reason(
+                                        "monetary_identity_fail_closed",
+                                    );
+                                    rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                    rt.sync_pipeline
+                                        .fallback_after_failure(reason, now_unix());
+                                    continue;
+                                }
+                            }
+
+                            let drive = if let Some(monetary) = monetary_activation.as_ref() {
+                                pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
+                                    block.clone(),
+                                    &mut guard,
+                                    &mut activated_v2_p2p_runtime,
+                                    &identity,
+                                    &monetary.monetary_cadence_segments,
+                                    |state: &pulsedag_core::ChainState,
+                                     durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                        storage.persist_activated_v2_p2p_runtime_snapshot(
+                                            &identity,
+                                            state,
+                                            durable_runtime,
+                                        )
+                                    },
+                                    |candidate: &pulsedag_core::Block,
+                                     prepared: &pulsedag_core::ChainState,
+                                     durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                        storage.persist_activated_v2_p2p_block_and_runtime(
+                                            candidate,
+                                            &identity,
+                                            prepared,
+                                            durable_runtime,
+                                        )
+                                    },
+                                    |bundle: &[pulsedag_core::Block],
+                                     prepared: &pulsedag_core::ChainState,
+                                     durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                        storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                            bundle,
+                                            &identity,
+                                            prepared,
+                                            durable_runtime,
+                                        )
+                                    },
+                                    |candidate| {
+                                        if let Some(ref p2p_handle) = p2p {
+                                            p2p_handle.broadcast_block(candidate)?;
+                                        }
+                                        Ok(())
+                                    },
+                                )
+                            } else {
                                 pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
                                     block.clone(),
                                     &mut guard,
@@ -3859,7 +3974,8 @@ async fn main() -> Result<()> {
                                         }
                                         Ok(())
                                     },
-                                );
+                                )
+                            };
                             let drive = match drive {
                                 Ok(drive) => drive,
                                 Err(error) => {
