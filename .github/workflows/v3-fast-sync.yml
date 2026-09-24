@@ -31,6 +31,7 @@ on:
       - 'crates/pulsedag-p2p/src/messages.rs'
       - 'crates/pulsedag-p2p/src/messages/compact_relay_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/compact_relay_carrier_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/compact_relay_controller_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/compact_relay_runtime_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
@@ -126,6 +127,10 @@ jobs:
       - name: Compact relay runtime session regressions
         run: |
           cargo test --locked -p pulsedag-p2p compact_relay_runtime_v1::tests:: -- --nocapture
+
+      - name: Compact relay controller regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p compact_relay_controller_v1::tests:: -- --nocapture
 
       - name: Live compact relay transport regressions
         run: |

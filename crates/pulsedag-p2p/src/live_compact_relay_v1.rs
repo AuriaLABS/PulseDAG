@@ -169,6 +169,46 @@ pub(super) fn authorized_compact_relay_from_tip(
     Ok(Some((peer_id.to_string(), carrier.wire)))
 }
 
+#[allow(dead_code)]
+pub(super) fn dispatch_reconstructed_compact_block_v1(
+    chain_id: &str,
+    peer_id: &str,
+    block: Block,
+    inner: &Arc<Mutex<InnerState>>,
+    inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
+) -> Result<(), PulseError> {
+    {
+        let guard = inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if guard.chain_id != chain_id {
+            return Err(PulseError::Internal(format!(
+                "compact-relay reconstructed block chain mismatch: state={} submit={chain_id}",
+                guard.chain_id
+            )));
+        }
+        if !protocol_sync_peer_is_authorized(&guard, peer_id)
+            || !guard.compact_relay_runtime.peer_session_authorized(peer_id)
+        {
+            return Err(PulseError::Internal(format!(
+                "compact-relay reconstructed block submission is not authorized for peer {peer_id}"
+            )));
+        }
+    }
+
+    let encoded = serde_json::to_vec(&NetworkMessage::Block {
+        chain_id: chain_id.to_string(),
+        block,
+    })
+    .map_err(|error| {
+        PulseError::Internal(format!(
+            "compact-relay reconstructed block serialization failed: {error}"
+        ))
+    })?;
+    dispatch_network_message(chain_id, &encoded, Some(peer_id), inner, inbound_tx);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +218,7 @@ mod tests {
     use crate::messages::{CompactTransactionRequestV1, COMPACT_DAG_RELAY_VERSION_V1};
     use crate::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
     use pulsedag_core::{
+        types::{compute_block_hash, compute_merkle_root, BlockHeader, TxOutput},
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
         GHOSTDAG_V1_FINALITY_POLICY_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
     };
@@ -185,6 +226,10 @@ mod tests {
     const CHAIN_ID: &str = "compact-relay-live-io-testnet";
     const LOCAL_PEER: &str = "compact-relay-local-peer";
     const REMOTE_PEER: &str = "compact-relay-remote-peer";
+
+    fn same_block(left: &Block, right: &Block) -> bool {
+        serde_json::to_vec(left).unwrap() == serde_json::to_vec(right).unwrap()
+    }
 
     fn protocol_capabilities() -> ProtocolCapabilitiesV1 {
         ProtocolCapabilitiesV1 {
@@ -249,6 +294,36 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn block() -> Block {
+        let transactions = vec![Transaction {
+            txid: "tx-live-compact".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                address: "recipient".into(),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 0,
+        }];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 1,
+            height: 1,
+        };
+        Block {
+            hash: compute_block_hash(&header),
+            header,
+            transactions,
+        }
     }
 
     #[test]
@@ -324,6 +399,80 @@ mod tests {
         let legacy: NetworkMessage = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(legacy.kind(), "Tips");
         assert_eq!(legacy.chain_id(), CHAIN_ID);
+    }
+
+    #[test]
+    fn reconstructed_block_reenters_the_canonical_network_block_dispatch() {
+        let inner = Arc::new(Mutex::new(authorized_state()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let expected = block();
+
+        dispatch_reconstructed_compact_block_v1(
+            CHAIN_ID,
+            REMOTE_PEER,
+            expected.clone(),
+            &inner,
+            &inbound_tx,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block(observed)) if same_block(&observed, &expected)
+        ));
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.blocks_received, 1);
+        assert_eq!(guard.invalid_blocks_received, 0);
+    }
+
+    #[test]
+    fn reconstructed_and_full_blocks_share_invalid_merkle_rejection() {
+        let compact_inner = Arc::new(Mutex::new(authorized_state()));
+        let direct_inner = Arc::new(Mutex::new(InnerState {
+            chain_id: CHAIN_ID.to_string(),
+            ..InnerState::default()
+        }));
+        let (compact_tx, mut compact_rx) = mpsc::unbounded_channel();
+        let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
+
+        let mut invalid = block();
+        invalid.header.merkle_root = "00".repeat(32);
+        invalid.hash = compute_block_hash(&invalid.header);
+
+        dispatch_reconstructed_compact_block_v1(
+            CHAIN_ID,
+            REMOTE_PEER,
+            invalid.clone(),
+            &compact_inner,
+            &compact_tx,
+        )
+        .unwrap();
+
+        let direct = serde_json::to_vec(&NetworkMessage::Block {
+            chain_id: CHAIN_ID.to_string(),
+            block: invalid,
+        })
+        .unwrap();
+        dispatch_network_message(
+            CHAIN_ID,
+            &direct,
+            Some(REMOTE_PEER),
+            &direct_inner,
+            &direct_tx,
+        );
+
+        assert!(compact_rx.try_recv().is_err());
+        assert!(direct_rx.try_recv().is_err());
+
+        let compact = compact_inner.lock().unwrap();
+        let direct = direct_inner.lock().unwrap();
+        assert_eq!(compact.invalid_blocks_received, 1);
+        assert_eq!(direct.invalid_blocks_received, 1);
+        assert_eq!(compact.last_drop_reason, direct.last_drop_reason);
+        assert_eq!(
+            compact.last_drop_reason.as_deref(),
+            Some("invalid_block_merkle_root_mismatch")
+        );
     }
 
     #[test]
