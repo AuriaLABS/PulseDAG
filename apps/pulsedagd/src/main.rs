@@ -3890,6 +3890,45 @@ async fn main() -> Result<()> {
                                 }
                             }
 
+                            if let Some(monetary) = monetary_activation.as_ref() {
+                                if monetary.reward_finality_policy_version
+                                    != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                                {
+                                    let reason = format!(
+                                        "unsupported v3 reward-finality policy {} for inbound block {}; implemented live policy is {}",
+                                        monetary.reward_finality_policy_version,
+                                        block.hash,
+                                        pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                                    );
+                                    warn!(
+                                        block_hash = %block.hash,
+                                        "rejected inbound p2p block because reward-finality policy is not implemented"
+                                    );
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_monetary_finality_rejected",
+                                        &reason,
+                                    );
+                                    block_requests.resolve(&block.hash);
+                                    let mut rt = runtime.write().await;
+                                    rt.blockdata_received =
+                                        rt.blockdata_received.saturating_add(1);
+                                    rt.rejected_p2p_blocks =
+                                        rt.rejected_p2p_blocks.saturating_add(1);
+                                    rt.pulsedag_blocks_rejected_total =
+                                        rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                    rt.record_rejected_block_reason(
+                                        "monetary_finality_fail_closed",
+                                    );
+                                    rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                    rt.sync_pipeline
+                                        .fallback_after_failure(reason, now_unix());
+                                    continue;
+                                }
+                            }
+
                             let drive = if let Some(monetary) = monetary_activation.as_ref() {
                                 pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
                                     block.clone(),
