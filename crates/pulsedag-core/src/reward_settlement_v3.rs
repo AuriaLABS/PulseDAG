@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::{
     monetary_v3::{
-        economic_maturity_reached, subsidy_atoms_for_score, MonetaryCadenceSegment,
-        MonetaryV3Error,
+        economic_maturity_reached, subsidy_atoms_for_score, total_supply_atoms_for_score,
+        MonetaryCadenceSegment, MonetaryV3Error,
     },
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, OrderingV2Error},
     state::ChainState,
@@ -55,6 +55,14 @@ pub enum RewardSettlementV3Error {
     RewardClaimTxidMismatch { expected: Hash, observed: Hash },
     #[error("reward arithmetic overflow")]
     RewardOverflow,
+    #[error(
+        "authorized subsidy sum {observed} does not match scheduled supply {expected} at monetary score {score}"
+    )]
+    SupplyInvariantMismatch {
+        score: u64,
+        expected: u64,
+        observed: u64,
+    },
     #[error(transparent)]
     Monetary(#[from] MonetaryV3Error),
 }
@@ -113,6 +121,7 @@ pub struct RewardSettlementSnapshotV3 {
     pub finality_boundary: Option<RewardFinalityBoundaryV3>,
     pub claims: Vec<RewardClaimSettlementV3>,
     pub total_authorized_subsidy_atoms: u64,
+    pub scheduled_supply_atoms: u64,
     pub total_pending_or_spendable_fees_atoms: u64,
     pub total_spendable_reward_atoms: u64,
 }
@@ -451,6 +460,16 @@ pub fn derive_reward_settlement_snapshot_v3(
         });
     }
 
+    let scheduled_supply_atoms =
+        total_supply_atoms_for_score(current_monetary_score, cadence_segments)?;
+    if total_authorized_subsidy_atoms != scheduled_supply_atoms {
+        return Err(RewardSettlementV3Error::SupplyInvariantMismatch {
+            score: current_monetary_score,
+            expected: scheduled_supply_atoms,
+            observed: total_authorized_subsidy_atoms,
+        });
+    }
+
     Ok(RewardSettlementSnapshotV3 {
         schema_version: REWARD_SETTLEMENT_SCHEMA_VERSION_V3,
         ordering_version: ordered.ordering_version,
@@ -460,6 +479,7 @@ pub fn derive_reward_settlement_snapshot_v3(
         finality_boundary: finality_boundary.cloned(),
         claims,
         total_authorized_subsidy_atoms,
+        scheduled_supply_atoms,
         total_pending_or_spendable_fees_atoms,
         total_spendable_reward_atoms,
     })
@@ -642,6 +662,20 @@ mod tests {
             derive_reward_settlement_snapshot_v3(&state, &ONE_HOUR_PER_SCORE, None).unwrap();
         assert_eq!(no_finality.claims[0].status, RewardClaimStatusV3::Provisional);
         assert!(materializable_reward_utxos_v3(&no_finality).is_empty());
+    }
+
+    #[test]
+    fn settlement_supply_matches_exact_cumulative_schedule() {
+        let state = diamond_state("reward-supply", true);
+        let snapshot = derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, None).unwrap();
+        assert_eq!(
+            snapshot.total_authorized_subsidy_atoms,
+            snapshot.scheduled_supply_atoms
+        );
+        assert_eq!(
+            snapshot.scheduled_supply_atoms,
+            total_supply_atoms_for_score(snapshot.current_monetary_score, &ONE_SECOND).unwrap()
+        );
     }
 
     #[test]
