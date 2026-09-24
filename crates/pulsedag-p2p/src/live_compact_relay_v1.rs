@@ -564,6 +564,7 @@ mod tests {
 
         let mut invalid = block();
         invalid.header.merkle_root = "00".repeat(32);
+        invalid.hash = compute_block_hash(&invalid.header);
 
         dispatch_reconstructed_compact_block_v1(
             CHAIN_ID,
