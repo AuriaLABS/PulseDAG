@@ -45,8 +45,9 @@ use crate::messages::compact_relay_carrier_v1::{
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
-    message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage, ProtocolCapabilitiesV1, ProtocolSyncWireV1, TipInventoryStatus,
+    build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
+    topic_names, BlockHeaderAnnouncement, HeaderInventory, NetworkMessage, ProtocolCapabilitiesV1,
+    ProtocolSyncWireV1, TipInventoryStatus,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -992,6 +993,11 @@ enum OutboundMessage {
     CompactRelayReconstructedBlock {
         peer_id: String,
         block: Block,
+    },
+    CompactRelayBlockBatch {
+        peer_ids: Vec<String>,
+        wire: CompactRelayWireV1,
+        fallback_block: Block,
     },
     GetTips,
     Tips(Vec<PulseHash>),
@@ -3125,6 +3131,130 @@ fn track_queue_depth_on_enqueue(state: &mut InnerState) {
     state.queue_max_depth = state.queue_max_depth.max(state.queued_messages);
 }
 
+#[derive(Debug)]
+struct PreparedBlockPublishV1 {
+    bytes: Vec<u8>,
+    topic_name: String,
+    message_kind: &'static str,
+    message_id: String,
+}
+
+#[derive(Debug)]
+enum PreparedAutomaticBlockRelayV1 {
+    Compact(Vec<PreparedBlockPublishV1>),
+    Full(PreparedBlockPublishV1),
+}
+
+fn prepare_full_block_publish_v1(
+    chain_id: &str,
+    block: &Block,
+) -> Result<PreparedBlockPublishV1, serde_json::Error> {
+    Ok(PreparedBlockPublishV1 {
+        bytes: serde_json::to_vec(&NetworkMessage::NewBlock {
+            chain_id: chain_id.to_string(),
+            block: block.clone(),
+        })?,
+        topic_name: format!("{chain_id}-blocks"),
+        message_kind: "block",
+        message_id: message_id_for_block(block),
+    })
+}
+
+fn plan_automatic_compact_block_relay_v1(
+    state: &InnerState,
+    block: &Block,
+) -> Option<(Vec<String>, CompactRelayWireV1)> {
+    if state.mode != P2P_MODE_LIBP2P_REAL {
+        return None;
+    }
+
+    let mut peer_ids = state.connected_peers.clone();
+    peer_ids.sort();
+    peer_ids.dedup();
+    if peer_ids.is_empty() {
+        return None;
+    }
+
+    let announcement =
+        build_compact_block_announcement_for_chain_v1(block, &state.chain_id).ok()?;
+    let wire = CompactRelayWireV1::Announce(announcement);
+    if peer_ids
+        .iter()
+        .any(|peer_id| validate_compact_relay_send(state, peer_id, &wire).is_err())
+    {
+        return None;
+    }
+
+    Some((peer_ids, wire))
+}
+
+fn prepare_automatic_compact_block_relay_v1(
+    inner: &Arc<Mutex<InnerState>>,
+    chain_id: &str,
+    peer_ids: &[String],
+    wire: &CompactRelayWireV1,
+    fallback_block: &Block,
+) -> Result<PreparedAutomaticBlockRelayV1, serde_json::Error> {
+    if peer_ids.is_empty() {
+        return prepare_full_block_publish_v1(chain_id, fallback_block)
+            .map(PreparedAutomaticBlockRelayV1::Full);
+    }
+
+    let preflight_ok = {
+        let guard = inner
+            .lock()
+            .map_err(|_| <serde_json::Error as serde::ser::Error>::custom("p2p lock poisoned"))?;
+        let mut connected_peer_ids = guard.connected_peers.clone();
+        connected_peer_ids.sort();
+        connected_peer_ids.dedup();
+        guard.mode == P2P_MODE_LIBP2P_REAL
+            && connected_peer_ids == peer_ids
+            && peer_ids
+                .iter()
+                .all(|peer_id| validate_compact_relay_send(&guard, peer_id, wire).is_ok())
+    };
+    if !preflight_ok {
+        return prepare_full_block_publish_v1(chain_id, fallback_block)
+            .map(PreparedAutomaticBlockRelayV1::Full);
+    }
+
+    let mut prepared = Vec::with_capacity(peer_ids.len());
+    for peer_id in peer_ids {
+        let bytes = match encode_compact_relay_for_transport(inner, chain_id, peer_id, wire) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return prepare_full_block_publish_v1(chain_id, fallback_block)
+                    .map(PreparedAutomaticBlockRelayV1::Full);
+            }
+        };
+        prepared.push(PreparedBlockPublishV1 {
+            bytes,
+            topic_name: format!("{chain_id}-sync"),
+            message_kind: "compact-relay-v1",
+            message_id: format!(
+                "sync:compact-relay-v1:{peer_id}:{}:{}",
+                wire.kind(),
+                serde_json::to_string(wire).unwrap_or_else(|_| wire.kind().to_string())
+            ),
+        });
+    }
+
+    Ok(PreparedAutomaticBlockRelayV1::Compact(prepared))
+}
+
+fn record_prepared_block_publish_v1(
+    inner: &Arc<Mutex<InnerState>>,
+    prepared: &PreparedBlockPublishV1,
+) {
+    note_swarm_event(inner, format!("publish-attempt:{}", prepared.topic_name));
+    record_publish(
+        inner,
+        &prepared.topic_name,
+        prepared.message_kind,
+        &prepared.message_id,
+    );
+}
+
 fn queue_backpressure_reject(state: &mut InnerState, reason: &str) -> bool {
     if state.queued_messages >= OUTBOUND_QUEUE_SOFT_CAP {
         state.queue_backpressure_drops = state.queue_backpressure_drops.saturating_add(1);
@@ -3142,6 +3272,19 @@ fn enqueue_outbound_message(
     match msg {
         OutboundMessage::Block(block) => {
             queue.blocks.push_back(OutboundMessage::Block(block));
+        }
+        OutboundMessage::CompactRelayBlockBatch {
+            peer_ids,
+            wire,
+            fallback_block,
+        } => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::CompactRelayBlockBatch {
+                    peer_ids,
+                    wire,
+                    fallback_block,
+                });
         }
         OutboundMessage::CompactRelayReconstructedBlock { peer_id, block } => {
             queue
@@ -3284,6 +3427,7 @@ fn pop_outbound_message(
         guard.queued_messages = guard.queued_messages.saturating_sub(1);
         match msg {
             OutboundMessage::Block(_)
+            | OutboundMessage::CompactRelayBlockBatch { .. }
             | OutboundMessage::CompactRelayReconstructedBlock { .. }
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
@@ -5591,6 +5735,49 @@ async fn run_libp2p_runtime(
                             }
                             continue;
                         }
+                        OutboundMessage::CompactRelayBlockBatch {
+                            peer_ids,
+                            wire,
+                            fallback_block,
+                        } => {
+                            match prepare_automatic_compact_block_relay_v1(
+                                &inner,
+                                &cfg.chain_id,
+                                &peer_ids,
+                                &wire,
+                                &fallback_block,
+                            ) {
+                                Ok(PreparedAutomaticBlockRelayV1::Compact(prepared)) => {
+                                    for item in prepared {
+                                        record_prepared_block_publish_v1(&inner, &item);
+                                        dispatch_network_message(
+                                            &cfg.chain_id,
+                                            &item.bytes,
+                                            None,
+                                            &inner,
+                                            &inbound_tx,
+                                        );
+                                    }
+                                }
+                                Ok(PreparedAutomaticBlockRelayV1::Full(item)) => {
+                                    record_prepared_block_publish_v1(&inner, &item);
+                                    dispatch_network_message(
+                                        &cfg.chain_id,
+                                        &item.bytes,
+                                        None,
+                                        &inner,
+                                        &inbound_tx,
+                                    );
+                                }
+                                Err(error) => {
+                                    note_swarm_event(
+                                        &inner,
+                                        format!("compact-relay-auto-prepare-failed:{error}"),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
                         other => other,
                     };
                     let (wire, topic_name, message_kind, message_id) = match msg {
@@ -5614,6 +5801,9 @@ async fn run_libp2p_runtime(
                     }
                     OutboundMessage::CompactRelayReconstructedBlock { .. } => {
                         unreachable!("compact reconstructed blocks are consumed before publish")
+                    }
+                    OutboundMessage::CompactRelayBlockBatch { .. } => {
+                        unreachable!("automatic compact block batches are consumed before publish")
                     }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6282,6 +6472,96 @@ async fn run_libp2p_real_runtime(
                             }
                             continue;
                         }
+                        OutboundMessage::CompactRelayBlockBatch {
+                            peer_ids,
+                            wire,
+                            fallback_block,
+                        } => {
+                            match prepare_automatic_compact_block_relay_v1(
+                                &inner,
+                                &cfg.chain_id,
+                                &peer_ids,
+                                &wire,
+                                &fallback_block,
+                            ) {
+                                Ok(PreparedAutomaticBlockRelayV1::Compact(prepared)) => {
+                                    let mut compact_publish_failed = false;
+                                    for item in prepared {
+                                        record_prepared_block_publish_v1(&inner, &item);
+                                        let topic =
+                                            gossipsub::IdentTopic::new(item.topic_name.clone());
+                                        if let Err(error) =
+                                            swarm.behaviour_mut().gossipsub.publish(topic, item.bytes)
+                                        {
+                                            note_swarm_event(
+                                                &inner,
+                                                format!(
+                                                    "compact-relay-auto-publish-failed:{error}"
+                                                ),
+                                            );
+                                            compact_publish_failed = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if compact_publish_failed {
+                                        match prepare_full_block_publish_v1(
+                                            &cfg.chain_id,
+                                            &fallback_block,
+                                        ) {
+                                            Ok(item) => {
+                                                record_prepared_block_publish_v1(&inner, &item);
+                                                let topic = gossipsub::IdentTopic::new(
+                                                    item.topic_name.clone(),
+                                                );
+                                                if let Err(error) = swarm
+                                                    .behaviour_mut()
+                                                    .gossipsub
+                                                    .publish(topic, item.bytes)
+                                                {
+                                                    note_swarm_event(
+                                                        &inner,
+                                                        format!(
+                                                            "compact-relay-auto-full-fallback-failed:{error}"
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                            Err(error) => {
+                                                note_swarm_event(
+                                                    &inner,
+                                                    format!(
+                                                        "compact-relay-auto-full-fallback-encode-failed:{error}"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(PreparedAutomaticBlockRelayV1::Full(item)) => {
+                                    record_prepared_block_publish_v1(&inner, &item);
+                                    let topic =
+                                        gossipsub::IdentTopic::new(item.topic_name.clone());
+                                    if let Err(error) =
+                                        swarm.behaviour_mut().gossipsub.publish(topic, item.bytes)
+                                    {
+                                        note_swarm_event(
+                                            &inner,
+                                            format!(
+                                                "compact-relay-auto-full-publish-failed:{error}"
+                                            ),
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    note_swarm_event(
+                                        &inner,
+                                        format!("compact-relay-auto-prepare-failed:{error}"),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
                         other => other,
                     };
                     let (wire, topic_name, message_kind, message_id) = match msg {
@@ -6305,6 +6585,9 @@ async fn run_libp2p_real_runtime(
                     }
                     OutboundMessage::CompactRelayReconstructedBlock { .. } => {
                         unreachable!("compact reconstructed blocks are consumed before publish")
+                    }
+                    OutboundMessage::CompactRelayBlockBatch { .. } => {
+                        unreachable!("automatic compact block batches are consumed before publish")
                     }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6951,24 +7234,87 @@ impl P2pHandle for Libp2pHandle {
     }
 
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError> {
-        {
+        let block_id = message_id_for_block(block);
+        let relay_now = now_unix();
+        let (outbound, previous_seen, previous_recovery_generation, recovery_admission) = {
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-            let block_id = message_id_for_block(block);
-            if !should_relay_outbound_block(&mut inner, &block_id, now_unix()) {
+            let previous_seen = inner.outbound_block_seen_at_unix.get(&block_id).copied();
+            let previous_recovery_generation = inner
+                .outbound_block_recovery_relay_generation
+                .get(&block_id)
+                .copied();
+            let recovery_admission = previous_seen.is_some_and(|last_seen| {
+                relay_now.saturating_sub(last_seen) <= BLOCK_OUTBOUND_DEDUP_WINDOW_SECS
+            });
+            if !should_relay_outbound_block(&mut inner, &block_id, relay_now) {
                 inner.last_drop_reason = Some("duplicate_block_outbound".into());
                 return Ok(());
             }
+
+            let compact_plan = plan_automatic_compact_block_relay_v1(&inner, block);
             inner.known_block_hashes.insert(block.hash.clone());
             inner.queued_messages += 1;
             inner.queued_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
+
+            let outbound = match compact_plan {
+                Some((peer_ids, wire)) => OutboundMessage::CompactRelayBlockBatch {
+                    peer_ids,
+                    wire,
+                    fallback_block: block.clone(),
+                },
+                None => OutboundMessage::Block(block.clone()),
+            };
+            (
+                outbound,
+                previous_seen,
+                previous_recovery_generation,
+                recovery_admission,
+            )
+        };
+
+        if let Err(error) = self.outbound_tx.send(outbound) {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.queued_messages = inner.queued_messages.saturating_sub(1);
+                inner.queued_block_messages = inner.queued_block_messages.saturating_sub(1);
+                match previous_seen {
+                    Some(seen_at) => {
+                        inner
+                            .outbound_block_seen_at_unix
+                            .insert(block_id.clone(), seen_at);
+                    }
+                    None => {
+                        inner.outbound_block_seen_at_unix.remove(&block_id);
+                    }
+                }
+                if recovery_admission {
+                    inner.block_outbound_recovery_relayed =
+                        inner.block_outbound_recovery_relayed.saturating_sub(1);
+                    inner.recovery_rebroadcast_budget_used =
+                        inner.recovery_rebroadcast_budget_used.saturating_sub(1);
+                    match previous_recovery_generation {
+                        Some(generation) => {
+                            inner
+                                .outbound_block_recovery_relay_generation
+                                .insert(block_id.clone(), generation);
+                        }
+                        None => {
+                            inner
+                                .outbound_block_recovery_relay_generation
+                                .remove(&block_id);
+                        }
+                    }
+                } else {
+                    inner.block_outbound_first_seen_relayed =
+                        inner.block_outbound_first_seen_relayed.saturating_sub(1);
+                }
+            }
+            return Err(PulseError::Internal(format!("p2p send failed: {error}")));
         }
-        self.outbound_tx
-            .send(OutboundMessage::Block(block.clone()))
-            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))
+        Ok(())
     }
 
     fn request_tips(&self) -> Result<(), PulseError> {
@@ -7520,6 +7866,183 @@ mod tests {
         }
         record_outbound_tx_relay(state, id, now);
         true
+    }
+
+    fn valid_compact_relay_block() -> Block {
+        let transactions = vec![
+            sample_tx("coinbase"),
+            sample_tx("compact-tx-a"),
+            sample_tx("compact-tx-b"),
+        ];
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["parent-a".into(), "parent-b".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: "state".into(),
+            blue_score: 2,
+            height: 2,
+        };
+        Block {
+            hash: compute_block_hash(&header),
+            header,
+            transactions,
+        }
+    }
+
+    fn compact_relay_protocol_capabilities(chain_id: &str) -> ProtocolCapabilitiesV1 {
+        let state = pulsedag_core::genesis::init_chain_state(chain_id.to_string());
+        ProtocolCapabilitiesV1 {
+            capabilities_version: crate::messages::P2P_PROTOCOL_CAPABILITIES_VERSION,
+            protocol_identity: pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                chain_id.to_string(),
+                state.dag.genesis_hash,
+                pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            ),
+            consensus_metadata_schema_version: pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version: pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            supports_dag_frontier: true,
+            supports_consensus_metadata: true,
+            high_cadence_allowed: false,
+        }
+    }
+
+    fn compact_relay_test_state(connected: &[&str], authorized: &[&str]) -> InnerState {
+        let chain_id = "compact-auto-selection-test";
+        let protocol_capabilities = compact_relay_protocol_capabilities(chain_id);
+        let compact_capabilities = CompactRelayCapabilitiesV1::canonical(chain_id);
+        let mut state = InnerState {
+            chain_id: chain_id.to_string(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            connected_peers: connected.iter().map(|peer| (*peer).to_string()).collect(),
+            ..InnerState::default()
+        };
+        state
+            .protocol_capability_transport
+            .configure_local_capabilities(chain_id, protocol_capabilities.clone())
+            .unwrap();
+        state
+            .compact_relay_runtime
+            .configure_local(chain_id, compact_capabilities.clone())
+            .unwrap();
+
+        for peer_id in authorized {
+            let mut remote = ProtocolCapabilityTransportV1::default();
+            remote
+                .configure_local_capabilities(chain_id, protocol_capabilities.clone())
+                .unwrap();
+            let carrier = remote
+                .encode_tip_message(&NetworkMessage::Tips {
+                    chain_id: chain_id.to_string(),
+                    tips: Vec::new(),
+                    inventory: None,
+                })
+                .unwrap();
+            state
+                .protocol_capability_transport
+                .decode_from_peer(peer_id, &carrier)
+                .unwrap();
+            state
+                .compact_relay_runtime
+                .note_inbound(
+                    peer_id,
+                    &CompactRelayWireV1::Capabilities(compact_capabilities.clone()),
+                )
+                .unwrap();
+        }
+
+        state
+    }
+
+    #[test]
+    fn automatic_compact_block_relay_requires_every_connected_peer() {
+        let block = valid_compact_relay_block();
+        let partial = compact_relay_test_state(&["peer-a", "peer-b"], &["peer-a"]);
+        assert!(plan_automatic_compact_block_relay_v1(&partial, &block).is_none());
+
+        let complete =
+            compact_relay_test_state(&["peer-b", "peer-a", "peer-a"], &["peer-a", "peer-b"]);
+        let (peer_ids, wire) =
+            plan_automatic_compact_block_relay_v1(&complete, &block).expect("compact plan");
+        assert_eq!(peer_ids, vec!["peer-a".to_string(), "peer-b".to_string()]);
+        assert!(matches!(
+            wire,
+            CompactRelayWireV1::Announce(ref announcement)
+                if announcement.block_hash == block.hash
+        ));
+    }
+
+    #[test]
+    fn automatic_block_enqueue_failure_does_not_poison_dedup_or_queue_depth() {
+        let block = valid_compact_relay_block();
+        let state = compact_relay_test_state(&["peer-a"], &["peer-a"]);
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
+        drop(outbound_rx);
+        let handle = Libp2pHandle {
+            inner: Arc::new(Mutex::new(state)),
+            outbound_tx,
+        };
+
+        assert!(handle.broadcast_block(&block).is_err());
+        assert!(handle.broadcast_block(&block).is_err());
+
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.queued_messages, 0);
+        assert_eq!(guard.queued_block_messages, 0);
+        assert_eq!(guard.block_outbound_duplicates_suppressed, 0);
+        assert!(!guard
+            .outbound_block_seen_at_unix
+            .contains_key(&message_id_for_block(&block)));
+    }
+
+    #[test]
+    fn automatic_compact_block_relay_is_real_network_only() {
+        let block = valid_compact_relay_block();
+        let mut state = compact_relay_test_state(&["peer-a"], &["peer-a"]);
+        state.mode = P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.to_string();
+        assert!(plan_automatic_compact_block_relay_v1(&state, &block).is_none());
+    }
+
+    #[test]
+    fn automatic_compact_block_batch_falls_back_if_session_changes_before_publish() {
+        let block = valid_compact_relay_block();
+        let mut state = compact_relay_test_state(&["peer-a", "peer-b"], &["peer-a", "peer-b"]);
+        let (peer_ids, wire) =
+            plan_automatic_compact_block_relay_v1(&state, &block).expect("compact plan");
+        state.compact_relay_runtime.peer_disconnected("peer-b");
+        let inner = Arc::new(Mutex::new(state));
+
+        let prepared = prepare_automatic_compact_block_relay_v1(
+            &inner,
+            "compact-auto-selection-test",
+            &peer_ids,
+            &wire,
+            &block,
+        )
+        .unwrap();
+        assert!(matches!(prepared, PreparedAutomaticBlockRelayV1::Full(_)));
+    }
+
+    #[test]
+    fn automatic_compact_block_batch_falls_back_if_peer_set_changes_before_publish() {
+        let block = valid_compact_relay_block();
+        let mut state = compact_relay_test_state(&["peer-a", "peer-b"], &["peer-a", "peer-b"]);
+        let (peer_ids, wire) =
+            plan_automatic_compact_block_relay_v1(&state, &block).expect("compact plan");
+        state.connected_peers.push("peer-c".to_string());
+        let inner = Arc::new(Mutex::new(state));
+
+        let prepared = prepare_automatic_compact_block_relay_v1(
+            &inner,
+            "compact-auto-selection-test",
+            &peer_ids,
+            &wire,
+            &block,
+        )
+        .unwrap();
+        assert!(matches!(prepared, PreparedAutomaticBlockRelayV1::Full(_)));
     }
 
     #[test]

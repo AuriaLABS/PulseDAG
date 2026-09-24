@@ -104,6 +104,14 @@ jobs:
           set -euo pipefail
           cargo test -p pulsedagd --locked compact_relay::tests:: -- --nocapture
 
+      - name: Run automatic compact block relay regressions
+        if: steps.compile.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-p2p --locked automatic_compact_block -- --nocapture \
+            | tee ci-evidence/p2p-real-runtime/compact-relay-auto.log
+
       - name: Record compile failure
         if: always() && steps.compile.outcome != 'success'
         shell: bash
