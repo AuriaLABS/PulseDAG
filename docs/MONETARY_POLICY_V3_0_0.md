@@ -59,18 +59,31 @@ The production mainnet/testnet cadence tables are separate network-freeze inputs
 
 v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Monetary snapshot persistence now fails closed if the chain state has contracts enabled. Therefore programmable compute/state/proof fee paths must not become consensus-active and cannot create, redirect or burn supply. Any later activation requires a separately versioned protocol decision and monetary-policy compatibility review.
 
+## Live integration status
+
+The current #1045 integration line now enforces the monetary contract at the live boundaries rather than only exposing a policy library:
+
+- `/mining/template` uses the amountless v3 reward claim, rechecks protocol/policy/cadence bindings, finalizes the authoritative state root/hash, and only then exposes nonce-search work when a valid monetary sidecar is present;
+- `/mining/submit` validates the state-derived canonical monetary reward and the complete accepted-state supply before persistence/commit;
+- live inbound P2P routes through the monetary runtime when activated-v2 capabilities and the persisted monetary identity agree;
+- incoming, staged and pending P2P blocks must use the amountless reward-claim envelope; legacy amount-bearing coinbases and additional inputless issuance are rejected before they can become authoritative;
+- daemon restore revalidates protocol identity, monetary binding, transient P2P queues, complete accepted-state supply and reward-finality compatibility;
+- sidecar presence never activates v3 by itself, but it **does** make legacy fallback invalid: startup, inbound P2P, legacy-v1 Mining Protocol fallback, `/mine`, `/mine/preview`, mining jobs, PoW auto-run and PoW mine-capture all fail closed rather than authorizing height-based issuance;
+- `/block/validate` uses the monetary validation path when the monetary sidecar is active, so diagnostic validation cannot report a legacy-subsidy block as production-valid;
+- the persisted reward-finality policy must equal a finality engine actually implemented by the daemon. The currently implemented `ghostdag-v1-no-prune-before-task30-v1` engine protects only genesis, therefore no non-genesis reward becomes spendable yet;
+- maturity/finality settlement is evaluated on every authoritative monetary state. If a future finality engine would make reward UTXOs spendable before explicit UTXO/state-root materialization is integrated, the node fails closed instead of materializing supply implicitly.
+
+Legacy v2.x subsidy constants remain available for historical compatibility and tests, but the monetary activation guards make those paths unreachable as v3 issuance authority.
+
 ## Remaining #1045 integration gates
 
-This policy core does **not** by itself close #1045. Before closure the exact v3 candidate must also prove:
+This integration still does **not** close #1045 or claim #781 launch readiness. The exact v3 candidate must still bind and prove:
 
-- zero-allocation deterministic production genesis;
-- the live mining RPC is switched from legacy height subsidy to the claim-based v3 template/state finalizer; the non-live `MonetaryMiningTemplateV3` foundation already embeds **zero** reward amount and defers settlement to canonical score;
-- the live block-admission path invokes state-derived v3 reward validation; `validate_ordered_monetary_reward_v3` and `audit_monetary_state_v3` already reject hidden inputless issuance and prove exact cumulative supply;
-- coinbase maturity and settlement/finality are enforced by the live replay path; the foundation now rejects a finality boundary whose policy version differs from the activation-bound finality version;
-- protocol and persisted activation identity bind policy fingerprint, exact cadence and reward-finality policy; RocksDB and the additive monetary snapshot bundle carry this binding atomically;
-- exact accepted-state total-supply accounting passes;
-- downstream explorer integration consumes the frozen denomination contract (core/wallet/RPC now share integer atoms, `PDG`, 8 decimals, and exact no-float formatting/parsing);
-- no legacy or alternate hidden issuance path is reachable;
-- golden vectors and the final policy digest are bound to the exact #781 release/network identities.
+- the exact production mainnet/testnet cadence tables and their fingerprints;
+- the exact production chain IDs, deterministic genesis timestamps/hashes and zero-allocation genesis identities;
+- the final production reward-finality policy. The current conservative engine finalizes only genesis, so spendable reward UTXO materialization remains intentionally unavailable rather than guessed;
+- downstream explorer consumption of the frozen denomination contract (core/wallet/RPC already share integer atoms, `PDG`, 8 decimals and exact no-float formatting/parsing);
+- an exact-candidate reachability/evidence pass demonstrating that no legacy or alternate issuance path is reachable with the frozen production sidecar;
+- golden monetary vectors, policy/cadence/finality bindings and artifact digests tied to the exact #781 source/tree and network identities.
 
-Legacy v2.x constants remain development compatibility only and are not v3 mainnet authority.
+The deterministic zero-allocation v3 genesis constructor, accepted-state total-supply audit, live mining/P2P monetary gates, protocol/persistence binding and denomination contract are implemented foundations; their final production identities remain #781 freeze inputs.
