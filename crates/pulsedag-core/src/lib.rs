@@ -2,6 +2,7 @@ pub mod accept;
 pub mod acceptance_v2;
 pub mod apply;
 pub mod channel_v1;
+pub mod colored_utxo_v1;
 pub mod consensus_metadata;
 pub mod consistency;
 #[allow(clippy::too_many_arguments)]
@@ -204,6 +205,10 @@ pub use channel_v1::{
     challenge_deadline_v1, channel_spend_signing_message_v1, evaluate_channel_spend_v1,
     validate_channel_output_v1, ChannelAdmissionV1, ChannelSpendPathV1, ChannelSpendWitnessV1,
     ChannelStageV1, ChannelV1Error, ChannelV1Output, CHANNEL_DOMAIN_V1, CHANNEL_TEMPLATE_ID_V1,
+pub use colored_utxo_v1::{
+    derive_color_id_v1, evaluate_colored_mint_v1, evaluate_colored_units_v1,
+    validate_colored_output_v1, ColoredAdmissionV1, ColoredSpendPathV1, ColoredV1Error,
+    ColoredV1Output, COLORED_DOMAIN_V1, COLORED_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{
