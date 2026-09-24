@@ -289,6 +289,7 @@ fn p2p_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> serde_json::Value 
         "p2p_status_degraded_reason": "fresh p2p status unavailable; serving cached node RPC snapshot",
         "p2p_status_captured_at_unix": snapshot.last_updated_ms / 1_000,
         "chain_id": snapshot.chain_id,
+        "local_protocol_capabilities_v1": null,
         "mode": "cached_snapshot",
         "p2p_mode": "cached_snapshot",
         "local_node_id": null,
@@ -317,6 +318,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             liveness_snapshot,
         )));
     }
+    let local_protocol_capabilities_v1 = state
+        .p2p()
+        .and_then(|p2p| p2p.local_protocol_capabilities_v1().ok().flatten());
     match p2p_status_for_rpc(state.p2p(), "/p2p/status").await {
         Ok(Some(snapshot)) => {
             let status = snapshot.status;
@@ -389,6 +393,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 .collect::<Vec<_>>();
             let mut payload = serde_json::Map::new();
             payload.insert("chain_id".into(), serde_json::json!(status.chain_id));
+            payload.insert(
+                "local_protocol_capabilities_v1".into(),
+                serde_json::json!(local_protocol_capabilities_v1),
+            );
             payload.insert(
                 "p2p_status_stale".into(),
                 serde_json::json!(p2p_status_stale),
@@ -1386,6 +1394,8 @@ mod tests {
     #[derive(Clone)]
     struct TestP2pHandle {
         status: P2pStatus,
+        local_protocol_capabilities:
+            Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
     }
 
     impl P2pHandle for TestP2pHandle {
@@ -1403,6 +1413,15 @@ mod tests {
         }
         fn status(&self) -> Result<P2pStatus, pulsedag_core::errors::PulseError> {
             Ok(self.status.clone())
+        }
+
+        fn local_protocol_capabilities_v1(
+            &self,
+        ) -> Result<
+            Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
+            pulsedag_core::errors::PulseError,
+        > {
+            Ok(self.local_protocol_capabilities.clone())
         }
     }
 
@@ -1434,11 +1453,29 @@ mod tests {
         let chain = storage
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
+        let local_protocol_capabilities = pulsedag_p2p::messages::ProtocolCapabilitiesV1 {
+            capabilities_version: pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION,
+            protocol_identity: pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                chain.chain_id.clone(),
+                chain.dag.genesis_hash.clone(),
+                pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            ),
+            consensus_metadata_schema_version:
+                pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version:
+                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            supports_dag_frontier: true,
+            supports_consensus_metadata: true,
+            high_cadence_allowed: false,
+        };
         TestState {
             chain: Arc::new(RwLock::new(chain)),
             storage,
             runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
-            p2p: Some(Arc::new(TestP2pHandle { status })),
+            p2p: Some(Arc::new(TestP2pHandle {
+                status,
+                local_protocol_capabilities: Some(local_protocol_capabilities),
+            })),
         }
     }
 
@@ -1719,6 +1756,14 @@ mod tests {
         assert_eq!(data["p2p_enabled"], true);
         assert_eq!(data["p2p_mode"], P2P_MODE_MEMORY_SIMULATED);
         assert_eq!(data["peer_count"], 1);
+        assert!(data["local_protocol_capabilities_v1"].is_object());
+        assert_eq!(
+            data["local_protocol_capabilities_v1"]["protocol_identity"]["chain_id"],
+            "testnet-dev"
+        );
+        assert!(data["local_protocol_capabilities_v1"]["protocol_identity"]["genesis_hash"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
         assert!(data["tx_propagation_counters"].is_object());
         assert!(data["block_propagation_counters"].is_object());
         assert!(data["duplicate_suppression_counters"].is_object());
