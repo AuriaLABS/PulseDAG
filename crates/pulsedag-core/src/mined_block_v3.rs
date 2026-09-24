@@ -121,16 +121,21 @@ mod tests {
 
     #[test]
     fn monetary_candidate_accepts_without_legacy_height_subsidy_authority() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
         let mut state =
-            init_chain_state_v3("monetary-v3-mined-acceptance".into(), 1_800_000_000).unwrap();
+            init_chain_state_v3("monetary-v3-mined-acceptance".into(), frozen_ts).unwrap();
         let identity = identity(&state);
+        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
         let template = build_monetary_mining_template_v3(
             &state,
             &identity,
             &ONE_SECOND,
             "pulse1monetaryminer",
             1,
-            current_ts(),
+            timestamp,
             vec![],
         )
         .unwrap();
@@ -167,15 +172,20 @@ mod tests {
 
     #[test]
     fn legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
         let mut state =
-            init_chain_state_v3("monetary-v3-reject-legacy".into(), 1_800_000_001).unwrap();
+            init_chain_state_v3("monetary-v3-reject-legacy".into(), frozen_ts).unwrap();
         let identity = identity(&state);
+        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
         let legacy = build_activated_v2_mining_template(
             &state,
             &identity,
             ActivatedV2MiningTemplateSpec {
                 miner_address: "pulse1legacyminer".into(),
-                timestamp: current_ts(),
+                timestamp,
                 coinbase_nonce: 2,
                 transactions: vec![],
             },
@@ -210,16 +220,21 @@ mod tests {
 
     #[test]
     fn contracts_enabled_fails_before_acceptance() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
         let mut state =
-            init_chain_state_v3("monetary-v3-contracts-disabled".into(), 1_800_000_002).unwrap();
+            init_chain_state_v3("monetary-v3-contracts-disabled".into(), frozen_ts).unwrap();
         let identity = identity(&state);
+        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
         let template = build_monetary_mining_template_v3(
             &state,
             &identity,
             &ONE_SECOND,
             "pulse1miner",
             3,
-            current_ts(),
+            timestamp,
             vec![],
         )
         .unwrap();
