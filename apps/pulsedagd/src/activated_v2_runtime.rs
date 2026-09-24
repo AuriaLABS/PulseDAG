@@ -1,5 +1,8 @@
 use anyhow::Result;
-use pulsedag_core::{ActivatedV2P2pRuntime, ChainState, ProtocolActivationIdentity};
+use pulsedag_core::{
+    validate_monetary_v3_p2p_runtime_snapshot, ActivatedV2P2pRuntime, ChainState,
+    ProtocolActivationIdentity,
+};
 use pulsedag_p2p::messages::ProtocolCapabilitiesV1;
 use pulsedag_storage::Storage;
 
@@ -29,6 +32,29 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
 
     let (restored_state, restored_runtime) =
         storage.load_activated_v2_p2p_runtime_snapshot(&identity)?;
+
+    // A monetary sidecar is never sufficient to activate this path: reaching
+    // here already required explicit matching P2P capabilities. Once present,
+    // however, it becomes an additional fail-closed restore constraint.
+    if let Some(monetary) = storage.protocol_monetary_activation_record()? {
+        if monetary.identity != identity {
+            anyhow::bail!(
+                "v3 monetary activation identity does not match activated-v2 startup identity"
+            );
+        }
+        storage.verify_persisted_monetary_identity(
+            &identity,
+            &monetary.monetary_cadence_segments,
+            &monetary.reward_finality_policy_version,
+        )?;
+        validate_monetary_v3_p2p_runtime_snapshot(
+            &restored_state,
+            &restored_runtime,
+            &identity,
+            &monetary.monetary_cadence_segments,
+        )?;
+    }
+
     Ok((restored_state, restored_runtime, Some(identity)))
 }
 
