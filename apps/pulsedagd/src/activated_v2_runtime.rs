@@ -27,7 +27,20 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
     let identity = resolve_activated_v2_runtime_restore_identity(capabilities, &state)
         .map_err(anyhow::Error::msg)?;
     let Some(identity) = identity else {
-        return Ok((state, ActivatedV2P2pRuntime::default(), None));
+        match storage.protocol_monetary_activation_record() {
+            Ok(None) => return Ok((state, ActivatedV2P2pRuntime::default(), None)),
+            Ok(Some(record)) => {
+                anyhow::bail!(
+                    "v3 monetary activation {} is present but local P2P capabilities do not select activated-v2; refusing legacy startup fallback",
+                    record.binding_fingerprint
+                );
+            }
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(
+                    "cannot validate v3 monetary activation while resolving legacy startup fallback",
+                ));
+            }
+        }
     };
 
     let (restored_state, restored_runtime) =
