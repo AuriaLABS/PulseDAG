@@ -35,6 +35,7 @@ pub mod network_staging_v2;
 pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
+pub mod pay_stream_v1;
 pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
@@ -171,6 +172,12 @@ pub use pulseclock_v1::{
     observe_pulse_v1, observe_pulse_v1_at, PulseClockV1Error, PulseObservationV1, PULSE_DOMAIN_V1,
     PULSE_FINALITY_DEPTH_UNPUBLISHED_V1, PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1, PULSE_VERSION_V1,
     PULSE_WINDOW_K_V1,
+};
+
+pub use pay_stream_v1::{
+    evaluate_pay_stream_withdraw_v1, matured_buckets_v1, validate_pay_stream_output_v1,
+    withdrawable_buckets_v1, PayStreamAdmissionV1, PayStreamV1Error, PayStreamV1Output,
+    PAY_STREAM_DOMAIN_V1, PAY_STREAM_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{
