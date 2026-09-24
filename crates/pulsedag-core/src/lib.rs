@@ -61,6 +61,7 @@ pub mod tx_v3;
 pub mod types;
 pub mod validation;
 pub mod validation_v2;
+pub mod vault_v1;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -185,6 +186,12 @@ pub use htlc_v1::{
     evaluate_htlc_spend_v1, htlc_spend_signing_message_v1, payment_hash_v1, refund_height_v1,
     reserved_payment_hash_v1, validate_htlc_output_v1, HtlcAdmissionV1, HtlcSpendPathV1,
     HtlcSpendWitnessV1, HtlcV1Error, HtlcV1Output, HTLC_DOMAIN_V1, HTLC_TEMPLATE_ID_V1,
+};
+
+pub use vault_v1::{
+    created_pulse_height_from_tip, emergency_unlock_height, evaluate_vault_spend_v1,
+    owner_unlock_height, pulses_remaining_owner, validate_vault_output_v1, VaultAdmissionV1,
+    VaultSpendPathV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1, VAULT_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{
