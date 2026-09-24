@@ -111,6 +111,44 @@ impl CompactRelayControllerV1 {
             .retain(|(owner, _), _| owner != peer_id);
     }
 
+    pub fn handle_send_failure(
+        &mut self,
+        sessions: &mut CompactRelayRuntimeSessionBookV1,
+        peer_id: &str,
+        wire: &CompactRelayWireV1,
+    ) -> Vec<CompactRelayControllerActionV1> {
+        match wire {
+            CompactRelayWireV1::GetTransactions(request) => {
+                let key = (peer_id.to_string(), request.block_hash.clone());
+                let pending_removed = self.pending_announcements.remove(&key).is_some();
+                let in_flight_removed = sessions.abandon_in_flight(peer_id, &request.block_hash);
+                if pending_removed || in_flight_removed {
+                    self.telemetry.full_block_requests_total =
+                        self.telemetry.full_block_requests_total.saturating_add(1);
+                    vec![CompactRelayControllerActionV1::RequestFullBlock {
+                        peer_id: peer_id.to_string(),
+                        block_hash: request.block_hash.clone(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            CompactRelayWireV1::Transactions(response) => {
+                self.telemetry.full_block_service_fallback_total = self
+                    .telemetry
+                    .full_block_service_fallback_total
+                    .saturating_add(1);
+                vec![CompactRelayControllerActionV1::ServeFullBlock {
+                    peer_id: peer_id.to_string(),
+                    block_hash: response.block_hash.clone(),
+                }]
+            }
+            CompactRelayWireV1::CapabilityProbe
+            | CompactRelayWireV1::Capabilities(_)
+            | CompactRelayWireV1::Announce(_) => Vec::new(),
+        }
+    }
+
     pub fn handle_wire(
         &mut self,
         sessions: &mut CompactRelayRuntimeSessionBookV1,

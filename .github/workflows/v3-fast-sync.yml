@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/v3-fast-sync.yml'
       - 'apps/pulsedagd/src/main.rs'
+      - 'apps/pulsedagd/src/compact_relay.rs'
       - 'apps/pulsedagd/src/fast_sync_bootstrap.rs'
       - 'crates/pulsedag-core/src/lib.rs'
       - 'crates/pulsedag-core/src/snapshot_transfer.rs'
@@ -131,6 +132,10 @@ jobs:
       - name: Compact relay controller regressions
         run: |
           cargo test --locked -p pulsedag-p2p compact_relay_controller_v1::tests:: -- --nocapture
+
+      - name: Compact relay daemon controller regressions
+        run: |
+          cargo test --locked -p pulsedagd compact_relay::tests:: -- --nocapture
 
       - name: Live compact relay transport regressions
         run: |

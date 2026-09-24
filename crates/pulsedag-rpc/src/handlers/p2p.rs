@@ -797,6 +797,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
                 }
             };
+            payload.insert(
+                "compact_relay_controller".into(),
+                serde_json::json!(&runtime.compact_relay_controller),
+            );
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
@@ -1737,7 +1741,24 @@ mod tests {
             ..P2pStatus::default()
         };
 
-        let Json(resp) = get_p2p_status(State(mk_state(status))).await;
+        let state = mk_state(status);
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime
+                .compact_relay_controller
+                .reconstructed_blocks_ready_total = 7;
+            runtime.compact_relay_controller.full_block_requests_total = 2;
+            runtime
+                .compact_relay_controller
+                .full_block_service_fallback_total = 1;
+            runtime.compact_relay_controller.invalid_response_total = 3;
+            runtime
+                .compact_relay_controller
+                .pending_announcements_current = 4;
+            runtime.compact_relay_controller.pending_announcements_peak = 6;
+            runtime.compact_relay_controller.max_inflight_per_peer = 64;
+        }
+        let Json(resp) = get_p2p_status(State(state)).await;
         let data = resp.data.expect("p2p status data");
         assert!(data.get("connected_peers").is_some());
         assert_eq!(
@@ -1786,6 +1807,34 @@ mod tests {
         assert_eq!(
             data["compact_relay_transport"]["max_carrier_bytes"],
             60 * 1_024
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["reconstructed_blocks_ready_total"],
+            7
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["full_block_requests_total"],
+            2
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["full_block_service_fallback_total"],
+            1
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["invalid_response_total"],
+            3
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["pending_announcements_current"],
+            4
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["pending_announcements_peak"],
+            6
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["max_inflight_per_peer"],
+            64
         );
         assert!(data["sync_candidates"].is_array());
         assert!(data["peer_recovery"].is_array());
