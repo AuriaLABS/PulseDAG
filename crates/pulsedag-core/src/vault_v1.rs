@@ -490,4 +490,31 @@ mod tests {
             Err(VaultV1Error::SpendKeyMismatch { path: "owner" })
         );
     }
+
+    #[test]
+    fn spend_message_golden_vector_is_chain_bound() {
+        use sha2::{Digest, Sha256};
+        let owner = key(1);
+        let witness = VaultSpendWitnessV1 {
+            path: VaultSpendPathV1::Owner,
+            chain_id: "pulsedag-testnet".into(),
+            outpoint_txid: "aa".repeat(32),
+            outpoint_index: 0,
+            public_key: pk_hex(&owner),
+            signature_hex: String::new(),
+        };
+        let testnet = vault_spend_signing_message_v1(&witness).unwrap();
+        let mut other = witness.clone();
+        other.chain_id = "pulsedag-private".into();
+        let private = vault_spend_signing_message_v1(&other).unwrap();
+        assert_ne!(testnet, private);
+        assert_eq!(
+            hex::encode(Sha256::digest(&testnet)),
+            "7e6fb65488d1836043755c8c621481637830b1b0b51e1bb5a48c29534b08f5d7"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&private)),
+            "5aa937374d363d70b250919df7d475127ac3a65936efc63470b79566827f302b"
+        );
+    }
 }
