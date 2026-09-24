@@ -1459,10 +1459,8 @@ mod tests {
                 chain.dag.genesis_hash.clone(),
                 pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
             ),
-            consensus_metadata_schema_version:
-                pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
-            finality_policy_version:
-                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            consensus_metadata_schema_version: pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version: pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
             supports_dag_frontier: true,
             supports_consensus_metadata: true,
             high_cadence_allowed: false,
@@ -1760,9 +1758,11 @@ mod tests {
             data["local_protocol_capabilities_v1"]["protocol_identity"]["chain_id"],
             "testnet-dev"
         );
-        assert!(data["local_protocol_capabilities_v1"]["protocol_identity"]["genesis_hash"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty()));
+        assert!(
+            data["local_protocol_capabilities_v1"]["protocol_identity"]["genesis_hash"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
         assert!(data["tx_propagation_counters"].is_object());
         assert!(data["block_propagation_counters"].is_object());
         assert!(data["duplicate_suppression_counters"].is_object());
