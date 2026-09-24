@@ -175,11 +175,13 @@ pub use protocol_persistence::{
 };
 pub use monetary_v3::{
     authorized_issuance_atoms, economic_maturity_reached, economic_time_ns_for_score,
-    max_coinbase_claim_atoms, monetary_policy_fingerprint_v3, subsidy_atoms_for_score,
+    canonical_monetary_cadence_bytes_v3, max_coinbase_claim_atoms,
+    monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, subsidy_atoms_for_score,
     target_issuance_atoms, total_supply_atoms_for_score, MonetaryCadenceSegment, MonetaryV3Error,
     ATOMS_PER_COIN, COINBASE_MATURITY_NS, COINBASE_MATURITY_SECONDS, CONSENSUS_BURN_BPS,
     ECONOMIC_YEAR_NS, ECONOMIC_YEAR_SECONDS, GENESIS_ISSUANCE_ATOMS, MAX_SUPPLY_ATOMS,
-    MONETARY_POLICY_CANONICAL_V3, MONETARY_POLICY_FINGERPRINT_V3, MONETARY_POLICY_VERSION_V3,
+    MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3, MONETARY_POLICY_CANONICAL_V3,
+    MONETARY_POLICY_FINGERPRINT_V3, MONETARY_POLICY_VERSION_V3,
     ORDINARY_FEE_RECIPIENT_BPS, TAIL_EMISSION_ATOMS, TERMINAL_ECONOMIC_YEAR,
     YEAR1_MINING_BUDGET_ATOMS,
 };

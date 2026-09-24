@@ -4,6 +4,8 @@ use thiserror::Error;
 
 /// Frozen v3.0.0 mainnet monetary-policy version.
 pub const MONETARY_POLICY_VERSION_V3: &str = "pulsedag-monetary-v3.0.0";
+pub const MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3: &[u8] =
+    b"PulseDAG:monetary-cadence:v3.0.0";
 
 /// Approved v3.0.0 mainnet monetary constants.
 pub const MAX_SUPPLY_ATOMS: u64 = 100_000_000_000_000_000;
@@ -55,6 +57,33 @@ pub fn monetary_policy_fingerprint_v3() -> String {
 pub struct MonetaryCadenceSegment {
     pub activation_score: u64,
     pub target_interval_ns: u64,
+}
+
+pub fn canonical_monetary_cadence_bytes_v3(
+    segments: &[MonetaryCadenceSegment],
+) -> Result<Vec<u8>, MonetaryV3Error> {
+    validate_cadence_segments(segments)?;
+    let count = u32::try_from(segments.len()).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
+    let mut out = Vec::with_capacity(
+        MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3.len()
+            + 4
+            + segments.len().saturating_mul(16),
+    );
+    out.extend_from_slice(MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3);
+    out.extend_from_slice(&count.to_le_bytes());
+    for segment in segments {
+        out.extend_from_slice(&segment.activation_score.to_le_bytes());
+        out.extend_from_slice(&segment.target_interval_ns.to_le_bytes());
+    }
+    Ok(out)
+}
+
+pub fn monetary_cadence_fingerprint_v3(
+    segments: &[MonetaryCadenceSegment],
+) -> Result<String, MonetaryV3Error> {
+    Ok(hex::encode(Sha256::digest(
+        canonical_monetary_cadence_bytes_v3(segments)?,
+    )))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -259,6 +288,36 @@ mod tests {
     #[test]
     fn policy_fingerprint_is_frozen() {
         assert_eq!(monetary_policy_fingerprint_v3(), MONETARY_POLICY_FINGERPRINT_V3);
+    }
+
+    #[test]
+    fn cadence_fingerprint_is_frozen_for_one_bps_vector() {
+        assert_eq!(
+            monetary_cadence_fingerprint_v3(&BPS1).unwrap(),
+            "1eac3d10a00fb226fba56f8d88079f78bdc4d18d27b0a81ac8972ede1788c626"
+        );
+    }
+
+    #[test]
+    fn cadence_fingerprint_changes_on_consensus_schedule_change() {
+        assert_ne!(
+            monetary_cadence_fingerprint_v3(&BPS1).unwrap(),
+            monetary_cadence_fingerprint_v3(&BPS2).unwrap()
+        );
+        let staged = [
+            MonetaryCadenceSegment {
+                activation_score: 0,
+                target_interval_ns: 1_000_000_000,
+            },
+            MonetaryCadenceSegment {
+                activation_score: 10,
+                target_interval_ns: 500_000_000,
+            },
+        ];
+        assert_ne!(
+            monetary_cadence_fingerprint_v3(&BPS1).unwrap(),
+            monetary_cadence_fingerprint_v3(&staged).unwrap()
+        );
     }
 
     #[test]
