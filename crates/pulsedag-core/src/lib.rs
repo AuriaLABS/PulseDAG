@@ -47,6 +47,7 @@ pub mod protocol_persistence;
 pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
+pub mod reward_settlement_v3;
 pub mod retarget;
 pub mod selection;
 pub mod selection_v2;
@@ -111,6 +112,17 @@ pub use types::*;
 pub use retarget::{
     consensus_difficulty_snapshot, expected_difficulty, expected_target_u64,
     ConsensusDifficultySnapshot, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
+};
+
+pub use reward_settlement_v3::{
+    bind_reward_finality_boundary_v3, build_reward_claim_transaction_v3,
+    compute_reward_claim_txid_v3, derive_reward_settlement_snapshot_v3,
+    materializable_reward_utxos_v3, settlement_outpoint_v3,
+    validate_reward_claim_transaction_v3, validate_reward_finality_boundary_v3,
+    RewardClaimSettlementV3, RewardClaimStatusV3, RewardFinalityBoundaryV3,
+    RewardSettlementSnapshotV3, RewardSettlementV3Error,
+    REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3, REWARD_FINALITY_BINDING_SCHEMA_VERSION_V3,
+    REWARD_SETTLEMENT_SCHEMA_VERSION_V3,
 };
 
 pub use replay::{
