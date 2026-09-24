@@ -6,6 +6,7 @@ pub mod consistency;
 #[allow(clippy::too_many_arguments)]
 pub mod contract_state_v1;
 pub mod contract_v3;
+pub mod denomination_v3;
 pub mod contracts_gate;
 pub mod covenant_utxo_v1;
 pub mod covenant_v1;
@@ -76,6 +77,10 @@ pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV
 pub use contracts_gate::{
     contracts_compile_identity, contracts_compile_time_executable, contracts_may_execute,
     reject_inactive_contract_apply, EXECUTABLE_CONTRACTS_COMPILED,
+};
+pub use denomination_v3::{
+    format_pdg_atoms_v3, parse_pdg_decimal_v3, DenominationV3Error, PdgAmountV3,
+    PDG_DECIMALS_V3, PDG_SYMBOL_V3,
 };
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
