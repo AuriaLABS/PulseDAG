@@ -589,11 +589,11 @@ mod tests {
     fn retained_state_budget_reserves_controller_announcement_clone() {
         let candidate = block("metadata-only");
         let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
-        let state = match plan_compact_block_reconstruction_v1(&announcement, &HashMap::new()).unwrap()
-        {
-            CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
-            other => panic!("unexpected reconstruction plan: {other:?}"),
-        };
+        let state =
+            match plan_compact_block_reconstruction_v1(&announcement, &HashMap::new()).unwrap() {
+                CompactBlockReconstructionPlanV1::RequestTransactions(state) => state,
+                other => panic!("unexpected reconstruction plan: {other:?}"),
+            };
 
         assert_eq!(state.retained_known_transaction_count(), 0);
         assert_eq!(
