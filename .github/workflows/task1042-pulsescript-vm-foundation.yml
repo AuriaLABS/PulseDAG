@@ -10,6 +10,7 @@ on:
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "crates/pulsedag-core/tests/pulsescript_vm_v1_adversarial.rs"
+      - "crates/pulsedag-core/tests/pulsescript_vm_v1_conformance.rs"
       - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
       - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
   push:
@@ -19,6 +20,7 @@ on:
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "crates/pulsedag-core/tests/pulsescript_vm_v1_adversarial.rs"
+      - "crates/pulsedag-core/tests/pulsescript_vm_v1_conformance.rs"
       - "docs/PULSESCRIPT_VM_V1_FOUNDATION.md"
       - ".github/workflows/task1042-pulsescript-vm-foundation.yml"
 
@@ -58,6 +60,9 @@ jobs:
 
       - name: Run adversarial malformed/resource vectors
         run: cargo test --locked -p pulsedag-core --test pulsescript_vm_v1_adversarial
+
+      - name: Run independent opcode conformance vectors
+        run: cargo test --locked -p pulsedag-core --test pulsescript_vm_v1_conformance
 
       - name: Verify formatting
         if: runner.os == 'Linux'
