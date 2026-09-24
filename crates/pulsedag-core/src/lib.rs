@@ -29,6 +29,7 @@ pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
+pub mod multisig_v1;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
@@ -194,6 +195,10 @@ pub use vault_v1::{
     vault_spend_signing_message_v1, verify_vault_spend_signature_v1, VaultAdmissionV1,
     VaultSpendPathV1, VaultSpendWitnessV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1,
     VAULT_TEMPLATE_ID_V1,
+pub use multisig_v1::{
+    evaluate_multisig_spend_v1, multisig_spend_signing_message_v1, validate_multisig_output_v1,
+    MultisigAdmissionV1, MultisigSpendWitnessV1, MultisigV1Error, MultisigV1Output,
+    MULTISIG_DOMAIN_V1, MULTISIG_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{
