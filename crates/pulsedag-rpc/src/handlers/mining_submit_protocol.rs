@@ -600,6 +600,17 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     Json(req): Json<SubmitMinedBlockRequest>,
 ) -> Json<ApiResponse<MiningSubmitData>> {
     if req.block.header.version == BLOCK_HEADER_VERSION_V1 {
+        if let Err(error) = ensure_legacy_mining_disabled_when_monetary_v3_active(
+            &state,
+            "/mining/submit legacy-v1 fallback",
+        ) {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                format!("{MONETARY_V3_LEGACY_MINING_DISABLED}: {error}"),
+                None,
+            );
+        }
         return super::mining_submit_legacy::post_mining_submit(State(state), Json(req)).await;
     }
     post_activated_v2_mining_submit(state, req).await
