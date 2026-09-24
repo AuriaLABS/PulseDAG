@@ -2,6 +2,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{
     api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike},
+    handlers::monetary_activation_guard::{
+        ensure_legacy_mining_disabled_when_monetary_v3_active,
+        MONETARY_V3_LEGACY_MINING_DISABLED,
+    },
     handlers::pow_metrics::PowMetricsData,
 };
 use axum::{extract::State, Json};
@@ -679,6 +683,15 @@ pub async fn post_mining_template<S: RpcStateLike>(
 
     match path_and_legacy_identity {
         (PowValidationPath::LegacyV1, Some(identity)) => {
+            if let Err(error) = ensure_legacy_mining_disabled_when_monetary_v3_active(
+                &state,
+                "/mining/template legacy fallback",
+            ) {
+                return Json(ApiResponse::err(
+                    MONETARY_V3_LEGACY_MINING_DISABLED,
+                    error,
+                ));
+            }
             post_legacy_template(state, req, identity).await
         }
         (PowValidationPath::LegacyV1, None) => Json(ApiResponse::err(
