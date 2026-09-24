@@ -13,6 +13,7 @@ pub mod errors;
 pub mod finality_v2;
 pub mod genesis;
 pub mod genesis_v2;
+pub mod genesis_v3;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
@@ -149,6 +150,7 @@ pub use protocol::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
     BLOCK_HEADER_VERSION_V2,
 };
+pub use genesis_v3::{genesis_block_v3, init_chain_state_v3};
 pub use protocol_persistence::{
     verify_protocol_restore_identity, ProtocolActivationRecordV1, ProtocolMonetaryActivationRecordV2,
     ProtocolRestoreIdentityGate, PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
