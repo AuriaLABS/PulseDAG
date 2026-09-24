@@ -155,20 +155,16 @@ fn robust_pulse_time(samples: &[i64]) -> (i64, u32) {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
     if sorted.len() < 3 {
-        return (
-            median_sorted(&sorted),
-            PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1,
-        );
+        return (median_sorted(&sorted), PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1);
     }
     let clipped = &sorted[1..sorted.len() - 1];
     let min = *clipped.first().expect("clipped window non-empty");
     let max = *clipped.last().expect("clipped window non-empty");
     let range = max.saturating_sub(min) as u64;
-    let uncertainty = ((range + 1) / 2).clamp(1, u64::from(PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1));
-    (
-        median_sorted(clipped),
-        uncertainty as u32,
-    )
+    let uncertainty = range
+        .div_ceil(2)
+        .clamp(1, u64::from(PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1));
+    (median_sorted(clipped), uncertainty as u32)
 }
 
 fn median_sorted(sorted: &[i64]) -> i64 {
@@ -352,8 +348,16 @@ mod tests {
         assert_eq!(after.selected_tip, "b3");
         assert_eq!(after.pulse_height, 3);
         assert_ne!(
-            (before.selected_tip.clone(), before.pulse_time, before.pulse_height),
-            (after.selected_tip.clone(), after.pulse_time, after.pulse_height)
+            (
+                before.selected_tip.clone(),
+                before.pulse_time,
+                before.pulse_height
+            ),
+            (
+                after.selected_tip.clone(),
+                after.pulse_time,
+                after.pulse_height
+            )
         );
         // genesis + b1..b3: clip 1_700_000_000 and 1_020; remaining 1000,1010.
         assert_eq!(after.pulse_time, 1_700_001_005);

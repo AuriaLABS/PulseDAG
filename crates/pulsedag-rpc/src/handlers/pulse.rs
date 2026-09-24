@@ -37,21 +37,17 @@ impl From<PulseObservationV1> for PulseV1Data {
 
 fn pulse_error(err: PulseClockV1Error) -> (String, String) {
     match err {
-        PulseClockV1Error::SelectedTipUnavailable => (
-            "pulse_selected_tip_unavailable".into(),
-            err.to_string(),
-        ),
-        PulseClockV1Error::SelectedTipBlockMissing { .. } => (
-            "pulse_selected_tip_missing".into(),
-            err.to_string(),
-        ),
+        PulseClockV1Error::SelectedTipUnavailable => {
+            ("pulse_selected_tip_unavailable".into(), err.to_string())
+        }
+        PulseClockV1Error::SelectedTipBlockMissing { .. } => {
+            ("pulse_selected_tip_missing".into(), err.to_string())
+        }
     }
 }
 
 /// Observational PulseClock v1. Does not activate covenants or change consensus.
-pub async fn get_pulse<S: RpcStateLike>(
-    State(state): State<S>,
-) -> Json<ApiResponse<PulseV1Data>> {
+pub async fn get_pulse<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<PulseV1Data>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     match observe_pulse_v1(&chain) {

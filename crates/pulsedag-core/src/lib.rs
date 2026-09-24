@@ -40,8 +40,8 @@ pub mod pow_protocol;
 pub mod pow_v2;
 pub mod pqc;
 pub mod protocol;
-pub mod pulseclock_v1;
 pub mod protocol_persistence;
+pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
@@ -168,9 +168,9 @@ pub use finality_v2::{
 };
 
 pub use pulseclock_v1::{
-    observe_pulse_v1, observe_pulse_v1_at, PulseClockV1Error, PulseObservationV1,
-    PULSE_DOMAIN_V1, PULSE_FINALITY_DEPTH_UNPUBLISHED_V1, PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1,
-    PULSE_VERSION_V1, PULSE_WINDOW_K_V1,
+    observe_pulse_v1, observe_pulse_v1_at, PulseClockV1Error, PulseObservationV1, PULSE_DOMAIN_V1,
+    PULSE_FINALITY_DEPTH_UNPUBLISHED_V1, PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1, PULSE_VERSION_V1,
+    PULSE_WINDOW_K_V1,
 };
 
 pub use ordering::{
