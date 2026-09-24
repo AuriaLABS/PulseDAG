@@ -307,6 +307,10 @@ mod tests {
     const LOCAL_PEER: &str = "compact-relay-local-peer";
     const REMOTE_PEER: &str = "compact-relay-remote-peer";
 
+    fn same_block(left: &Block, right: &Block) -> bool {
+        serde_json::to_vec(left).unwrap() == serde_json::to_vec(right).unwrap()
+    }
+
     fn protocol_capabilities() -> ProtocolCapabilitiesV1 {
         ProtocolCapabilitiesV1 {
             capabilities_version: P2P_PROTOCOL_CAPABILITIES_VERSION,
@@ -540,7 +544,7 @@ mod tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(observed)) if observed == expected
+            Ok(InboundEvent::Block(observed)) if same_block(&observed, &expected)
         ));
         let guard = inner.lock().unwrap();
         assert_eq!(guard.blocks_received, 1);
