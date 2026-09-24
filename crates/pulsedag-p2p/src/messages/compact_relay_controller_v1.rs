@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use pulsedag_core::types::{Block, Hash, Transaction};
 
-use super::compact_relay_carrier_v1::{CompactRelayCapabilitiesV1, CompactRelayWireV1};
+use super::compact_relay_carrier_v1::CompactRelayWireV1;
 use super::compact_relay_runtime_v1::{
     CompactRelayRuntimeSessionBookV1, CompactRelayRuntimeSessionErrorV1,
 };
@@ -201,6 +201,7 @@ impl CompactRelayControllerV1 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::compact_relay_carrier_v1::CompactRelayCapabilitiesV1;
     use super::super::compact_relay_v1::{
         build_compact_block_announcement_v1, COMPACT_DAG_RELAY_VERSION_V1,
     };
@@ -209,6 +210,10 @@ mod tests {
 
     const CHAIN_ID: &str = "compact-relay-controller-testnet";
     const PEER: &str = "peer-controller";
+
+    fn same_block(left: &Block, right: &Block) -> bool {
+        serde_json::to_vec(left).unwrap() == serde_json::to_vec(right).unwrap()
+    }
 
     fn transaction(txid: &str) -> Transaction {
         Transaction {
@@ -316,7 +321,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [CompactRelayControllerActionV1::ReconstructedBlockReady { peer_id, block: rebuilt }]
-                if peer_id == PEER && rebuilt == &block
+                if peer_id == PEER && same_block(rebuilt, &block)
         ));
     }
 
@@ -379,7 +384,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [CompactRelayControllerActionV1::ReconstructedBlockReady { block: rebuilt, .. }]
-                if rebuilt == &block
+                if same_block(rebuilt, &block)
         ));
         assert_eq!(controller.pending_count(PEER), 0);
         assert_eq!(sessions.in_flight_count(PEER), 0);
@@ -434,7 +439,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [CompactRelayControllerActionV1::ReconstructedBlockReady { block: rebuilt, .. }]
-                if rebuilt == &block
+                if same_block(rebuilt, &block)
         ));
         assert_eq!(controller.pending_count(PEER), 0);
         assert_eq!(sessions.in_flight_count(PEER), 0);
@@ -501,8 +506,8 @@ mod tests {
 
         let txid = "tx-large".to_string();
         let mut large = transaction(&txid);
-        large.outputs[0].address =
-            "x".repeat(super::super::compact_relay_carrier_v1::COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1);
+        large.outputs[0].address = "x"
+            .repeat(super::super::compact_relay_carrier_v1::COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1);
         let known = [(txid.clone(), large)].into_iter().collect();
         let request = super::super::compact_relay_v1::CompactTransactionRequestV1 {
             version: COMPACT_DAG_RELAY_VERSION_V1,
@@ -627,7 +632,7 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [CompactRelayControllerActionV1::ReconstructedBlockReady { block: rebuilt, .. }]
-                if rebuilt == &block
+                if same_block(rebuilt, &block)
         ));
         assert_eq!(controller.pending_count(PEER), 0);
         assert_eq!(sessions.in_flight_count(PEER), 0);
