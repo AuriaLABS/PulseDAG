@@ -425,6 +425,20 @@ fn activated_monetary_v3_template_data(
             "v3 monetary activation identity does not match mining protocol identity".to_string(),
         ));
     }
+    if monetary_activation.reward_finality_policy_version
+        != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+    {
+        return Err(PulseError::InvalidBlock(format!(
+            "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+            monetary_activation.reward_finality_policy_version,
+            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        )));
+    }
+    pulsedag_core::validate_live_reward_settlement_v3(
+        chain,
+        &monetary_activation.monetary_cadence_segments,
+        &monetary_activation.reward_finality_policy_version,
+    )?;
     if chain.contracts.config.enabled {
         return Err(PulseError::InvalidBlock(
             "v3.0.0 monetary mining requires smart-contract execution to remain inactive".to_string(),
@@ -873,7 +887,7 @@ mod tests {
         let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
             identity.clone(),
             &cadence,
-            "reward-finality-test-v1",
+            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION,
         )
         .unwrap();
         let timestamp = state.dag.blocks[&state.dag.genesis_hash]
