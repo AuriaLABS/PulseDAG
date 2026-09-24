@@ -26,6 +26,7 @@ pub mod mempool_replacement_v3;
 pub mod mempool_resource_v1;
 pub mod mempool_v3;
 pub mod mined_block_v2;
+pub mod mined_block_v3;
 pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
@@ -316,6 +317,7 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use mined_block_v2::{
     accept_activated_v2_mined_block_atomically, prepare_activated_v2_mined_block_state,
 };
+pub use mined_block_v3::accept_monetary_v3_mined_block_atomically;
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
