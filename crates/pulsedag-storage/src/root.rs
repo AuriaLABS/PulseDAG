@@ -28,7 +28,9 @@ pub use fast_sync_transfer::{
 pub use protocol_bundle::{
     ProtocolSnapshotExportBundleV2, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
 };
-pub use protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY;
+pub use protocol_identity::{
+    PROTOCOL_ACTIVATION_STORAGE_KEY, PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+};
 pub use protocol_runtime_v2::{
     ActivatedV2P2pRuntimeRecordV1, ACTIVATED_V2_P2P_RUNTIME_RECORD_FORMAT_VERSION,
     ACTIVATED_V2_P2P_RUNTIME_STORAGE_KEY,
