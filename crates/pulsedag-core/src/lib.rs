@@ -28,6 +28,7 @@ pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
+pub mod monetary_v3;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
@@ -149,8 +150,19 @@ pub use protocol::{
     BLOCK_HEADER_VERSION_V2,
 };
 pub use protocol_persistence::{
-    verify_protocol_restore_identity, ProtocolActivationRecordV1, ProtocolRestoreIdentityGate,
-    PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
+    verify_protocol_restore_identity, ProtocolActivationRecordV1, ProtocolMonetaryActivationRecordV2,
+    ProtocolRestoreIdentityGate, PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
+    PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION, PROTOCOL_MONETARY_BINDING_DOMAIN_V2,
+};
+pub use monetary_v3::{
+    authorized_issuance_atoms, economic_maturity_reached, economic_time_ns_for_score,
+    max_coinbase_claim_atoms, monetary_policy_fingerprint_v3, subsidy_atoms_for_score,
+    target_issuance_atoms, total_supply_atoms_for_score, MonetaryCadenceSegment, MonetaryV3Error,
+    ATOMS_PER_COIN, COINBASE_MATURITY_NS, COINBASE_MATURITY_SECONDS, CONSENSUS_BURN_BPS,
+    ECONOMIC_YEAR_NS, ECONOMIC_YEAR_SECONDS, GENESIS_ISSUANCE_ATOMS, MAX_SUPPLY_ATOMS,
+    MONETARY_POLICY_CANONICAL_V3, MONETARY_POLICY_FINGERPRINT_V3, MONETARY_POLICY_VERSION_V3,
+    ORDINARY_FEE_RECIPIENT_BPS, TAIL_EMISSION_ATOMS, TERMINAL_ECONOMIC_YEAR,
+    YEAR1_MINING_BUDGET_ATOMS,
 };
 
 pub use header_v2::{
