@@ -18,6 +18,7 @@ pub mod genesis_v3;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
+pub mod htlc_v1;
 pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
@@ -227,6 +228,12 @@ pub use pay_stream_v1::{
     evaluate_pay_stream_withdraw_v1, matured_buckets_v1, validate_pay_stream_output_v1,
     withdrawable_buckets_v1, PayStreamAdmissionV1, PayStreamV1Error, PayStreamV1Output,
     PAY_STREAM_DOMAIN_V1, PAY_STREAM_TEMPLATE_ID_V1,
+};
+
+pub use htlc_v1::{
+    evaluate_htlc_spend_v1, htlc_spend_signing_message_v1, payment_hash_v1, refund_height_v1,
+    reserved_payment_hash_v1, validate_htlc_output_v1, HtlcAdmissionV1, HtlcSpendPathV1,
+    HtlcSpendWitnessV1, HtlcV1Error, HtlcV1Output, HTLC_DOMAIN_V1, HTLC_TEMPLATE_ID_V1,
 };
 
 pub use ordering::{
