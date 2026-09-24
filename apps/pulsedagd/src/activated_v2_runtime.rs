@@ -42,6 +42,15 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
                 "v3 monetary activation identity does not match activated-v2 startup identity"
             );
         }
+        if monetary.reward_finality_policy_version
+            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        {
+            anyhow::bail!(
+                "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+                monetary.reward_finality_policy_version,
+                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            );
+        }
         storage.verify_persisted_monetary_identity(
             &identity,
             &monetary.monetary_cadence_segments,
