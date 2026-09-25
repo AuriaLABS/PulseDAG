@@ -66,7 +66,7 @@ pub fn wallet_pulse_view_v1(
         return Err(WalletPulseV1Error::HostTimeForbidden);
     }
     pulse
-        .map(|observation| observation.clone())
+        .cloned()
         .map_err(|_| WalletPulseV1Error::PulseClockUnavailable)
 }
 
