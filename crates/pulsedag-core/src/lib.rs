@@ -250,8 +250,9 @@ pub use work_cert_v1::{
 };
 
 pub use explorer_dag_v1::{
-    is_genesis_view_v1, validate_explorer_block_v1, ExplorerBlockV1, ExplorerDagAdmissionV1,
-    ExplorerDagV1Error, ExplorerMergeColorV1, EXPLORER_DAG_DOMAIN_V1, EXPLORER_DAG_VERSION_V1,
+    assemble_explorer_block_v1, is_genesis_view_v1, merge_color_for_hash_v1,
+    validate_explorer_block_v1, ExplorerBlockV1, ExplorerDagAdmissionV1, ExplorerDagV1Error,
+    ExplorerMergeColorV1, EXPLORER_DAG_DOMAIN_V1, EXPLORER_DAG_VERSION_V1,
 };
 
 pub use wallet_pulse_v1::{
