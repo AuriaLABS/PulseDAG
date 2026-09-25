@@ -227,15 +227,21 @@ impl Storage {
         expected: &ProtocolActivationIdentity,
         expected_cadence: &[MonetaryCadenceSegment],
         expected_reward_finality_policy_version: &str,
-    ) -> Result<(ProtocolMonetarySnapshotExportBundleV3, SnapshotVerificationReport), PulseError> {
+    ) -> Result<
+        (
+            ProtocolMonetarySnapshotExportBundleV3,
+            SnapshotVerificationReport,
+        ),
+        PulseError,
+    > {
         self.verify_persisted_monetary_identity(
             expected,
             expected_cadence,
             expected_reward_finality_policy_version,
         )?;
-        let monetary_record = self
-            .protocol_monetary_activation_record()?
-            .ok_or_else(|| storage_error("verified monetary activation sidecar disappeared before export"))?;
+        let monetary_record = self.protocol_monetary_activation_record()?.ok_or_else(|| {
+            storage_error("verified monetary activation sidecar disappeared before export")
+        })?;
         monetary_record
             .verify_expected(
                 expected,
@@ -357,7 +363,6 @@ impl Storage {
             .map_err(|error| storage_error(error.to_string()))?;
         Ok(report)
     }
-
 }
 
 #[cfg(test)]
@@ -593,7 +598,9 @@ mod tests {
             )
             .unwrap();
 
-        assert!(target.monetary_protocol_snapshot_sidecar_complete().unwrap());
+        assert!(target
+            .monetary_protocol_snapshot_sidecar_complete()
+            .unwrap());
         target
             .verify_persisted_monetary_identity(
                 &expected,
@@ -644,7 +651,10 @@ mod tests {
                 MONETARY_TEST_FINALITY,
             )
             .is_err());
-        assert!(target.protocol_monetary_activation_record().unwrap().is_none());
+        assert!(target
+            .protocol_monetary_activation_record()
+            .unwrap()
+            .is_none());
         assert!(target.load_chain_state().unwrap().is_none());
 
         drop(source);
@@ -652,5 +662,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(source_path);
         let _ = std::fs::remove_dir_all(target_path);
     }
-
 }

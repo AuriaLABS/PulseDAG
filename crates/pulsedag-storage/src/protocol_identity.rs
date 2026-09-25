@@ -1,6 +1,6 @@
 use pulsedag_core::{
-    errors::PulseError, verify_protocol_restore_identity, ProtocolActivationIdentity,
-    MonetaryCadenceSegment, ProtocolActivationRecordV1, ProtocolConsensusMode,
+    errors::PulseError, verify_protocol_restore_identity, MonetaryCadenceSegment,
+    ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolConsensusMode,
     ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
 };
 use rocksdb::WriteBatch;
@@ -273,9 +273,8 @@ impl Storage {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, init_chain_state_v3,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, MonetaryCadenceSegment,
-        ProtocolActivationIdentity,
+        genesis::init_chain_state, init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+        MonetaryCadenceSegment, ProtocolActivationIdentity,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -430,11 +429,8 @@ mod tests {
     fn monetary_snapshot_and_both_sidecars_round_trip_atomically() {
         let path = temp_db_path("monetary-round-trip");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-storage-candidate".to_string(),
-            1_800_000_000,
-        )
-        .unwrap();
+        let state = init_chain_state_v3("pulsedag-v3-storage-candidate".to_string(), 1_800_000_000)
+            .unwrap();
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -463,13 +459,11 @@ mod tests {
                 .identity,
             expected
         );
-        assert!(storage.monetary_protocol_snapshot_sidecar_complete().unwrap());
+        assert!(storage
+            .monetary_protocol_snapshot_sidecar_complete()
+            .unwrap());
         storage
-            .verify_persisted_monetary_identity(
-                &expected,
-                &V3_TEST_CADENCE,
-                V3_TEST_FINALITY,
-            )
+            .verify_persisted_monetary_identity(&expected, &V3_TEST_CADENCE, V3_TEST_FINALITY)
             .unwrap();
 
         drop(storage);
@@ -480,11 +474,8 @@ mod tests {
     fn missing_v3_monetary_sidecar_fails_closed() {
         let path = temp_db_path("monetary-missing");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-storage-missing".to_string(),
-            1_800_000_001,
-        )
-        .unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-storage-missing".to_string(), 1_800_000_001).unwrap();
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -492,11 +483,7 @@ mod tests {
         );
 
         assert!(storage
-            .verify_persisted_monetary_identity(
-                &expected,
-                &V3_TEST_CADENCE,
-                V3_TEST_FINALITY,
-            )
+            .verify_persisted_monetary_identity(&expected, &V3_TEST_CADENCE, V3_TEST_FINALITY,)
             .is_err());
 
         drop(storage);
@@ -507,11 +494,8 @@ mod tests {
     fn persisted_monetary_cadence_substitution_fails_closed() {
         let path = temp_db_path("monetary-cadence-drift");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-storage-cadence".to_string(),
-            1_800_000_002,
-        )
-        .unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-storage-cadence".to_string(), 1_800_000_002).unwrap();
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -531,11 +515,7 @@ mod tests {
             target_interval_ns: 500_000_000,
         }];
         assert!(storage
-            .verify_persisted_monetary_identity(
-                &expected,
-                &alternate,
-                V3_TEST_FINALITY,
-            )
+            .verify_persisted_monetary_identity(&expected, &alternate, V3_TEST_FINALITY,)
             .is_err());
 
         drop(storage);
@@ -546,11 +526,8 @@ mod tests {
     fn persisted_monetary_finality_policy_substitution_fails_closed() {
         let path = temp_db_path("monetary-finality-drift");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-storage-finality".to_string(),
-            1_800_000_004,
-        )
-        .unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-storage-finality".to_string(), 1_800_000_004).unwrap();
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -581,11 +558,9 @@ mod tests {
     fn monetary_persistence_rejects_enabled_smart_contracts() {
         let path = temp_db_path("monetary-contracts-enabled");
         let storage = Storage::open(&path).unwrap();
-        let mut state = init_chain_state_v3(
-            "pulsedag-v3-storage-contracts".to_string(),
-            1_800_000_005,
-        )
-        .unwrap();
+        let mut state =
+            init_chain_state_v3("pulsedag-v3-storage-contracts".to_string(), 1_800_000_005)
+                .unwrap();
         state.contracts.config.enabled = true;
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
@@ -610,11 +585,8 @@ mod tests {
     fn corrupted_monetary_sidecar_fails_closed() {
         let path = temp_db_path("monetary-corrupt");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-storage-corrupt".to_string(),
-            1_800_000_003,
-        )
-        .unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-storage-corrupt".to_string(), 1_800_000_003).unwrap();
         let expected = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -649,5 +621,4 @@ mod tests {
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
-
 }
