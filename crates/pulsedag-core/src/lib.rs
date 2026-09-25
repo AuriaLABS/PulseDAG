@@ -259,7 +259,6 @@ pub use finality_envelope_v1::{
     FinalityEnvelopeV1Error, FinalityMeasurementsV1, FINALITY_ENVELOPE_DOMAIN_V1,
     FINALITY_ENVELOPE_VERSION_V1,
 };
-};
 
 pub use ordering::{
     derive_ordered_dag, ordered_dag_tip, refresh_ordered_dag, DAG_ORDERING_VERSION,
