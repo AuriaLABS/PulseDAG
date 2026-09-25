@@ -11,6 +11,8 @@ Planning only. Does not ship a custody wallet or change `pulsedag-wallet` on the
 
 The in-tree matcher (`crates/pulsedag-core/src/wallet_pulse_v1.rs`) allows a future non-custodial surface to display vault/stream delays from observational PulseClock only. Host unix time is rejected. Missing PulseClock fails closed. Default `WalletPulseAdmissionV1::INACTIVE` keeps this off the current wallet.
 
+`pulsedag-wallet` exposes `wallet_covenant_delay_pulse`. Session unlock may still use wall clock; that path must not feed covenant delay UI.
+
 ## Authorization
 
 Planning only.
