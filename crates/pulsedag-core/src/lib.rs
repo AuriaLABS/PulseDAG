@@ -2,6 +2,7 @@ pub mod accept;
 pub mod acceptance_v2;
 pub mod access_set_v1;
 pub mod apply;
+pub mod based_app_v0;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
 pub mod consensus_metadata;
@@ -66,6 +67,7 @@ pub mod types;
 pub mod validation;
 pub mod validation_v2;
 pub mod vault_v1;
+pub mod verify_receipt_v1;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -223,6 +225,18 @@ pub use access_set_v1::{
     spends_underdeclared_v1, validate_access_set_v1, AccessConflictClassV1, AccessKeyIdV1,
     AccessOutpointV1, AccessSetAdmissionV1, AccessSetV1, AccessSetV1Error, ACCESS_SET_DOMAIN_V1,
     ACCESS_SET_VERSION_V1,
+};
+
+pub use based_app_v0::{
+    derive_app_id_v0, evaluate_based_app_v0, settle_height_v0, BasedAppAdmissionV0, BasedAppPathV0,
+    BasedAppProfileV0, BasedAppV0Error, BasedCommitV0, BasedDaModeV0, BASED_APP_DOMAIN_V0,
+    BASED_COMMIT_TEMPLATE_V0,
+};
+
+pub use verify_receipt_v1::{
+    compare_reconstructed_v1, reject_host_time_v1, validate_verify_receipt_v1,
+    verify_receipt_canonical_bytes_v1, verify_receipt_digest_v1, VerifyReceiptV1,
+    VerifyReceiptV1Error, VerifyResultV1, VERIFY_RECEIPT_DOMAIN_V1, VERIFY_RECEIPT_VERSION_V1,
 };
 
 pub use ordering::{
