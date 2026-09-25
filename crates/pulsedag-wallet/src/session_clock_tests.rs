@@ -84,6 +84,20 @@ fn wall_clock_check_expires_at_deadline() {
 }
 
 #[test]
+fn wall_clock_check_fails_closed_on_forward_jump_past_deadline() {
+    let mut state = WallClockState {
+        deadline: Some(at(130)),
+        last_observed: at(100),
+        shutdown: false,
+    };
+    assert_eq!(
+        inspect_wall_clock(&mut state, at(10_000)),
+        WallClockCheck::ExpiredOrDiscontinuous
+    );
+    assert!(state.deadline.is_none());
+}
+
+#[test]
 fn wall_clock_check_fails_closed_on_rollback() {
     let mut state = WallClockState {
         deadline: Some(at(150)),
@@ -103,6 +117,39 @@ fn guarded_session_starts_locked() {
         .expect("valid policy");
     let session = WalletSession::new(policy).expect("create guarded session");
     assert_eq!(session.status().lock_state, WalletSessionLockState::Locked);
+}
+
+#[test]
+fn suspend_resume_past_deadline_locks_seed_session_before_derivation() {
+    let (dir, file) = seed_fixture();
+    let policy = WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+        .expect("valid policy");
+    let mut session = WalletSession::new(policy).expect("create guarded session");
+    session
+        .unlock(&file, &SecretString::new(PASSWORD))
+        .expect("unlock seed session");
+
+    let now = SystemTime::now();
+    {
+        let mut wall = lock_wall(&session.wall);
+        wall.last_observed = now
+            .checked_sub(Duration::from_secs(120))
+            .expect("test wall time");
+        wall.deadline = Some(
+            now.checked_sub(Duration::from_secs(60))
+                .expect("expired test deadline"),
+        );
+    }
+
+    assert!(matches!(
+        session.with_derived_key(0, WalletDerivationBranch::Receive, 0, |_| ()),
+        Err(WalletSessionError::Locked)
+    ));
+    assert_eq!(session.status().lock_state, WalletSessionLockState::Locked);
+
+    drop(session);
+    drop(file);
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]
