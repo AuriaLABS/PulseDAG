@@ -1,5 +1,6 @@
 pub mod accept;
 pub mod acceptance_v2;
+pub mod access_set_v1;
 pub mod apply;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
@@ -197,18 +198,31 @@ pub use vault_v1::{
     vault_spend_signing_message_v1, verify_vault_spend_signature_v1, VaultAdmissionV1,
     VaultSpendPathV1, VaultSpendWitnessV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1,
     VAULT_TEMPLATE_ID_V1,
+};
+
 pub use multisig_v1::{
     evaluate_multisig_spend_v1, multisig_spend_signing_message_v1, validate_multisig_output_v1,
     MultisigAdmissionV1, MultisigSpendWitnessV1, MultisigV1Error, MultisigV1Output,
     MULTISIG_DOMAIN_V1, MULTISIG_TEMPLATE_ID_V1,
+};
+
 pub use channel_v1::{
     challenge_deadline_v1, channel_spend_signing_message_v1, evaluate_channel_spend_v1,
     validate_channel_output_v1, ChannelAdmissionV1, ChannelSpendPathV1, ChannelSpendWitnessV1,
     ChannelStageV1, ChannelV1Error, ChannelV1Output, CHANNEL_DOMAIN_V1, CHANNEL_TEMPLATE_ID_V1,
+};
+
 pub use colored_utxo_v1::{
     derive_color_id_v1, evaluate_colored_mint_v1, evaluate_colored_units_v1,
     validate_colored_output_v1, ColoredAdmissionV1, ColoredSpendPathV1, ColoredV1Error,
     ColoredV1Output, COLORED_DOMAIN_V1, COLORED_TEMPLATE_ID_V1,
+};
+
+pub use access_set_v1::{
+    access_sets_conflict_v1, inspects_underdeclared_v1, schedule_access_sets_v1,
+    spends_underdeclared_v1, validate_access_set_v1, AccessConflictClassV1, AccessKeyIdV1,
+    AccessOutpointV1, AccessSetAdmissionV1, AccessSetV1, AccessSetV1Error, ACCESS_SET_DOMAIN_V1,
+    ACCESS_SET_VERSION_V1,
 };
 
 pub use ordering::{
