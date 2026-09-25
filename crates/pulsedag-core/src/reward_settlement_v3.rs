@@ -260,7 +260,10 @@ fn validate_ordered_genesis(
     Ok(())
 }
 
-fn ordered_prefix_digest(blocks: &[Hash], through_score: u64) -> Result<String, RewardSettlementV3Error> {
+fn ordered_prefix_digest(
+    blocks: &[Hash],
+    through_score: u64,
+) -> Result<String, RewardSettlementV3Error> {
     let end = usize::try_from(through_score)
         .map_err(|_| RewardSettlementV3Error::RewardOverflow)?
         .checked_add(1)
@@ -364,10 +367,14 @@ pub fn validate_reward_finality_boundary_v3(
 }
 
 fn block_fees_atoms(block: &crate::types::Block) -> Result<u64, RewardSettlementV3Error> {
-    block.transactions.iter().skip(1).try_fold(0_u64, |acc, tx| {
-        acc.checked_add(tx.fee)
-            .ok_or(RewardSettlementV3Error::RewardOverflow)
-    })
+    block
+        .transactions
+        .iter()
+        .skip(1)
+        .try_fold(0_u64, |acc, tx| {
+            acc.checked_add(tx.fee)
+                .ok_or(RewardSettlementV3Error::RewardOverflow)
+        })
 }
 
 pub fn derive_reward_settlement_snapshot_v3(
@@ -390,11 +397,7 @@ pub fn derive_reward_settlement_snapshot_v3(
     validate_ordered_genesis(state, &ordered)?;
 
     if let Some(boundary) = finality_boundary {
-        validate_reward_finality_boundary_v3(
-            state,
-            boundary,
-            expected_finality_policy_version,
-        )?;
+        validate_reward_finality_boundary_v3(state, boundary, expected_finality_policy_version)?;
     }
     let finalized_through = finality_boundary.map(|boundary| boundary.finalized_through_score);
     let current_monetary_score = ordered.blocks.len().saturating_sub(1) as u64;
@@ -405,18 +408,16 @@ pub fn derive_reward_settlement_snapshot_v3(
     let mut total_spendable_reward_atoms = 0_u64;
 
     for (index, block_hash) in ordered.blocks.iter().enumerate().skip(1) {
-        let monetary_score = u64::try_from(index).map_err(|_| RewardSettlementV3Error::RewardOverflow)?;
-        let block = state
-            .dag
-            .blocks
-            .get(block_hash)
-            .ok_or_else(|| RewardSettlementV3Error::Ordering(format!("ordered block {block_hash} is missing")))?;
-        let claim = block
-            .transactions
-            .first()
-            .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
+        let monetary_score =
+            u64::try_from(index).map_err(|_| RewardSettlementV3Error::RewardOverflow)?;
+        let block = state.dag.blocks.get(block_hash).ok_or_else(|| {
+            RewardSettlementV3Error::Ordering(format!("ordered block {block_hash} is missing"))
+        })?;
+        let claim = block.transactions.first().ok_or_else(|| {
+            RewardSettlementV3Error::MissingRewardClaim {
                 block_hash: block_hash.clone(),
-            })?;
+            }
+        })?;
         validate_reward_claim_transaction_v3(claim, &state.chain_id).map_err(|error| {
             RewardSettlementV3Error::InvalidRewardClaim(format!("block {block_hash}: {error}"))
         })?;
@@ -436,13 +437,10 @@ pub fn derive_reward_settlement_snapshot_v3(
         let settlement_amount_atoms = subsidy_atoms
             .checked_add(fees_atoms)
             .ok_or(RewardSettlementV3Error::RewardOverflow)?;
-        let finality_protected = finalized_through
-            .is_some_and(|finalized_score| monetary_score <= finalized_score);
-        let maturity = economic_maturity_reached(
-            monetary_score,
-            current_monetary_score,
-            cadence_segments,
-        )?;
+        let finality_protected =
+            finalized_through.is_some_and(|finalized_score| monetary_score <= finalized_score);
+        let maturity =
+            economic_maturity_reached(monetary_score, current_monetary_score, cadence_segments)?;
         let status = match (finality_protected, maturity) {
             (false, _) => RewardClaimStatusV3::Provisional,
             (true, false) => RewardClaimStatusV3::FinalizedImmature,
@@ -598,7 +596,10 @@ mod tests {
             state.dag.selected_chain = vec![genesis, "a".into(), "c".into()];
             state.dag.merge_set_blues.insert("a".into(), vec![]);
             state.dag.merge_set_reds.insert("a".into(), vec![]);
-            state.dag.merge_set_blues.insert("c".into(), vec!["b".into()]);
+            state
+                .dag
+                .merge_set_blues
+                .insert("c".into(), vec!["b".into()]);
             state.dag.merge_set_reds.insert("c".into(), vec![]);
         } else {
             state
@@ -608,7 +609,10 @@ mod tests {
             state.dag.selected_chain = vec![genesis, "b".into(), "c".into()];
             state.dag.merge_set_blues.insert("b".into(), vec![]);
             state.dag.merge_set_reds.insert("b".into(), vec![]);
-            state.dag.merge_set_blues.insert("c".into(), vec!["a".into()]);
+            state
+                .dag
+                .merge_set_blues
+                .insert("c".into(), vec!["a".into()]);
             state.dag.merge_set_reds.insert("c".into(), vec![]);
         }
         state
@@ -619,10 +623,7 @@ mod tests {
         let mut claim = build_reward_claim_transaction_v3("pulse1miner", 7, "chain-a").unwrap();
         assert_eq!(claim.version, TRANSACTION_VERSION_V2);
         assert_eq!(claim.outputs[0].amount, 0);
-        assert_eq!(
-            claim.txid,
-            compute_txid_v2(&claim, "chain-a").unwrap()
-        );
+        assert_eq!(claim.txid, compute_txid_v2(&claim, "chain-a").unwrap());
         validate_reward_claim_transaction_v3(&claim, "chain-a").unwrap();
 
         claim.outputs[0].amount = 1;
@@ -650,11 +651,7 @@ mod tests {
         let boundary = bind_reward_finality_boundary_v3(&first, 1, FINALITY_TEST_POLICY).unwrap();
         assert_eq!(boundary.finalized_block_hash, "a");
         assert!(matches!(
-            validate_reward_finality_boundary_v3(
-                &reordered,
-                &boundary,
-                FINALITY_TEST_POLICY,
-            ),
+            validate_reward_finality_boundary_v3(&reordered, &boundary, FINALITY_TEST_POLICY,),
             Err(RewardSettlementV3Error::FinalityBlockMismatch { .. })
                 | Err(RewardSettlementV3Error::FinalityPrefixDigestMismatch)
         ));
@@ -663,8 +660,7 @@ mod tests {
     #[test]
     fn settlement_rejects_boundary_from_different_finality_policy() {
         let state = diamond_state("reward-finality-policy", true);
-        let boundary =
-            bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
+        let boundary = bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
 
         assert!(matches!(
             derive_reward_settlement_snapshot_v3(
@@ -682,15 +678,18 @@ mod tests {
         let state = diamond_state("reward-settlement", true);
         let boundary = bind_reward_finality_boundary_v3(&state, 1, FINALITY_TEST_POLICY).unwrap();
 
-        let immature =
-            derive_reward_settlement_snapshot_v3(
-                &state,
-                &ONE_SECOND,
-                FINALITY_TEST_POLICY,
-                Some(&boundary),
-            ).unwrap();
+        let immature = derive_reward_settlement_snapshot_v3(
+            &state,
+            &ONE_SECOND,
+            FINALITY_TEST_POLICY,
+            Some(&boundary),
+        )
+        .unwrap();
         assert_eq!(immature.claims[0].monetary_score, 1);
-        assert_eq!(immature.claims[0].status, RewardClaimStatusV3::FinalizedImmature);
+        assert_eq!(
+            immature.claims[0].status,
+            RewardClaimStatusV3::FinalizedImmature
+        );
         assert!(materializable_reward_utxos_v3(&immature).is_empty());
 
         let mature = derive_reward_settlement_snapshot_v3(
@@ -703,26 +702,26 @@ mod tests {
         assert_eq!(mature.claims[0].status, RewardClaimStatusV3::Spendable);
         assert!(!materializable_reward_utxos_v3(&mature).is_empty());
 
-        let no_finality =
-            derive_reward_settlement_snapshot_v3(
-                &state,
-                &ONE_HOUR_PER_SCORE,
-                FINALITY_TEST_POLICY,
-                None,
-            ).unwrap();
-        assert_eq!(no_finality.claims[0].status, RewardClaimStatusV3::Provisional);
+        let no_finality = derive_reward_settlement_snapshot_v3(
+            &state,
+            &ONE_HOUR_PER_SCORE,
+            FINALITY_TEST_POLICY,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            no_finality.claims[0].status,
+            RewardClaimStatusV3::Provisional
+        );
         assert!(materializable_reward_utxos_v3(&no_finality).is_empty());
     }
 
     #[test]
     fn settlement_supply_matches_exact_cumulative_schedule() {
         let state = diamond_state("reward-supply", true);
-        let snapshot = derive_reward_settlement_snapshot_v3(
-            &state,
-            &ONE_SECOND,
-            FINALITY_TEST_POLICY,
-            None,
-        ).unwrap();
+        let snapshot =
+            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, FINALITY_TEST_POLICY, None)
+                .unwrap();
         assert_eq!(
             snapshot.total_authorized_subsidy_atoms,
             snapshot.scheduled_supply_atoms
@@ -756,12 +755,7 @@ mod tests {
             .push(hidden);
 
         assert!(matches!(
-            derive_reward_settlement_snapshot_v3(
-            &state,
-            &ONE_SECOND,
-            FINALITY_TEST_POLICY,
-            None,
-        ),
+            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, FINALITY_TEST_POLICY, None,),
             Err(RewardSettlementV3Error::MultipleRewardClaims { .. })
         ));
     }

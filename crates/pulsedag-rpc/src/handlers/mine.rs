@@ -1,8 +1,7 @@
 use crate::{
     api::{ApiResponse, MineRequest, RpcStateLike},
     handlers::monetary_activation_guard::{
-        ensure_legacy_mining_disabled_when_monetary_v3_active,
-        MONETARY_V3_LEGACY_MINING_DISABLED,
+        ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
     },
 };
 use axum::{extract::State, Json};
@@ -52,10 +51,7 @@ pub async fn post_mine_preview<S: RpcStateLike>(
     if let Err(error) =
         ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mine/preview")
     {
-        return Json(ApiResponse::err(
-            MONETARY_V3_LEGACY_MINING_DISABLED,
-            error,
-        ));
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
     }
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
@@ -106,13 +102,8 @@ pub async fn post_mine<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<MineRequest>,
 ) -> Json<ApiResponse<MineData>> {
-    if let Err(error) =
-        ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mine")
-    {
-        return Json(ApiResponse::err(
-            MONETARY_V3_LEGACY_MINING_DISABLED,
-            error,
-        ));
+    if let Err(error) = ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mine") {
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
     }
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;

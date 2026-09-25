@@ -50,12 +50,13 @@ pub(crate) fn validate_monetary_reward_at_canonical_score_v3(
         return Err(MonetaryValidationV3Error::GenesisRewardForbidden);
     }
 
-    let claim = block
-        .transactions
-        .first()
-        .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
-            block_hash: block.hash.clone(),
-        })?;
+    let claim =
+        block
+            .transactions
+            .first()
+            .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
+                block_hash: block.hash.clone(),
+            })?;
     validate_reward_claim_transaction_v3(claim, chain_id)?;
 
     let mut eligible_fees_atoms = 0u64;
@@ -141,8 +142,7 @@ mod tests {
     fn accepted_state_with_reward(extra: Option<Transaction>) -> ChainState {
         let mut state = init_chain_state("monetary-validation-v3".into());
         let genesis = state.dag.genesis_hash.clone();
-        let claim =
-            build_reward_claim_transaction_v3("pulse1miner", 7, &state.chain_id).unwrap();
+        let claim = build_reward_claim_transaction_v3("pulse1miner", 7, &state.chain_id).unwrap();
         let mut transactions = vec![claim];
         if let Some(extra) = extra {
             transactions.push(extra);

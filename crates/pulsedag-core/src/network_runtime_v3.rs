@@ -1,8 +1,6 @@
 use crate::{
     audit_monetary_state_v3,
     errors::PulseError,
-    validate_live_reward_settlement_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v3::validate_monetary_v3_p2p_staging_envelope,
     network_runtime_v2::{
@@ -12,7 +10,8 @@ use crate::{
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_ordered_monetary_reward_v3,
+    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
 fn invalid_monetary_runtime(message: impl Into<String>) -> PulseError {
@@ -222,8 +221,7 @@ mod tests {
     #[test]
     fn runtime_accepts_monetary_block_and_audits_persisted_state() {
         let frozen_ts = current_ts().saturating_sub(10).max(1);
-        let mut state =
-            init_chain_state_v3("monetary-v3-p2p-runtime".into(), frozen_ts).unwrap();
+        let mut state = init_chain_state_v3("monetary-v3-p2p-runtime".into(), frozen_ts).unwrap();
         let identity = identity(&state);
         let block = monetary_block(&state, &identity);
         let expected_hash = block.hash.clone();

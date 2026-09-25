@@ -4,8 +4,7 @@ use thiserror::Error;
 
 /// Frozen v3.0.0 mainnet monetary-policy version.
 pub const MONETARY_POLICY_VERSION_V3: &str = "pulsedag-monetary-v3.0.0";
-pub const MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3: &[u8] =
-    b"PulseDAG:monetary-cadence:v3.0.0";
+pub const MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3: &[u8] = b"PulseDAG:monetary-cadence:v3.0.0";
 
 /// Approved v3.0.0 mainnet monetary constants.
 pub const MAX_SUPPLY_ATOMS: u64 = 100_000_000_000_000_000;
@@ -65,9 +64,7 @@ pub fn canonical_monetary_cadence_bytes_v3(
     validate_cadence_segments(segments)?;
     let count = u32::try_from(segments.len()).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
     let mut out = Vec::with_capacity(
-        MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3.len()
-            + 4
-            + segments.len().saturating_mul(16),
+        MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3.len() + 4 + segments.len().saturating_mul(16),
     );
     out.extend_from_slice(MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3);
     out.extend_from_slice(&count.to_le_bytes());
@@ -287,7 +284,10 @@ mod tests {
 
     #[test]
     fn policy_fingerprint_is_frozen() {
-        assert_eq!(monetary_policy_fingerprint_v3(), MONETARY_POLICY_FINGERPRINT_V3);
+        assert_eq!(
+            monetary_policy_fingerprint_v3(),
+            MONETARY_POLICY_FINGERPRINT_V3
+        );
     }
 
     #[test]
@@ -389,10 +389,7 @@ mod tests {
     fn authorized_issuance_telescopes_to_total_supply() {
         let end = 123_456;
         let total = total_supply_atoms_for_score(end, &BPS1).unwrap();
-        assert_eq!(
-            authorized_issuance_atoms(0, end, &BPS1).unwrap(),
-            total
-        );
+        assert_eq!(authorized_issuance_atoms(0, end, &BPS1).unwrap(), total);
         assert_eq!(
             (1..=end)
                 .map(|score| subsidy_atoms_for_score(score, &BPS1).unwrap())

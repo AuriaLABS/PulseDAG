@@ -9,9 +9,7 @@ use crate::{
     },
     ordering_v2::{derive_ordered_dag_v2, OrderingV2Error},
     state::ChainState,
-    validation_v3::{
-        validate_monetary_reward_at_canonical_score_v3, MonetaryValidationV3Error,
-    },
+    validation_v3::{validate_monetary_reward_at_canonical_score_v3, MonetaryValidationV3Error},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,8 +153,7 @@ mod tests {
     }];
 
     fn linear_reward_state() -> ChainState {
-        let mut state =
-            init_chain_state_v3("monetary-audit-v3".into(), 1_800_000_000).unwrap();
+        let mut state = init_chain_state_v3("monetary-audit-v3".into(), 1_800_000_000).unwrap();
         let genesis = state.dag.genesis_hash.clone();
         let mut previous = genesis.clone();
 
@@ -220,9 +217,15 @@ mod tests {
     fn genesis_allocation_is_rejected() {
         let mut state = linear_reward_state();
         let genesis = state.dag.genesis_hash.clone();
-        state.dag.blocks.get_mut(&genesis).unwrap().transactions.push(
-            build_reward_claim_transaction_v3("pulse1forbidden", 99, &state.chain_id).unwrap(),
-        );
+        state
+            .dag
+            .blocks
+            .get_mut(&genesis)
+            .unwrap()
+            .transactions
+            .push(
+                build_reward_claim_transaction_v3("pulse1forbidden", 99, &state.chain_id).unwrap(),
+            );
         assert!(matches!(
             audit_monetary_state_v3(&state, &ONE_SECOND),
             Err(MonetaryStateAuditV3Error::GenesisAllocationPresent)

@@ -2,8 +2,6 @@ use crate::{
     accept::{AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult},
     audit_monetary_state_v3,
     errors::PulseError,
-    validate_live_reward_settlement_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v2::{
         accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
@@ -13,7 +11,8 @@ use crate::{
     reward_settlement_v3::validate_reward_claim_transaction_v3,
     state::ChainState,
     types::Block,
-    validate_ordered_monetary_reward_v3,
+    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
 fn invalid_monetary_network_block(message: impl Into<String>) -> PulseError {
@@ -80,9 +79,7 @@ pub fn prepare_monetary_v3_p2p_block_state(
 
     validate_ordered_monetary_reward_v3(&prepared, &block.hash, cadence_segments).map_err(
         |error| {
-            invalid_monetary_network_block(format!(
-                "ordered reward validation failed: {error}"
-            ))
+            invalid_monetary_network_block(format!("ordered reward validation failed: {error}"))
         },
     )?;
     audit_monetary_state_v3(&prepared, cadence_segments).map_err(|error| {
@@ -116,9 +113,9 @@ pub fn preflight_monetary_v3_p2p_block(
         ActivatedV2P2pDisposition::Finalizable => {
             match prepare_monetary_v3_p2p_block_state(block, state, identity, cadence_segments) {
                 Ok(_) => ActivatedV2P2pDisposition::Finalizable,
-                Err(error) => ActivatedV2P2pDisposition::Rejected(
-                    BlockAcceptanceResult::Rejected(error.to_string()),
-                ),
+                Err(error) => ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(
+                    error.to_string(),
+                )),
             }
         }
         disposition => disposition,
@@ -151,15 +148,9 @@ where
         source,
         identity,
         |accepted_block, prepared| {
-            validate_ordered_monetary_reward_v3(
-                prepared,
-                &accepted_block.hash,
-                cadence_segments,
-            )
-            .map_err(|error| {
-                invalid_monetary_network_block(format!(
-                    "ordered reward validation failed: {error}"
-                ))
+            validate_ordered_monetary_reward_v3(prepared, &accepted_block.hash, cadence_segments)
+                .map_err(|error| {
+                invalid_monetary_network_block(format!("ordered reward validation failed: {error}"))
             })?;
             audit_monetary_state_v3(prepared, cadence_segments).map_err(|error| {
                 invalid_monetary_network_block(format!(
@@ -316,15 +307,16 @@ mod tests {
     #[test]
     fn contracts_enabled_rejects_network_candidate() {
         let frozen_ts = current_ts().saturating_sub(10).max(1);
-        let mut state =
-            init_chain_state_v3("monetary-v3-p2p-contracts".into(), frozen_ts).unwrap();
+        let mut state = init_chain_state_v3("monetary-v3-p2p-contracts".into(), frozen_ts).unwrap();
         let identity = identity(&state);
         let block = monetary_block(&state, &identity);
         state.contracts.config.enabled = true;
 
-        assert!(validate_monetary_v3_p2p_staging_envelope(&block, &state, &identity)
-            .unwrap_err()
-            .to_string()
-            .contains("smart-contract"));
+        assert!(
+            validate_monetary_v3_p2p_staging_envelope(&block, &state, &identity)
+                .unwrap_err()
+                .to_string()
+                .contains("smart-contract")
+        );
     }
 }

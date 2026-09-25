@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     monetary_v3::{
-        monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3,
-        MonetaryCadenceSegment, MONETARY_POLICY_FINGERPRINT_V3,
+        monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, MonetaryCadenceSegment,
+        MONETARY_POLICY_FINGERPRINT_V3,
     },
     protocol::{ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1},
     state::ChainState,
@@ -188,9 +188,8 @@ impl ProtocolMonetaryActivationRecordV2 {
         {
             return Err("monetary policy fingerprint mismatch in activation record".into());
         }
-        let expected_cadence =
-            monetary_cadence_fingerprint_v3(&self.monetary_cadence_segments)
-                .map_err(|error| error.to_string())?;
+        let expected_cadence = monetary_cadence_fingerprint_v3(&self.monetary_cadence_segments)
+            .map_err(|error| error.to_string())?;
         if self.monetary_cadence_fingerprint != expected_cadence {
             return Err("monetary cadence fingerprint mismatch in activation record".into());
         }
@@ -474,11 +473,9 @@ mod tests {
             monetary_cadence_fingerprint_v3(&MONETARY_TEST_CADENCE).unwrap()
         );
         assert!(record.validate_internal().is_ok());
-        assert!(
-            record
-                .verify_expected(&expected, &MONETARY_TEST_CADENCE, MONETARY_TEST_FINALITY)
-                .is_ok()
-        );
+        assert!(record
+            .verify_expected(&expected, &MONETARY_TEST_CADENCE, MONETARY_TEST_FINALITY)
+            .is_ok());
     }
 
     #[test]
@@ -538,5 +535,4 @@ mod tests {
         wrong_binding.binding_fingerprint = "11".repeat(32);
         assert!(wrong_binding.validate_internal().is_err());
     }
-
 }
