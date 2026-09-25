@@ -3816,10 +3816,7 @@ async fn main() -> Result<()> {
                             }
                         };
 
-                        if matches!(
-                            &inbound_protocol,
-                            InboundP2pBlockProtocol::Legacy
-                        ) {
+                        if matches!(&inbound_protocol, InboundP2pBlockProtocol::Legacy) {
                             match storage.protocol_monetary_activation_record() {
                                 Ok(None) => {}
                                 Ok(Some(record)) => {
@@ -3839,8 +3836,7 @@ async fn main() -> Result<()> {
                                     );
                                     block_requests.resolve(&block.hash);
                                     let mut rt = runtime.write().await;
-                                    rt.blockdata_received =
-                                        rt.blockdata_received.saturating_add(1);
+                                    rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                     rt.rejected_p2p_blocks =
                                         rt.rejected_p2p_blocks.saturating_add(1);
                                     rt.pulsedag_blocks_rejected_total =
@@ -3851,8 +3847,7 @@ async fn main() -> Result<()> {
                                     rt.last_rejected_peer_block_reason = Some(reason.clone());
                                     rt.sync_state = "degraded".to_string();
                                     rt.sync_failures = rt.sync_failures.saturating_add(1);
-                                    rt.sync_pipeline
-                                        .fallback_after_failure(reason, now_unix());
+                                    rt.sync_pipeline.fallback_after_failure(reason, now_unix());
                                     continue;
                                 }
                                 Err(error) => {
@@ -3872,63 +3867,56 @@ async fn main() -> Result<()> {
                                     );
                                     block_requests.resolve(&block.hash);
                                     let mut rt = runtime.write().await;
-                                    rt.blockdata_received =
-                                        rt.blockdata_received.saturating_add(1);
+                                    rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                     rt.rejected_p2p_blocks =
                                         rt.rejected_p2p_blocks.saturating_add(1);
                                     rt.pulsedag_blocks_rejected_total =
                                         rt.pulsedag_blocks_rejected_total.saturating_add(1);
-                                    rt.record_rejected_block_reason(
-                                        "monetary_sidecar_fail_closed",
-                                    );
+                                    rt.record_rejected_block_reason("monetary_sidecar_fail_closed");
                                     rt.last_rejected_peer_block_reason = Some(reason.clone());
                                     rt.sync_state = "degraded".to_string();
                                     rt.sync_failures = rt.sync_failures.saturating_add(1);
-                                    rt.sync_pipeline
-                                        .fallback_after_failure(reason, now_unix());
+                                    rt.sync_pipeline.fallback_after_failure(reason, now_unix());
                                     continue;
                                 }
                             }
                         }
 
                         if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
-                            let monetary_activation =
-                                match storage.protocol_monetary_activation_record() {
-                                    Ok(record) => record,
-                                    Err(error) => {
-                                        let reason = format!(
+                            let monetary_activation = match storage
+                                .protocol_monetary_activation_record()
+                            {
+                                Ok(record) => record,
+                                Err(error) => {
+                                    let reason = format!(
                                             "v3 monetary activation sidecar is invalid for inbound block {}: {}",
                                             block.hash, error
                                         );
-                                        warn!(
-                                            block_hash = %block.hash,
-                                            error = %error,
-                                            "rejected inbound p2p block because monetary activation sidecar failed closed"
-                                        );
-                                        let _ = storage.append_runtime_event(
-                                            "warn",
-                                            "peer_block_monetary_sidecar_rejected",
-                                            &reason,
-                                        );
-                                        block_requests.resolve(&block.hash);
-                                        let mut rt = runtime.write().await;
-                                        rt.blockdata_received =
-                                            rt.blockdata_received.saturating_add(1);
-                                        rt.rejected_p2p_blocks =
-                                            rt.rejected_p2p_blocks.saturating_add(1);
-                                        rt.pulsedag_blocks_rejected_total =
-                                            rt.pulsedag_blocks_rejected_total.saturating_add(1);
-                                        rt.record_rejected_block_reason(
-                                            "monetary_sidecar_fail_closed",
-                                        );
-                                        rt.last_rejected_peer_block_reason = Some(reason.clone());
-                                        rt.sync_state = "degraded".to_string();
-                                        rt.sync_failures = rt.sync_failures.saturating_add(1);
-                                        rt.sync_pipeline
-                                            .fallback_after_failure(reason, now_unix());
-                                        continue;
-                                    }
-                                };
+                                    warn!(
+                                        block_hash = %block.hash,
+                                        error = %error,
+                                        "rejected inbound p2p block because monetary activation sidecar failed closed"
+                                    );
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_monetary_sidecar_rejected",
+                                        &reason,
+                                    );
+                                    block_requests.resolve(&block.hash);
+                                    let mut rt = runtime.write().await;
+                                    rt.blockdata_received = rt.blockdata_received.saturating_add(1);
+                                    rt.rejected_p2p_blocks =
+                                        rt.rejected_p2p_blocks.saturating_add(1);
+                                    rt.pulsedag_blocks_rejected_total =
+                                        rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                    rt.record_rejected_block_reason("monetary_sidecar_fail_closed");
+                                    rt.last_rejected_peer_block_reason = Some(reason.clone());
+                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_failures = rt.sync_failures.saturating_add(1);
+                                    rt.sync_pipeline.fallback_after_failure(reason, now_unix());
+                                    continue;
+                                }
+                            };
 
                             if let Some(monetary) = monetary_activation.as_ref() {
                                 if monetary.identity != identity {
@@ -3947,8 +3935,7 @@ async fn main() -> Result<()> {
                                     );
                                     block_requests.resolve(&block.hash);
                                     let mut rt = runtime.write().await;
-                                    rt.blockdata_received =
-                                        rt.blockdata_received.saturating_add(1);
+                                    rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                     rt.rejected_p2p_blocks =
                                         rt.rejected_p2p_blocks.saturating_add(1);
                                     rt.pulsedag_blocks_rejected_total =
@@ -3959,8 +3946,7 @@ async fn main() -> Result<()> {
                                     rt.last_rejected_peer_block_reason = Some(reason.clone());
                                     rt.sync_state = "degraded".to_string();
                                     rt.sync_failures = rt.sync_failures.saturating_add(1);
-                                    rt.sync_pipeline
-                                        .fallback_after_failure(reason, now_unix());
+                                    rt.sync_pipeline.fallback_after_failure(reason, now_unix());
                                     continue;
                                 }
                             }
@@ -3986,8 +3972,7 @@ async fn main() -> Result<()> {
                                     );
                                     block_requests.resolve(&block.hash);
                                     let mut rt = runtime.write().await;
-                                    rt.blockdata_received =
-                                        rt.blockdata_received.saturating_add(1);
+                                    rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                     rt.rejected_p2p_blocks =
                                         rt.rejected_p2p_blocks.saturating_add(1);
                                     rt.pulsedag_blocks_rejected_total =
@@ -3998,8 +3983,7 @@ async fn main() -> Result<()> {
                                     rt.last_rejected_peer_block_reason = Some(reason.clone());
                                     rt.sync_state = "degraded".to_string();
                                     rt.sync_failures = rt.sync_failures.saturating_add(1);
-                                    rt.sync_pipeline
-                                        .fallback_after_failure(reason, now_unix());
+                                    rt.sync_pipeline.fallback_after_failure(reason, now_unix());
                                     continue;
                                 }
                             }

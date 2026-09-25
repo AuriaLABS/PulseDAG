@@ -114,8 +114,7 @@ mod tests {
     #[test]
     fn v3_genesis_has_zero_spendable_allocation() {
         let block = genesis_block_v3("pulsedag-v3-mainnet-candidate", FROZEN_TS).unwrap();
-        let state =
-            init_chain_state_v3("pulsedag-v3-mainnet-candidate".into(), FROZEN_TS).unwrap();
+        let state = init_chain_state_v3("pulsedag-v3-mainnet-candidate".into(), FROZEN_TS).unwrap();
 
         assert!(block.transactions.is_empty());
         assert!(state.utxo.utxos.is_empty());

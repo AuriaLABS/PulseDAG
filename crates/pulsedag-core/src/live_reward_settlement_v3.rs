@@ -1,6 +1,6 @@
 use crate::{
-    derive_finality_boundary_v1, derive_ordered_dag_v2, derive_reward_settlement_snapshot_v3,
-    bind_reward_finality_boundary_v3, materializable_reward_utxos_v3, ChainState,
+    bind_reward_finality_boundary_v3, derive_finality_boundary_v1, derive_ordered_dag_v2,
+    derive_reward_settlement_snapshot_v3, materializable_reward_utxos_v3, ChainState,
     MonetaryCadenceSegment, PulseError, RewardFinalityBoundaryV3, RewardSettlementSnapshotV3,
     GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
@@ -113,14 +113,11 @@ mod tests {
 
     #[test]
     fn current_live_finality_binds_genesis_and_materializes_nothing() {
-        let state =
-            init_chain_state_v3("monetary-v3-live-finality".into(), 1_800_000_000).unwrap();
+        let state = init_chain_state_v3("monetary-v3-live-finality".into(), 1_800_000_000).unwrap();
 
-        let boundary = derive_live_reward_finality_boundary_v3(
-            &state,
-            GHOSTDAG_V1_FINALITY_POLICY_VERSION,
-        )
-        .unwrap();
+        let boundary =
+            derive_live_reward_finality_boundary_v3(&state, GHOSTDAG_V1_FINALITY_POLICY_VERSION)
+                .unwrap();
         assert_eq!(boundary.finalized_through_score, 0);
         assert_eq!(boundary.finalized_block_hash, state.dag.genesis_hash);
 
@@ -137,8 +134,7 @@ mod tests {
     #[test]
     fn unknown_live_finality_policy_fails_closed() {
         let state =
-            init_chain_state_v3("monetary-v3-live-finality-unknown".into(), 1_800_000_001)
-                .unwrap();
+            init_chain_state_v3("monetary-v3-live-finality-unknown".into(), 1_800_000_001).unwrap();
 
         assert!(validate_live_reward_settlement_v3(
             &state,

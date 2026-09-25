@@ -243,7 +243,12 @@ pub fn finalize_monetary_mining_template_v3(
             "reward claim must remain amountless before ordered settlement",
         ));
     }
-    if template.transactions.iter().skip(1).any(|tx| tx.inputs.is_empty()) {
+    if template
+        .transactions
+        .iter()
+        .skip(1)
+        .any(|tx| tx.inputs.is_empty())
+    {
         return Err(invalid_template(
             "template contains an additional inputless transaction",
         ));
@@ -421,27 +426,21 @@ mod tests {
             activation_score: 0,
             target_interval_ns: 2_000_000_000,
         }];
-        assert!(finalize_monetary_mining_template_v3(
-            &state,
-            &identity,
-            &alternate,
-            &template
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("cadence fingerprint"));
+        assert!(
+            finalize_monetary_mining_template_v3(&state, &identity, &alternate, &template)
+                .unwrap_err()
+                .to_string()
+                .contains("cadence fingerprint")
+        );
 
         let mut tampered = template.clone();
         tampered.monetary_policy_fingerprint = "00".repeat(32);
-        assert!(finalize_monetary_mining_template_v3(
-            &state,
-            &identity,
-            &ONE_SECOND,
-            &tampered
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("policy fingerprint"));
+        assert!(
+            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &tampered)
+                .unwrap_err()
+                .to_string()
+                .contains("policy fingerprint")
+        );
     }
 
     #[test]
@@ -460,19 +459,17 @@ mod tests {
             nonce: 1,
         };
 
-        assert!(
-            build_monetary_mining_template_v3(
-                &state,
-                &identity(&state),
-                &ONE_SECOND,
-                "pulse1miner",
-                9,
-                parent_ts.saturating_add(1),
-                vec![hidden],
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("hidden issuance")
-        );
+        assert!(build_monetary_mining_template_v3(
+            &state,
+            &identity(&state),
+            &ONE_SECOND,
+            "pulse1miner",
+            9,
+            parent_ts.saturating_add(1),
+            vec![hidden],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("hidden issuance"));
     }
 }

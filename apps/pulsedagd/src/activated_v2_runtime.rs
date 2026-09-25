@@ -150,9 +150,11 @@ mod tests {
     fn monetary_sidecar_without_activated_capabilities_refuses_legacy_startup() {
         let path = temp_db_path("monetary-without-capabilities");
         let storage = Storage::open(&path).unwrap();
-        let state =
-            init_chain_state_v3("task1045-daemon-no-legacy-fallback".to_string(), 1_800_000_000)
-                .unwrap();
+        let state = init_chain_state_v3(
+            "task1045-daemon-no-legacy-fallback".to_string(),
+            1_800_000_000,
+        )
+        .unwrap();
         let identity = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -173,7 +175,9 @@ mod tests {
 
         let error = restore_activated_v2_p2p_runtime_for_startup(&storage, None, state)
             .expect_err("monetary sidecar must never permit legacy startup fallback");
-        assert!(error.to_string().contains("refusing legacy startup fallback"));
+        assert!(error
+            .to_string()
+            .contains("refusing legacy startup fallback"));
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

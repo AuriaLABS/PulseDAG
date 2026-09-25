@@ -97,7 +97,8 @@ pub fn parse_pdg_decimal_v3(value: &str) -> Result<u64, DenominationV3Error> {
             let scale = 10u64
                 .checked_pow(u32::try_from(padding).map_err(|_| DenominationV3Error::Overflow)?)
                 .ok_or(DenominationV3Error::Overflow)?;
-            raw.checked_mul(scale).ok_or(DenominationV3Error::Overflow)?
+            raw.checked_mul(scale)
+                .ok_or(DenominationV3Error::Overflow)?
         }
     };
 
@@ -116,10 +117,7 @@ mod tests {
         assert_eq!(format_pdg_atoms_v3(0), "0.00000000");
         assert_eq!(format_pdg_atoms_v3(1), "0.00000001");
         assert_eq!(format_pdg_atoms_v3(ATOMS_PER_COIN), "1.00000000");
-        assert_eq!(
-            format_pdg_atoms_v3(MAX_SUPPLY_ATOMS),
-            "1000000000.00000000"
-        );
+        assert_eq!(format_pdg_atoms_v3(MAX_SUPPLY_ATOMS), "1000000000.00000000");
     }
 
     #[test]
@@ -143,7 +141,9 @@ mod tests {
 
     #[test]
     fn noncanonical_or_overprecise_input_fails_closed() {
-        for value in ["", " 1", "1 ", "+1", "-1", ".1", "1.", "1e3", "1E3", "1.2.3"] {
+        for value in [
+            "", " 1", "1 ", "+1", "-1", ".1", "1.", "1e3", "1E3", "1.2.3",
+        ] {
             assert!(parse_pdg_decimal_v3(value).is_err(), "{value}");
         }
         assert_eq!(
