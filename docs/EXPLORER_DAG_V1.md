@@ -31,3 +31,7 @@ A view that only exposes height + hash is `LinearOnly`. Missing PulseClock metad
 ## Authorization
 
 Planning only. Not an official hosted explorer.
+
+## RPC
+
+`GET /api/v1/explorer/block/:hash` is wired and **disabled** on Task31 (`ExplorerDagAdmissionV1::INACTIVE`). The response would include parents, selected parent, merge color, blue score, and optional PulseClock. Existing `/blocks/:hash` is unchanged and may still show linear previous/next hashes.
