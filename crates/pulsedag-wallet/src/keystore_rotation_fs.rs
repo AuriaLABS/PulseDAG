@@ -218,7 +218,6 @@ impl Drop for TempCleanup {
     }
 }
 
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -270,18 +269,15 @@ mod tests {
         original_bytes.push(b'\n');
         fs::write(&path, &original_bytes).expect("write original");
 
-        let error = replace_existing_atomically_with_pre_publish(
-            &path,
-            &envelope("44"),
-            |temp_path| {
+        let error =
+            replace_existing_atomically_with_pre_publish(&path, &envelope("44"), |temp_path| {
                 assert!(temp_path.exists());
                 Err(io_error(
                     "injected pre-publish failure",
                     io::Error::new(io::ErrorKind::Interrupted, "injected test interruption"),
                 ))
-            },
-        )
-        .expect_err("injected failure must abort replacement");
+            })
+            .expect_err("injected failure must abort replacement");
 
         assert!(matches!(
             error,
@@ -291,15 +287,13 @@ mod tests {
             }
         ));
         assert_eq!(fs::read(&path).expect("read live file"), original_bytes);
-        assert!(
-            fs::read_dir(&directory)
-                .expect("list directory")
-                .all(|entry| !entry
-                    .expect("directory entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".rotate-"))
-        );
+        assert!(fs::read_dir(&directory)
+            .expect("list directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".rotate-")));
 
         let _ = fs::remove_dir_all(directory);
     }

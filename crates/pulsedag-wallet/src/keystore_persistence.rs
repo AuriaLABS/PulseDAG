@@ -504,15 +504,13 @@ mod tests {
             WalletKeystorePersistenceError::Io("injected pre-publish failure", _)
         ));
         assert!(!path.exists());
-        assert!(
-            fs::read_dir(&directory)
-                .expect("list directory")
-                .all(|entry| !entry
-                    .expect("directory entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".tmp-"))
-        );
+        assert!(fs::read_dir(&directory)
+            .expect("list directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")));
 
         drop(session);
         let _ = fs::remove_dir_all(directory);
