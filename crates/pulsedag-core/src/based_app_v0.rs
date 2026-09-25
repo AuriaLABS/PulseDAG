@@ -149,7 +149,7 @@ pub fn derive_app_id_v0(profile: &BasedAppProfileV0) -> Result<[u8; 32], BasedAp
     let mut out = Vec::new();
     encode_len_prefixed(&mut out, BASED_APP_DOMAIN_V0.as_bytes());
     encode_len_prefixed(&mut out, profile.chain_id.as_bytes());
-    out.extend_from_slice(&u32::from(profile.challenge_pulses).to_le_bytes());
+    out.extend_from_slice(&profile.challenge_pulses.to_le_bytes());
     out.extend_from_slice(&profile.max_blob_bytes.to_le_bytes());
     let mode = match profile.da_mode {
         BasedDaModeV0::Inline => b"inline".as_slice(),
