@@ -217,7 +217,6 @@ impl Drop for TempCleanup {
         }
     }
 }
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
