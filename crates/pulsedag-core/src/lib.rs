@@ -238,7 +238,6 @@ pub use verify_receipt_v1::{
     verify_receipt_canonical_bytes_v1, verify_receipt_digest_v1, VerifyReceiptV1,
     VerifyReceiptV1Error, VerifyResultV1, VERIFY_RECEIPT_DOMAIN_V1, VERIFY_RECEIPT_VERSION_V1,
 };
-};
 
 pub use ordering::{
     derive_ordered_dag, ordered_dag_tip, refresh_ordered_dag, DAG_ORDERING_VERSION,
