@@ -40,6 +40,8 @@ Activation intent for a future 3.0 genesis:
 
 These are planning tasks, not authorized implementation on the v2.4.0 Task31 line.
 
+Fail-closed matchers now exist on `main` for P1–P8 (PulseClock through measured envelope, plus explorer/wallet pulse views). Default admission stays inactive. That is not a 3.0 genesis, not `covenants_enabled=true`, and not a public-testnet clock start.
+
 ### Task P1 — PulseClock
 
 Define a canonical pulse derived from the selected DAG:
