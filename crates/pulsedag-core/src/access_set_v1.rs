@@ -112,9 +112,9 @@ pub fn access_sets_conflict_v1(a: &AccessSetV1, b: &AccessSetV1) -> bool {
 
 /// Walk `ordered` and keep the first non-conflicting internally valid set.
 /// Already-accepted members of the window determine later rejects.
-pub fn schedule_access_sets_v1<'a>(
+pub fn schedule_access_sets_v1(
     admission: AccessSetAdmissionV1,
-    ordered: &'a [(u32, AccessSetV1)],
+    ordered: &[(u32, AccessSetV1)],
     value_moving: bool,
 ) -> (Vec<u32>, Vec<(u32, AccessConflictClassV1)>) {
     let mut accepted = Vec::new();
