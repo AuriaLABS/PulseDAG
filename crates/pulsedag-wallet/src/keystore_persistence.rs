@@ -102,6 +102,17 @@ impl fmt::Debug for WalletKeystoreFile {
 }
 
 impl WalletKeystoreFile {
+    pub fn permission_policy_preflight() -> WalletKeystorePermissionStatus {
+        #[cfg(unix)]
+        {
+            WalletKeystorePermissionStatus::EnforcedOwnerReadWrite
+        }
+        #[cfg(not(unix))]
+        {
+            WalletKeystorePermissionStatus::NotEnforcedOnThisPlatform
+        }
+    }
+
     pub fn try_acquire(path: impl AsRef<Path>) -> Result<Self, WalletKeystorePersistenceError> {
         let path = path.as_ref();
         let name = path.file_name().filter(|name| !name.is_empty()).ok_or(
@@ -386,6 +397,20 @@ mod tests {
         ));
         fs::create_dir(&path).expect("create test directory");
         path
+    }
+
+    #[test]
+    fn permission_policy_preflight_matches_platform_contract() {
+        #[cfg(unix)]
+        assert_eq!(
+            WalletKeystoreFile::permission_policy_preflight(),
+            WalletKeystorePermissionStatus::EnforcedOwnerReadWrite
+        );
+        #[cfg(not(unix))]
+        assert_eq!(
+            WalletKeystoreFile::permission_policy_preflight(),
+            WalletKeystorePermissionStatus::NotEnforcedOnThisPlatform
+        );
     }
 
     #[test]
