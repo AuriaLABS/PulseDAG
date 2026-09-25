@@ -2,6 +2,7 @@ mod activated_v2_runtime;
 mod app_state;
 mod block_protocol;
 mod block_request;
+mod compact_relay;
 mod config;
 mod fast_sync_bootstrap;
 mod startup_protocol;
@@ -32,6 +33,7 @@ use block_request::{
     BlockRequestTracker, DependencyAwareFetchScheduler, GetBlockRequestReadiness,
     HeaderFetchCandidate,
 };
+use compact_relay::{CompactRelayDaemonRuntimeV1, CompactRelayProbeScheduleV1};
 use config::Config;
 use pulsedag_core::accept::{AcceptSource, BlockAcceptanceResult, TxAcceptanceResult};
 use pulsedag_core::{
@@ -42,7 +44,8 @@ use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{
         build_dag_frontier_response_v1, build_selected_chain_locator_v1,
-        plan_dag_frontier_reconciliation_v1, HeaderInventory, ProtocolSyncWireV1,
+        plan_dag_frontier_reconciliation_v1, CompactRelayCapabilitiesV1,
+        CompactRelayControllerActionV1, CompactRelayWireV1, HeaderInventory, ProtocolSyncWireV1,
         RecoveryProgressDecisionV1, RecoveryProgressObservationV1, RecoveryProgressTrackerV1,
         TipInventoryStatus, MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
         MAX_SELECTED_CHAIN_SUFFIX_HASHES,
@@ -2021,6 +2024,9 @@ async fn main() -> Result<()> {
             stack.handle.configure_fast_sync_capabilities_v1(
                 fast_sync_bootstrap::local_fast_sync_capabilities_v1(expected)?,
             )?;
+            stack.handle.configure_compact_relay_capabilities_v1(
+                CompactRelayCapabilitiesV1::canonical(cfg.chain_id.as_str()),
+            )?;
         }
         if let Ok(status) = stack.handle.status() {
             info!(
@@ -2254,6 +2260,15 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    let compact_relay_daemon_runtime = if startup_protocol.activated_v2() {
+        Some(
+            CompactRelayDaemonRuntimeV1::new(&cfg.chain_id).map_err(|error| {
+                anyhow::anyhow!("failed configuring compact relay daemon runtime: {error:?}")
+            })?,
+        )
+    } else {
+        None
+    };
 
     if let Some(mut rx) = inbound_rx {
         let chain = app_state.chain.clone();
@@ -2266,6 +2281,8 @@ async fn main() -> Result<()> {
         let p2p_protocol_identity = startup_activated_v2_identity.clone();
         tokio::spawn(async move {
             let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
+            let mut compact_relay_daemon_runtime = compact_relay_daemon_runtime;
+            let mut compact_relay_probe_schedule = CompactRelayProbeScheduleV1::default();
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
             let mut block_requests = BlockRequestTracker::with_limits(
                 8,
@@ -5299,6 +5316,48 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Tips { tips } => {
+                        if let Some(ref p2p_handle) = p2p {
+                            match (
+                                p2p_handle.protocol_sync_eligible_peers_v1(),
+                                p2p_handle.compact_relay_eligible_peers_v1(),
+                            ) {
+                                (Ok(protocol_eligible), Ok(compact_eligible)) => {
+                                    for peer_id in compact_relay_probe_schedule.probe_targets(
+                                        &protocol_eligible,
+                                        &compact_eligible,
+                                        now,
+                                    ) {
+                                        match p2p_handle.send_compact_relay_v1(
+                                            &peer_id,
+                                            &CompactRelayWireV1::CapabilityProbe,
+                                        ) {
+                                            Ok(()) => {
+                                                info!(
+                                                    peer = %peer_id,
+                                                    "sent compact-relay capability probe after protocol authorization"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                compact_relay_probe_schedule
+                                                    .note_send_failure(&peer_id);
+                                                warn!(
+                                                    peer = %peer_id,
+                                                    error = %error,
+                                                    "compact-relay capability probe send failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                (Err(error), _) | (_, Err(error)) => {
+                                    warn!(
+                                        error = %error,
+                                        "failed reading compact-relay probe eligibility"
+                                    );
+                                }
+                            }
+                        }
+
                         let local_height = {
                             let guard = chain.read().await;
                             guard.dag.best_height
@@ -6044,7 +6103,358 @@ async fn main() -> Result<()> {
                             ),
                         );
                     }
+                    InboundEvent::CompactRelay { peer_id, wire } => {
+                        let kind = wire.kind();
+                        let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() else {
+                            warn!(
+                                peer = %peer_id,
+                                compact_relay_kind = kind,
+                                "ignored compact-relay event because activated-v2 daemon runtime is inactive"
+                            );
+                            continue;
+                        };
+                        let actions = {
+                            let guard = chain.read().await;
+                            compact_runtime.handle_inbound(&peer_id, &wire, &guard)
+                        };
+                        let actions = match actions {
+                            Ok(actions) => actions,
+                            Err(error) => {
+                                warn!(
+                                    peer = %peer_id,
+                                    compact_relay_kind = kind,
+                                    error = ?error,
+                                    "compact-relay controller rejected inbound event"
+                                );
+                                let telemetry = compact_runtime.telemetry();
+                                {
+                                    let mut rt = runtime.write().await;
+                                    rt.compact_relay_controller = (&telemetry).into();
+                                }
+                                let _ = storage.append_runtime_event(
+                                    "warn",
+                                    "compact_relay_controller_rejected",
+                                    &format!("peer={peer_id} kind={kind} error={error:?}"),
+                                );
+                                continue;
+                            }
+                        };
+
+                        if let Some(ref p2p_handle) = p2p {
+                            for action in actions {
+                                match action {
+                                    CompactRelayControllerActionV1::Send {
+                                        peer_id: target_peer,
+                                        wire,
+                                    } => {
+                                        if let Err(error) =
+                                            p2p_handle.send_compact_relay_v1(&target_peer, &wire)
+                                        {
+                                            warn!(
+                                                peer = %target_peer,
+                                                compact_relay_kind = wire.kind(),
+                                                error = %error,
+                                                "failed sending compact-relay controller response"
+                                            );
+                                            for recovery_action in compact_runtime
+                                                .handle_send_failure(&target_peer, &wire)
+                                            {
+                                                match recovery_action {
+                                                    CompactRelayControllerActionV1::RequestFullBlock {
+                                                        peer_id: source_peer,
+                                                        block_hash,
+                                                    } => {
+                                                        if let Err(request_error) = p2p_handle
+                                                            .request_block_from(
+                                                                &source_peer,
+                                                                &block_hash,
+                                                            )
+                                                        {
+                                                            warn!(
+                                                                peer = %source_peer,
+                                                                block_hash = %block_hash,
+                                                                error = %request_error,
+                                                                "compact-relay send failure could not enqueue peer-addressed full-block fallback; using broadcast GetBlock"
+                                                            );
+                                                            if let Err(fallback_error) =
+                                                                p2p_handle.request_block(&block_hash)
+                                                            {
+                                                                warn!(
+                                                                    block_hash = %block_hash,
+                                                                    error = %fallback_error,
+                                                                    "compact-relay send failure full-block request fallback failed"
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    CompactRelayControllerActionV1::ServeFullBlock {
+                                                        peer_id: fallback_peer,
+                                                        block_hash,
+                                                    } => {
+                                                        let block = {
+                                                            let guard = chain.read().await;
+                                                            guard.dag.blocks.get(&block_hash).cloned()
+                                                        };
+                                                        if let Err(fallback_error) = p2p_handle
+                                                            .send_compact_relay_full_block_fallback_v1(
+                                                                &block_hash,
+                                                                block.as_ref(),
+                                                            )
+                                                        {
+                                                            warn!(
+                                                                peer = %fallback_peer,
+                                                                block_hash = %block_hash,
+                                                                error = %fallback_error,
+                                                                "compact-relay body response send failure full-block service fallback failed"
+                                                            );
+                                                        }
+                                                    }
+                                                    other => {
+                                                        warn!(
+                                                            peer = %target_peer,
+                                                            recovery_action = ?other,
+                                                            "ignored unexpected compact-relay send-failure recovery action"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    CompactRelayControllerActionV1::ReconstructedBlockReady {
+                                        peer_id: source_peer,
+                                        block,
+                                    } => {
+                                        if let Err(error) = p2p_handle
+                                            .submit_reconstructed_compact_block_v1(
+                                                &source_peer,
+                                                &block,
+                                            )
+                                        {
+                                            warn!(
+                                                peer = %source_peer,
+                                                block_hash = %block.hash,
+                                                error = %error,
+                                                "failed canonical reinjection of reconstructed compact block; requesting full block"
+                                            );
+                                            if let Err(request_error) = p2p_handle
+                                                .request_block_from(&source_peer, &block.hash)
+                                            {
+                                                warn!(
+                                                    peer = %source_peer,
+                                                    block_hash = %block.hash,
+                                                    error = %request_error,
+                                                    "reconstructed compact block fallback could not enqueue peer-addressed request; using broadcast GetBlock"
+                                                );
+                                                if let Err(fallback_error) =
+                                                    p2p_handle.request_block(&block.hash)
+                                                {
+                                                    warn!(
+                                                        block_hash = %block.hash,
+                                                        error = %fallback_error,
+                                                        "reconstructed compact block full-request fallback failed"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    CompactRelayControllerActionV1::RequestFullBlock {
+                                        peer_id: source_peer,
+                                        block_hash,
+                                    } => {
+                                        if let Err(error) =
+                                            p2p_handle.request_block_from(&source_peer, &block_hash)
+                                        {
+                                            warn!(
+                                                peer = %source_peer,
+                                                block_hash = %block_hash,
+                                                error = %error,
+                                                "peer-addressed compact fallback failed; using broadcast GetBlock"
+                                            );
+                                            if let Err(fallback_error) =
+                                                p2p_handle.request_block(&block_hash)
+                                            {
+                                                warn!(
+                                                    block_hash = %block_hash,
+                                                    error = %fallback_error,
+                                                    "compact-relay full-block request fallback failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    CompactRelayControllerActionV1::ServeFullBlock {
+                                        peer_id: target_peer,
+                                        block_hash,
+                                    } => {
+                                        let block = {
+                                            let guard = chain.read().await;
+                                            guard.dag.blocks.get(&block_hash).cloned()
+                                        };
+                                        if let Err(error) = p2p_handle
+                                            .send_compact_relay_full_block_fallback_v1(
+                                                &block_hash,
+                                                block.as_ref(),
+                                            )
+                                        {
+                                            warn!(
+                                                peer = %target_peer,
+                                                block_hash = %block_hash,
+                                                error = %error,
+                                                "failed serving compact-relay full-block fallback"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let telemetry = compact_runtime.telemetry();
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.compact_relay_controller = (&telemetry).into();
+                        }
+                        info!(
+                            peer = %peer_id,
+                            compact_relay_kind = kind,
+                            pending = telemetry.pending_announcements_current,
+                            reconstructed = telemetry.reconstructed_blocks_ready_total,
+                            full_block_requests = telemetry.full_block_requests_total,
+                            full_block_service_fallbacks =
+                                telemetry.full_block_service_fallback_total,
+                            invalid_responses = telemetry.invalid_response_total,
+                            "processed live compact-relay controller event"
+                        );
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "compact_relay_controller",
+                            &format!(
+                                "peer={peer_id} kind={kind} pending={} reconstructed={} full_block_requests={} full_block_service_fallbacks={} invalid_responses={}",
+                                telemetry.pending_announcements_current,
+                                telemetry.reconstructed_blocks_ready_total,
+                                telemetry.full_block_requests_total,
+                                telemetry.full_block_service_fallback_total,
+                                telemetry.invalid_response_total,
+                            ),
+                        );
+                    }
+                    InboundEvent::CompactRelaySendFailed {
+                        peer_id,
+                        wire,
+                        error,
+                    } => {
+                        if matches!(wire, CompactRelayWireV1::CapabilityProbe) {
+                            compact_relay_probe_schedule.note_send_failure(&peer_id);
+                        }
+                        let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() else {
+                            warn!(
+                                peer = %peer_id,
+                                compact_relay_kind = wire.kind(),
+                                error = %error,
+                                "compact-relay asynchronous send failure arrived without active daemon runtime"
+                            );
+                            continue;
+                        };
+                        warn!(
+                            peer = %peer_id,
+                            compact_relay_kind = wire.kind(),
+                            error = %error,
+                            "compact-relay runtime reported asynchronous send failure"
+                        );
+                        let recovery_actions = compact_runtime.handle_send_failure(&peer_id, &wire);
+                        if let Some(ref p2p_handle) = p2p {
+                            for recovery_action in recovery_actions {
+                                match recovery_action {
+                                    CompactRelayControllerActionV1::RequestFullBlock {
+                                        peer_id: source_peer,
+                                        block_hash,
+                                    } => {
+                                        if let Err(request_error) =
+                                            p2p_handle.request_block_from(&source_peer, &block_hash)
+                                        {
+                                            warn!(
+                                                peer = %source_peer,
+                                                block_hash = %block_hash,
+                                                error = %request_error,
+                                                "asynchronous compact send failure could not enqueue peer-addressed full-block fallback; using broadcast GetBlock"
+                                            );
+                                            if let Err(fallback_error) =
+                                                p2p_handle.request_block(&block_hash)
+                                            {
+                                                warn!(
+                                                    block_hash = %block_hash,
+                                                    error = %fallback_error,
+                                                    "asynchronous compact send failure full-block request fallback failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    CompactRelayControllerActionV1::ServeFullBlock {
+                                        peer_id: fallback_peer,
+                                        block_hash,
+                                    } => {
+                                        let block = {
+                                            let guard = chain.read().await;
+                                            guard.dag.blocks.get(&block_hash).cloned()
+                                        };
+                                        if let Err(fallback_error) = p2p_handle
+                                            .send_compact_relay_full_block_fallback_v1(
+                                                &block_hash,
+                                                block.as_ref(),
+                                            )
+                                        {
+                                            warn!(
+                                                peer = %fallback_peer,
+                                                block_hash = %block_hash,
+                                                error = %fallback_error,
+                                                "asynchronous compact body-response failure full-block service fallback failed"
+                                            );
+                                        }
+                                    }
+                                    other => {
+                                        warn!(
+                                            peer = %peer_id,
+                                            recovery_action = ?other,
+                                            "ignored unexpected asynchronous compact send-failure recovery action"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        let telemetry = compact_runtime.telemetry();
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.compact_relay_controller = (&telemetry).into();
+                        }
+                        let _ = storage.append_runtime_event(
+                            "warn",
+                            "compact_relay_send_failed",
+                            &format!(
+                                "peer={peer_id} kind={} error={error} pending={} full_block_requests={} full_block_service_fallbacks={}",
+                                wire.kind(),
+                                telemetry.pending_announcements_current,
+                                telemetry.full_block_requests_total,
+                                telemetry.full_block_service_fallback_total,
+                            ),
+                        );
+                    }
+                    InboundEvent::PeerDisconnected(peer) => {
+                        if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
+                            compact_runtime.peer_disconnected(&peer);
+                            let telemetry = compact_runtime.telemetry();
+                            let mut rt = runtime.write().await;
+                            rt.compact_relay_controller = (&telemetry).into();
+                        }
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "compact_relay_peer_disconnected",
+                            &format!("peer={peer} action=clear_session_and_pending"),
+                        );
+                        info!(
+                            peer = %peer,
+                            "p2p peer disconnected; cleared compact-relay daemon session"
+                        );
+                    }
                     InboundEvent::PeerConnected(peer) => {
+                        compact_relay_probe_schedule.note_peer_connected(&peer);
                         let peers_connected = p2p
                             .as_ref()
                             .and_then(|h| h.status().ok().map(|s| s.connected_peers));

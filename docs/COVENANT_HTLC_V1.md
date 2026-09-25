@@ -1,6 +1,6 @@
 # Covenant template htlc_v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1171, #794
@@ -10,6 +10,8 @@ Source thesis: `ROADMAP_V3_0_0.md` Task P3
 This document defines the hash-time lock template. It does **not** authorize `covenants_enabled`, `contracts_enabled=true`, Task31 identity change, PulseVM, or v3 launch.
 
 Until an explicit activation contract admits `htlc_v1`, nodes MUST treat these outputs as unknown and fail closed.
+
+The in-tree matcher (`crates/pulsedag-core/src/htlc_v1.rs`) cites PulseClock `pulse_height` only. Claim requires SHA-256(preimage) and must occur before the refund height. Default `HtlcAdmissionV1::INACTIVE` rejects both paths. This file does **not** admit the template into mempool/consensus.
 
 ## Purpose
 

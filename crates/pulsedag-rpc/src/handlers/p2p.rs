@@ -289,6 +289,7 @@ fn p2p_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> serde_json::Value 
         "p2p_status_degraded_reason": "fresh p2p status unavailable; serving cached node RPC snapshot",
         "p2p_status_captured_at_unix": snapshot.last_updated_ms / 1_000,
         "chain_id": snapshot.chain_id,
+        "local_protocol_capabilities_v1": null,
         "mode": "cached_snapshot",
         "p2p_mode": "cached_snapshot",
         "local_node_id": null,
@@ -317,6 +318,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             liveness_snapshot,
         )));
     }
+    let local_protocol_capabilities_v1 = state
+        .p2p()
+        .and_then(|p2p| p2p.local_protocol_capabilities_v1().ok().flatten());
     match p2p_status_for_rpc(state.p2p(), "/p2p/status").await {
         Ok(Some(snapshot)) => {
             let status = snapshot.status;
@@ -389,6 +393,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 .collect::<Vec<_>>();
             let mut payload = serde_json::Map::new();
             payload.insert("chain_id".into(), serde_json::json!(status.chain_id));
+            payload.insert(
+                "local_protocol_capabilities_v1".into(),
+                serde_json::json!(local_protocol_capabilities_v1),
+            );
             payload.insert(
                 "p2p_status_stale".into(),
                 serde_json::json!(p2p_status_stale),
@@ -513,6 +521,25 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             payload.insert(
                 "inbound_messages".into(),
                 serde_json::json!(status.inbound_messages),
+            );
+            payload.insert(
+                "compact_relay_transport".into(),
+                serde_json::json!({
+                    "outbound_carriers_encoded_total": status.compact_relay_transport.outbound_carriers_encoded_total,
+                    "inbound_carriers_accepted_total": status.compact_relay_transport.inbound_carriers_accepted_total,
+                    "outbound_encoded_bytes_total": status.compact_relay_transport.outbound_encoded_bytes_total,
+                    "inbound_accepted_bytes_total": status.compact_relay_transport.inbound_accepted_bytes_total,
+                    "outbound_capability_messages_total": status.compact_relay_transport.outbound_capability_messages_total,
+                    "inbound_capability_messages_total": status.compact_relay_transport.inbound_capability_messages_total,
+                    "outbound_announcements_total": status.compact_relay_transport.outbound_announcements_total,
+                    "inbound_announcements_total": status.compact_relay_transport.inbound_announcements_total,
+                    "outbound_body_requests_total": status.compact_relay_transport.outbound_body_requests_total,
+                    "inbound_body_requests_total": status.compact_relay_transport.inbound_body_requests_total,
+                    "outbound_body_responses_total": status.compact_relay_transport.outbound_body_responses_total,
+                    "inbound_body_responses_total": status.compact_relay_transport.inbound_body_responses_total,
+                    "decode_failures_total": status.compact_relay_transport.decode_failures_total,
+                    "max_carrier_bytes": status.compact_relay_transport.max_carrier_bytes
+                }),
             );
             payload.insert(
                 "runtime_started".into(),
@@ -770,6 +797,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
                 }
             };
+            payload.insert(
+                "compact_relay_controller".into(),
+                serde_json::json!(&runtime.compact_relay_controller),
+            );
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
@@ -1367,6 +1398,7 @@ mod tests {
     #[derive(Clone)]
     struct TestP2pHandle {
         status: P2pStatus,
+        local_protocol_capabilities: Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
     }
 
     impl P2pHandle for TestP2pHandle {
@@ -1384,6 +1416,15 @@ mod tests {
         }
         fn status(&self) -> Result<P2pStatus, pulsedag_core::errors::PulseError> {
             Ok(self.status.clone())
+        }
+
+        fn local_protocol_capabilities_v1(
+            &self,
+        ) -> Result<
+            Option<pulsedag_p2p::messages::ProtocolCapabilitiesV1>,
+            pulsedag_core::errors::PulseError,
+        > {
+            Ok(self.local_protocol_capabilities.clone())
         }
     }
 
@@ -1415,11 +1456,27 @@ mod tests {
         let chain = storage
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
+        let local_protocol_capabilities = pulsedag_p2p::messages::ProtocolCapabilitiesV1 {
+            capabilities_version: pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION,
+            protocol_identity: pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                chain.chain_id.clone(),
+                chain.dag.genesis_hash.clone(),
+                pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            ),
+            consensus_metadata_schema_version: pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version: pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            supports_dag_frontier: true,
+            supports_consensus_metadata: true,
+            high_cadence_allowed: false,
+        };
         TestState {
             chain: Arc::new(RwLock::new(chain)),
             storage,
             runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
-            p2p: Some(Arc::new(TestP2pHandle { status })),
+            p2p: Some(Arc::new(TestP2pHandle {
+                status,
+                local_protocol_capabilities: Some(local_protocol_capabilities),
+            })),
         }
     }
 
@@ -1454,6 +1511,16 @@ mod tests {
             queue_starvation_relief_picks: 1,
             queue_backpressure_drops: 0,
             inbound_messages: 8,
+            compact_relay_transport: pulsedag_p2p::CompactRelayTransportTelemetryV1 {
+                outbound_carriers_encoded_total: 3,
+                inbound_carriers_accepted_total: 2,
+                outbound_encoded_bytes_total: 1_234,
+                inbound_accepted_bytes_total: 987,
+                outbound_announcements_total: 2,
+                inbound_announcements_total: 1,
+                decode_failures_total: 4,
+                ..Default::default()
+            },
             runtime_started: true,
             runtime_mode_detail: "in-process-dispatch".into(),
             swarm_events_seen: 9,
@@ -1674,7 +1741,24 @@ mod tests {
             ..P2pStatus::default()
         };
 
-        let Json(resp) = get_p2p_status(State(mk_state(status))).await;
+        let state = mk_state(status);
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime
+                .compact_relay_controller
+                .reconstructed_blocks_ready_total = 7;
+            runtime.compact_relay_controller.full_block_requests_total = 2;
+            runtime
+                .compact_relay_controller
+                .full_block_service_fallback_total = 1;
+            runtime.compact_relay_controller.invalid_response_total = 3;
+            runtime
+                .compact_relay_controller
+                .pending_announcements_current = 4;
+            runtime.compact_relay_controller.pending_announcements_peak = 6;
+            runtime.compact_relay_controller.max_inflight_per_peer = 64;
+        }
+        let Json(resp) = get_p2p_status(State(state)).await;
         let data = resp.data.expect("p2p status data");
         assert!(data.get("connected_peers").is_some());
         assert_eq!(
@@ -1690,9 +1774,68 @@ mod tests {
         assert_eq!(data["p2p_enabled"], true);
         assert_eq!(data["p2p_mode"], P2P_MODE_MEMORY_SIMULATED);
         assert_eq!(data["peer_count"], 1);
+        assert!(data["local_protocol_capabilities_v1"].is_object());
+        assert_eq!(
+            data["local_protocol_capabilities_v1"]["protocol_identity"]["chain_id"],
+            "testnet-dev"
+        );
+        assert!(
+            data["local_protocol_capabilities_v1"]["protocol_identity"]["genesis_hash"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
         assert!(data["tx_propagation_counters"].is_object());
         assert!(data["block_propagation_counters"].is_object());
         assert!(data["duplicate_suppression_counters"].is_object());
+        assert_eq!(
+            data["compact_relay_transport"]["outbound_carriers_encoded_total"],
+            3
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["inbound_carriers_accepted_total"],
+            2
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["outbound_encoded_bytes_total"],
+            1_234
+        );
+        assert_eq!(
+            data["compact_relay_transport"]["inbound_accepted_bytes_total"],
+            987
+        );
+        assert_eq!(data["compact_relay_transport"]["decode_failures_total"], 4);
+        assert_eq!(
+            data["compact_relay_transport"]["max_carrier_bytes"],
+            60 * 1_024
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["reconstructed_blocks_ready_total"],
+            7
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["full_block_requests_total"],
+            2
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["full_block_service_fallback_total"],
+            1
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["invalid_response_total"],
+            3
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["pending_announcements_current"],
+            4
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["pending_announcements_peak"],
+            6
+        );
+        assert_eq!(
+            data["compact_relay_controller"]["max_inflight_per_peer"],
+            64
+        );
         assert!(data["sync_candidates"].is_array());
         assert!(data["peer_recovery"].is_array());
         assert_eq!(data["peer_recovery"][0]["eligible_for_sync"], true);

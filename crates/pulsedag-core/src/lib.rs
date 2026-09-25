@@ -1,6 +1,9 @@
 pub mod accept;
 pub mod acceptance_v2;
+pub mod access_set_v1;
 pub mod apply;
+pub mod channel_v1;
+pub mod colored_utxo_v1;
 pub mod consensus_metadata;
 pub mod consistency;
 #[allow(clippy::too_many_arguments)]
@@ -16,6 +19,7 @@ pub mod genesis_v2;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
+pub mod htlc_v1;
 pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
@@ -28,6 +32,7 @@ pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
+pub mod multisig_v1;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
@@ -35,12 +40,14 @@ pub mod network_staging_v2;
 pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
+pub mod pay_stream_v1;
 pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
 pub mod pqc;
 pub mod protocol;
 pub mod protocol_persistence;
+pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
@@ -58,6 +65,7 @@ pub mod tx_v3;
 pub mod types;
 pub mod validation;
 pub mod validation_v2;
+pub mod vault_v1;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -164,6 +172,57 @@ pub use consensus_metadata::{
 pub use finality_v2::{
     derive_finality_boundary_v1, FinalityBoundaryV1, FinalityV2Error,
     GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+};
+
+pub use pulseclock_v1::{
+    observe_pulse_v1, observe_pulse_v1_at, PulseClockV1Error, PulseObservationV1, PULSE_DOMAIN_V1,
+    PULSE_FINALITY_DEPTH_UNPUBLISHED_V1, PULSE_UNCERTAINTY_POLICY_MAX_SECS_V1, PULSE_VERSION_V1,
+    PULSE_WINDOW_K_V1,
+};
+
+pub use pay_stream_v1::{
+    evaluate_pay_stream_withdraw_v1, matured_buckets_v1, validate_pay_stream_output_v1,
+    withdrawable_buckets_v1, PayStreamAdmissionV1, PayStreamV1Error, PayStreamV1Output,
+    PAY_STREAM_DOMAIN_V1, PAY_STREAM_TEMPLATE_ID_V1,
+};
+
+pub use htlc_v1::{
+    evaluate_htlc_spend_v1, htlc_spend_signing_message_v1, payment_hash_v1, refund_height_v1,
+    reserved_payment_hash_v1, validate_htlc_output_v1, HtlcAdmissionV1, HtlcSpendPathV1,
+    HtlcSpendWitnessV1, HtlcV1Error, HtlcV1Output, HTLC_DOMAIN_V1, HTLC_TEMPLATE_ID_V1,
+};
+
+pub use vault_v1::{
+    created_pulse_height_from_tip, emergency_unlock_height, evaluate_vault_spend_v1,
+    owner_unlock_height, pulses_remaining_owner, validate_vault_output_v1,
+    vault_spend_signing_message_v1, verify_vault_spend_signature_v1, VaultAdmissionV1,
+    VaultSpendPathV1, VaultSpendWitnessV1, VaultV1Error, VaultV1Output, VAULT_DOMAIN_V1,
+    VAULT_TEMPLATE_ID_V1,
+};
+
+pub use multisig_v1::{
+    evaluate_multisig_spend_v1, multisig_spend_signing_message_v1, validate_multisig_output_v1,
+    MultisigAdmissionV1, MultisigSpendWitnessV1, MultisigV1Error, MultisigV1Output,
+    MULTISIG_DOMAIN_V1, MULTISIG_TEMPLATE_ID_V1,
+};
+
+pub use channel_v1::{
+    challenge_deadline_v1, channel_spend_signing_message_v1, evaluate_channel_spend_v1,
+    validate_channel_output_v1, ChannelAdmissionV1, ChannelSpendPathV1, ChannelSpendWitnessV1,
+    ChannelStageV1, ChannelV1Error, ChannelV1Output, CHANNEL_DOMAIN_V1, CHANNEL_TEMPLATE_ID_V1,
+};
+
+pub use colored_utxo_v1::{
+    derive_color_id_v1, evaluate_colored_mint_v1, evaluate_colored_units_v1,
+    validate_colored_output_v1, ColoredAdmissionV1, ColoredSpendPathV1, ColoredV1Error,
+    ColoredV1Output, COLORED_DOMAIN_V1, COLORED_TEMPLATE_ID_V1,
+};
+
+pub use access_set_v1::{
+    access_sets_conflict_v1, inspects_underdeclared_v1, schedule_access_sets_v1,
+    spends_underdeclared_v1, validate_access_set_v1, AccessConflictClassV1, AccessKeyIdV1,
+    AccessOutpointV1, AccessSetAdmissionV1, AccessSetV1, AccessSetV1Error, ACCESS_SET_DOMAIN_V1,
+    ACCESS_SET_VERSION_V1,
 };
 
 pub use ordering::{

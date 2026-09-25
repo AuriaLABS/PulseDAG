@@ -1,6 +1,6 @@
 # Access set v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1163, #794
@@ -10,6 +10,8 @@ Related: `PULSECLOCK_V1.md`, `COVENANT_VAULT_V1.md`
 This document defines declared access sets for a future programmable transaction format. It does **not** authorize Transaction Protocol v3, reinterpret Transaction Protocol v2, enable covenants/contracts, or change GHOSTDAG selection.
 
 Existing v2 transactions have no access-set field. Nodes MUST NOT infer one. v2 conflict handling remains the frozen v2.4.0 rule (conflicts reject; no implicit RBF) until a later activation contract admits this format.
+
+The in-tree matcher (`crates/pulsedag-core/src/access_set_v1.rs`) schedules declared sets in caller-supplied GHOSTDAG order. Default `AccessSetAdmissionV1::INACTIVE` rejects the window. This file does **not** change Transaction Protocol v2, mempool, or apply.
 
 ## Purpose
 
