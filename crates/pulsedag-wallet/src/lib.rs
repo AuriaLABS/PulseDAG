@@ -10,6 +10,7 @@ mod pending;
 mod pending_persistence;
 mod plan;
 pub mod protocol_v2;
+mod pulse_view;
 mod safety;
 mod secrets;
 mod session_clock;
@@ -57,6 +58,10 @@ pub use plan::{
     WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
     WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
     WALLET_NONCE_DOMAIN_V1,
+};
+pub use pulse_view::{
+    wallet_covenant_delay_pulse, wallet_pulse_view_v1, WalletPulseAdmissionV1, WalletPulseV1Error,
+    WALLET_PULSE_DOMAIN_V1,
 };
 pub use safety::{
     validate_wallet_safety_acknowledgements, WalletFundingEntry, WalletFundingSnapshot,

@@ -70,6 +70,7 @@ pub mod validation;
 pub mod validation_v2;
 pub mod vault_v1;
 pub mod verify_receipt_v1;
+pub mod wallet_pulse_v1;
 pub mod work_cert_v1;
 
 pub use accept::{
@@ -251,6 +252,10 @@ pub use work_cert_v1::{
 pub use explorer_dag_v1::{
     is_genesis_view_v1, validate_explorer_block_v1, ExplorerBlockV1, ExplorerDagAdmissionV1,
     ExplorerDagV1Error, ExplorerMergeColorV1, EXPLORER_DAG_DOMAIN_V1, EXPLORER_DAG_VERSION_V1,
+};
+
+pub use wallet_pulse_v1::{
+    wallet_pulse_view_v1, WalletPulseAdmissionV1, WalletPulseV1Error, WALLET_PULSE_DOMAIN_V1,
 };
 
 pub use finality_envelope_v1::{
