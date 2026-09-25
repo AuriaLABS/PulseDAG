@@ -1707,6 +1707,113 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recovery_lifecycle_restore_address_watch_import_and_backup_verify_is_coherent() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "pulsedag-wallet-recovery-lifecycle-{}-{nonce}",
+            std::process::id()
+        ));
+        let keystore = directory.join("wallet.json");
+        let manifest_path = directory.join("watch.json");
+
+        let password_canary = "PR1166_LIFECYCLE_PASSWORD_CANARY";
+        let mnemonic_canary =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let passphrase_canary = "PR1166_LIFECYCLE_PASSPHRASE_CANARY";
+
+        let restored = run_restore(
+            RestoreArgs {
+                keystore: keystore.clone(),
+                network_profile: "public-testnet".to_string(),
+                chain_id: "pulsedag-public-testnet".to_string(),
+            },
+            RestoreSecrets {
+                password: SecretString::new(password_canary.to_string()),
+                mnemonic: SecretString::new(mnemonic_canary.to_string()),
+                bip39_passphrase: Some(SecretString::new(passphrase_canary.to_string())),
+            },
+        )
+        .expect("restore deterministic seed wallet");
+        assert_eq!(
+            restored.initialization_state,
+            WalletInitializationState::BackupVerificationRequired
+        );
+
+        let address = run_address(
+            AddressArgs {
+                keystore: keystore.clone(),
+                account: 0,
+                branch: WalletDerivationBranch::Receive,
+                index: 0,
+            },
+            &SecretString::new(password_canary),
+        )
+        .expect("derive restored anchor address");
+        assert_eq!(address.address, restored.anchor_address);
+
+        let manifest = run_watch_export(
+            WatchExportArgs {
+                keystore: keystore.clone(),
+                account: 0,
+                receive_count: 2,
+                change_count: 1,
+            },
+            &SecretString::new(password_canary),
+        )
+        .expect("export approved watch-only backup");
+        assert_eq!(manifest.entries().len(), 3);
+        assert_eq!(manifest.entries()[0].address(), restored.anchor_address);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize watch-only backup"),
+        )
+        .expect("write watch-only backup");
+
+        let imported = run_watch_import(WatchImportArgs {
+            manifest: manifest_path.clone(),
+        })
+        .expect("import public watch-only backup");
+        assert_eq!(imported.entry_count, 3);
+        assert!(!imported.signing_capability);
+        assert_eq!(imported.checksum_hex, manifest.checksum_hex());
+
+        let verified = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore.clone(),
+                manifest: manifest_path.clone(),
+            },
+            &SecretString::new(password_canary),
+        )
+        .expect("verify backup against restored deterministic seed");
+        assert!(verified.verified);
+        assert_eq!(
+            verified.initialization_state,
+            WalletInitializationState::BackupVerified
+        );
+        assert_eq!(verified.checksum_hex, manifest.checksum_hex());
+
+        let public_outputs = [
+            serde_json::to_string(&restored).expect("serialize restore output"),
+            serde_json::to_string(&address).expect("serialize address output"),
+            serde_json::to_string(&manifest).expect("serialize manifest"),
+            serde_json::to_string(&imported).expect("serialize import output"),
+            serde_json::to_string(&verified).expect("serialize verification output"),
+        ]
+        .join("\n");
+        for canary in [password_canary, mnemonic_canary, passphrase_canary] {
+            assert!(!public_outputs.contains(canary));
+        }
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
     #[cfg(not(unix))]
     #[test]
     fn restore_refuses_unenforced_private_permissions_before_publish() {
