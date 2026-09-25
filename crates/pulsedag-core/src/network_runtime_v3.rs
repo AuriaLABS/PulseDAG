@@ -113,7 +113,7 @@ where
         runtime,
         identity,
         ActivatedV2P2pRuntimePersistence::new(
-            |prepared_state, prepared_runtime| {
+            |prepared_state: &ChainState, prepared_runtime: &ActivatedV2P2pRuntime| {
                 validate_runtime_transient_monetary_envelopes(
                     prepared_state,
                     prepared_runtime,
@@ -122,7 +122,7 @@ where
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_runtime(prepared_state, prepared_runtime)
             },
-            |accepted_block, prepared_state, prepared_runtime| {
+            |accepted_block: &Block, prepared_state: &ChainState, prepared_runtime: &ActivatedV2P2pRuntime| {
                 validate_runtime_transient_monetary_envelopes(
                     prepared_state,
                     prepared_runtime,
@@ -141,7 +141,7 @@ where
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_one(accepted_block, prepared_state, prepared_runtime)
             },
-            |bundle, prepared_state, prepared_runtime| {
+            |bundle: &[Block], prepared_state: &ChainState, prepared_runtime: &ActivatedV2P2pRuntime| {
                 validate_runtime_transient_monetary_envelopes(
                     prepared_state,
                     prepared_runtime,

@@ -21,7 +21,7 @@ use crate::{
 
 pub const MONETARY_MINING_TEMPLATE_SCHEMA_V3: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonetaryMiningTemplateV3 {
     pub schema_version: u32,
     pub protocol_fingerprint: String,
@@ -41,7 +41,7 @@ pub struct MonetaryMiningTemplateV3 {
     pub ready_for_nonce_search: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizedMonetaryMiningCandidateV3 {
     pub block: Block,
     pub state: ActivatedV2MiningStateContext,
