@@ -1,6 +1,6 @@
 # pulsedag verify v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED RECEIPT IN TREE** (CLI not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1174, #794
@@ -8,6 +8,8 @@ Source thesis: `ROADMAP_V3_0_0.md` Task P5
 Related: `RELEASE_EVIDENCE.md`, `PULSECLOCK_V1.md`
 
 Planning only. Does not authorize a public-testnet claim or a change of Task31 protocol identity.
+
+The in-tree receipt (`crates/pulsedag-core/src/verify_receipt_v1.rs`) binds digests to `chain_id` and binary identity. Host time is rejected. Default `admitted_templates` is empty. This file does **not** add a `pulsedag verify` CLI flag to a release candidate.
 
 ## Purpose
 
