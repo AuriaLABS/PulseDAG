@@ -37,6 +37,18 @@ pub(super) fn replace_existing_atomically(
     path: &Path,
     replacement: &WalletKeystoreEnvelope,
 ) -> Result<WalletKeystorePersistenceReport, WalletKeystoreRotationError> {
+    replace_existing_atomically_with_pre_publish(path, replacement, |_| Ok(()))
+}
+
+#[cfg(unix)]
+fn replace_existing_atomically_with_pre_publish<F>(
+    path: &Path,
+    replacement: &WalletKeystoreEnvelope,
+    before_publish: F,
+) -> Result<WalletKeystorePersistenceReport, WalletKeystoreRotationError>
+where
+    F: FnOnce(&Path) -> Result<(), WalletKeystoreRotationError>,
+{
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     replacement
@@ -92,6 +104,7 @@ pub(super) fn replace_existing_atomically(
     // Advisory locking coordinates cooperating PulseDAG processes; this is not
     // a sandbox against a hostile actor mutating the local filesystem.
     ensure_regular_existing_target(path)?;
+    before_publish(&temp_path)?;
     fs::rename(&temp_path, path).map_err(|source| io_error("publish replacement", source))?;
     cleanup.disarm();
     if let Err(source) = File::open(parent).and_then(|directory| directory.sync_all()) {
@@ -202,5 +215,92 @@ impl Drop for TempCleanup {
         if self.armed {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{
+        WalletCipherMetadata, WalletKdfMetadata, KEYSTORE_CIPHER_XCHACHA20_POLY1305,
+        KEYSTORE_FORMAT, KEYSTORE_KDF_ARGON2ID, KEYSTORE_KDF_DEFAULT_ITERATIONS,
+        KEYSTORE_KDF_DEFAULT_LANES, KEYSTORE_KDF_DEFAULT_MEMORY_KIB, KEYSTORE_NONCE_BYTES,
+        KEYSTORE_SALT_BYTES, KEYSTORE_V1_CIPHERTEXT_BYTES, KEYSTORE_VERSION,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn envelope(ciphertext_byte: &str) -> WalletKeystoreEnvelope {
+        WalletKeystoreEnvelope {
+            format: KEYSTORE_FORMAT.into(),
+            version: KEYSTORE_VERSION,
+            network_profile: "public-testnet-v2.4.0-candidate".into(),
+            chain_id: "pulsedag-public-testnet-v2.4.0-candidate".into(),
+            address: "pulse1rotationfaultfixture".into(),
+            kdf: WalletKdfMetadata {
+                algorithm: KEYSTORE_KDF_ARGON2ID.into(),
+                memory_kib: KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
+                iterations: KEYSTORE_KDF_DEFAULT_ITERATIONS,
+                lanes: KEYSTORE_KDF_DEFAULT_LANES,
+                salt_hex: "11".repeat(KEYSTORE_SALT_BYTES),
+            },
+            cipher: WalletCipherMetadata {
+                algorithm: KEYSTORE_CIPHER_XCHACHA20_POLY1305.into(),
+                nonce_hex: "22".repeat(KEYSTORE_NONCE_BYTES),
+            },
+            ciphertext_hex: ciphertext_byte.repeat(KEYSTORE_V1_CIPHERTEXT_BYTES),
+        }
+    }
+
+    #[test]
+    fn injected_pre_publish_rotation_failure_preserves_live_file_and_cleans_temp() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "pulsedag-rotation-interrupt-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("create test directory");
+        let path = directory.join("wallet.json");
+
+        let original = envelope("33");
+        let mut original_bytes = serde_json::to_vec_pretty(&original).expect("serialize original");
+        original_bytes.push(b'\n');
+        fs::write(&path, &original_bytes).expect("write original");
+
+        let error = replace_existing_atomically_with_pre_publish(
+            &path,
+            &envelope("44"),
+            |temp_path| {
+                assert!(temp_path.exists());
+                Err(io_error(
+                    "injected pre-publish failure",
+                    io::Error::new(io::ErrorKind::Interrupted, "injected test interruption"),
+                ))
+            },
+        )
+        .expect_err("injected failure must abort replacement");
+
+        assert!(matches!(
+            error,
+            WalletKeystoreRotationError::Io {
+                operation: "injected pre-publish failure",
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&path).expect("read live file"), original_bytes);
+        assert!(
+            fs::read_dir(&directory)
+                .expect("list directory")
+                .all(|entry| !entry
+                    .expect("directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".rotate-"))
+        );
+
+        let _ = fs::remove_dir_all(directory);
     }
 }

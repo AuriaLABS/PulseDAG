@@ -180,6 +180,17 @@ impl WalletKeystoreFile {
         &self,
         envelope: &WalletKeystoreEnvelope,
     ) -> Result<WalletKeystorePersistenceReport, WalletKeystorePersistenceError> {
+        self.create_new_with_pre_publish(envelope, |_| Ok(()))
+    }
+
+    fn create_new_with_pre_publish<F>(
+        &self,
+        envelope: &WalletKeystoreEnvelope,
+        before_publish: F,
+    ) -> Result<WalletKeystorePersistenceReport, WalletKeystorePersistenceError>
+    where
+        F: FnOnce(&Path) -> Result<(), WalletKeystorePersistenceError>,
+    {
         envelope.validate_structure()?;
         if self.target_exists()? {
             return Err(WalletKeystorePersistenceError::AlreadyExists);
@@ -201,6 +212,7 @@ impl WalletKeystoreFile {
             .map_err(|e| ioerr("sync keystore permissions", e))?;
         drop(temp);
 
+        before_publish(&temp_path)?;
         if self.target_exists()? {
             return Err(WalletKeystorePersistenceError::AlreadyExists);
         }
@@ -468,6 +480,41 @@ mod tests {
             Err(WalletKeystorePersistenceError::TooLarge { .. })
         ));
         drop(oversized);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn injected_pre_publish_failure_leaves_target_absent_and_cleans_temp() {
+        let directory = dir("interrupted-create");
+        let path = directory.join("wallet.json");
+        let session = WalletKeystoreFile::try_acquire(&path).expect("lock");
+
+        let error = session
+            .create_new_with_pre_publish(&envelope(), |temp_path| {
+                assert!(temp_path.exists());
+                Err(ioerr(
+                    "injected pre-publish failure",
+                    io::Error::new(io::ErrorKind::Interrupted, "injected test interruption"),
+                ))
+            })
+            .expect_err("injected failure must abort publication");
+
+        assert!(matches!(
+            error,
+            WalletKeystorePersistenceError::Io("injected pre-publish failure", _)
+        ));
+        assert!(!path.exists());
+        assert!(
+            fs::read_dir(&directory)
+                .expect("list directory")
+                .all(|entry| !entry
+                    .expect("directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp-"))
+        );
+
+        drop(session);
         let _ = fs::remove_dir_all(directory);
     }
 
