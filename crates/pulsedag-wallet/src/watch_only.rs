@@ -637,60 +637,6 @@ mod tests {
         (dir, file)
     }
 
-        let dir = test_dir(label);
-        let path = dir.join("wallet.json");
-        let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
-        let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
-        let anchor =
-            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
-                .expect("anchor")
-                .address()
-                .to_string();
-        let envelope = encrypt_wallet_seed_with_kdf_costs(
-            NETWORK_PROFILE,
-            CHAIN_ID,
-            &anchor,
-            &seed,
-            &SecretString::new(PASSWORD),
-            SeedKeystoreKdfCosts::new(
-                KEYSTORE_KDF_MIN_MEMORY_KIB,
-                KEYSTORE_KDF_MIN_ITERATIONS,
-                KEYSTORE_KDF_MIN_LANES,
-            ),
-        )
-        .expect("encrypt seed fixture");
-        let file = WalletKeystoreFile::try_acquire(&path).expect("acquire seed fixture");
-        file.create_new(&envelope).expect("persist seed fixture");
-        (dir, file)
-    }
-
-        let dir = test_dir(label);
-        let path = dir.join("wallet.json");
-        let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
-        let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
-        let anchor =
-            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
-                .expect("anchor")
-                .address()
-                .to_string();
-        let envelope = encrypt_wallet_seed_with_kdf_costs(
-            NETWORK_PROFILE,
-            CHAIN_ID,
-            &anchor,
-            &seed,
-            &SecretString::new(PASSWORD),
-            SeedKeystoreKdfCosts::new(
-                KEYSTORE_KDF_MIN_MEMORY_KIB,
-                KEYSTORE_KDF_MIN_ITERATIONS,
-                KEYSTORE_KDF_MIN_LANES,
-            ),
-        )
-        .expect("encrypt seed fixture");
-        let file = WalletKeystoreFile::try_acquire(&path).expect("acquire seed fixture");
-        file.create_new(&envelope).expect("persist seed fixture");
-        (dir, file)
-    }
-
     fn v1_fixture(label: &str) -> (PathBuf, WalletKeystoreFile) {
         let dir = test_dir(label);
         let path = dir.join("wallet.json");
@@ -794,7 +740,9 @@ mod tests {
         let manifest = other
             .export_watch_only_manifest(WalletWatchOnlyScope::new(0, 1, 0).expect("scope"))
             .expect("export structurally valid alternate-network manifest");
-        manifest.validate().expect("alternate-network manifest is valid");
+        manifest
+            .validate()
+            .expect("alternate-network manifest is valid");
 
         assert!(matches!(
             primary.verify_watch_only_manifest(&manifest),
