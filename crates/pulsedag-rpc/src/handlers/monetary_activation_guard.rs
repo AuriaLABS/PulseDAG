@@ -1,8 +1,7 @@
 use crate::api::RpcStateLike;
 use pulsedag_storage::Storage;
 
-pub const MONETARY_V3_LEGACY_MINING_DISABLED: &str =
-    "MONETARY_V3_LEGACY_MINING_DISABLED";
+pub const MONETARY_V3_LEGACY_MINING_DISABLED: &str = "MONETARY_V3_LEGACY_MINING_DISABLED";
 
 /// Fail closed on every retained height-subsidy mining surface once a v3
 /// monetary activation sidecar is present.
@@ -71,8 +70,7 @@ mod tests {
     fn monetary_sidecar_disables_every_legacy_mining_surface() {
         let path = temp_db_path("active");
         let storage = Storage::open(&path).unwrap();
-        let state =
-            init_chain_state_v3("rpc-monetary-guard".to_string(), 1_800_000_000).unwrap();
+        let state = init_chain_state_v3("rpc-monetary-guard".to_string(), 1_800_000_000).unwrap();
         let identity = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -97,8 +95,8 @@ mod tests {
             "/mining/template legacy fallback",
             "/mining/submit legacy-v1 fallback",
         ] {
-            let error = ensure_storage_has_no_monetary_v3_activation(&storage, surface)
-                .expect_err(surface);
+            let error =
+                ensure_storage_has_no_monetary_v3_activation(&storage, surface).expect_err(surface);
             assert!(error.contains("disabled while v3 monetary activation"));
             assert!(error.contains("/mining/template and /mining/submit"));
         }

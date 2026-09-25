@@ -3,8 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::{
     api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike},
     handlers::monetary_activation_guard::{
-        ensure_legacy_mining_disabled_when_monetary_v3_active,
-        MONETARY_V3_LEGACY_MINING_DISABLED,
+        ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
     },
     handlers::pow_metrics::PowMetricsData,
 };
@@ -445,7 +444,8 @@ fn activated_monetary_v3_template_data(
     )?;
     if chain.contracts.config.enabled {
         return Err(PulseError::InvalidBlock(
-            "v3.0.0 monetary mining requires smart-contract execution to remain inactive".to_string(),
+            "v3.0.0 monetary mining requires smart-contract execution to remain inactive"
+                .to_string(),
         ));
     }
 
@@ -525,9 +525,7 @@ fn activated_monetary_v3_template_data(
             ),
             monetary_policy_fingerprint: Some(finalized.monetary_policy_fingerprint),
             monetary_cadence_fingerprint: Some(finalized.monetary_cadence_fingerprint),
-            monetary_binding_fingerprint: Some(
-                monetary_activation.binding_fingerprint.clone(),
-            ),
+            monetary_binding_fingerprint: Some(monetary_activation.binding_fingerprint.clone()),
             reward_settlement_deferred: finalized.reward_settlement_deferred,
             block,
             target_u64: material.target.target_u64,
@@ -555,7 +553,8 @@ fn activated_monetary_v3_template_data(
                 retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
                 notes: vec![
                     "Mining template is bound to the persisted v3 monetary activation".to_string(),
-                    "Reward claim amount is zero until canonical ordered-DAG settlement".to_string(),
+                    "Reward claim amount is zero until canonical ordered-DAG settlement"
+                        .to_string(),
                 ],
             },
             pow_preimage_hex: hex::encode(material.pre_pow_bytes),
@@ -687,10 +686,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
                 &state,
                 "/mining/template legacy fallback",
             ) {
-                return Json(ApiResponse::err(
-                    MONETARY_V3_LEGACY_MINING_DISABLED,
-                    error,
-                ));
+                return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
             }
             post_legacy_template(state, req, identity).await
         }
@@ -720,15 +716,16 @@ pub async fn post_mining_template<S: RpcStateLike>(
             let data = {
                 let chain_handle = state.chain();
                 let chain = chain_handle.read().await;
-                let monetary_activation = match state.storage().protocol_monetary_activation_record() {
-                    Ok(record) => record,
-                    Err(error) => {
-                        return Json(ApiResponse::err(
-                            "MINING_TEMPLATE_ERROR",
-                            format!("cannot read v3 monetary activation sidecar: {error}"),
-                        ));
-                    }
-                };
+                let monetary_activation =
+                    match state.storage().protocol_monetary_activation_record() {
+                        Ok(record) => record,
+                        Err(error) => {
+                            return Json(ApiResponse::err(
+                                "MINING_TEMPLATE_ERROR",
+                                format!("cannot read v3 monetary activation sidecar: {error}"),
+                            ));
+                        }
+                    };
                 if let Some(record) = monetary_activation.as_ref() {
                     if record.identity != identity {
                         return Json(ApiResponse::err(

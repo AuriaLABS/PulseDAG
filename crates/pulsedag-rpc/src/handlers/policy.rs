@@ -173,7 +173,10 @@ mod tests {
         assert_eq!(data.activation_state, "candidate_not_activated");
         assert!(!data.production_cadence_frozen);
         assert_eq!(data.production_cadence_fingerprint, None);
-        assert_eq!(data.policy_fingerprint, pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3);
+        assert_eq!(
+            data.policy_fingerprint,
+            pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3
+        );
         assert_eq!(data.symbol, "PDG");
         assert_eq!(data.decimals, 8);
         assert_eq!(data.max_supply_atoms, "100000000000000000");

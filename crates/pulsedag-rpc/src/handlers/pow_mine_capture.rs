@@ -1,8 +1,7 @@
 use crate::{
     api::{ApiResponse, MineRequest, RpcStateLike},
     handlers::monetary_activation_guard::{
-        ensure_legacy_mining_disabled_when_monetary_v3_active,
-        MONETARY_V3_LEGACY_MINING_DISABLED,
+        ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
     },
 };
 use axum::{extract::State, Json};
@@ -37,10 +36,7 @@ pub async fn post_pow_mine_capture<S: RpcStateLike>(
     if let Err(error) =
         ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/pow/mine-capture")
     {
-        return Json(ApiResponse::err(
-            MONETARY_V3_LEGACY_MINING_DISABLED,
-            error,
-        ));
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
     }
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;

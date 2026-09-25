@@ -9,9 +9,9 @@ use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_activated_v2_mined_block_atomically, accept_block_atomically,
     accept_monetary_v3_mined_block_atomically, evaluate_pow_for_protocol, pow_validation_result,
-    preferred_tip_hash, resolve_pow_validation_path, AcceptSource,
-    AtomicBlockAcceptance, Block, BlockAcceptanceResult, ChainState, PowValidationPath,
-    ProtocolActivationIdentity, PulseError, BLOCK_HEADER_VERSION_V1,
+    preferred_tip_hash, resolve_pow_validation_path, AcceptSource, AtomicBlockAcceptance, Block,
+    BlockAcceptanceResult, ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError,
+    BLOCK_HEADER_VERSION_V1,
 };
 use tokio::time::timeout;
 
