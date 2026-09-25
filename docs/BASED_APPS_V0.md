@@ -1,6 +1,6 @@
 # Based Apps v0
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1174, #794
@@ -8,6 +8,8 @@ Depends on: `PULSECLOCK_V1.md`, `ACCESS_SET_V1.md`
 Source thesis: `ROADMAP_V3_0_0.md` Task P4
 
 Planning only. Does not authorize PulseVM, PulseProgs, generic ZK, a hidden sequencer, or Task31 identity change.
+
+The in-tree matcher (`crates/pulsedag-core/src/based_app_v0.rs`) cites PulseClock for the challenge window. Default `BasedAppAdmissionV0::INACTIVE` rejects open/challenge/settle. This file does **not** enable PulseVM or a hidden sequencer.
 
 ## Purpose
 

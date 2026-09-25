@@ -1,6 +1,6 @@
 # Covenant template pay_stream_v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1173, #794
@@ -8,6 +8,8 @@ Depends on: `PULSECLOCK_V1.md`, `ACCESS_SET_V1.md`
 Source thesis: `ROADMAP_V3_0_0.md` Task P3
 
 Planning only. Not admitted until an activation contract lists `pay_stream_v1`.
+
+The in-tree matcher (`crates/pulsedag-core/src/pay_stream_v1.rs`) cites PulseClock `pulse_height` for bucket maturity. Default `PayStreamAdmissionV1::INACTIVE` rejects every withdraw. This file does **not** admit the template into mempool/consensus.
 
 ## Purpose
 

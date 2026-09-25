@@ -1,6 +1,6 @@
 # Covenant template colored_utxo_v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1173, #794
@@ -8,6 +8,8 @@ Depends on: `ACCESS_SET_V1.md`
 Source thesis: `ROADMAP_V3_0_0.md` Task P3
 
 Planning only. Not admitted until an activation contract lists `colored_utxo_v1`.
+
+The in-tree matcher (`crates/pulsedag-core/src/colored_utxo_v1.rs`) derives `color_id` from `PulseDAG:color:v1 || chain_id || genesis outpoint` and enforces per-color unit conservation. Default `ColoredAdmissionV1::INACTIVE` rejects mint/transfer/burn. This file does **not** admit the template into mempool/consensus.
 
 ## Purpose
 

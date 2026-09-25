@@ -47,6 +47,7 @@ pub mod readiness;
 pub mod release;
 
 pub mod policy;
+pub mod pulse;
 
 pub mod diagnostics;
 

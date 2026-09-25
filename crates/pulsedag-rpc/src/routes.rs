@@ -62,6 +62,7 @@ use crate::{
         pow_policy::get_pow_policy,
         pow_validate::post_pow_validate_header,
         pruning::post_prune_chain,
+        pulse::get_pulse,
         readiness::get_readiness,
         rebuild::get_rebuild_preview,
         release::{get_release_info, operator_stage, repo_version},
@@ -646,6 +647,7 @@ where
         .route("/readiness", get(get_readiness::<S>))
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
+        .route("/pulse", get(get_pulse::<S>))
 }
 
 fn public_routes<S>() -> Router<S>
@@ -711,6 +713,7 @@ where
         .route("/readiness", get(get_readiness::<S>))
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
+        .route("/pulse", get(get_pulse::<S>))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))

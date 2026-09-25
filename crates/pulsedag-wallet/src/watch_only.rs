@@ -602,18 +602,26 @@ mod tests {
     }
 
     fn seed_fixture(label: &str) -> (PathBuf, WalletKeystoreFile) {
+        seed_fixture_for(label, NETWORK_PROFILE, CHAIN_ID)
+    }
+
+    fn seed_fixture_for(
+        label: &str,
+        network_profile: &str,
+        chain_id: &str,
+    ) -> (PathBuf, WalletKeystoreFile) {
         let dir = test_dir(label);
         let path = dir.join("wallet.json");
         let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
-        let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
+        let network = WalletNetworkContext::new(network_profile, chain_id).expect("network");
         let anchor =
             derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
                 .expect("anchor")
                 .address()
                 .to_string();
         let envelope = encrypt_wallet_seed_with_kdf_costs(
-            NETWORK_PROFILE,
-            CHAIN_ID,
+            network_profile,
+            chain_id,
             &anchor,
             &seed,
             &SecretString::new(PASSWORD),
@@ -700,6 +708,55 @@ mod tests {
         drop(session);
         drop(file);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn valid_cross_network_backup_is_rejected_explicitly() {
+        let (primary_dir, primary_file) = seed_fixture("cross-network-primary");
+        let (other_dir, other_file) = seed_fixture_for(
+            "cross-network-other",
+            "alternate-public-testnet",
+            "pulsedag-alternate-public-testnet",
+        );
+
+        let mut primary = WalletSession::new(
+            WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+                .expect("primary policy"),
+        )
+        .expect("primary session");
+        primary
+            .unlock(&primary_file, &SecretString::new(PASSWORD))
+            .expect("unlock primary");
+
+        let mut other = WalletSession::new(
+            WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+                .expect("other policy"),
+        )
+        .expect("other session");
+        other
+            .unlock(&other_file, &SecretString::new(PASSWORD))
+            .expect("unlock other");
+
+        let manifest = other
+            .export_watch_only_manifest(WalletWatchOnlyScope::new(0, 1, 0).expect("scope"))
+            .expect("export structurally valid alternate-network manifest");
+        manifest
+            .validate()
+            .expect("alternate-network manifest is valid");
+
+        assert!(matches!(
+            primary.verify_watch_only_manifest(&manifest),
+            Err(WalletWatchOnlyOperationError::Manifest(
+                WalletWatchOnlyError::NetworkMismatch
+            ))
+        ));
+
+        drop(primary);
+        drop(other);
+        drop(primary_file);
+        drop(other_file);
+        let _ = fs::remove_dir_all(primary_dir);
+        let _ = fs::remove_dir_all(other_dir);
     }
 
     #[test]

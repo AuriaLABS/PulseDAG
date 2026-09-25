@@ -10,7 +10,7 @@ use pulsedag_core::state::ChainState;
 use pulsedag_core::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, SyncPipelineStatus,
 };
-use pulsedag_p2p::{P2pHandle, P2pStatus};
+use pulsedag_p2p::{messages::CompactRelayControllerTelemetryV1, P2pHandle, P2pStatus};
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -603,8 +603,48 @@ pub struct SubmitBlockRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompactRelayControllerRuntimeStats {
+    pub announcements_received_total: u64,
+    pub reconstructed_blocks_ready_total: u64,
+    pub body_requests_sent_total: u64,
+    pub body_txids_requested_total: u64,
+    pub body_requests_received_total: u64,
+    pub body_responses_sent_total: u64,
+    pub body_transactions_sent_total: u64,
+    pub body_responses_received_total: u64,
+    pub full_block_requests_total: u64,
+    pub full_block_service_fallback_total: u64,
+    pub invalid_response_total: u64,
+    pub pending_announcements_current: usize,
+    pub pending_announcements_peak: usize,
+    pub max_inflight_per_peer: usize,
+}
+
+impl From<&CompactRelayControllerTelemetryV1> for CompactRelayControllerRuntimeStats {
+    fn from(value: &CompactRelayControllerTelemetryV1) -> Self {
+        Self {
+            announcements_received_total: value.announcements_received_total,
+            reconstructed_blocks_ready_total: value.reconstructed_blocks_ready_total,
+            body_requests_sent_total: value.body_requests_sent_total,
+            body_txids_requested_total: value.body_txids_requested_total,
+            body_requests_received_total: value.body_requests_received_total,
+            body_responses_sent_total: value.body_responses_sent_total,
+            body_transactions_sent_total: value.body_transactions_sent_total,
+            body_responses_received_total: value.body_responses_received_total,
+            full_block_requests_total: value.full_block_requests_total,
+            full_block_service_fallback_total: value.full_block_service_fallback_total,
+            invalid_response_total: value.invalid_response_total,
+            pending_announcements_current: value.pending_announcements_current,
+            pending_announcements_peak: value.pending_announcements_peak,
+            max_inflight_per_peer: value.max_inflight_per_peer,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeRuntimeStats {
     pub started_at_unix: u64,
+    pub compact_relay_controller: CompactRelayControllerRuntimeStats,
     pub accepted_p2p_blocks: u64,
     pub rejected_p2p_blocks: u64,
     pub duplicate_p2p_blocks: u64,

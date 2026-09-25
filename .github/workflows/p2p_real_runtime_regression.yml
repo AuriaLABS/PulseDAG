@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'crates/pulsedag-p2p/**'
+      - 'apps/pulsedagd/src/main.rs'
+      - 'apps/pulsedagd/src/compact_relay.rs'
       - '.github/workflows/p2p_real_runtime_regression.yml'
       - '.github/workflows/v2_3_0_workspace_validation.yml'
   workflow_dispatch:
@@ -64,7 +66,7 @@ jobs:
         run: |
           set -o pipefail
           timeout --signal=TERM --kill-after=30s "${COMPILE_TIMEOUT_MINUTES}m" \
-            cargo test -p pulsedag-p2p --locked --no-run 2>&1 \
+            bash -c 'set -euo pipefail; cargo test -p pulsedag-p2p --locked --no-run; cargo test -p pulsedagd --locked --no-run' 2>&1 \
             | tee ci-evidence/p2p-real-runtime/compile.log
 
       - name: Run isolated real-swarm test
@@ -94,6 +96,21 @@ jobs:
             printf 'FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
           fi
           exit 0
+
+      - name: Run compact relay daemon controller regressions
+        if: steps.compile.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedagd --locked compact_relay::tests:: -- --nocapture
+
+      - name: Run automatic compact block relay regressions
+        if: steps.compile.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-p2p --locked automatic_compact_block -- --nocapture \
+            | tee ci-evidence/p2p-real-runtime/compact-relay-auto.log
 
       - name: Record compile failure
         if: always() && steps.compile.outcome != 'success'

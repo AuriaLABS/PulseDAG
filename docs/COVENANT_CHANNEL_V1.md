@@ -1,6 +1,6 @@
 # Covenant template channel_v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-15 UTC
 Parent issues: #1173, #794
@@ -8,6 +8,8 @@ Depends on: `PULSECLOCK_V1.md`, `ACCESS_SET_V1.md`, `COVENANT_MULTISIG_V1.md`
 Source thesis: `ROADMAP_V3_0_0.md` Task P3
 
 Planning only. Not admitted until an activation contract lists `channel_v1`.
+
+The in-tree matcher (`crates/pulsedag-core/src/channel_v1.rs`) cites PulseClock `pulse_height` for the unilateral challenge window. Default `ChannelAdmissionV1::INACTIVE` rejects every path. This file does **not** admit the template into mempool/consensus.
 
 ## Purpose
 

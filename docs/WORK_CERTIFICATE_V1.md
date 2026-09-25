@@ -1,6 +1,6 @@
 # Work certificate v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-16 UTC
 Parent issues: #1178, #794
@@ -8,6 +8,8 @@ Source thesis: `ROADMAP_V3_0_0.md` Task P6
 Related: miner protocol v3 in `ROADMAP_V2_5_0.md`, `POW_SPEC_FINAL.md`
 
 Planning only. Does **not** add a pool, vardiff, share accounting, or payout logic to `pulsedagd` or the official miner.
+
+The in-tree matcher (`crates/pulsedag-core/src/work_cert_v1.rs`) checks `hash256 <= target256` and binds `chain_id`. Default `WorkCertAdmissionV1::INACTIVE` refuses issuance so the node does not stamp shares. This file does **not** add pool software.
 
 ## Purpose
 

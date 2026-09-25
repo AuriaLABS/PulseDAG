@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/v3-fast-sync.yml'
       - 'apps/pulsedagd/src/main.rs'
+      - 'apps/pulsedagd/src/compact_relay.rs'
       - 'apps/pulsedagd/src/fast_sync_bootstrap.rs'
       - 'crates/pulsedag-core/src/lib.rs'
       - 'crates/pulsedag-core/src/snapshot_transfer.rs'
@@ -26,8 +27,13 @@ on:
       - 'crates/pulsedag-storage/tests/task789_pruned_v2_restart.rs'
       - 'crates/pulsedag-storage/tests/v3_fast_sync_restore_rejoin.rs'
       - 'crates/pulsedag-p2p/src/lib.rs'
+      - 'crates/pulsedag-p2p/src/live_compact_relay_v1.rs'
       - 'crates/pulsedag-p2p/src/live_fast_sync_v1.rs'
       - 'crates/pulsedag-p2p/src/messages.rs'
+      - 'crates/pulsedag-p2p/src/messages/compact_relay_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/compact_relay_carrier_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/compact_relay_controller_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/compact_relay_runtime_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/multi_source_v1.rs'
@@ -110,6 +116,30 @@ jobs:
       - name: Bounded fast-sync P2P carrier regressions
         run: |
           cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::tests:: -- --nocapture
+
+      - name: Bounded compact DAG relay regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p compact_relay_v1::tests:: -- --nocapture
+
+      - name: Bounded compact relay carrier regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p compact_relay_carrier_v1::tests:: -- --nocapture
+
+      - name: Compact relay runtime session regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p compact_relay_runtime_v1::tests:: -- --nocapture
+
+      - name: Compact relay controller regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p compact_relay_controller_v1::tests:: -- --nocapture
+
+      - name: Compact relay daemon controller regressions
+        run: |
+          cargo test --locked -p pulsedagd compact_relay::tests:: -- --nocapture
+
+      - name: Live compact relay transport regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p live_compact_relay_v1::tests:: -- --nocapture
 
       - name: Fast-sync serving and downloader session regressions
         run: |
