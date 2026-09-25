@@ -57,6 +57,8 @@ Supported recovery/read-only commands:
 - `watch-export --keystore <path> --account <n> --receive-count <n> --change-count <n>` emits the bounded public watch-only manifest;
 - `watch-import --manifest <path>` validates/imports a public watch-only manifest and reports public metadata only; it has no signing capability;
 - `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity;
+
+`restore` deliberately reports `initialization_state="backup_verification_required"` after publishing the encrypted keystore. That result is **not** a production-readiness confirmation. After exporting the intended watch-only backup manifest, a successful `backup-verify` reports `initialization_state="backup_verified"`; verification failures return an error and never emit the verified state. This is an explicit command-output readiness boundary, not a persisted readiness flag.
 - `balance --manifest <path> --branch <receive|change> --index <n> --relay <origin>` selects a public address from a validated watch-only manifest, verifies the relay network identity and explorer surface, then returns its confirmed balance metadata;
 - `utxos --manifest <path> --branch <receive|change> --index <n> --relay <origin>` performs the same fail-closed network/surface checks and returns the selected public address's validated UTXO set.
 

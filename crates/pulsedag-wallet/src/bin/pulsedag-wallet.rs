@@ -139,6 +139,13 @@ struct NetworkReadOnlyArgs {
     relay: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WalletInitializationState {
+    BackupVerificationRequired,
+    BackupVerified,
+}
+
 #[derive(Debug, Serialize)]
 struct RestoreOutput {
     network_profile: String,
@@ -146,6 +153,7 @@ struct RestoreOutput {
     account: u32,
     anchor_address: String,
     keystore: String,
+    initialization_state: WalletInitializationState,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,6 +188,7 @@ struct BackupVerifyOutput {
     account: u32,
     entry_count: usize,
     checksum_hex: String,
+    initialization_state: WalletInitializationState,
 }
 
 #[derive(Debug, Serialize)]
@@ -663,6 +672,7 @@ fn run_restore(args: RestoreArgs, secrets: RestoreSecrets) -> CliResult<RestoreO
         account: 0,
         anchor_address,
         keystore: args.keystore.to_string_lossy().into_owned(),
+        initialization_state: WalletInitializationState::BackupVerificationRequired,
     })
 }
 
@@ -775,6 +785,7 @@ fn run_backup_verify(
         account: manifest.account(),
         entry_count: manifest.entries().len(),
         checksum_hex: manifest.checksum_hex().to_string(),
+        initialization_state: WalletInitializationState::BackupVerified,
     })
 }
 
@@ -1639,11 +1650,61 @@ mod tests {
             account: 0,
             anchor_address: "pulse1publicrestoreoutput".to_string(),
             keystore: "wallet.json".to_string(),
+            initialization_state: WalletInitializationState::BackupVerificationRequired,
         };
         let encoded = serde_json::to_string(&output).expect("serialize public restore output");
         for canary in [password_canary, mnemonic_canary, passphrase_canary] {
             assert!(!encoded.contains(canary));
         }
+    }
+
+    #[test]
+    fn wallet_initialization_state_serializes_stably() {
+        assert_eq!(
+            serde_json::to_string(&WalletInitializationState::BackupVerificationRequired)
+                .expect("serialize pending initialization state"),
+            "\"backup_verification_required\""
+        );
+        assert_eq!(
+            serde_json::to_string(&WalletInitializationState::BackupVerified)
+                .expect("serialize verified initialization state"),
+            "\"backup_verified\""
+        );
+    }
+
+    #[test]
+    fn public_outputs_make_backup_readiness_boundary_explicit() {
+        let restore = RestoreOutput {
+            network_profile: "public-testnet".to_string(),
+            chain_id: "pulsedag-public-testnet".to_string(),
+            account: 0,
+            anchor_address: "pulse1readinessboundary".to_string(),
+            keystore: "wallet.json".to_string(),
+            initialization_state: WalletInitializationState::BackupVerificationRequired,
+        };
+        let restore_json =
+            serde_json::to_value(&restore).expect("serialize restore readiness output");
+        assert_eq!(
+            restore_json["initialization_state"],
+            serde_json::json!("backup_verification_required")
+        );
+
+        let verified = BackupVerifyOutput {
+            verified: true,
+            network_profile: "public-testnet".to_string(),
+            chain_id: "pulsedag-public-testnet".to_string(),
+            account: 0,
+            entry_count: 2,
+            checksum_hex: "11".repeat(32),
+            initialization_state: WalletInitializationState::BackupVerified,
+        };
+        let verified_json =
+            serde_json::to_value(&verified).expect("serialize backup verification output");
+        assert_eq!(verified_json["verified"], serde_json::json!(true));
+        assert_eq!(
+            verified_json["initialization_state"],
+            serde_json::json!("backup_verified")
+        );
     }
 
     #[cfg(not(unix))]
