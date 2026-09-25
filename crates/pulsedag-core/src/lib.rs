@@ -2,6 +2,7 @@ pub mod accept;
 pub mod acceptance_v2;
 pub mod access_set_v1;
 pub mod apply;
+pub mod based_app_v0;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
 pub mod consensus_metadata;
@@ -223,6 +224,12 @@ pub use access_set_v1::{
     spends_underdeclared_v1, validate_access_set_v1, AccessConflictClassV1, AccessKeyIdV1,
     AccessOutpointV1, AccessSetAdmissionV1, AccessSetV1, AccessSetV1Error, ACCESS_SET_DOMAIN_V1,
     ACCESS_SET_VERSION_V1,
+};
+
+pub use based_app_v0::{
+    derive_app_id_v0, evaluate_based_app_v0, settle_height_v0, BasedAppAdmissionV0, BasedAppPathV0,
+    BasedAppProfileV0, BasedAppV0Error, BasedCommitV0, BasedDaModeV0, BASED_APP_DOMAIN_V0,
+    BASED_COMMIT_TEMPLATE_V0,
 };
 
 pub use ordering::{
