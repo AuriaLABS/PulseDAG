@@ -14,6 +14,7 @@ pub mod contracts_gate;
 pub mod covenant_utxo_v1;
 pub mod covenant_v1;
 pub mod errors;
+pub mod explorer_dag_v1;
 pub mod finality_envelope_v1;
 pub mod finality_v2;
 pub mod genesis;
@@ -247,11 +248,17 @@ pub use work_cert_v1::{
     WORK_CERT_VERSION_V1,
 };
 
+pub use explorer_dag_v1::{
+    is_genesis_view_v1, validate_explorer_block_v1, ExplorerBlockV1, ExplorerDagAdmissionV1,
+    ExplorerDagV1Error, ExplorerMergeColorV1, EXPLORER_DAG_DOMAIN_V1, EXPLORER_DAG_VERSION_V1,
+};
+
 pub use finality_envelope_v1::{
     operational_finality_lag_v1, publish_finality_envelope_v1, unpublished_envelope_v1,
     validate_measurements_v1, CadenceClassV1, FinalityEnvelopeAdmissionV1, FinalityEnvelopeV1,
     FinalityEnvelopeV1Error, FinalityMeasurementsV1, FINALITY_ENVELOPE_DOMAIN_V1,
     FINALITY_ENVELOPE_VERSION_V1,
+};
 };
 
 pub use ordering::{
