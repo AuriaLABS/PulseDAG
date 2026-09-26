@@ -1,89 +1,131 @@
-# PulseDAG v3.0.0 monetary policy
+# PulseDAG v3.0.0 monetary policy — smooth emission proposal
 
-Status: **POLICY PARAMETERS FROZEN / ACTIVATION INTEGRATION IN PROGRESS**
+Status: **PROPOSED POLICY REPLACEMENT / STACKED ON #1233 / NOT ACTIVATED**
 
-Authority: #781, #794, #1045. The superseded #1016 policy must not be used for v3.0.0.
+Authority path: #781, #794 and #1045. This proposal intentionally changes the emission curve currently carried by #1233. It must not be treated as frozen production policy until the launch authority accepts the replacement and the exact-candidate evidence is regenerated.
 
-## Frozen mainnet policy
+## Proposed mainnet policy
 
 - hard cap: **1,000,000,000.00000000 PDG**
 - atomic precision: **8 decimals**
 - spendable mainnet genesis issuance: **0**
 - premine / treasury / foundation allocation: **0**
-- first economic-year mining budget: **500,000,000.00000000 PDG**
-- reduction: **50% every 31,536,000 economic seconds**
+- emission curve: **smooth geometric decay**
+- exact monetary half-life: **3 economic years / 94,608,000 economic seconds**
+- monetary quantum: **21,600 economic seconds / 6 hours**
+- Q64 per-quantum decay factor: **18,443,825,056,137,834,748**
+- first economic-year scheduled issuance: **206,299,474.01590026 PDG**
+- three-year cumulative issuance: **500,000,000.00000000 PDG**
+- six-year cumulative issuance: **750,000,000.00000000 PDG**
 - tail emission: **none**
 - coinbase maturity: **3,600 economic seconds**, plus the separately frozen settlement/finality rule
 - ordinary transaction fees: **100% to the eligible reward recipient**
 - consensus burn: **0%**
-- programmable resource fees: **consensus-unreachable on v3.0.0 mainnet because smart-contract deployment/execution is INACTIVE**
+- programmable resource fees: **consensus-unreachable on v3.0.0 mainnet while smart-contract deployment/execution is INACTIVE**
 - canonical monetary index: deterministic ordered-DAG ordinal, genesis = score 0
 - raw block height / raw BPS / header blue score are not monetary authority
 
 The exact integer implementation is `crates/pulsedag-core/src/monetary_v3.rs`.
 
-## Frozen policy fingerprint
+## Why replace annual halvings
 
-Canonical bytes are embedded in `MONETARY_POLICY_CANONICAL_V3`.
+The previous candidate emitted 500,000,000 PDG during the first economic year and then cut the annual mining budget by 50% at discrete one-year boundaries. That is deterministic, but it front-loads half of the entire hard cap into year one and creates large scheduled miner-revenue cliffs.
 
-SHA-256:
+The smooth curve keeps the same fair-launch properties while spreading issuance over a longer security horizon:
 
-`14605483aa65a17d654ffc4db1571b1416eb45b3f9b56af452d88c9023311366`
+| Economic time | Cumulative issuance | Hard-cap share |
+|---:|---:|---:|
+| 1 year | 206,299,474.01590026 PDG | 20.6299474% |
+| 2 years | 370,039,475.05256342 PDG | 37.0039475% |
+| 3 years | 500,000,000.00000000 PDG | 50% |
+| 4 years | 603,149,737.00795013 PDG | 60.3149737% |
+| 6 years | 750,000,000.00000000 PDG | 75% |
+| 10 years | 900,787,434.25198753 PDG | 90.0787434% |
+| 12 years | 937,500,000.00000000 PDG | 93.75% |
+| 15 years | 968,750,000.00000000 PDG | 96.875% |
+| 20 years | 990,156,866.79769630 PDG | 99.0156867% |
+| 30 years | 999,023,437.50000000 PDG | 99.90234375% |
 
-This digest binds the economic rules only. The exact cadence table has a separate canonical SHA-256 produced by `monetary_cadence_fingerprint_v3`; persistence binds **protocol fingerprint + policy fingerprint + cadence fingerprint + explicit reward-finality policy version**. Final launch evidence must additionally bind the exact source/tree SHA, network identities, deterministic genesis identities, settlement/finality identity and artifact digests.
+No permanent tail is introduced. The geometric residual is settled at the terminal 57th half-life boundary, equal to economic year 171, after which scheduled subsidy is exactly zero forever.
 
-## Exact issuance rule
+## Deterministic integer curve
 
-The implementation uses integer-only cumulative issuance. Within each economic year the exact annual budget is distributed linearly over economic time. The annual budget halves at each 31,536,000-second boundary.
+Consensus uses no floating point, runtime logarithms or runtime exponentiation.
 
-For canonical score `s`:
+The frozen six-hour factor approximates:
+
+`2^(-1 / 4380)`
+
+where 4,380 quanta equal one three-year half-life.
+
+For each half-life interval:
+
+1. the exact integer remaining supply at the interval boundaries is derived from the hard cap;
+2. a Q64 decay curve determines relative progress inside the interval;
+3. that curve is normalized so every three-year boundary lands on the exact half-life checkpoint;
+4. the cumulative amount is linearly interpolated inside each six-hour monetary quantum;
+5. per-score subsidy remains the cumulative difference:
 
 `subsidy(s) = total_supply(s) - total_supply(s - 1)`
 
-This cumulative-difference rule deterministically carries rounding remainders and prevents hidden issuance. At the year-57 terminal boundary the final residual atom is settled, total scheduled supply reaches the hard cap exactly, and subsidy remains zero forever.
+This preserves exact telescoping supply accounting and deterministic remainder carry.
 
-Fees are transfers and never increase total supply.
+## Policy fingerprint
 
-## Cadence and monetary time
+Canonical bytes are embedded in `MONETARY_POLICY_CANONICAL_V3`.
 
-Consensus economic time is derived from a versioned list of:
+Proposed SHA-256:
 
-- `activation_score`
-- `target_interval_ns`
+`feb4fd1c466a03cbd73404ab2e38d8920941ff8c6cb4ba4614b21e4fd70d7b8b`
 
-A cadence change must activate at an exact canonical monetary score. Changing from 1 BPS to 2 BPS or 4 BPS changes reward granularity only; equal economic time must map to equal cumulative issuance.
+The policy version string is:
 
-The production mainnet/testnet cadence tables are separate network-freeze inputs and remain invalid to invent before #781 freezes them. Until then, RPC policy metadata reports `production_cadence_frozen=false` and no production cadence fingerprint.
+`pulsedag-monetary-v3.0.0-smooth-v1`
+
+The cadence table remains separately fingerprinted. Persistence must continue binding protocol fingerprint + monetary-policy fingerprint + cadence fingerprint + reward-finality policy version.
+
+## DAG and cadence invariants
+
+Economic time remains derived from versioned `(activation_score, target_interval_ns)` cadence segments.
+
+A cadence change must activate at an exact canonical monetary score. Moving between 1 BPS, 2 BPS and 4 BPS changes only reward granularity. Equal economic time must produce equal cumulative issuance.
+
+The core invariant remains:
+
+> Economic time determines how much PDG may exist. Block count and DAG width never determine gross issuance.
+
+That prevents higher BPS or wider parallel DAG activity from silently accelerating supply.
+
+## Fees, burn and funding
+
+v3.0.0 keeps:
+
+- miner/reward recipient: **100% of ordinary transaction fees**
+- protocol treasury: **0%**
+- consensus burn: **0%**
+- premine: **0**
+- ICO/presale/bootstrap issuance: **0**
+
+Fees are transfers and never increase total supply. Any future treasury, burn, redistribution or programmable-fee split requires a separately versioned monetary-policy decision and a new fingerprint.
 
 ## Smart-contract boundary
 
-v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Monetary snapshot persistence now fails closed if the chain state has contracts enabled. Therefore programmable compute/state/proof fee paths must not become consensus-active and cannot create, redirect or burn supply. Any later activation requires a separately versioned protocol decision and monetary-policy compatibility review.
+Smart-contract deployment/execution remains inactive for v3.0.0 mainnet. This proposal does not activate PulseVM, programmable resource fees or any hidden issuance path.
 
-## Live integration status
+## Integration boundary
 
-The current #1045 integration line now enforces the monetary contract at the live boundaries rather than only exposing a policy library:
+This proposal is stacked on the #1233 monetary integration rather than replacing its safety architecture.
 
-- `/mining/template` uses the amountless v3 reward claim, rechecks protocol/policy/cadence bindings, finalizes the authoritative state root/hash, and only then exposes nonce-search work when a valid monetary sidecar is present;
-- `/mining/submit` validates the state-derived canonical monetary reward and the complete accepted-state supply before persistence/commit;
-- live inbound P2P routes through the monetary runtime when activated-v2 capabilities and the persisted monetary identity agree;
-- incoming, staged and pending P2P blocks must use the amountless reward-claim envelope; legacy amount-bearing coinbases and additional inputless issuance are rejected before they can become authoritative;
-- daemon restore revalidates protocol identity, monetary binding, transient P2P queues, complete accepted-state supply and reward-finality compatibility;
-- sidecar presence never activates v3 by itself, but it **does** make legacy fallback invalid: startup, inbound P2P, legacy-v1 Mining Protocol fallback, `/mine`, `/mine/preview`, mining jobs, PoW auto-run and PoW mine-capture all fail closed rather than authorizing height-based issuance;
-- `/block/validate` uses the monetary validation path when the monetary sidecar is active, so diagnostic validation cannot report a legacy-subsidy block as production-valid;
-- the persisted reward-finality policy must equal a finality engine actually implemented by the daemon. The currently implemented `ghostdag-v1-no-prune-before-task30-v1` engine protects only genesis, therefore no non-genesis reward becomes spendable yet;
-- maturity/finality settlement is evaluated on every authoritative monetary state. If a future finality engine would make reward UTXOs spendable before explicit UTXO/state-root materialization is integrated, the node fails closed instead of materializing supply implicitly.
+The following #1233 properties remain required:
 
-Legacy v2.x subsidy constants remain available for historical compatibility and tests, but the monetary activation guards make those paths unreachable as v3 issuance authority.
+- amountless reward claims before canonical ordered-DAG settlement;
+- state-derived monetary score;
+- protocol/policy/cadence fingerprint revalidation;
+- no legacy `block_subsidy(height)` fallback under monetary activation;
+- deterministic accepted-state total-supply audit;
+- fail-closed P2P/mining/restore behavior;
+- zero-allocation production genesis;
+- coinbase maturity plus explicit finality/settlement;
+- exact mainnet/testnet identity binding.
 
-## Remaining #1045 integration gates
-
-This integration still does **not** close #1045 or claim #781 launch readiness. The exact v3 candidate must still bind and prove:
-
-- the exact production mainnet/testnet cadence tables and their fingerprints;
-- the exact production chain IDs, deterministic genesis timestamps/hashes and zero-allocation genesis identities;
-- the final production reward-finality policy. The current conservative engine finalizes only genesis, so spendable reward UTXO materialization remains intentionally unavailable rather than guessed;
-- downstream explorer consumption of the frozen denomination contract (core/wallet/RPC already share integer atoms, `PDG`, 8 decimals and exact no-float formatting/parsing);
-- an exact-candidate reachability/evidence pass demonstrating that no legacy or alternate issuance path is reachable with the frozen production sidecar;
-- golden monetary vectors, policy/cadence/finality bindings and artifact digests tied to the exact #781 source/tree and network identities.
-
-The deterministic zero-allocation v3 genesis constructor, accepted-state total-supply audit, live mining/P2P monetary gates, protocol/persistence binding and denomination contract are implemented foundations; their final production identities remain #781 freeze inputs.
+If this curve is accepted, all old annual-halving golden vectors and the old policy fingerprint become superseded evidence and must be regenerated on the exact candidate.
