@@ -69,8 +69,13 @@ pub struct MonetaryPolicyV3Data {
     pub atoms_per_coin: String,
     pub max_supply_atoms: String,
     pub genesis_issuance_atoms: String,
-    pub year1_mining_budget_atoms: String,
+    pub year1_target_issuance_atoms: String,
     pub economic_year_seconds: u64,
+    pub half_life_seconds: u64,
+    pub emission_quantum_seconds: u64,
+    pub decay_factor_q64: String,
+    pub terminal_emission_quantum: u64,
+    pub terminal_emission_seconds: u64,
     pub coinbase_maturity_seconds: u64,
     pub ordinary_fee_recipient_bps: u16,
     pub consensus_burn_bps: u16,
@@ -91,8 +96,13 @@ impl MonetaryPolicyV3Data {
             atoms_per_coin: pulsedag_core::ATOMS_PER_COIN.to_string(),
             max_supply_atoms: pulsedag_core::MAX_SUPPLY_ATOMS.to_string(),
             genesis_issuance_atoms: pulsedag_core::GENESIS_ISSUANCE_ATOMS.to_string(),
-            year1_mining_budget_atoms: pulsedag_core::YEAR1_MINING_BUDGET_ATOMS.to_string(),
+            year1_target_issuance_atoms: pulsedag_core::YEAR1_TARGET_ISSUANCE_ATOMS.to_string(),
             economic_year_seconds: pulsedag_core::ECONOMIC_YEAR_SECONDS,
+            half_life_seconds: pulsedag_core::HALF_LIFE_SECONDS,
+            emission_quantum_seconds: pulsedag_core::EMISSION_QUANTUM_SECONDS,
+            decay_factor_q64: pulsedag_core::DECAY_FACTOR_Q64.to_string(),
+            terminal_emission_quantum: pulsedag_core::TERMINAL_EMISSION_QUANTUM,
+            terminal_emission_seconds: pulsedag_core::TERMINAL_EMISSION_SECONDS,
             coinbase_maturity_seconds: pulsedag_core::COINBASE_MATURITY_SECONDS,
             ordinary_fee_recipient_bps: pulsedag_core::ORDINARY_FEE_RECIPIENT_BPS,
             consensus_burn_bps: pulsedag_core::CONSENSUS_BURN_BPS,
@@ -192,8 +202,12 @@ mod tests {
             serde_json::Value::String("100000000000000000".into())
         );
         assert_eq!(
-            json["year1_mining_budget_atoms"],
-            serde_json::Value::String("50000000000000000".into())
+            json["year1_target_issuance_atoms"],
+            serde_json::Value::String("20629947401590029".into())
+        );
+        assert_eq!(
+            json["decay_factor_q64"],
+            serde_json::Value::String("18443825056137834748".into())
         );
     }
 
