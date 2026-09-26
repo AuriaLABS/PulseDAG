@@ -13,6 +13,8 @@ The in-tree matcher (`crates/pulsedag-core/src/wallet_pulse_v1.rs`) allows a fut
 
 `pulsedag-wallet` exposes `wallet_covenant_delay_pulse`. Session unlock may still use wall clock; that path must not feed covenant delay UI.
 
+Read-only CLI `pulse --manifest <path> --relay <origin>` fetches observational `GET /api/v1/pulse` after `/release` advertises `explorer_api` and that endpoint. It does not unlock a keystore. A foreign `chain_id` or a domain other than `PulseDAG:pulse:v1` fails closed. This does not activate vault delay rendering.
+
 ## Authorization
 
 Planning only.

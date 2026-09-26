@@ -130,6 +130,7 @@ fn release_core_endpoints() -> Vec<String> {
         "/address/:address/utxos".into(),
         "/api/v1/tx/submit".into(),
         "/api/v1/mempool/fee-estimate".into(),
+        "/api/v1/pulse".into(),
         "/mine".into(),
         "/mining/template".into(),
         "/mining/submit".into(),
@@ -290,6 +291,7 @@ mod tests {
         );
         assert!(release.contains("\"/api/v1/tx/submit\""));
         assert!(release.contains("\"/api/v1/mempool/fee-estimate\""));
+        assert!(release.contains("\"/api/v1/pulse\""));
         assert!(!release.contains("\"/tx/build\""));
         assert!(!release.contains("\"/tx/submit\""));
         assert!(!release.contains("\"wallets\""));
