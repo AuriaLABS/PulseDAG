@@ -1,0 +1,126 @@
+name: v3 wallet custody closeout
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-wallet/**"
+      - ".github/workflows/v3-wallet-custody-closeout.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-wallet-custody-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  custody:
+    name: custody / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Record exact candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-wallet-custody
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "${ACTUAL_SHA}" | tee ci-evidence/v3-wallet-custody/candidate-sha.txt
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Wallet library tests
+        run: cargo test -p pulsedag-wallet --lib --locked
+
+      - name: Wallet CLI tests
+        run: cargo test -p pulsedag-wallet --bin pulsedag-wallet --locked
+
+      - name: Wallet clippy
+        run: cargo clippy -p pulsedag-wallet --all-targets --locked -- -D warnings
+
+      - name: Native restrictive-permission policy regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            filter="published_keystore_is_mode_0600_and_directory_synced"
+            expected="EnforcedOwnerReadWrite"
+          elif [ "${RUNNER_OS}" = "Windows" ]; then
+            filter="restore_refuses_unenforced_private_permissions_before_publish"
+            expected="NotEnforcedOnThisPlatform"
+          else
+            echo "::error::unexpected runner OS ${RUNNER_OS}"
+            exit 1
+          fi
+
+          log="ci-evidence/v3-wallet-custody/native-policy-test.log"
+          set -o pipefail
+          cargo test -p pulsedag-wallet --locked "${filter}" -- --nocapture 2>&1 | tee "${log}"
+          grep -Fq "test result: ok" "${log}"
+          grep -Eq '1 passed|[1-9][0-9]* passed' "${log}"
+
+          CANDIDATE_SHA="$(git rev-parse HEAD)" EXPECTED_POLICY="${expected}" python - <<'PY'
+          import json, os, pathlib
+          evidence = {
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "runner_os": os.environ["RUNNER_OS"],
+              "expected_permission_policy": os.environ["EXPECTED_POLICY"],
+              "native_policy_regression": "PASS",
+          }
+          pathlib.Path("ci-evidence/v3-wallet-custody/native-result.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Require application fail-closed policy regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "restrictive keystore permissions are not enforced on this platform" \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -Fq "restore_refuses_unenforced_private_permissions_before_publish" \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+
+      - name: Upload custody evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: v3-wallet-custody-${{ matrix.name }}
+          path: ci-evidence/v3-wallet-custody
+          if-no-files-found: error
+          retention-days: 90

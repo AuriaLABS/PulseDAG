@@ -34,6 +34,7 @@ use crate::{
         dashboard::get_dashboard,
         diagnostics::{get_diagnostics, get_operator_query_pack},
         errors::get_error_catalog,
+        explorer::get_explorer_block,
         incremental_sync::get_incremental_sync_plan,
         maintenance::get_maintenance_report,
         metrics::get_metrics,
@@ -648,6 +649,7 @@ where
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
         .route("/pulse", get(get_pulse::<S>))
+        .route("/explorer/block/:hash", get(get_explorer_block::<S>))
 }
 
 fn public_routes<S>() -> Router<S>
@@ -714,6 +716,7 @@ where
         .route("/release", get(get_release_info))
         .route("/policy", get(get_policy::<S>))
         .route("/pulse", get(get_pulse::<S>))
+        .route("/explorer/block/:hash", get(get_explorer_block::<S>))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))
@@ -924,6 +927,8 @@ mod public_safe_hardening_tests {
         }
         assert!(!is_liveness_endpoint("/blocks"));
         assert!(!is_liveness_endpoint("/tx/submit"));
+        assert!(!is_liveness_endpoint("/explorer/block/abc"));
+        assert!(!is_liveness_endpoint("/api/v1/explorer/block/abc"));
     }
 
     #[test]

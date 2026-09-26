@@ -1,6 +1,6 @@
 # Finality envelope v1
 
-Status: **PLANNING SPEC**
+Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 
 Date: 2026-09-16 UTC
 Parent issues: #1178, #794
@@ -8,6 +8,8 @@ Source thesis: `ROADMAP_V3_0_0.md` Task P8
 Depends on: `PULSECLOCK_V1.md`, cadence work in `ROADMAP_V2_5_0.md` Task 41
 
 Planning only. Does not enable default high cadence or change GHOSTDAG `k` on the Task31 candidate.
+
+The in-tree matcher (`crates/pulsedag-core/src/finality_envelope_v1.rs`) keeps cadence experimental until measurements exist and publication is explicitly admitted. Silent `k` changes are rejected. This file does **not** change GHOSTDAG selection or default cadence.
 
 ## Purpose
 

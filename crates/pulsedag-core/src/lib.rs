@@ -1,6 +1,8 @@
 pub mod accept;
 pub mod acceptance_v2;
+pub mod access_set_v1;
 pub mod apply;
+pub mod based_app_v0;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
 pub mod consensus_metadata;
@@ -13,6 +15,8 @@ pub mod covenant_utxo_v1;
 pub mod covenant_v1;
 pub mod denomination_v3;
 pub mod errors;
+pub mod explorer_dag_v1;
+pub mod finality_envelope_v1;
 pub mod finality_v2;
 pub mod genesis;
 pub mod genesis_v2;
@@ -76,6 +80,9 @@ pub mod validation;
 pub mod validation_v2;
 pub mod validation_v3;
 pub mod vault_v1;
+pub mod verify_receipt_v1;
+pub mod wallet_pulse_v1;
+pub mod work_cert_v1;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -271,6 +278,48 @@ pub use colored_utxo_v1::{
     derive_color_id_v1, evaluate_colored_mint_v1, evaluate_colored_units_v1,
     validate_colored_output_v1, ColoredAdmissionV1, ColoredSpendPathV1, ColoredV1Error,
     ColoredV1Output, COLORED_DOMAIN_V1, COLORED_TEMPLATE_ID_V1,
+};
+
+pub use access_set_v1::{
+    access_sets_conflict_v1, inspects_underdeclared_v1, schedule_access_sets_v1,
+    spends_underdeclared_v1, validate_access_set_v1, AccessConflictClassV1, AccessKeyIdV1,
+    AccessOutpointV1, AccessSetAdmissionV1, AccessSetV1, AccessSetV1Error, ACCESS_SET_DOMAIN_V1,
+    ACCESS_SET_VERSION_V1,
+};
+
+pub use based_app_v0::{
+    derive_app_id_v0, evaluate_based_app_v0, settle_height_v0, BasedAppAdmissionV0, BasedAppPathV0,
+    BasedAppProfileV0, BasedAppV0Error, BasedCommitV0, BasedDaModeV0, BASED_APP_DOMAIN_V0,
+    BASED_COMMIT_TEMPLATE_V0,
+};
+
+pub use verify_receipt_v1::{
+    compare_reconstructed_v1, reject_host_time_v1, validate_verify_receipt_v1,
+    verify_receipt_canonical_bytes_v1, verify_receipt_digest_v1, VerifyReceiptV1,
+    VerifyReceiptV1Error, VerifyResultV1, VERIFY_RECEIPT_DOMAIN_V1, VERIFY_RECEIPT_VERSION_V1,
+};
+
+pub use work_cert_v1::{
+    issue_work_certificate_v1, validate_work_certificate_v1, work_meets_target_v1,
+    WorkCertAdmissionV1, WorkCertV1Error, WorkCertificateV1, WORK_CERT_DOMAIN_V1,
+    WORK_CERT_VERSION_V1,
+};
+
+pub use explorer_dag_v1::{
+    assemble_explorer_block_v1, is_genesis_view_v1, merge_color_for_hash_v1,
+    validate_explorer_block_v1, ExplorerBlockV1, ExplorerDagAdmissionV1, ExplorerDagV1Error,
+    ExplorerMergeColorV1, EXPLORER_DAG_DOMAIN_V1, EXPLORER_DAG_VERSION_V1,
+};
+
+pub use wallet_pulse_v1::{
+    wallet_pulse_view_v1, WalletPulseAdmissionV1, WalletPulseV1Error, WALLET_PULSE_DOMAIN_V1,
+};
+
+pub use finality_envelope_v1::{
+    operational_finality_lag_v1, publish_finality_envelope_v1, unpublished_envelope_v1,
+    validate_measurements_v1, CadenceClassV1, FinalityEnvelopeAdmissionV1, FinalityEnvelopeV1,
+    FinalityEnvelopeV1Error, FinalityMeasurementsV1, FINALITY_ENVELOPE_DOMAIN_V1,
+    FINALITY_ENVELOPE_VERSION_V1,
 };
 
 pub use ordering::{

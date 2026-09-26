@@ -56,6 +56,7 @@ The v1 namespace exposes read-mostly public chain, explorer, wallet-broadcast, m
 | `GET /api/v1/release` | `GET /release` | Release readiness metadata. |
 | `GET /api/v1/policy` | `GET /policy` | Consensus/runtime policy summary. |
 | `GET /api/v1/pulse` | `GET /pulse` | Observational PulseClock v1 (`docs/PULSECLOCK_V1.md`). Telemetry only; not a consensus or covenant activation. |
+| `GET /api/v1/explorer/block/:hash` | `GET /explorer/block/:hash` | DAG explorer row (`docs/EXPLORER_DAG_V1.md`). Wired and **disabled** on Task31 (`explorer_surface_disabled`). Does not replace `GET /blocks/:hash`. |
 
 ## v3 monetary denomination contract
 
@@ -162,6 +163,6 @@ Do not expose RPC directly to the public internet without network controls. Even
 Use `PULSEDAG_API_PROFILE=public_safe` only when a read surface must leave loopback. Keep operator/admin flows on separate private infrastructure.
 
 Public-safe profile includes read-only explorer/health/status surfaces, for example:
-`/api/v1/health`, `/api/v1/status`, `/api/v1/blocks`, `/api/v1/txs`, `/api/v1/address/:address`, `/api/v1/readiness`, `/api/v1/release`, `/api/v1/policy`, `/api/v1/pulse`.
+`/api/v1/health`, `/api/v1/status`, `/api/v1/blocks`, `/api/v1/txs`, `/api/v1/address/:address`, `/api/v1/readiness`, `/api/v1/release`, `/api/v1/policy`, `/api/v1/pulse`, `/api/v1/explorer/block/:hash` (fail-closed).
 
 Admin/operator paths such as `/admin/*`, `/snapshot/create`, `/prune`, `/sync/rebuild`, and `/operator/query-pack` are not available in `public_safe`.
