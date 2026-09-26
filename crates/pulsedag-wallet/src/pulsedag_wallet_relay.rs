@@ -4,9 +4,11 @@ use pulsedag_core::{
     compute_txid,
     mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
-    PULSE_VERSION_V1,
+    ProtocolActivationIdentity, PULSE_VERSION_V1,
 };
-use pulsedag_wallet::WalletNetworkIdentity;
+use pulsedag_wallet::{
+    protocol_v2::verify_wallet_v2_node_identity, WalletNetworkIdentity,
+};
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +21,7 @@ const EXPLORER_CAPABILITY: &str = "explorer_api";
 const MEMPOOL_CAPABILITY: &str = "mempool";
 const MEMPOOL_FEE_ESTIMATE_PATH: &str = "/api/v1/mempool/fee-estimate";
 const PULSE_PATH: &str = "/api/v1/pulse";
+const STATUS_PATH: &str = "/status";
 const PULSE_DOMAIN_V1: &str = "PulseDAG:pulse:v1";
 const ADDRESS_PATH: &str = "/address/:address";
 const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
@@ -217,6 +220,23 @@ struct ReleaseIdentityData {
     signed_transaction_relay_version: String,
     capabilities: Vec<String>,
     core_endpoints: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeStatusProtocolData {
+    rpc_response_degraded: bool,
+    rpc_response_stale: bool,
+    chain_id: String,
+    protocol_identity: Option<ProtocolActivationIdentity>,
+    protocol_identity_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolIdentityOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub protocol_identity: ProtocolActivationIdentity,
+    pub protocol_identity_fingerprint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -530,6 +550,23 @@ fn validate_explorer_identity(
     Ok(identity)
 }
 
+fn validate_protocol_status_identity(
+    expected_network: &WalletNetworkIdentity,
+    response: ApiResponse<ReleaseIdentityData>,
+) -> Result<RelayIdentity, RelayClientError> {
+    let identity = validate_remote_identity(expected_network, response)?;
+    if !identity
+        .core_endpoints
+        .iter()
+        .any(|value| value == STATUS_PATH)
+    {
+        return Err(relay_error(
+            "relay identity does not advertise canonical /status endpoint",
+        ));
+    }
+    Ok(identity)
+}
+
 fn validate_mempool_identity(
     expected_network: &WalletNetworkIdentity,
     response: ApiResponse<ReleaseIdentityData>,
@@ -592,6 +629,93 @@ async fn fetch_mempool_identity(
         expected_network,
         fetch_identity_response(client, base).await?,
     )
+}
+
+fn protocol_identity_output(
+    release_identity: &RelayIdentity,
+    response: ApiResponse<NodeStatusProtocolData>,
+) -> Result<ProtocolIdentityOutput, RelayClientError> {
+    if !response.ok {
+        return Err(relay_error(format!(
+            "protocol identity request failed: {}",
+            api_error_detail(response.error)
+        )));
+    }
+    let data = response
+        .data
+        .ok_or_else(|| relay_error("protocol identity response is missing data"))?;
+    if data.rpc_response_degraded || data.rpc_response_stale {
+        return Err(relay_error(
+            "protocol identity status is degraded or stale",
+        ));
+    }
+    if data.chain_id != release_identity.network.chain_id {
+        return Err(relay_error(
+            "protocol identity status chain_id does not match release identity",
+        ));
+    }
+
+    let protocol_identity = data
+        .protocol_identity
+        .ok_or_else(|| relay_error("activated-v2 protocol identity is not available"))?;
+    if protocol_identity.chain_id != data.chain_id {
+        return Err(relay_error(
+            "persisted protocol identity chain_id does not match node status",
+        ));
+    }
+
+    let observed_fingerprint = data
+        .protocol_identity_fingerprint
+        .ok_or_else(|| relay_error("protocol identity fingerprint is missing"))?;
+    let expected_fingerprint =
+        verify_wallet_v2_node_identity(&protocol_identity, &protocol_identity)
+            .map_err(|error| relay_error(format!("protocol identity is invalid: {error}")))?;
+    if observed_fingerprint != expected_fingerprint {
+        return Err(relay_error(
+            "protocol identity fingerprint does not match persisted identity",
+        ));
+    }
+
+    Ok(ProtocolIdentityOutput {
+        network_profile: release_identity.network.network_profile.clone(),
+        chain_id: release_identity.network.chain_id.clone(),
+        protocol_identity,
+        protocol_identity_fingerprint: observed_fingerprint,
+    })
+}
+
+pub async fn fetch_protocol_identity(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+) -> Result<ProtocolIdentityOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let release_identity = validate_protocol_status_identity(
+        expected_network,
+        fetch_identity_response(&client, &base).await?,
+    )?;
+
+    let url = base
+        .join(STATUS_PATH.trim_start_matches('/'))
+        .map_err(|_| relay_error("failed to construct protocol identity status URL"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| relay_error(format!("protocol identity transport failed: {error}")))?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "protocol identity request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<NodeStatusProtocolData>>(&body)
+        .map_err(|_| relay_error("protocol identity response JSON is invalid"))?;
+    protocol_identity_output(&release_identity, parsed)
 }
 
 fn rejected_broadcast_output(
