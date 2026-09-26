@@ -71,6 +71,7 @@ pub enum BasedAppV0Error {
     ChallengeWindowOutOfRange { value: u32 },
     EmptyChainId,
     HiddenOperator,
+    DuplicateOperator,
     OperatorNotDeclared,
     OversizedBlob { len: usize, max: u32 },
     InlinePayloadRequired,
@@ -96,6 +97,9 @@ impl std::fmt::Display for BasedAppV0Error {
             }
             Self::EmptyChainId => write!(f, "based-app chain_id must not be empty"),
             Self::HiddenOperator => write!(f, "operator_set must not contain empty keys"),
+            Self::DuplicateOperator => {
+                write!(f, "operator_set must not contain duplicate keys")
+            }
             Self::OperatorNotDeclared => {
                 write!(f, "committer is not in the declared operator_set")
             }
@@ -156,6 +160,12 @@ pub fn derive_app_id_v0(profile: &BasedAppProfileV0) -> Result<[u8; 32], BasedAp
     if profile.operator_set.iter().any(|pk| pk.is_empty()) {
         return Err(BasedAppV0Error::HiddenOperator);
     }
+    let mut operators = profile.operator_set.clone();
+    operators.sort();
+    if operators.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(BasedAppV0Error::DuplicateOperator);
+    }
+
     let mut out = Vec::new();
     encode_len_prefixed(&mut out, BASED_APP_DOMAIN_V0.as_bytes());
     encode_len_prefixed(&mut out, profile.chain_id.as_bytes());
@@ -166,7 +176,7 @@ pub fn derive_app_id_v0(profile: &BasedAppProfileV0) -> Result<[u8; 32], BasedAp
         BasedDaModeV0::CommitOnly => b"commit_only".as_slice(),
     };
     encode_len_prefixed(&mut out, mode);
-    for pk in &profile.operator_set {
+    for pk in &operators {
         encode_len_prefixed(&mut out, pk.as_bytes());
     }
     Ok(Sha256::digest(&out).into())
@@ -390,6 +400,24 @@ mod tests {
         assert_ne!(
             derive_app_id_v0(&inline).unwrap(),
             derive_app_id_v0(&commit_only).unwrap()
+        );
+    }
+
+    #[test]
+    fn operator_set_identity_is_order_independent_and_unique() {
+        let mut a = profile();
+        a.operator_set = vec!["op-b".into(), "op-a".into()];
+
+        let mut b = profile();
+        b.operator_set = vec!["op-a".into(), "op-b".into()];
+
+        assert_eq!(derive_app_id_v0(&a).unwrap(), derive_app_id_v0(&b).unwrap());
+
+        let mut duplicate = profile();
+        duplicate.operator_set = vec!["op-a".into(), "op-a".into()];
+        assert_eq!(
+            derive_app_id_v0(&duplicate),
+            Err(BasedAppV0Error::DuplicateOperator)
         );
     }
 
