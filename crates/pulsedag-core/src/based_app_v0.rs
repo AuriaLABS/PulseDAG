@@ -72,6 +72,7 @@ pub enum BasedAppV0Error {
     OperatorNotDeclared,
     OversizedBlob { len: usize, max: u32 },
     InlinePayloadRequired,
+    CommitOnlyPayloadForbidden,
     PayloadHashMismatch,
     PulseClockUnavailable,
     SettleTooEarly { current: u64, required: u64 },
@@ -100,6 +101,9 @@ impl std::fmt::Display for BasedAppV0Error {
             }
             Self::InlinePayloadRequired => {
                 write!(f, "da_mode=inline requires a payload matching payload_hash")
+            }
+            Self::CommitOnlyPayloadForbidden => {
+                write!(f, "da_mode=commit_only forbids inline payload bytes")
             }
             Self::PayloadHashMismatch => write!(f, "SHA-256(payload) does not match payload_hash"),
             Self::PulseClockUnavailable => {
@@ -210,7 +214,11 @@ fn validate_commit_shape(
                 return Err(BasedAppV0Error::PayloadHashMismatch);
             }
         }
-        BasedDaModeV0::CommitOnly => {}
+        BasedDaModeV0::CommitOnly => {
+            if commit.payload.is_some() {
+                return Err(BasedAppV0Error::CommitOnlyPayloadForbidden);
+            }
+        }
     }
     Ok(())
 }
@@ -343,6 +351,53 @@ mod tests {
             ),
             Err(BasedAppV0Error::PayloadHashMismatch)
         );
+    }
+
+    #[test]
+    fn app_identity_is_chain_and_da_mode_separated() {
+        let inline = profile();
+
+        let mut other_chain = inline.clone();
+        other_chain.chain_id = "app-test-other".into();
+        assert_ne!(
+            derive_app_id_v0(&inline).unwrap(),
+            derive_app_id_v0(&other_chain).unwrap()
+        );
+
+        let mut commit_only = inline.clone();
+        commit_only.da_mode = BasedDaModeV0::CommitOnly;
+        assert_ne!(
+            derive_app_id_v0(&inline).unwrap(),
+            derive_app_id_v0(&commit_only).unwrap()
+        );
+    }
+
+    #[test]
+    fn commit_only_forbids_inline_payload_bytes() {
+        let mut profile = profile();
+        profile.da_mode = BasedDaModeV0::CommitOnly;
+        let mut commit = commit_for(&profile, b"hello");
+
+        assert_eq!(
+            evaluate_based_app_v0(
+                admitted(),
+                &profile,
+                &commit,
+                BasedAppPathV0::Open,
+                Ok(&pulse_at(100))
+            ),
+            Err(BasedAppV0Error::CommitOnlyPayloadForbidden)
+        );
+
+        commit.payload = None;
+        evaluate_based_app_v0(
+            admitted(),
+            &profile,
+            &commit,
+            BasedAppPathV0::Open,
+            Ok(&pulse_at(100)),
+        )
+        .unwrap();
     }
 
     #[test]
