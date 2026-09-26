@@ -71,9 +71,13 @@ pub struct MonetaryPolicyV3Data {
     pub genesis_issuance_atoms: String,
     pub year1_target_issuance_atoms: String,
     pub economic_year_seconds: u64,
+    pub half_life_years: u64,
     pub half_life_seconds: u64,
     pub emission_quantum_seconds: u64,
     pub decay_factor_q64: String,
+    pub half_life_end_factor_q64: String,
+    pub terminal_half_lives: u32,
+    pub terminal_economic_year: u64,
     pub terminal_emission_quantum: u64,
     pub terminal_emission_seconds: u64,
     pub coinbase_maturity_seconds: u64,
@@ -98,9 +102,13 @@ impl MonetaryPolicyV3Data {
             genesis_issuance_atoms: pulsedag_core::GENESIS_ISSUANCE_ATOMS.to_string(),
             year1_target_issuance_atoms: pulsedag_core::YEAR1_TARGET_ISSUANCE_ATOMS.to_string(),
             economic_year_seconds: pulsedag_core::ECONOMIC_YEAR_SECONDS,
+            half_life_years: pulsedag_core::HALF_LIFE_YEARS,
             half_life_seconds: pulsedag_core::HALF_LIFE_SECONDS,
             emission_quantum_seconds: pulsedag_core::EMISSION_QUANTUM_SECONDS,
             decay_factor_q64: pulsedag_core::DECAY_FACTOR_Q64.to_string(),
+            half_life_end_factor_q64: pulsedag_core::HALF_LIFE_END_FACTOR_Q64.to_string(),
+            terminal_half_lives: pulsedag_core::TERMINAL_HALF_LIVES,
+            terminal_economic_year: pulsedag_core::TERMINAL_ECONOMIC_YEAR,
             terminal_emission_quantum: pulsedag_core::TERMINAL_EMISSION_QUANTUM,
             terminal_emission_seconds: pulsedag_core::TERMINAL_EMISSION_SECONDS,
             coinbase_maturity_seconds: pulsedag_core::COINBASE_MATURITY_SECONDS,
@@ -203,12 +211,18 @@ mod tests {
         );
         assert_eq!(
             json["year1_target_issuance_atoms"],
-            serde_json::Value::String("20629947401590029".into())
+            serde_json::Value::String("20629947401590026".into())
         );
         assert_eq!(
             json["decay_factor_q64"],
             serde_json::Value::String("18443825056137834748".into())
         );
+        assert_eq!(
+            json["half_life_end_factor_q64"],
+            serde_json::Value::String("9223372036854774856".into())
+        );
+        assert_eq!(json["terminal_economic_year"], 171);
+        assert_eq!(json["terminal_emission_quantum"], 249660);
     }
 
     #[test]
