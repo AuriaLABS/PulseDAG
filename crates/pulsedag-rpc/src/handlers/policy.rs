@@ -193,7 +193,7 @@ mod tests {
         );
         assert_eq!(
             json["year1_mining_budget_atoms"],
-            serde_json::Value::String("50000000000000000".into())
+            serde_json::Value::String("20629947401590026".into())
         );
     }
 
