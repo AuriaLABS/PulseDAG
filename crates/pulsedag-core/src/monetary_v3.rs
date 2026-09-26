@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Frozen v3.0.0 mainnet monetary-policy version.
+/// Proposed v3.0.0 smooth-emission monetary-policy version.
 pub const MONETARY_POLICY_VERSION_V3: &str = "pulsedag-monetary-v3.0.0-smooth-v1";
 pub const MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3: &[u8] = b"PulseDAG:monetary-cadence:v3.0.0";
 
@@ -386,6 +386,15 @@ mod tests {
             monetary_policy_fingerprint_v3(),
             MONETARY_POLICY_FINGERPRINT_V3
         );
+    }
+
+    #[test]
+    fn smooth_decay_factor_is_frozen_for_exact_half_life_normalization() {
+        assert_eq!(
+            decay_power_q64(QUANTA_PER_HALF_LIFE).unwrap(),
+            HALF_LIFE_END_FACTOR_Q64
+        );
+        assert_eq!(QUANTA_PER_HALF_LIFE, 4_380);
     }
 
     #[test]
