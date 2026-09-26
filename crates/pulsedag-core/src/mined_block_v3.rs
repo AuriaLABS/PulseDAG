@@ -7,8 +7,7 @@ use crate::{
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    validate_ordered_monetary_reward_v3,
 };
 
 fn invalid_monetary_mined_block(message: impl Into<String>) -> PulseError {
