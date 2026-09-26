@@ -1,9 +1,12 @@
+use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{
     address_from_public_key, signing_message_v2,
     types::{OutPoint, Utxo},
     ProtocolActivationIdentity, TRANSACTION_VERSION_V2,
 };
-use pulsedag_wallet::protocol_v2::{prepare_wallet_v2_signing_plan, WalletV2PlanRequest};
+use pulsedag_wallet::protocol_v2::{
+    finalize_wallet_v2_signed_plan, prepare_wallet_v2_signing_plan, WalletV2PlanRequest,
+};
 
 const PUBLIC_KEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
 
@@ -116,4 +119,61 @@ fn prepared_signing_bytes_cannot_be_reinterpreted_under_another_chain_id() {
         .expect("other non-empty chain domain can be serialized");
 
     assert_ne!(plan.signing_message, hex::encode(wrong_domain));
+}
+
+
+#[test]
+fn signature_valid_on_testnet_is_rejected_under_mainnet_chain_domain() {
+    let testnet = identity("pulsedag-testnet-v3", "testnet-genesis-v3");
+    let mainnet = identity("pulsedag-mainnet-v3", "mainnet-genesis-v3");
+    let testnet_plan = prepare(&testnet);
+    let mainnet_plan = prepare(&mainnet);
+
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+    assert_eq!(
+        hex::encode(signing_key.verifying_key().to_bytes()),
+        PUBLIC_KEY
+    );
+
+    let testnet_message = hex::decode(&testnet_plan.signing_message).expect("testnet message");
+    let signature = hex::encode(signing_key.sign(&testnet_message).to_bytes());
+
+    let signed = finalize_wallet_v2_signed_plan(&testnet_plan, std::slice::from_ref(&signature))
+        .expect("signature must validate in its original chain domain");
+    assert_eq!(signed.protocol_identity.chain_id, "pulsedag-testnet-v3");
+
+    let replay_error = finalize_wallet_v2_signed_plan(&mainnet_plan, &[signature])
+        .expect_err("testnet signature must not validate in mainnet chain domain");
+    assert!(matches!(
+        replay_error,
+        pulsedag_core::errors::PulseError::InvalidSignature
+    ));
+}
+
+#[test]
+fn same_chain_id_with_different_genesis_is_rejected_before_signing() {
+    let expected = identity("pulsedag-v3-domain", "testnet-genesis-v3");
+    let observed = identity("pulsedag-v3-domain", "mainnet-genesis-v3");
+    let source = source_address();
+    let available = [funding_utxo()];
+
+    let error = prepare_wallet_v2_signing_plan(
+        &expected,
+        &observed,
+        WalletV2PlanRequest {
+            public_key: PUBLIC_KEY,
+            from: &source,
+            to: "pulse1recipient",
+            amount: 7,
+            fee: 1,
+            available_utxos: &available,
+            nonce: 9,
+        },
+    )
+    .expect_err("genesis mismatch must fail before signing even when chain_id is reused");
+
+    assert!(matches!(
+        error,
+        pulsedag_core::errors::PulseError::InvalidTransaction(_)
+    ));
 }
