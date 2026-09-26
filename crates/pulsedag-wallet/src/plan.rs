@@ -1,10 +1,11 @@
 use std::{error::Error, fmt};
 
 use pulsedag_core::{
-    address_from_public_key, compute_txid,
+    address_from_public_key, compute_txid, compute_txid_v2,
     errors::PulseError,
-    signing_message,
+    signing_message, signing_message_v2,
     types::{Transaction, Utxo},
+    ProtocolActivationIdentity, TRANSACTION_VERSION_V2,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -58,6 +59,46 @@ impl WalletNetworkIdentity {
             observed_network_profile: observed.network_profile.clone(),
             observed_chain_id: observed.chain_id.clone(),
         })
+    }
+}
+
+/// Exact activated-v2 consensus identity bound into a wallet plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WalletProtocolBindingV2 {
+    pub identity: ProtocolActivationIdentity,
+    pub fingerprint: String,
+}
+
+impl WalletProtocolBindingV2 {
+    pub fn new(identity: ProtocolActivationIdentity) -> Result<Self, WalletPlanError> {
+        let fingerprint =
+            crate::protocol_v2::verify_wallet_v2_node_identity(&identity, &identity)
+                .map_err(WalletPlanError::Build)?;
+        Ok(Self {
+            identity,
+            fingerprint,
+        })
+    }
+
+    fn validate_for_network(&self, network: &WalletNetworkIdentity) -> Result<(), WalletPlanError> {
+        network.validate()?;
+        if self.identity.chain_id != network.chain_id {
+            return Err(invalid_plan(
+                "protocol_binding_v2.identity.chain_id",
+                "does not match wallet network chain_id",
+            ));
+        }
+        let expected =
+            crate::protocol_v2::verify_wallet_v2_node_identity(&self.identity, &self.identity)
+                .map_err(WalletPlanError::Build)?;
+        if expected != self.fingerprint {
+            return Err(invalid_plan(
+                "protocol_binding_v2.fingerprint",
+                "does not match activated protocol identity",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -247,6 +288,8 @@ pub struct WalletSigningPreparation {
     pub network: WalletNetworkIdentity,
     pub review: WalletReviewSummary,
     pub spend_policy: WalletSpendPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
     pub transaction: Transaction,
     pub signing_message: String,
 }
@@ -264,6 +307,8 @@ pub struct WalletTransactionPlan {
     /// Explicit acknowledgement of dangerous transaction shapes. Signing
     /// revalidates these persisted decisions rather than accepting fresh flags.
     pub safety_acknowledgements: WalletSafetyAcknowledgements,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
     pub transaction: Transaction,
     pub selected_utxos: Vec<SelectedUtxo>,
     pub total_input: u64,
@@ -279,11 +324,24 @@ impl WalletTransactionPlan {
         self.spend_policy
             .validate_input_count(self.selected_utxos.len())?;
 
-        if self.transaction.version != 1 {
-            return Err(invalid_plan(
-                "transaction.version",
-                "unsupported wallet transaction version",
-            ));
+        match &self.protocol_binding_v2 {
+            Some(binding) => {
+                binding.validate_for_network(&self.network)?;
+                if self.transaction.version != TRANSACTION_VERSION_V2 {
+                    return Err(invalid_plan(
+                        "transaction.version",
+                        "activated-v2 wallet plan must use transaction version 2",
+                    ));
+                }
+            }
+            None => {
+                if self.transaction.version != 1 {
+                    return Err(invalid_plan(
+                        "transaction.version",
+                        "unbound wallet plan must use legacy transaction version 1",
+                    ));
+                }
+            }
         }
         if self.transaction.fee != self.intent.fee {
             return Err(invalid_plan(
@@ -398,13 +456,33 @@ impl WalletTransactionPlan {
                 ));
             }
         }
-        if compute_txid(&self.transaction) != self.transaction.txid {
+        let expected_txid = match &self.protocol_binding_v2 {
+            Some(binding) => compute_txid_v2(&self.transaction, &binding.identity.chain_id)
+                .map_err(WalletPlanError::Build)?,
+            None => compute_txid(&self.transaction),
+        };
+        if expected_txid != self.transaction.txid {
             return Err(invalid_plan(
                 "transaction.txid",
                 "does not match unsigned template",
             ));
         }
         Ok(())
+    }
+
+    pub fn bind_activated_v2_protocol(
+        mut self,
+        identity: ProtocolActivationIdentity,
+    ) -> Result<Self, WalletPlanError> {
+        let binding = WalletProtocolBindingV2::new(identity)?;
+        binding.validate_for_network(&self.network)?;
+        self.transaction.version = TRANSACTION_VERSION_V2;
+        self.transaction.txid =
+            compute_txid_v2(&self.transaction, &binding.identity.chain_id)
+                .map_err(WalletPlanError::Build)?;
+        self.protocol_binding_v2 = Some(binding);
+        self.validate_structure()?;
+        Ok(self)
     }
 
     pub fn review_summary(&self) -> Result<WalletReviewSummary, WalletPlanError> {
@@ -481,12 +559,19 @@ impl WalletTransactionPlan {
             input.public_key = public_key_hex.to_string();
             input.signature.clear();
         }
-        let signing_message = hex::encode(signing_message(&transaction));
+        let signing_message = match &self.protocol_binding_v2 {
+            Some(binding) => hex::encode(
+                signing_message_v2(&transaction, &binding.identity.chain_id)
+                    .map_err(WalletPlanError::Build)?,
+            ),
+            None => hex::encode(signing_message(&transaction)),
+        };
 
         Ok(WalletSigningPreparation {
             network: self.network.clone(),
             review,
             spend_policy: self.spend_policy.clone(),
+            protocol_binding_v2: self.protocol_binding_v2.clone(),
             transaction,
             signing_message,
         })
@@ -749,6 +834,7 @@ fn plan_from_build(
         nonce_policy: WalletNoncePolicy::ExplicitCallerProvidedV1,
         funding_snapshot,
         safety_acknowledgements,
+        protocol_binding_v2: None,
         transaction: built.transaction,
         selected_utxos: built.selected_utxos,
         total_input: built.total_input,
