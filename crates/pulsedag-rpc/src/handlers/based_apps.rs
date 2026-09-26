@@ -309,7 +309,8 @@ mod tests {
             next_state_root: [0x33; 32],
             pulse_height: 120,
         };
-        let page = based_app_events_data_v0(app_id, Some(9), 64, &[event.clone()]).unwrap();
+        let page =
+            based_app_events_data_v0(app_id, Some(9), 64, std::slice::from_ref(&event)).unwrap();
         assert_eq!(page.next_after, Some(10));
         assert_eq!(page.events[0].kind, "challenged");
         assert_eq!(page.retained_max, BASED_APP_EVENT_RETAINED_MAX_V0);
