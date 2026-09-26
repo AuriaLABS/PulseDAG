@@ -23,6 +23,7 @@ use crate::{
         address::{
             get_address, get_address_activity, get_address_summary, get_address_utxos, get_utxos,
         },
+        based_apps::{get_based_app_events, get_based_app_state},
         block_validate::post_block_validate,
         blocks::{
             get_block_overview, get_block_transactions, get_blocks, get_blocks_latest,
@@ -650,6 +651,8 @@ where
         .route("/policy", get(get_policy::<S>))
         .route("/pulse", get(get_pulse::<S>))
         .route("/explorer/block/:hash", get(get_explorer_block::<S>))
+        .route("/based-apps/:app_id/state", get(get_based_app_state))
+        .route("/based-apps/:app_id/events", get(get_based_app_events))
 }
 
 fn public_routes<S>() -> Router<S>
@@ -717,6 +720,8 @@ where
         .route("/policy", get(get_policy::<S>))
         .route("/pulse", get(get_pulse::<S>))
         .route("/explorer/block/:hash", get(get_explorer_block::<S>))
+        .route("/based-apps/:app_id/state", get(get_based_app_state))
+        .route("/based-apps/:app_id/events", get(get_based_app_events))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))

@@ -5,7 +5,9 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::pulseclock_v1::{PulseClockV1Error, PulseObservationV1};
+use crate::pulseclock_v1::{
+    PulseClockV1Error, PulseObservationV1, PULSE_DOMAIN_V1, PULSE_VERSION_V1,
+};
 
 pub const BASED_APP_DOMAIN_V0: &str = "PulseDAG:based-app:v0";
 pub const BASED_COMMIT_TEMPLATE_V0: &str = "based_commit_v0";
@@ -69,11 +71,14 @@ pub enum BasedAppV0Error {
     ChallengeWindowOutOfRange { value: u32 },
     EmptyChainId,
     HiddenOperator,
+    DuplicateOperator,
     OperatorNotDeclared,
     OversizedBlob { len: usize, max: u32 },
     InlinePayloadRequired,
+    CommitOnlyPayloadForbidden,
     PayloadHashMismatch,
     PulseClockUnavailable,
+    PulseClockContextMismatch,
     SettleTooEarly { current: u64, required: u64 },
     ChallengeTooLate { current: u64, deadline: u64 },
 }
@@ -92,6 +97,9 @@ impl std::fmt::Display for BasedAppV0Error {
             }
             Self::EmptyChainId => write!(f, "based-app chain_id must not be empty"),
             Self::HiddenOperator => write!(f, "operator_set must not contain empty keys"),
+            Self::DuplicateOperator => {
+                write!(f, "operator_set must not contain duplicate keys")
+            }
             Self::OperatorNotDeclared => {
                 write!(f, "committer is not in the declared operator_set")
             }
@@ -101,11 +109,20 @@ impl std::fmt::Display for BasedAppV0Error {
             Self::InlinePayloadRequired => {
                 write!(f, "da_mode=inline requires a payload matching payload_hash")
             }
+            Self::CommitOnlyPayloadForbidden => {
+                write!(f, "da_mode=commit_only forbids inline payload bytes")
+            }
             Self::PayloadHashMismatch => write!(f, "SHA-256(payload) does not match payload_hash"),
             Self::PulseClockUnavailable => {
                 write!(
                     f,
                     "PulseClock metadata unavailable; based-app path fails closed"
+                )
+            }
+            Self::PulseClockContextMismatch => {
+                write!(
+                    f,
+                    "PulseClock context does not match based-app chain/domain"
                 )
             }
             Self::SettleTooEarly { current, required } => {
@@ -146,6 +163,12 @@ pub fn derive_app_id_v0(profile: &BasedAppProfileV0) -> Result<[u8; 32], BasedAp
     if profile.operator_set.iter().any(|pk| pk.is_empty()) {
         return Err(BasedAppV0Error::HiddenOperator);
     }
+    let mut operators = profile.operator_set.clone();
+    operators.sort();
+    if operators.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(BasedAppV0Error::DuplicateOperator);
+    }
+
     let mut out = Vec::new();
     encode_len_prefixed(&mut out, BASED_APP_DOMAIN_V0.as_bytes());
     encode_len_prefixed(&mut out, profile.chain_id.as_bytes());
@@ -156,7 +179,7 @@ pub fn derive_app_id_v0(profile: &BasedAppProfileV0) -> Result<[u8; 32], BasedAp
         BasedDaModeV0::CommitOnly => b"commit_only".as_slice(),
     };
     encode_len_prefixed(&mut out, mode);
-    for pk in &profile.operator_set {
+    for pk in &operators {
         encode_len_prefixed(&mut out, pk.as_bytes());
     }
     Ok(Sha256::digest(&out).into())
@@ -210,7 +233,24 @@ fn validate_commit_shape(
                 return Err(BasedAppV0Error::PayloadHashMismatch);
             }
         }
-        BasedDaModeV0::CommitOnly => {}
+        BasedDaModeV0::CommitOnly => {
+            if commit.payload.is_some() {
+                return Err(BasedAppV0Error::CommitOnlyPayloadForbidden);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_pulse_context_v0(
+    profile: &BasedAppProfileV0,
+    pulse: &PulseObservationV1,
+) -> Result<(), BasedAppV0Error> {
+    if pulse.pulse_version != PULSE_VERSION_V1
+        || pulse.domain != PULSE_DOMAIN_V1
+        || pulse.chain_id != profile.chain_id
+    {
+        return Err(BasedAppV0Error::PulseClockContextMismatch);
     }
     Ok(())
 }
@@ -230,6 +270,7 @@ pub fn evaluate_based_app_v0(
         BasedAppPathV0::Open => Ok(()),
         BasedAppPathV0::Challenge => {
             let pulse = pulse.map_err(BasedAppV0Error::from)?;
+            validate_pulse_context_v0(profile, pulse)?;
             let deadline = settle_height_v0(commit, profile);
             if pulse.pulse_height >= deadline {
                 return Err(BasedAppV0Error::ChallengeTooLate {
@@ -241,6 +282,7 @@ pub fn evaluate_based_app_v0(
         }
         BasedAppPathV0::Settle => {
             let pulse = pulse.map_err(BasedAppV0Error::from)?;
+            validate_pulse_context_v0(profile, pulse)?;
             let required = settle_height_v0(commit, profile);
             if pulse.pulse_height < required {
                 return Err(BasedAppV0Error::SettleTooEarly {
@@ -346,6 +388,71 @@ mod tests {
     }
 
     #[test]
+    fn app_identity_is_chain_and_da_mode_separated() {
+        let inline = profile();
+
+        let mut other_chain = inline.clone();
+        other_chain.chain_id = "app-test-other".into();
+        assert_ne!(
+            derive_app_id_v0(&inline).unwrap(),
+            derive_app_id_v0(&other_chain).unwrap()
+        );
+
+        let mut commit_only = inline.clone();
+        commit_only.da_mode = BasedDaModeV0::CommitOnly;
+        assert_ne!(
+            derive_app_id_v0(&inline).unwrap(),
+            derive_app_id_v0(&commit_only).unwrap()
+        );
+    }
+
+    #[test]
+    fn operator_set_identity_is_order_independent_and_unique() {
+        let mut a = profile();
+        a.operator_set = vec!["op-b".into(), "op-a".into()];
+
+        let mut b = profile();
+        b.operator_set = vec!["op-a".into(), "op-b".into()];
+
+        assert_eq!(derive_app_id_v0(&a).unwrap(), derive_app_id_v0(&b).unwrap());
+
+        let mut duplicate = profile();
+        duplicate.operator_set = vec!["op-a".into(), "op-a".into()];
+        assert_eq!(
+            derive_app_id_v0(&duplicate),
+            Err(BasedAppV0Error::DuplicateOperator)
+        );
+    }
+
+    #[test]
+    fn commit_only_forbids_inline_payload_bytes() {
+        let mut profile = profile();
+        profile.da_mode = BasedDaModeV0::CommitOnly;
+        let mut commit = commit_for(&profile, b"hello");
+
+        assert_eq!(
+            evaluate_based_app_v0(
+                admitted(),
+                &profile,
+                &commit,
+                BasedAppPathV0::Open,
+                Ok(&pulse_at(100))
+            ),
+            Err(BasedAppV0Error::CommitOnlyPayloadForbidden)
+        );
+
+        commit.payload = None;
+        evaluate_based_app_v0(
+            admitted(),
+            &profile,
+            &commit,
+            BasedAppPathV0::Open,
+            Ok(&pulse_at(100)),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn undeclared_operator_is_rejected() {
         let profile = profile();
         let mut commit = commit_for(&profile, b"hello");
@@ -407,6 +514,38 @@ mod tests {
                 current: 163,
                 required: 164
             })
+        );
+    }
+
+    #[test]
+    fn foreign_or_invalid_pulseclock_context_fails_closed() {
+        let profile = profile();
+        let commit = commit_for(&profile, b"hello");
+
+        let mut foreign = pulse_at(120);
+        foreign.chain_id = "other-chain".into();
+        assert_eq!(
+            evaluate_based_app_v0(
+                admitted(),
+                &profile,
+                &commit,
+                BasedAppPathV0::Challenge,
+                Ok(&foreign)
+            ),
+            Err(BasedAppV0Error::PulseClockContextMismatch)
+        );
+
+        let mut wrong_version = pulse_at(120);
+        wrong_version.pulse_version = PULSE_VERSION_V1 + 1;
+        assert_eq!(
+            evaluate_based_app_v0(
+                admitted(),
+                &profile,
+                &commit,
+                BasedAppPathV0::Challenge,
+                Ok(&wrong_version)
+            ),
+            Err(BasedAppV0Error::PulseClockContextMismatch)
         );
     }
 

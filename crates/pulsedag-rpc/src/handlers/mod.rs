@@ -1,4 +1,5 @@
 pub mod address;
+pub mod based_apps;
 pub mod dag;
 pub mod mine;
 pub mod p2p;

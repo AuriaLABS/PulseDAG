@@ -2,6 +2,7 @@ pub mod accept;
 pub mod acceptance_v2;
 pub mod access_set_v1;
 pub mod apply;
+pub mod based_app_state_v0;
 pub mod based_app_v0;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
@@ -235,6 +236,15 @@ pub use based_app_v0::{
     derive_app_id_v0, evaluate_based_app_v0, settle_height_v0, BasedAppAdmissionV0, BasedAppPathV0,
     BasedAppProfileV0, BasedAppV0Error, BasedCommitV0, BasedDaModeV0, BASED_APP_DOMAIN_V0,
     BASED_COMMIT_TEMPLATE_V0,
+};
+
+pub use based_app_state_v0::{
+    apply_based_app_canonical_event_v0, based_app_event_page_v0, based_app_write_key_v0,
+    fold_based_app_events_from_state_v0, fold_based_app_events_v0,
+    validate_based_app_access_set_v0, BasedAppCanonicalEventKindV0, BasedAppCanonicalEventV0,
+    BasedAppPendingRoundV0, BasedAppStateV0Error, BasedAppStateViewV0, BASED_APP_EVENT_PAGE_MAX_V0,
+    BASED_APP_EVENT_RETAINED_MAX_V0, BASED_APP_EVENT_SCHEMA_VERSION_V0,
+    BASED_APP_STATE_SCHEMA_VERSION_V0,
 };
 
 pub use verify_receipt_v1::{
