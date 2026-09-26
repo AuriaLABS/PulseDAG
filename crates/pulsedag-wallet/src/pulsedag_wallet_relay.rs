@@ -4,6 +4,7 @@ use pulsedag_core::{
     compute_txid,
     mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
+    PULSE_VERSION_V1,
 };
 use pulsedag_wallet::WalletNetworkIdentity;
 use reqwest::{redirect::Policy, Client, Response, Url};
@@ -929,6 +930,11 @@ fn validate_pulse_observation_data(
     expected_network: &WalletNetworkIdentity,
     data: &PulseObservationData,
 ) -> Result<(), RelayClientError> {
+    if data.pulse_version != PULSE_VERSION_V1 {
+        return Err(relay_error(format!(
+            "pulse version is not {PULSE_VERSION_V1}"
+        )));
+    }
     if data.domain != PULSE_DOMAIN_V1 {
         return Err(relay_error(format!(
             "pulse domain is not {PULSE_DOMAIN_V1}"
@@ -1288,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn pulse_observation_rejects_foreign_chain_and_wrong_domain() {
+    fn pulse_observation_rejects_foreign_chain_wrong_version_and_wrong_domain() {
         let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
         assert!(validate_explorer_identity(
             &network,
@@ -1315,6 +1321,9 @@ mod tests {
             finality_lag: 3,
         };
         assert!(validate_pulse_observation_data(&network, &data).is_ok());
+        data.pulse_version = PULSE_VERSION_V1 + 1;
+        assert!(validate_pulse_observation_data(&network, &data).is_err());
+        data.pulse_version = PULSE_VERSION_V1;
         data.chain_id = "other-chain".into();
         assert!(validate_pulse_observation_data(&network, &data).is_err());
         data.chain_id = "pulsedag-testnet".into();
