@@ -4,6 +4,7 @@ use pulsedag_core::{
     compute_txid,
     mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
+    PULSE_VERSION_V1,
 };
 use pulsedag_wallet::WalletNetworkIdentity;
 use reqwest::{redirect::Policy, Client, Response, Url};
@@ -17,6 +18,8 @@ const RELAY_SUBMIT_PATH: &str = "/api/v1/tx/submit";
 const EXPLORER_CAPABILITY: &str = "explorer_api";
 const MEMPOOL_CAPABILITY: &str = "mempool";
 const MEMPOOL_FEE_ESTIMATE_PATH: &str = "/api/v1/mempool/fee-estimate";
+const PULSE_PATH: &str = "/api/v1/pulse";
+const PULSE_DOMAIN_V1: &str = "PulseDAG:pulse:v1";
 const ADDRESS_PATH: &str = "/address/:address";
 const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
 const SAFETY_REVIEW_FIELDS: [&str; 7] = [
@@ -150,6 +153,21 @@ pub struct MempoolFeeEstimateOutput {
     pub pressure_bps: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PulseObservationOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub pulse_version: u32,
+    pub domain: String,
+    pub selected_tip: String,
+    pub pulse_height: u64,
+    pub pulse_time: i64,
+    pub window_k: u32,
+    pub sample_count: u32,
+    pub uncertainty_secs: u32,
+    pub finality_lag: u64,
+}
+
 pub struct PreparedBroadcast {
     client: Client,
     submit_url: Url,
@@ -221,6 +239,20 @@ struct MempoolFeeEstimateData {
     mempool_transactions: u64,
     effective_max_transactions: u64,
     pressure_bps: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PulseObservationData {
+    pulse_version: u32,
+    domain: String,
+    chain_id: String,
+    selected_tip: String,
+    pulse_height: u64,
+    pulse_time: i64,
+    window_k: u32,
+    sample_count: u32,
+    uncertainty_secs: u32,
+    finality_lag: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -894,6 +926,90 @@ pub async fn fetch_mempool_fee_estimate(
     mempool_fee_estimate_output(&identity, parsed)
 }
 
+fn validate_pulse_observation_data(
+    expected_network: &WalletNetworkIdentity,
+    data: &PulseObservationData,
+) -> Result<(), RelayClientError> {
+    if data.pulse_version != PULSE_VERSION_V1 {
+        return Err(relay_error(format!(
+            "pulse version is not {PULSE_VERSION_V1}"
+        )));
+    }
+    if data.domain != PULSE_DOMAIN_V1 {
+        return Err(relay_error(format!(
+            "pulse domain is not {PULSE_DOMAIN_V1}"
+        )));
+    }
+    if data.chain_id != expected_network.chain_id {
+        return Err(relay_error(
+            "pulse chain_id does not match watch-only network identity",
+        ));
+    }
+    if data.selected_tip.is_empty() {
+        return Err(relay_error("pulse selected_tip must not be empty"));
+    }
+    Ok(())
+}
+
+fn pulse_observation_output(
+    identity: &RelayIdentity,
+    response: ApiResponse<PulseObservationData>,
+) -> Result<PulseObservationOutput, RelayClientError> {
+    if !response.ok {
+        return Err(relay_error(format!(
+            "pulse request failed: {}",
+            api_error_detail(response.error)
+        )));
+    }
+    let data = response
+        .data
+        .ok_or_else(|| relay_error("pulse response is missing data"))?;
+    validate_pulse_observation_data(&identity.network, &data)?;
+    Ok(PulseObservationOutput {
+        network_profile: identity.network.network_profile.clone(),
+        chain_id: identity.network.chain_id.clone(),
+        pulse_version: data.pulse_version,
+        domain: data.domain,
+        selected_tip: data.selected_tip,
+        pulse_height: data.pulse_height,
+        pulse_time: data.pulse_time,
+        window_k: data.window_k,
+        sample_count: data.sample_count,
+        uncertainty_secs: data.uncertainty_secs,
+        finality_lag: data.finality_lag,
+    })
+}
+
+pub async fn fetch_pulse_observation(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+) -> Result<PulseObservationOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity = fetch_explorer_identity(&client, &base, expected_network, PULSE_PATH).await?;
+    let url = base
+        .join(PULSE_PATH)
+        .map_err(|_| relay_error("failed to construct pulse URL"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| relay_error(format!("pulse transport failed: {error}")))?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "pulse request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<PulseObservationData>>(&body)
+        .map_err(|_| relay_error("pulse response JSON is invalid"))?;
+    pulse_observation_output(&identity, parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use pulsedag_core::types::{OutPoint, TxInput, TxOutput};
@@ -1175,6 +1291,66 @@ mod tests {
             explorer_identity_response("testnet", "pulsedag-testnet", ADDRESS_PATH);
         no_capability.data.as_mut().unwrap().capabilities.clear();
         assert!(validate_explorer_identity(&network, no_capability, ADDRESS_PATH).is_err());
+    }
+
+    #[test]
+    fn pulse_observation_rejects_foreign_chain_wrong_version_and_wrong_domain() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        assert!(validate_explorer_identity(
+            &network,
+            explorer_identity_response("testnet", "pulsedag-testnet", PULSE_PATH),
+            PULSE_PATH,
+        )
+        .is_ok());
+        let identity = validate_explorer_identity(
+            &network,
+            explorer_identity_response("testnet", "pulsedag-testnet", PULSE_PATH),
+            PULSE_PATH,
+        )
+        .unwrap();
+        let mut data = PulseObservationData {
+            pulse_version: 1,
+            domain: PULSE_DOMAIN_V1.to_string(),
+            chain_id: "pulsedag-testnet".into(),
+            selected_tip: "tip".into(),
+            pulse_height: 3,
+            pulse_time: 1_700_000_000,
+            window_k: 11,
+            sample_count: 3,
+            uncertainty_secs: 1,
+            finality_lag: 3,
+        };
+        assert!(validate_pulse_observation_data(&network, &data).is_ok());
+        data.pulse_version = PULSE_VERSION_V1 + 1;
+        assert!(validate_pulse_observation_data(&network, &data).is_err());
+        data.pulse_version = PULSE_VERSION_V1;
+        data.chain_id = "other-chain".into();
+        assert!(validate_pulse_observation_data(&network, &data).is_err());
+        data.chain_id = "pulsedag-testnet".into();
+        data.domain = "host-time".into();
+        assert!(validate_pulse_observation_data(&network, &data).is_err());
+        let output = pulse_observation_output(
+            &identity,
+            ApiResponse {
+                ok: true,
+                data: Some(PulseObservationData {
+                    pulse_version: 1,
+                    domain: PULSE_DOMAIN_V1.to_string(),
+                    chain_id: "pulsedag-testnet".into(),
+                    selected_tip: "tip".into(),
+                    pulse_height: 3,
+                    pulse_time: 1_700_000_000,
+                    window_k: 11,
+                    sample_count: 3,
+                    uncertainty_secs: 1,
+                    finality_lag: 3,
+                }),
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(output.pulse_height, 3);
+        assert_eq!(output.domain, PULSE_DOMAIN_V1);
     }
 
     #[test]

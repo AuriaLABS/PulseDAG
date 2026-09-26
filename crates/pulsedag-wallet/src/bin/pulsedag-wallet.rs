@@ -23,9 +23,10 @@ use pulsedag_wallet::{
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
-    fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate, parse_signed_broadcast,
-    prepare_broadcast, submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput,
-    MempoolFeeEstimateOutput, RelayEnvelope,
+    fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
+    fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast, submit_prepared,
+    AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput,
+    PulseObservationOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -46,6 +47,7 @@ enum Command {
     Balance(ReadOnlyArgs),
     Utxos(ReadOnlyArgs),
     FeeEstimate(NetworkReadOnlyArgs),
+    Pulse(NetworkReadOnlyArgs),
     TxPreview(TxPreviewArgs),
     TxSign(TxSignArgs),
     TxBroadcast(TxBroadcastArgs),
@@ -316,7 +318,7 @@ fn branch_name(branch: WalletDerivationBranch) -> &'static str {
 
 fn expected_command_error() -> io::Error {
     invalid_input(
-        "expected command: restore, address, watch-export, watch-import, backup-verify, balance, utxos, fee-estimate, tx-preview, tx-sign, or tx-broadcast",
+        "expected command: restore, address, watch-export, watch-import, backup-verify, balance, utxos, fee-estimate, pulse, tx-preview, tx-sign, or tx-broadcast",
     )
 }
 
@@ -388,6 +390,13 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
         "fee-estimate" => {
             reject_unknown(&flags, &["manifest", "relay"])?;
             Ok(Command::FeeEstimate(NetworkReadOnlyArgs {
+                manifest: PathBuf::from(required(&flags, "manifest")?),
+                relay: required(&flags, "relay")?,
+            }))
+        }
+        "pulse" => {
+            reject_unknown(&flags, &["manifest", "relay"])?;
+            Ok(Command::Pulse(NetworkReadOnlyArgs {
                 manifest: PathBuf::from(required(&flags, "manifest")?),
                 relay: required(&flags, "relay")?,
             }))
@@ -769,6 +778,11 @@ async fn run_fee_estimate(args: NetworkReadOnlyArgs) -> CliResult<MempoolFeeEsti
     Ok(fetch_mempool_fee_estimate(&args.relay, &network).await?)
 }
 
+async fn run_pulse(args: NetworkReadOnlyArgs) -> CliResult<PulseObservationOutput> {
+    let network = watch_network(&args.manifest)?;
+    Ok(fetch_pulse_observation(&args.relay, &network).await?)
+}
+
 fn run_backup_verify(
     args: BackupVerifyArgs,
     password: &SecretString,
@@ -1060,6 +1074,7 @@ async fn run() -> CliResult<()> {
         Command::Balance(args) => write_json(&run_balance(args).await?),
         Command::Utxos(args) => write_json(&run_utxos(args).await?),
         Command::FeeEstimate(args) => write_json(&run_fee_estimate(args).await?),
+        Command::Pulse(args) => write_json(&run_pulse(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_preview(args, &password)?)
@@ -1206,6 +1221,16 @@ mod tests {
         .is_err());
         assert!(parse_command_from(args(&[
             "fee-estimate",
+            "--manifest",
+            "watch.json",
+            "--relay",
+            "https://relay.example",
+            "--password",
+            "secret"
+        ]))
+        .is_err());
+        assert!(parse_command_from(args(&[
+            "pulse",
             "--manifest",
             "watch.json",
             "--relay",
@@ -1576,6 +1601,17 @@ mod tests {
             ]))
             .unwrap(),
             Command::FeeEstimate(_)
+        ));
+        assert!(matches!(
+            parse_command_from(args(&[
+                "pulse",
+                "--manifest",
+                "watch.json",
+                "--relay",
+                "https://relay.example"
+            ]))
+            .unwrap(),
+            Command::Pulse(_)
         ));
         assert!(parse_command_from(args(&[
             "balance",
