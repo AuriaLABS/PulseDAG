@@ -30,7 +30,7 @@ Bound to `chain_id` and a versioned `app_id` (32-byte namespace).
 | Field | Meaning |
 |---|---|
 | `app_id` | SHA-256 of domain + chain_id + canonical profile bytes |
-| `operator_set` | 0 or more pubkeys; empty means anyone may post commits |
+| `operator_set` | 0 or more unique pubkeys; empty means anyone may post commits; identity hashing sorts the set canonically |
 | `challenge_pulses` | u32 in `[64, 65536]` |
 | `max_blob_bytes` | bound for a single commitment payload |
 | `da_mode` | `inline` (payload on L1) or `commit_only` (hash + locator, locator is not consensus-critical) |
@@ -51,7 +51,7 @@ A based-app output (planning template family `based_commit_v0`) carries:
 | `payload` | optional, present iff `da_mode = inline` |
 | `opened_pulse_height` | PulseClock at first confirm |
 
-`payload` length MUST be `<= max_blob_bytes`. `SHA-256(payload) == payload_hash` when inline.
+`payload` length MUST be `<= max_blob_bytes`. `SHA-256(payload) == payload_hash` when inline. In `commit_only` mode, inline payload bytes are forbidden; only the commitment remains consensus-visible.
 
 ### Challenge
 
@@ -86,7 +86,7 @@ The v0 view tracks only:
 
 State continuity rules are fail-closed: after a settled round, the next open must use `round + 1` and its `prev_state_root` must equal the settled root. A challenged pending round cannot settle directly. Rejection is valid only after `challenge_pulses` measured from the canonical challenge pulse; a valid reject leaves the previous state root unchanged.
 
-Challenge/settle timing is checked with PulseClock heights. Host wall-clock time is not part of the state transition.
+Challenge/settle timing is checked with PulseClock heights. The observation must be PulseClock v1 in domain `PulseDAG:pulse:v1` and carry the same `chain_id` as the Based App profile; foreign-chain or wrong-version observations fail closed. Host wall-clock time is not part of the state transition.
 
 ### Bounded event feed
 
