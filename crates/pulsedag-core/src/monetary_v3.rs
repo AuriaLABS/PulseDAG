@@ -2,55 +2,78 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// Frozen v3.0.0 mainnet monetary-policy version.
-pub const MONETARY_POLICY_VERSION_V3: &str = "pulsedag-monetary-v3.0.0";
+/// Frozen v3.0.0 smooth-emission monetary-policy version.
+pub const MONETARY_POLICY_VERSION_V3: &str = "pulsedag-monetary-v3.0.0-smooth-v1";
 pub const MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3: &[u8] = b"PulseDAG:monetary-cadence:v3.0.0";
 
-/// Approved v3.0.0 mainnet monetary constants.
+/// PulseDAG v3.0.0 monetary constants.
+///
+/// Supply is fair-launch and bounded: no spendable genesis issuance, premine,
+/// protocol treasury, consensus burn, or permanent tail emission.
 pub const MAX_SUPPLY_ATOMS: u64 = 100_000_000_000_000_000;
-pub const YEAR1_MINING_BUDGET_ATOMS: u64 = 50_000_000_000_000_000;
 pub const GENESIS_ISSUANCE_ATOMS: u64 = 0;
 pub const ATOMS_PER_COIN: u64 = 100_000_000;
+
 pub const ECONOMIC_YEAR_SECONDS: u64 = 31_536_000;
 pub const ECONOMIC_YEAR_NS: u128 = ECONOMIC_YEAR_SECONDS as u128 * 1_000_000_000;
+
+/// Smooth emission uses a three-economic-year half-life evaluated at six-hour
+/// fixed-point quanta. The Q64 factor is the frozen integer approximation of
+/// 2^(-1/4380), because three 365-day economic years contain 4380 six-hour quanta.
+pub const HALF_LIFE_SECONDS: u64 = 3 * ECONOMIC_YEAR_SECONDS;
+pub const EMISSION_QUANTUM_SECONDS: u64 = 21_600;
+pub const EMISSION_QUANTUM_NS: u128 = EMISSION_QUANTUM_SECONDS as u128 * 1_000_000_000;
+pub const HALF_LIFE_QUANTA: u64 = HALF_LIFE_SECONDS / EMISSION_QUANTUM_SECONDS;
+pub const Q64_ONE: u128 = 1_u128 << 64;
+pub const DECAY_FACTOR_Q64: u128 = 18_443_825_056_137_834_748;
+
+/// Exact year-one cumulative issuance produced by the frozen Q64 curve.
+/// This is a golden-vector constant, not an independent annual budget.
+pub const YEAR1_TARGET_ISSUANCE_ATOMS: u64 = 20_629_947_401_590_029;
+
+/// Q64 truncation leaves exactly one atom immediately before this quantum and
+/// zero remaining atoms at this quantum. v3 settles that final atom here and
+/// permanently switches subsidy to zero, so there is no perpetual tail.
+pub const TERMINAL_EMISSION_QUANTUM: u64 = 247_333;
+pub const TERMINAL_EMISSION_SECONDS: u64 =
+    TERMINAL_EMISSION_QUANTUM * EMISSION_QUANTUM_SECONDS;
+
 pub const COINBASE_MATURITY_SECONDS: u64 = 3_600;
 pub const COINBASE_MATURITY_NS: u128 = COINBASE_MATURITY_SECONDS as u128 * 1_000_000_000;
 pub const ORDINARY_FEE_RECIPIENT_BPS: u16 = 10_000;
 pub const CONSENSUS_BURN_BPS: u16 = 0;
 pub const TAIL_EMISSION_ATOMS: u64 = 0;
 
-/// At the start of economic year 57 the remaining geometric amount is below
-/// one atomic unit. v3 settles the final residual atom at this boundary, reaches
-/// MAX_SUPPLY_ATOMS exactly, and permanently switches subsidy to zero.
-pub const TERMINAL_ECONOMIC_YEAR: u128 = 57;
-
-/// Canonical policy bytes. This is intentionally independent of release source
-/// SHA and network/genesis identity; those are bound separately by launch
-/// evidence. Programmable resource fees are explicitly unreachable while smart
-/// contracts remain inactive on v3.0.0 mainnet.
-pub const MONETARY_POLICY_CANONICAL_V3: &[u8] = b"PulseDAG:monetary-policy:v3.0.0\n\
-max_supply_atoms=100000000000000000\n\
-atoms_per_coin=100000000\n\
-genesis_issuance_atoms=0\n\
-year1_mining_budget_atoms=50000000000000000\n\
-economic_year_seconds=31536000\n\
-coinbase_maturity_seconds=3600\n\
-ordinary_fee_recipient_bps=10000\n\
-consensus_burn_bps=0\n\
-tail_emission_atoms=0\n\
-terminal_economic_year=57\n\
-score_basis=ordered-dag-ordinal-v1\n\
-programmable_resource_fees=inactive-unreachable-v3.0.0\n";
+/// Canonical policy bytes. This digest binds economic semantics only; cadence,
+/// protocol, finality, source, network and genesis identities are bound
+/// separately by their own fingerprints/evidence.
+pub const MONETARY_POLICY_CANONICAL_V3: &[u8] = br#"PulseDAG:monetary-policy:v3.0.0-smooth-v1
+max_supply_atoms=100000000000000000
+atoms_per_coin=100000000
+genesis_issuance_atoms=0
+economic_year_seconds=31536000
+half_life_seconds=94608000
+emission_quantum_seconds=21600
+decay_factor_q64=18443825056137834748
+terminal_emission_quantum=247333
+coinbase_maturity_seconds=3600
+ordinary_fee_recipient_bps=10000
+consensus_burn_bps=0
+tail_emission_atoms=0
+score_basis=ordered-dag-ordinal-v1
+emission_model=q64-exponential-decay-linear-within-quantum-v1
+programmable_resource_fees=inactive-unreachable-v3.0.0
+"#;
 
 pub const MONETARY_POLICY_FINGERPRINT_V3: &str =
-    "14605483aa65a17d654ffc4db1571b1416eb45b3f9b56af452d88c9023311366";
+    "1c1cdf61e46a59418d10315dd0fa705d7e7fd4dbe4d1bb0f855a808148838e36";
 
 pub fn monetary_policy_fingerprint_v3() -> String {
     hex::encode(Sha256::digest(MONETARY_POLICY_CANONICAL_V3))
 }
 
 /// A consensus cadence segment maps canonical monetary-score steps to economic
-/// time. `activation_score` is the score at which this interval becomes active
+/// time. activation_score is the score at which this interval becomes active
 /// for the next score transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonetaryCadenceSegment {
@@ -159,45 +182,85 @@ pub fn economic_time_ns_for_score(
     Ok(economic_time_ns)
 }
 
-fn ceil_div_u128(numerator: u128, denominator: u128) -> u128 {
-    let quotient = numerator / denominator;
-    quotient + u128::from(numerator % denominator != 0)
+fn q64_mul(a: u128, b: u128) -> Result<u128, MonetaryV3Error> {
+    debug_assert!(a <= Q64_ONE);
+    debug_assert!(b <= Q64_ONE);
+    a.checked_mul(b)
+        .map(|product| product >> 64)
+        .ok_or(MonetaryV3Error::ArithmeticOverflow)
 }
 
-/// Exact cumulative scheduled mining issuance by economic time.
-///
-/// The curve is linear within each economic year and halves its exact annual
-/// budget every 365 economic days. Cumulative issuance rounds down to atomic
-/// units; floating-point monetary arithmetic is forbidden.
-pub fn target_issuance_atoms(economic_time_ns: u128) -> Result<u64, MonetaryV3Error> {
-    let epoch = economic_time_ns / ECONOMIC_YEAR_NS;
-    if epoch >= TERMINAL_ECONOMIC_YEAR {
+fn q64_pow(mut exponent: u64) -> Result<u128, MonetaryV3Error> {
+    let mut base = DECAY_FACTOR_Q64;
+    let mut result = Q64_ONE;
+
+    while exponent != 0 {
+        if exponent & 1 == 1 {
+            result = q64_mul(result, base)?;
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            base = q64_mul(base, base)?;
+        }
+    }
+    Ok(result)
+}
+
+/// Cumulative scheduled issuance at an exact six-hour economic quantum.
+fn target_issuance_atoms_at_quantum(quantum: u64) -> Result<u64, MonetaryV3Error> {
+    if quantum >= TERMINAL_EMISSION_QUANTUM {
         return Ok(MAX_SUPPLY_ATOMS);
     }
 
-    let within_year_ns = economic_time_ns % ECONOMIC_YEAR_NS;
-    let remaining_numerator = u128::from(MAX_SUPPLY_ATOMS)
-        .checked_mul(
-            ECONOMIC_YEAR_NS
-                .checked_mul(2)
-                .and_then(|twice_year| twice_year.checked_sub(within_year_ns))
-                .ok_or(MonetaryV3Error::ArithmeticOverflow)?,
-        )
-        .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
-    let shift = u32::try_from(epoch + 1).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
-    let power_of_two = 1u128
-        .checked_shl(shift)
-        .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
-    let remaining_denominator = power_of_two
-        .checked_mul(ECONOMIC_YEAR_NS)
-        .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
-    let remaining_atoms = ceil_div_u128(remaining_numerator, remaining_denominator);
+    let remaining_multiplier = q64_pow(quantum)?;
+    let remaining_atoms = u128::from(MAX_SUPPLY_ATOMS)
+        .checked_mul(remaining_multiplier)
+        .ok_or(MonetaryV3Error::ArithmeticOverflow)?
+        >> 64;
     let remaining_atoms =
         u64::try_from(remaining_atoms).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
 
     MAX_SUPPLY_ATOMS
         .checked_sub(remaining_atoms)
         .ok_or(MonetaryV3Error::ArithmeticOverflow)
+}
+
+/// Exact cumulative scheduled mining issuance by economic time.
+///
+/// The curve is exponential at six-hour Q64 checkpoints and interpolated
+/// linearly with integer arithmetic inside each checkpoint interval. This keeps
+/// issuance smooth at block cadence while avoiding floating point, runtime
+/// logarithms/powers, raw-height dependence, or BPS-dependent gross supply.
+///
+/// At the explicit terminal quantum the final residual atom is settled and
+/// issuance remains exactly MAX_SUPPLY_ATOMS forever.
+pub fn target_issuance_atoms(economic_time_ns: u128) -> Result<u64, MonetaryV3Error> {
+    let quantum = economic_time_ns / EMISSION_QUANTUM_NS;
+    if quantum >= u128::from(TERMINAL_EMISSION_QUANTUM) {
+        return Ok(MAX_SUPPLY_ATOMS);
+    }
+
+    let quantum = u64::try_from(quantum).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
+    let within_quantum_ns = economic_time_ns % EMISSION_QUANTUM_NS;
+    let start = target_issuance_atoms_at_quantum(quantum)?;
+    if within_quantum_ns == 0 {
+        return Ok(start);
+    }
+
+    let end = target_issuance_atoms_at_quantum(quantum.saturating_add(1))?;
+    let delta = u128::from(
+        end.checked_sub(start)
+            .ok_or(MonetaryV3Error::ArithmeticOverflow)?,
+    );
+    let interpolated = delta
+        .checked_mul(within_quantum_ns)
+        .ok_or(MonetaryV3Error::ArithmeticOverflow)?
+        / EMISSION_QUANTUM_NS;
+    let total = u128::from(start)
+        .checked_add(interpolated)
+        .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
+
+    u64::try_from(total).map_err(|_| MonetaryV3Error::ArithmeticOverflow)
 }
 
 /// Exact total scheduled supply at an arbitrary canonical accepted score.
@@ -321,19 +384,56 @@ mod tests {
     }
 
     #[test]
-    fn approved_supply_checkpoints_are_exact() {
+    fn smooth_supply_checkpoints_are_exact() {
         assert_eq!(target_issuance_atoms(0).unwrap(), GENESIS_ISSUANCE_ATOMS);
         assert_eq!(
             target_issuance_atoms(ECONOMIC_YEAR_NS).unwrap(),
-            YEAR1_MINING_BUDGET_ATOMS
+            YEAR1_TARGET_ISSUANCE_ATOMS
         );
         assert_eq!(
             target_issuance_atoms(2 * ECONOMIC_YEAR_NS).unwrap(),
-            75_000_000_000_000_000
+            37_003_947_505_256_347
+        );
+        assert_eq!(
+            target_issuance_atoms(3 * ECONOMIC_YEAR_NS).unwrap(),
+            50_000_000_000_000_006
+        );
+        assert_eq!(
+            target_issuance_atoms(6 * ECONOMIC_YEAR_NS).unwrap(),
+            75_000_000_000_000_006
         );
         assert_eq!(
             target_issuance_atoms(10 * ECONOMIC_YEAR_NS).unwrap(),
-            99_902_343_750_000_000
+            90_078_743_425_198_757
+        );
+        assert_eq!(
+            target_issuance_atoms(20 * ECONOMIC_YEAR_NS).unwrap(),
+            99_015_686_679_769_632
+        );
+        assert_eq!(
+            target_issuance_atoms(30 * ECONOMIC_YEAR_NS).unwrap(),
+            99_902_343_750_000_001
+        );
+    }
+
+    #[test]
+    fn three_year_half_life_is_atomic_precision_bounded() {
+        let at_half_life = target_issuance_atoms(u128::from(HALF_LIFE_SECONDS) * 1_000_000_000)
+            .unwrap();
+        let exact_half = MAX_SUPPLY_ATOMS / 2;
+        assert!(at_half_life.abs_diff(exact_half) <= 10);
+        assert_eq!(HALF_LIFE_QUANTA, 4_380);
+    }
+
+    #[test]
+    fn first_quantum_vector_is_stable() {
+        assert_eq!(
+            target_issuance_atoms(1_000_000_000).unwrap(),
+            732_593_794
+        );
+        assert_eq!(
+            target_issuance_atoms(EMISSION_QUANTUM_NS).unwrap(),
+            15_824_025_963_894
         );
     }
 
@@ -345,7 +445,7 @@ mod tests {
             target_issuance_atoms(economic_time_ns_for_score(2, &BPS2).unwrap()).unwrap();
         let one_second_4bps =
             target_issuance_atoms(economic_time_ns_for_score(4, &BPS4).unwrap()).unwrap();
-        assert_eq!(one_second_1bps, 1_585_489_599);
+        assert_eq!(one_second_1bps, 732_593_794);
         assert_eq!(one_second_1bps, one_second_2bps);
         assert_eq!(one_second_1bps, one_second_4bps);
 
@@ -399,19 +499,18 @@ mod tests {
     }
 
     #[test]
-    fn year_boundary_and_terminal_residual_are_exact() {
+    fn terminal_residual_atom_is_exact_and_no_tail_exists() {
+        let terminal_ns = u128::from(TERMINAL_EMISSION_SECONDS) * 1_000_000_000;
         assert_eq!(
-            target_issuance_atoms(57 * ECONOMIC_YEAR_NS - 1).unwrap(),
+            target_issuance_atoms(terminal_ns - 1).unwrap(),
             MAX_SUPPLY_ATOMS - 1
         );
+        assert_eq!(target_issuance_atoms(terminal_ns).unwrap(), MAX_SUPPLY_ATOMS);
         assert_eq!(
-            target_issuance_atoms(57 * ECONOMIC_YEAR_NS).unwrap(),
+            target_issuance_atoms(terminal_ns + 100 * ECONOMIC_YEAR_NS).unwrap(),
             MAX_SUPPLY_ATOMS
         );
-        assert_eq!(
-            target_issuance_atoms(100 * ECONOMIC_YEAR_NS).unwrap(),
-            MAX_SUPPLY_ATOMS
-        );
+        assert_eq!(TAIL_EMISSION_ATOMS, 0);
     }
 
     #[test]
