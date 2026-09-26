@@ -16,6 +16,9 @@ use pulsedag_core::{
 use tokio::time::timeout;
 
 pub use super::mining_submit_legacy::MiningSubmitData;
+use super::monetary_activation_guard::{
+    ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+};
 
 const MAX_TEMPLATE_PROTOCOL_BINDINGS: usize = 4_096;
 const SUBMIT_V2_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
