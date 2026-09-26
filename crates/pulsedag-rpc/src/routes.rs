@@ -927,6 +927,8 @@ mod public_safe_hardening_tests {
         }
         assert!(!is_liveness_endpoint("/blocks"));
         assert!(!is_liveness_endpoint("/tx/submit"));
+        assert!(!is_liveness_endpoint("/explorer/block/abc"));
+        assert!(!is_liveness_endpoint("/api/v1/explorer/block/abc"));
     }
 
     #[test]
