@@ -35,7 +35,7 @@ pub const YEAR1_TARGET_ISSUANCE_ATOMS: u64 = 20_629_947_401_590_026;
 /// The terminal rule folds that sub-atom residual into the final half-life so
 /// the last atomic unit settles exactly at the year-171 boundary.
 pub const TERMINAL_HALF_LIVES: u32 = 57;
-pub const TERMINAL_ECONOMIC_YEAR: u128 = HALF_LIFE_YEARS as u128 * TERMINAL_HALF_LIVES as u128;
+pub const TERMINAL_ECONOMIC_YEAR: u64 = HALF_LIFE_YEARS * TERMINAL_HALF_LIVES as u64;
 pub const TERMINAL_EMISSION_QUANTUM: u64 =
     HALF_LIFE_QUANTA * TERMINAL_HALF_LIVES as u64;
 pub const TERMINAL_EMISSION_SECONDS: u64 =
