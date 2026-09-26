@@ -4,7 +4,8 @@
 //! and PulseClock when present. A linear hash list is not enough.
 //! Default admission keeps this out of the shipped explorer.
 
-use crate::pulseclock_v1::PulseObservationV1;
+use crate::pulseclock_v1::{observe_pulse_v1_at, PulseObservationV1};
+use crate::state::ChainState;
 
 pub const EXPLORER_DAG_DOMAIN_V1: &str = "PulseDAG:explorer-dag:v1";
 pub const EXPLORER_DAG_VERSION_V1: u32 = 1;
@@ -48,6 +49,7 @@ pub enum ExplorerDagV1Error {
     LinearOnly,
     MissingSelectedParent,
     EmptyParentHash,
+    MissingBlock { hash: String },
 }
 
 impl std::fmt::Display for ExplorerDagV1Error {
@@ -67,11 +69,50 @@ impl std::fmt::Display for ExplorerDagV1Error {
                 write!(f, "non-genesis explorer block must name selected_parent")
             }
             Self::EmptyParentHash => write!(f, "parent hash must not be empty"),
+            Self::MissingBlock { hash } => write!(f, "explorer block {hash} is not in the DAG"),
         }
     }
 }
 
 impl std::error::Error for ExplorerDagV1Error {}
+
+pub fn merge_color_for_hash_v1(state: &ChainState, hash: &str) -> ExplorerMergeColorV1 {
+    if state.dag.selected_chain.iter().any(|h| h == hash) {
+        return ExplorerMergeColorV1::Selected;
+    }
+    let is_red = state
+        .dag
+        .merge_set_reds
+        .values()
+        .any(|reds| reds.iter().any(|red| red == hash));
+    if is_red {
+        ExplorerMergeColorV1::Red
+    } else {
+        ExplorerMergeColorV1::Blue
+    }
+}
+
+pub fn assemble_explorer_block_v1(
+    state: &ChainState,
+    hash: &str,
+) -> Result<ExplorerBlockV1, ExplorerDagV1Error> {
+    let block = state
+        .dag
+        .blocks
+        .get(hash)
+        .ok_or_else(|| ExplorerDagV1Error::MissingBlock {
+            hash: hash.to_string(),
+        })?;
+    let selected_parent = state.dag.selected_parents.get(hash).cloned().flatten();
+    Ok(ExplorerBlockV1 {
+        hash: block.hash.clone(),
+        parents: block.header.parents.clone(),
+        selected_parent,
+        merge_color: merge_color_for_hash_v1(state, hash),
+        blue_score: block.header.blue_score,
+        pulse: observe_pulse_v1_at(state, &hash.to_string()).ok(),
+    })
+}
 
 pub fn is_genesis_view_v1(block: &ExplorerBlockV1) -> bool {
     block.parents.is_empty() && block.selected_parent.is_none() && block.blue_score == 0

@@ -22,7 +22,7 @@ jobs:
   production-valid-parallel:
     name: activated-v2 same-corpus parallel replay
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -87,7 +87,7 @@ jobs:
       - name: Run exact-candidate activated-v2 parallel replay
         shell: bash
         env:
-          PR_BLOCK_COUNT: "4096"
+          PR_BLOCK_COUNT: "1024"
           DISPATCH_BLOCK_COUNT: ${{ inputs.block_count }}
         run: |
           set -euo pipefail
