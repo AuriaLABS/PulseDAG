@@ -82,6 +82,7 @@ pub fn validate_monetary_v3_p2p_runtime_snapshot(
 /// persistence callback receives a state that has passed the complete ordered
 /// monetary audit. Existing invalid transient v2 economics therefore cannot be
 /// carried forward once this wrapper is selected.
+#[allow(clippy::too_many_arguments)]
 pub fn drive_monetary_v3_p2p_block_with_runtime_persistence<
     FPersistRuntime,
     FPersistOne,
