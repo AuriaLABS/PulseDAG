@@ -584,6 +584,46 @@ mod tests {
     }
 
     #[test]
+    fn every_half_life_boundary_is_exact_monotonic_and_capped() {
+        let mut previous_supply = GENESIS_ISSUANCE_ATOMS;
+
+        for completed in 0..=TERMINAL_HALF_LIVES {
+            let boundary_ns = u128::from(completed) * HALF_LIFE_NS;
+            let supply = target_issuance_atoms(boundary_ns).unwrap();
+            let remaining = remaining_atoms_at_half_life_boundary(completed).unwrap();
+            let expected_supply = MAX_SUPPLY_ATOMS - remaining;
+
+            assert_eq!(supply, expected_supply, "half-life boundary {completed}");
+            assert!(
+                supply >= previous_supply,
+                "supply regressed at half-life boundary {completed}"
+            );
+            assert!(supply <= MAX_SUPPLY_ATOMS);
+            previous_supply = supply;
+        }
+
+        assert_eq!(previous_supply, MAX_SUPPLY_ATOMS);
+    }
+
+    #[test]
+    fn normalized_quantum_progress_never_exceeds_interval_budget() {
+        for completed in [0, 1, 10, 32, 55, 56] {
+            let start_remaining = remaining_atoms_at_half_life_boundary(completed).unwrap();
+            let end_remaining = remaining_atoms_at_half_life_boundary(completed + 1).unwrap();
+            let budget = start_remaining - end_remaining;
+
+            let mut previous = 0;
+            for quantum in [0, 1, 2, 100, 1_000, HALF_LIFE_QUANTA - 1, HALF_LIFE_QUANTA] {
+                let issued = issuance_within_half_life_at_quantum(budget, quantum).unwrap();
+                assert!(issued >= previous);
+                assert!(issued <= budget);
+                previous = issued;
+            }
+            assert_eq!(previous, budget);
+        }
+    }
+
+    #[test]
     fn maturity_uses_economic_time_not_raw_score_count() {
         let one_hour_at_1bps = COINBASE_MATURITY_SECONDS;
         let one_hour_at_2bps = COINBASE_MATURITY_SECONDS * 2;
