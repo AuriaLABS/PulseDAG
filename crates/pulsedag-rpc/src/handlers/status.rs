@@ -3,7 +3,7 @@ use crate::{
     api::read_runtime_for_rpc, api::ApiResponse, api::NodeRpcSnapshot, api::RpcStateLike,
 };
 use axum::{extract::State, Json};
-use pulsedag_core::state::ChainState;
+use pulsedag_core::{state::ChainState, ProtocolActivationIdentity};
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
 use std::{
     sync::{Mutex, OnceLock},
@@ -47,6 +47,8 @@ pub struct NodeStatusData {
     pub canonical_state_apply_latency_us: Option<pulsedag_core::CanonicalStateApplyLatencySummary>,
     pub consensus_mode: String,
     pub protocol_consensus_mode: String,
+    pub protocol_identity: Option<ProtocolActivationIdentity>,
+    pub protocol_identity_fingerprint: Option<String>,
     pub ghostdag_metadata_active: bool,
     pub high_cadence_allowed: bool,
     pub tip_count: usize,
@@ -170,6 +172,8 @@ fn repo_version() -> String {
 fn status_from_rpc_snapshot(
     snapshot: NodeRpcSnapshot,
     protocol_consensus_mode: String,
+    protocol_identity: Option<ProtocolActivationIdentity>,
+    protocol_identity_fingerprint: Option<String>,
 ) -> NodeStatusData {
     let peer_summary = format!(
         "peer_count={} semantics=cached_snapshot",
@@ -200,6 +204,8 @@ fn status_from_rpc_snapshot(
         canonical_state_apply_latency_us: None,
         consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
         protocol_consensus_mode,
+        protocol_identity,
+        protocol_identity_fingerprint,
         ghostdag_metadata_active: false,
         high_cadence_allowed: false,
         tip_count: snapshot.tip.as_ref().map(|_| 1).unwrap_or(0),
@@ -352,16 +358,39 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
 pub async fn get_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<NodeStatusData>> {
-    let protocol_consensus_mode = match state.storage().protocol_activation_record() {
-        Ok(Some(record)) => record.identity.consensus_mode.to_string(),
-        Ok(None) => pulsedag_core::ProtocolConsensusMode::Legacy.to_string(),
-        Err(error) => return Json(ApiResponse::err("STORAGE_ERROR", error.to_string())),
-    };
+    let (protocol_consensus_mode, protocol_identity, protocol_identity_fingerprint) =
+        match state.storage().protocol_activation_record() {
+            Ok(Some(record)) => {
+                let identity = record.identity;
+                let fingerprint = match identity.fingerprint() {
+                    Ok(fingerprint) => fingerprint,
+                    Err(error) => {
+                        return Json(ApiResponse::err(
+                            "PROTOCOL_IDENTITY_ERROR",
+                            error.to_string(),
+                        ))
+                    }
+                };
+                (
+                    identity.consensus_mode.to_string(),
+                    Some(identity),
+                    Some(fingerprint),
+                )
+            }
+            Ok(None) => (
+                pulsedag_core::ProtocolConsensusMode::Legacy.to_string(),
+                None,
+                None,
+            ),
+            Err(error) => return Json(ApiResponse::err("STORAGE_ERROR", error.to_string())),
+        };
     let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/status").await;
     if liveness_snapshot.degraded || liveness_snapshot.stale {
         return Json(ApiResponse::ok(status_from_rpc_snapshot(
             liveness_snapshot,
             protocol_consensus_mode,
+            protocol_identity,
+            protocol_identity_fingerprint,
         )));
     }
     let snapshot_exists = match state.storage().snapshot_exists() {
@@ -506,6 +535,8 @@ pub async fn get_status<S: RpcStateLike>(
         canonical_state_apply_latency_us,
         consensus_mode: chain_snapshot.consensus_mode,
         protocol_consensus_mode,
+        protocol_identity,
+        protocol_identity_fingerprint,
         ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active,
         high_cadence_allowed: chain_snapshot.high_cadence_allowed,
         tip_count: chain_snapshot.tip_count,
@@ -902,6 +933,16 @@ mod tests {
         assert!(resp.ok);
         assert_eq!(data.consensus_mode, "legacy");
         assert_eq!(data.protocol_consensus_mode, "ghostdag_v1");
+        let identity = data
+            .protocol_identity
+            .as_ref()
+            .expect("activated-v2 status must expose persisted protocol identity");
+        assert_eq!(identity.consensus_mode.to_string(), "ghostdag_v1");
+        assert_eq!(identity.chain_id, "pulsedag-private-v2.4.0");
+        assert_eq!(
+            data.protocol_identity_fingerprint.as_deref(),
+            Some(identity.fingerprint().unwrap().as_str())
+        );
         assert!(!data.high_cadence_allowed);
         assert_eq!(
             data.selection_digest.as_deref(),
