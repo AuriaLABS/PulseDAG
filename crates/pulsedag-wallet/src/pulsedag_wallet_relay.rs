@@ -1244,6 +1244,46 @@ mod tests {
         }
     }
 
+    fn protocol_identity_release_response(
+        network_profile: &str,
+        chain_id: &str,
+    ) -> ApiResponse<ReleaseIdentityData> {
+        ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: network_profile.to_string(),
+                chain_id: chain_id.to_string(),
+                signed_transaction_relay_version: RELAY_VERSION.to_string(),
+                capabilities: vec![],
+                core_endpoints: vec![STATUS_PATH.to_string()],
+            }),
+            error: None,
+        }
+    }
+
+    fn protocol_status_response(
+        identity: Option<ProtocolActivationIdentity>,
+    ) -> ApiResponse<NodeStatusProtocolData> {
+        let chain_id = identity
+            .as_ref()
+            .map(|identity| identity.chain_id.clone())
+            .unwrap_or_else(|| "pulsedag-testnet".to_string());
+        let protocol_identity_fingerprint = identity
+            .as_ref()
+            .map(|identity| identity.fingerprint().unwrap());
+        ApiResponse {
+            ok: true,
+            data: Some(NodeStatusProtocolData {
+                rpc_response_degraded: false,
+                rpc_response_stale: false,
+                chain_id,
+                protocol_identity: identity,
+                protocol_identity_fingerprint,
+            }),
+            error: None,
+        }
+    }
+
     fn fee_estimate_data() -> MempoolFeeEstimateData {
         MempoolFeeEstimateData {
             version: MEMPOOL_FEE_ESTIMATE_V3_VERSION,
@@ -1498,6 +1538,78 @@ mod tests {
         let mut no_endpoint = mempool_identity_response("testnet", "pulsedag-testnet");
         no_endpoint.data.as_mut().unwrap().core_endpoints.clear();
         assert!(validate_mempool_identity(&network, no_endpoint).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_requires_exact_persisted_v2_fingerprint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let release = validate_protocol_status_identity(
+            &network,
+            protocol_identity_release_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+
+        let output = protocol_identity_output(
+            &release,
+            protocol_status_response(Some(identity.clone())),
+        )
+        .unwrap();
+        assert_eq!(output.protocol_identity, identity);
+        assert_eq!(
+            output.protocol_identity_fingerprint,
+            output.protocol_identity.fingerprint().unwrap()
+        );
+
+        let mut wrong_fingerprint = protocol_status_response(Some(output.protocol_identity.clone()));
+        wrong_fingerprint
+            .data
+            .as_mut()
+            .unwrap()
+            .protocol_identity_fingerprint = Some("00".repeat(32));
+        assert!(protocol_identity_output(&release, wrong_fingerprint).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_rejects_stale_foreign_or_inactive_status() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let release = validate_protocol_status_identity(
+            &network,
+            protocol_identity_release_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+
+        let mut stale = protocol_status_response(Some(identity.clone()));
+        stale.data.as_mut().unwrap().rpc_response_stale = true;
+        assert!(protocol_identity_output(&release, stale).is_err());
+
+        let mut degraded = protocol_status_response(Some(identity.clone()));
+        degraded.data.as_mut().unwrap().rpc_response_degraded = true;
+        assert!(protocol_identity_output(&release, degraded).is_err());
+
+        let mut foreign = protocol_status_response(Some(identity));
+        foreign.data.as_mut().unwrap().chain_id = "pulsedag-mainnet".to_string();
+        assert!(protocol_identity_output(&release, foreign).is_err());
+
+        assert!(protocol_identity_output(&release, protocol_status_response(None)).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_release_requires_status_endpoint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let mut response =
+            protocol_identity_release_response("testnet", "pulsedag-testnet");
+        response.data.as_mut().unwrap().core_endpoints.clear();
+        assert!(validate_protocol_status_identity(&network, response).is_err());
     }
 
     #[test]
