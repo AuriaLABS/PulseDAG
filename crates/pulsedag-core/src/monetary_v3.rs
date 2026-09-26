@@ -36,10 +36,8 @@ pub const YEAR1_TARGET_ISSUANCE_ATOMS: u64 = 20_629_947_401_590_026;
 /// the last atomic unit settles exactly at the year-171 boundary.
 pub const TERMINAL_HALF_LIVES: u32 = 57;
 pub const TERMINAL_ECONOMIC_YEAR: u64 = HALF_LIFE_YEARS * TERMINAL_HALF_LIVES as u64;
-pub const TERMINAL_EMISSION_QUANTUM: u64 =
-    HALF_LIFE_QUANTA * TERMINAL_HALF_LIVES as u64;
-pub const TERMINAL_EMISSION_SECONDS: u64 =
-    TERMINAL_EMISSION_QUANTUM * EMISSION_QUANTUM_SECONDS;
+pub const TERMINAL_EMISSION_QUANTUM: u64 = HALF_LIFE_QUANTA * TERMINAL_HALF_LIVES as u64;
+pub const TERMINAL_EMISSION_SECONDS: u64 = TERMINAL_EMISSION_QUANTUM * EMISSION_QUANTUM_SECONDS;
 
 pub const COINBASE_MATURITY_SECONDS: u64 = 3_600;
 pub const COINBASE_MATURITY_NS: u128 = COINBASE_MATURITY_SECONDS as u128 * 1_000_000_000;
@@ -296,8 +294,7 @@ pub fn target_issuance_atoms(economic_time_ns: u128) -> Result<u64, MonetaryV3Er
         .map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
     let within_quantum_ns = within_half_life_ns % EMISSION_QUANTUM_NS;
 
-    let issued_at_quantum =
-        issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum)?;
+    let issued_at_quantum = issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum)?;
     let issued_at_next =
         issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum + 1)?;
     let quantum_delta = issued_at_next
