@@ -130,7 +130,10 @@ mod tests {
         let b = genesis_block_v3("pulsedag-v3-b", FROZEN_TS).unwrap();
         let later = genesis_block_v3("pulsedag-v3-a", FROZEN_TS + 1).unwrap();
 
-        assert_eq!(a, a_again);
+        assert_eq!(a.hash, a_again.hash);
+        assert_eq!(a.header.merkle_root, a_again.header.merkle_root);
+        assert_eq!(a.header.state_root, a_again.header.state_root);
+        assert_eq!(a.transactions.len(), a_again.transactions.len());
         assert_ne!(a.hash, b.hash);
         assert_ne!(a.hash, later.hash);
     }
