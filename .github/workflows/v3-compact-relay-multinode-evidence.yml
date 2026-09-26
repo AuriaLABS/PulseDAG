@@ -1,0 +1,72 @@
+name: v3 compact relay multi-node evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'crates/pulsedag-p2p/**'
+      - 'crates/pulsedag-rpc/src/api.rs'
+      - 'crates/pulsedag-rpc/src/handlers/p2p.rs'
+      - 'apps/pulsedagd/src/compact_relay.rs'
+      - 'apps/pulsedagd/src/main.rs'
+      - 'scripts/v3_compact_relay_multinode_evidence.py'
+      - 'scripts/v3_compact_relay_5n4m_rehearsal.sh'
+      - 'scripts/tests/test_v3_compact_relay_multinode_evidence.py'
+      - '.github/workflows/v3-compact-relay-multinode-evidence.yml'
+  workflow_dispatch:
+    inputs:
+      run_rehearsal:
+        description: Run the real 5-node / 4-miner compact-relay rehearsal
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  evidence-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate collector syntax and rehearsal identity
+        run: |
+          python3 -m py_compile scripts/v3_compact_relay_multinode_evidence.py
+          bash -n scripts/v3_compact_relay_5n4m_rehearsal.sh
+          grep -Fq 'PULSEDAG_REHEARSAL_VERSION="v2.4.0"' scripts/v3_compact_relay_5n4m_rehearsal.sh
+          grep -Fq 'PULSEDAG_REHEARSAL_VERSION_SLUG="v2_4_0"' scripts/v3_compact_relay_5n4m_rehearsal.sh
+          grep -Fq 'PULSEDAG_CONSENSUS_MODE="legacy"' scripts/v3_compact_relay_5n4m_rehearsal.sh
+          grep -Fq 'PULSEDAG_PROTOCOL_CONSENSUS_MODE="ghostdag_v1"' scripts/v3_compact_relay_5n4m_rehearsal.sh
+          ! grep -Fq 'v2_3_0_private_5n_4m_rehearsal.sh' scripts/v3_compact_relay_5n4m_rehearsal.sh
+          tmp_out="$(mktemp -d)"
+          trap 'rm -rf "$tmp_out"' EXIT
+          OUT_DIR="$tmp_out" \
+          PULSEDAG_REHEARSAL_VERSION="v2.4.0" \
+          PULSEDAG_REHEARSAL_VERSION_SLUG="v2_4_0" \
+          bash scripts/v2_2_20_preflight_check.sh
+      - name: Run collector regressions
+        run: |
+          python3 scripts/tests/test_v3_compact_relay_multinode_evidence.py
+
+  real-5n4m-rehearsal:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_rehearsal) || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+      - name: Build exact candidate
+        run: cargo build --workspace --release --locked
+      - name: Run compact-relay 5N/4M evidence gate
+        run: bash scripts/v3_compact_relay_5n4m_rehearsal.sh
+      - name: Upload compact-relay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-relay-5n4m-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/v3/compact_relay_5n4m/**
+          if-no-files-found: error
+          retention-days: 30

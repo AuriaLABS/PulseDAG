@@ -63,6 +63,37 @@ use pulsedag_storage::Storage;
 use startup_protocol::select_startup_protocol;
 
 #[cfg(test)]
+mod compact_relay_fast_sync_handoff_tests {
+    use super::{
+        fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
+    };
+
+    #[test]
+    fn tip_refresh_is_requested_only_when_fast_sync_releases_authority() {
+        assert!(fast_sync_authority_release_requires_tip_refresh(
+            true, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            true, true
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, true
+        ));
+    }
+
+    #[test]
+    fn capability_tip_probe_runs_only_while_authority_is_active_and_due() {
+        assert!(fast_sync_authority_requires_tip_probe(true, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(false, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(true, Some(98), 100));
+        assert!(fast_sync_authority_requires_tip_probe(true, Some(95), 100));
+    }
+}
+
+#[cfg(test)]
 mod task27_rejoin_runtime_tests {
     use super::*;
     use pulsedag_p2p::RemoteSelectedTipStatus;
@@ -1754,6 +1785,23 @@ fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+const FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS: u64 = 5;
+
+fn fast_sync_authority_release_requires_tip_refresh(was_active: bool, is_active: bool) -> bool {
+    was_active && !is_active
+}
+
+fn fast_sync_authority_requires_tip_probe(
+    authority_active: bool,
+    last_probe_unix: Option<u64>,
+    now_unix: u64,
+) -> bool {
+    authority_active
+        && last_probe_unix.is_none_or(|last_probe_unix| {
+            now_unix.saturating_sub(last_probe_unix) >= FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS
+        })
+}
+
 fn update_orphan_backlog_classification(
     runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
     chain: &pulsedag_core::ChainState,
@@ -2281,6 +2329,10 @@ async fn main() -> Result<()> {
         let p2p_protocol_identity = startup_activated_v2_identity.clone();
         tokio::spawn(async move {
             let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
+            let mut fast_sync_authority_was_active = fast_sync_daemon_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.authority_active());
+            let mut fast_sync_authority_last_tip_probe_unix: Option<u64> = None;
             let mut compact_relay_daemon_runtime = compact_relay_daemon_runtime;
             let mut compact_relay_probe_schedule = CompactRelayProbeScheduleV1::default();
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
@@ -2349,7 +2401,55 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    if fast_sync_runtime.authority_active() {
+                    let fast_sync_authority_active = fast_sync_runtime.authority_active();
+                    if fast_sync_authority_requires_tip_probe(
+                        fast_sync_authority_active,
+                        fast_sync_authority_last_tip_probe_unix,
+                        now,
+                    ) {
+                        fast_sync_authority_last_tip_probe_unix = Some(now);
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority active; requested capability-bearing tips probe"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority active but capability-bearing tips probe failed"
+                                );
+                            }
+                        }
+                    }
+                    if fast_sync_authority_release_requires_tip_refresh(
+                        fast_sync_authority_was_active,
+                        fast_sync_authority_active,
+                    ) {
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority released; requested fresh tips for protocol/compact-relay negotiation"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority released but fresh tip request failed"
+                                );
+                            }
+                        }
+                    }
+                    fast_sync_authority_was_active = fast_sync_authority_active;
+                    if fast_sync_authority_active {
                         continue;
                     }
                 }
