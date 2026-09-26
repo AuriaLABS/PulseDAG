@@ -120,7 +120,10 @@ impl std::fmt::Display for BasedAppV0Error {
                 )
             }
             Self::PulseClockContextMismatch => {
-                write!(f, "PulseClock context does not match based-app chain/domain")
+                write!(
+                    f,
+                    "PulseClock context does not match based-app chain/domain"
+                )
             }
             Self::SettleTooEarly { current, required } => {
                 write!(f, "settle at pulse {current} before required {required}")
