@@ -653,8 +653,6 @@ where
         .route("/explorer/block/:hash", get(get_explorer_block::<S>))
         .route("/based-apps/:app_id/state", get(get_based_app_state))
         .route("/based-apps/:app_id/events", get(get_based_app_events))
-        .route("/based-apps/:app_id/state", get(get_based_app_state))
-        .route("/based-apps/:app_id/events", get(get_based_app_events))
 }
 
 fn public_routes<S>() -> Router<S>
@@ -722,6 +720,8 @@ where
         .route("/policy", get(get_policy::<S>))
         .route("/pulse", get(get_pulse::<S>))
         .route("/explorer/block/:hash", get(get_explorer_block::<S>))
+        .route("/based-apps/:app_id/state", get(get_based_app_state))
+        .route("/based-apps/:app_id/events", get(get_based_app_events))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))
