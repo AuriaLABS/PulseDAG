@@ -35,8 +35,7 @@ pub const YEAR1_TARGET_ISSUANCE_ATOMS: u64 = 20_629_947_401_590_029;
 /// zero remaining atoms at this quantum. v3 settles that final atom here and
 /// permanently switches subsidy to zero, so there is no perpetual tail.
 pub const TERMINAL_EMISSION_QUANTUM: u64 = 247_333;
-pub const TERMINAL_EMISSION_SECONDS: u64 =
-    TERMINAL_EMISSION_QUANTUM * EMISSION_QUANTUM_SECONDS;
+pub const TERMINAL_EMISSION_SECONDS: u64 = TERMINAL_EMISSION_QUANTUM * EMISSION_QUANTUM_SECONDS;
 
 pub const COINBASE_MATURITY_SECONDS: u64 = 3_600;
 pub const COINBASE_MATURITY_NS: u128 = COINBASE_MATURITY_SECONDS as u128 * 1_000_000_000;
@@ -418,8 +417,8 @@ mod tests {
 
     #[test]
     fn three_year_half_life_is_atomic_precision_bounded() {
-        let at_half_life = target_issuance_atoms(u128::from(HALF_LIFE_SECONDS) * 1_000_000_000)
-            .unwrap();
+        let at_half_life =
+            target_issuance_atoms(u128::from(HALF_LIFE_SECONDS) * 1_000_000_000).unwrap();
         let exact_half = MAX_SUPPLY_ATOMS / 2;
         assert!(at_half_life.abs_diff(exact_half) <= 10);
         assert_eq!(HALF_LIFE_QUANTA, 4_380);
@@ -427,10 +426,7 @@ mod tests {
 
     #[test]
     fn first_quantum_vector_is_stable() {
-        assert_eq!(
-            target_issuance_atoms(1_000_000_000).unwrap(),
-            732_593_794
-        );
+        assert_eq!(target_issuance_atoms(1_000_000_000).unwrap(), 732_593_794);
         assert_eq!(
             target_issuance_atoms(EMISSION_QUANTUM_NS).unwrap(),
             15_824_025_963_894
@@ -505,7 +501,10 @@ mod tests {
             target_issuance_atoms(terminal_ns - 1).unwrap(),
             MAX_SUPPLY_ATOMS - 1
         );
-        assert_eq!(target_issuance_atoms(terminal_ns).unwrap(), MAX_SUPPLY_ATOMS);
+        assert_eq!(
+            target_issuance_atoms(terminal_ns).unwrap(),
+            MAX_SUPPLY_ATOMS
+        );
         assert_eq!(
             target_issuance_atoms(terminal_ns + 100 * ECONOMIC_YEAR_NS).unwrap(),
             MAX_SUPPLY_ATOMS
