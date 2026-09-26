@@ -1,6 +1,7 @@
 pub mod address;
 pub mod dag;
 pub mod mine;
+mod monetary_activation_guard;
 pub mod p2p;
 #[path = "tx_protocol.rs"]
 pub mod tx;

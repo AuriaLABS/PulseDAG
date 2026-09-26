@@ -58,6 +58,20 @@ The v1 namespace exposes read-mostly public chain, explorer, wallet-broadcast, m
 | `GET /api/v1/pulse` | `GET /pulse` | Observational PulseClock v1 (`docs/PULSECLOCK_V1.md`). Telemetry only; not a consensus or covenant activation. |
 | `GET /api/v1/explorer/block/:hash` | `GET /explorer/block/:hash` | DAG explorer row (`docs/EXPLORER_DAG_V1.md`). Wired and **disabled** on Task31 (`explorer_surface_disabled`). Does not replace `GET /blocks/:hash`. |
 
+## v3 monetary denomination contract
+
+For v3.0.0 monetary values, the consensus and public data contract is **integer atomic units**:
+
+- symbol: `PDG`;
+- precision: **8 decimal places**;
+- `1 PDG = 100,000,000` atoms;
+- consensus/storage transaction `amount`, `fee`, balance and UTXO amount fields are integer atoms and MUST NOT use binary floating point;
+- JSON APIs keep authoritative monetary fields as integer atoms. A human-readable decimal string, when exposed, is derived presentation metadata and never consensus authority;
+- canonical display uses exactly eight fractional digits (for example `1 atom -> "0.00000001"`);
+- parsers reject signs, exponent notation, more than eight fractional digits and arithmetic overflow.
+
+Core, wallet and RPC crates share `format_pdg_atoms_v3` / `parse_pdg_decimal_v3` so wallet and explorer-facing integrations do not invent independent rounding rules.
+
 No smart-contract endpoints are part of API v1. `contracts_enabled` on `/status` must remain `false` on the Task31 line.
 
 ### P2P diagnostics payload (historical v2.2.15 fields, still current)

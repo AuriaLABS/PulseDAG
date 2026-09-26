@@ -1,12 +1,19 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
+    monetary_v3::{
+        monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, MonetaryCadenceSegment,
+        MONETARY_POLICY_FINGERPRINT_V3,
+    },
     protocol::{ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1},
     state::ChainState,
     tx::TRANSACTION_VERSION_V1,
 };
 
 pub const PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION: u32 = 1;
+pub const PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION: u32 = 2;
+pub const PROTOCOL_MONETARY_BINDING_DOMAIN_V2: &[u8] = b"PulseDAG:protocol-monetary-activation:v2";
 
 /// Versioned persistence envelope for the protocol activation identity.
 ///
@@ -87,6 +94,150 @@ impl ProtocolActivationRecordV1 {
                 "persisted protocol activation fingerprint {} does not match expected {}",
                 self.fingerprint, expected_fingerprint
             ));
+        }
+        Ok(())
+    }
+}
+
+fn encode_monetary_binding_field(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u32::try_from(value.len()).expect("protocol monetary binding field exceeds u32::MAX");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value);
+}
+
+/// v3 persistence identity that binds the existing protocol identity, the
+/// frozen economic policy, the exact consensus cadence schedule, and the
+/// reward-finality policy version that governs spendability.
+///
+/// The cadence table is persisted, not merely its digest, so restore can
+/// recompute the digest and fail closed on schedule substitution. Finality is
+/// an explicit activation input and is never inferred from a placeholder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolMonetaryActivationRecordV2 {
+    pub schema_version: u32,
+    pub identity: ProtocolActivationIdentity,
+    pub protocol_fingerprint: String,
+    pub monetary_policy_fingerprint: String,
+    pub monetary_cadence_segments: Vec<MonetaryCadenceSegment>,
+    pub monetary_cadence_fingerprint: String,
+    pub reward_finality_policy_version: String,
+    pub binding_fingerprint: String,
+}
+
+impl ProtocolMonetaryActivationRecordV2 {
+    pub fn from_identity_and_cadence(
+        identity: ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+    ) -> Result<Self, String> {
+        identity.validate()?;
+        if reward_finality_policy_version.trim().is_empty() {
+            return Err("reward finality policy version must not be empty".into());
+        }
+        let protocol_fingerprint = identity.fingerprint()?;
+        let monetary_policy_fingerprint = monetary_policy_fingerprint_v3();
+        let monetary_cadence_fingerprint =
+            monetary_cadence_fingerprint_v3(cadence_segments).map_err(|error| error.to_string())?;
+        let binding_fingerprint = Self::compute_binding_fingerprint(
+            &protocol_fingerprint,
+            &monetary_policy_fingerprint,
+            &monetary_cadence_fingerprint,
+            reward_finality_policy_version,
+        );
+        Ok(Self {
+            schema_version: PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION,
+            identity,
+            protocol_fingerprint,
+            monetary_policy_fingerprint,
+            monetary_cadence_segments: cadence_segments.to_vec(),
+            monetary_cadence_fingerprint,
+            reward_finality_policy_version: reward_finality_policy_version.to_string(),
+            binding_fingerprint,
+        })
+    }
+
+    fn compute_binding_fingerprint(
+        protocol_fingerprint: &str,
+        monetary_policy_fingerprint: &str,
+        monetary_cadence_fingerprint: &str,
+        reward_finality_policy_version: &str,
+    ) -> String {
+        let mut bytes = Vec::with_capacity(352);
+        encode_monetary_binding_field(&mut bytes, PROTOCOL_MONETARY_BINDING_DOMAIN_V2);
+        encode_monetary_binding_field(&mut bytes, protocol_fingerprint.as_bytes());
+        encode_monetary_binding_field(&mut bytes, monetary_policy_fingerprint.as_bytes());
+        encode_monetary_binding_field(&mut bytes, monetary_cadence_fingerprint.as_bytes());
+        encode_monetary_binding_field(&mut bytes, reward_finality_policy_version.as_bytes());
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    pub fn validate_internal(&self) -> Result<(), String> {
+        if self.schema_version != PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported protocol monetary activation record schema version {}; expected {}",
+                self.schema_version, PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION
+            ));
+        }
+        self.identity.validate()?;
+        let expected_protocol = self.identity.fingerprint()?;
+        if self.protocol_fingerprint != expected_protocol {
+            return Err("protocol fingerprint mismatch in monetary activation record".into());
+        }
+        if self.monetary_policy_fingerprint != MONETARY_POLICY_FINGERPRINT_V3
+            || self.monetary_policy_fingerprint != monetary_policy_fingerprint_v3()
+        {
+            return Err("monetary policy fingerprint mismatch in activation record".into());
+        }
+        let expected_cadence = monetary_cadence_fingerprint_v3(&self.monetary_cadence_segments)
+            .map_err(|error| error.to_string())?;
+        if self.monetary_cadence_fingerprint != expected_cadence {
+            return Err("monetary cadence fingerprint mismatch in activation record".into());
+        }
+        if self.reward_finality_policy_version.trim().is_empty() {
+            return Err("reward finality policy version missing from activation record".into());
+        }
+        let expected_binding = Self::compute_binding_fingerprint(
+            &self.protocol_fingerprint,
+            &self.monetary_policy_fingerprint,
+            &self.monetary_cadence_fingerprint,
+            &self.reward_finality_policy_version,
+        );
+        if self.binding_fingerprint != expected_binding {
+            return Err("protocol/monetary/cadence/finality binding fingerprint mismatch".into());
+        }
+        Ok(())
+    }
+
+    pub fn verify_expected(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
+    ) -> Result<(), String> {
+        self.validate_internal()?;
+        expected.validate()?;
+        if &self.identity != expected {
+            return Err(
+                "persisted protocol monetary activation identity does not match expected identity"
+                    .into(),
+            );
+        }
+        if expected_reward_finality_policy_version.trim().is_empty() {
+            return Err("expected reward finality policy version must not be empty".into());
+        }
+        let expected_cadence_fingerprint =
+            monetary_cadence_fingerprint_v3(expected_cadence).map_err(|error| error.to_string())?;
+        if self.monetary_cadence_fingerprint != expected_cadence_fingerprint
+            || self.monetary_cadence_segments != expected_cadence
+        {
+            return Err(
+                "persisted protocol monetary cadence does not match expected cadence".into(),
+            );
+        }
+        if self.reward_finality_policy_version != expected_reward_finality_policy_version {
+            return Err(
+                "persisted reward finality policy does not match expected finality policy".into(),
+            );
         }
         Ok(())
     }
@@ -285,5 +436,103 @@ mod tests {
             ProtocolRestoreIdentityGate::VerifiedRecordV1.as_str(),
             "verified_record_v1"
         );
+    }
+
+    const MONETARY_TEST_CADENCE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
+        activation_score: 0,
+        target_interval_ns: 1_000_000_000,
+    }];
+    const MONETARY_TEST_FINALITY: &str = "reward-finality-test-v1";
+
+    #[test]
+    fn monetary_record_binds_protocol_policy_and_exact_cadence() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-mainnet-candidate",
+            "genesis-v3",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &MONETARY_TEST_CADENCE,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.schema_version,
+            PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION
+        );
+        assert_eq!(
+            record.monetary_policy_fingerprint,
+            MONETARY_POLICY_FINGERPRINT_V3
+        );
+        assert_eq!(record.protocol_fingerprint, expected.fingerprint().unwrap());
+        assert_eq!(record.monetary_cadence_segments, MONETARY_TEST_CADENCE);
+        assert_eq!(
+            record.monetary_cadence_fingerprint,
+            monetary_cadence_fingerprint_v3(&MONETARY_TEST_CADENCE).unwrap()
+        );
+        assert!(record.validate_internal().is_ok());
+        assert!(record
+            .verify_expected(&expected, &MONETARY_TEST_CADENCE, MONETARY_TEST_FINALITY)
+            .is_ok());
+    }
+
+    #[test]
+    fn monetary_record_fails_closed_on_policy_cadence_or_binding_drift() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-mainnet-candidate",
+            "genesis-v3",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+
+        let mut wrong_policy = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &MONETARY_TEST_CADENCE,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+        wrong_policy.monetary_policy_fingerprint = "00".repeat(32);
+        assert!(wrong_policy.validate_internal().is_err());
+
+        let mut wrong_cadence = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &MONETARY_TEST_CADENCE,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+        wrong_cadence.monetary_cadence_segments[0].target_interval_ns = 500_000_000;
+        assert!(wrong_cadence.validate_internal().is_err());
+
+        let alternate_cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 500_000_000,
+        }];
+        let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &MONETARY_TEST_CADENCE,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+        assert!(record
+            .verify_expected(&expected, &alternate_cadence, MONETARY_TEST_FINALITY)
+            .is_err());
+
+        assert!(record
+            .verify_expected(
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                "reward-finality-other-v1",
+            )
+            .is_err());
+
+        let mut wrong_binding = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected,
+            &MONETARY_TEST_CADENCE,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+        wrong_binding.binding_fingerprint = "11".repeat(32);
+        assert!(wrong_binding.validate_internal().is_err());
     }
 }

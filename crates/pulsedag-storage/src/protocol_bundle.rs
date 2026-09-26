@@ -1,17 +1,20 @@
 use pulsedag_core::{
     derive_finality_boundary_v1, errors::PulseError, verify_authoritative_state_snapshot_v2,
-    ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolConsensusMode,
-    ProtocolRestoreIdentityGate,
+    MonetaryCadenceSegment, ProtocolActivationIdentity, ProtocolActivationRecordV1,
+    ProtocolConsensusMode, ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
 };
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY, SnapshotExportBundle,
-    SnapshotVerificationReport, Storage, ACCEPTED_BLOCKS_CF,
+    protocol_identity::{
+        PROTOCOL_ACTIVATION_STORAGE_KEY, PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+    },
+    SnapshotExportBundle, SnapshotVerificationReport, Storage, ACCEPTED_BLOCKS_CF,
 };
 
 pub const PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION: u32 = 2;
+pub const MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION: u32 = 3;
 
 /// Protocol-bound snapshot envelope for v2.4.0 activation work.
 ///
@@ -24,6 +27,18 @@ pub struct ProtocolSnapshotExportBundleV2 {
     pub format_version: u32,
     pub activation_record: ProtocolActivationRecordV1,
     pub legacy_bundle: SnapshotExportBundle,
+}
+
+/// Additive v3 snapshot envelope that carries the exact monetary policy and
+/// cadence binding alongside the existing protocol-bound v2 snapshot.
+///
+/// The inner v2 bundle remains byte/schema compatible for historical consumers.
+/// v3 restore must validate both records before any durable mutation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolMonetarySnapshotExportBundleV3 {
+    pub format_version: u32,
+    pub protocol_bundle: ProtocolSnapshotExportBundleV2,
+    pub monetary_record: ProtocolMonetaryActivationRecordV2,
 }
 
 fn storage_error(message: impl Into<String>) -> PulseError {
@@ -205,12 +220,157 @@ impl Storage {
             .map_err(|error| storage_error(error.to_string()))?;
         Ok(report)
     }
+    /// Export the additive v3 monetary snapshot envelope only when both durable
+    /// sidecars are present and match the caller's exact identity and cadence.
+    pub fn export_monetary_protocol_snapshot_bundle_v3(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
+    ) -> Result<
+        (
+            ProtocolMonetarySnapshotExportBundleV3,
+            SnapshotVerificationReport,
+        ),
+        PulseError,
+    > {
+        self.verify_persisted_monetary_identity(
+            expected,
+            expected_cadence,
+            expected_reward_finality_policy_version,
+        )?;
+        let monetary_record = self.protocol_monetary_activation_record()?.ok_or_else(|| {
+            storage_error("verified monetary activation sidecar disappeared before export")
+        })?;
+        monetary_record
+            .verify_expected(
+                expected,
+                expected_cadence,
+                expected_reward_finality_policy_version,
+            )
+            .map_err(storage_error)?;
+
+        let (protocol_bundle, report) = self.export_protocol_snapshot_bundle_v2(expected)?;
+        if protocol_bundle.activation_record.fingerprint != monetary_record.protocol_fingerprint {
+            return Err(storage_error(
+                "protocol and monetary snapshot sidecars disagree on protocol fingerprint",
+            ));
+        }
+
+        Ok((
+            ProtocolMonetarySnapshotExportBundleV3 {
+                format_version: MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
+                protocol_bundle,
+                monetary_record,
+            },
+            report,
+        ))
+    }
+
+    /// Verify a v3 monetary snapshot without mutating storage.
+    pub fn verify_monetary_protocol_snapshot_bundle_v3(
+        &self,
+        bundle: &ProtocolMonetarySnapshotExportBundleV3,
+        expected: &ProtocolActivationIdentity,
+        expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
+    ) -> Result<SnapshotVerificationReport, PulseError> {
+        if bundle.format_version != MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION {
+            return Err(storage_error(format!(
+                "unsupported monetary protocol snapshot bundle format version {}; expected {}",
+                bundle.format_version, MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION
+            )));
+        }
+        bundle
+            .monetary_record
+            .verify_expected(
+                expected,
+                expected_cadence,
+                expected_reward_finality_policy_version,
+            )
+            .map_err(storage_error)?;
+        if bundle.protocol_bundle.activation_record.fingerprint
+            != bundle.monetary_record.protocol_fingerprint
+        {
+            return Err(storage_error(
+                "protocol and monetary snapshot records disagree on protocol fingerprint",
+            ));
+        }
+        self.verify_protocol_snapshot_bundle_v2(&bundle.protocol_bundle, expected)
+    }
+
+    /// Verify the complete v3 envelope before mutation, then replace accepted
+    /// blocks, snapshot state, protocol identity and monetary identity in one
+    /// RocksDB batch.
+    pub fn import_monetary_protocol_snapshot_bundle_v3(
+        &self,
+        bundle: ProtocolMonetarySnapshotExportBundleV3,
+        expected: &ProtocolActivationIdentity,
+        expected_cadence: &[MonetaryCadenceSegment],
+        expected_reward_finality_policy_version: &str,
+    ) -> Result<SnapshotVerificationReport, PulseError> {
+        let report = self.verify_monetary_protocol_snapshot_bundle_v3(
+            &bundle,
+            expected,
+            expected_cadence,
+            expected_reward_finality_policy_version,
+        )?;
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| storage_error("missing cf accepted blocks"))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let existing_blocks = self.list_blocks()?;
+        let mut batch = WriteBatch::default();
+
+        for block in existing_blocks {
+            batch.delete_cf(&blocks_cf, block.hash.as_bytes());
+        }
+        for block in &bundle.protocol_bundle.legacy_bundle.persisted_blocks {
+            batch.put_cf(
+                &blocks_cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|error| storage_error(error.to_string()))?,
+            );
+        }
+        self.stage_chain_state_snapshot_with_captured_at(
+            &mut batch,
+            &meta_cf,
+            &bundle.protocol_bundle.legacy_bundle.snapshot,
+            bundle
+                .protocol_bundle
+                .legacy_bundle
+                .snapshot_captured_at_unix
+                .unwrap_or(bundle.protocol_bundle.legacy_bundle.exported_at_unix),
+        )?;
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&bundle.protocol_bundle.activation_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&bundle.monetary_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))?;
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pulsedag_core::{genesis::init_chain_state, ProtocolActivationIdentity};
+    use pulsedag_core::{
+        genesis::init_chain_state, MonetaryCadenceSegment, ProtocolActivationIdentity,
+    };
 
     fn temp_db_path(test_name: &str) -> String {
         let unique = std::time::SystemTime::now()
@@ -382,6 +542,120 @@ mod tests {
                 .identity,
             target_identity
         );
+
+        drop(source);
+        drop(target);
+        let _ = std::fs::remove_dir_all(source_path);
+        let _ = std::fs::remove_dir_all(target_path);
+    }
+
+    const MONETARY_TEST_CADENCE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
+        activation_score: 0,
+        target_interval_ns: 1_000_000_000,
+    }];
+    const MONETARY_TEST_FINALITY: &str = "reward-finality-test-v1";
+
+    #[test]
+    fn monetary_protocol_bundle_v3_round_trips_both_sidecars_atomically() {
+        let source_path = temp_db_path("monetary-v3-source");
+        let target_path = temp_db_path("monetary-v3-target");
+        let source = Storage::open(&source_path).unwrap();
+        let target = Storage::open(&target_path).unwrap();
+        let state = init_chain_state("pulsedag-monetary-bundle-test".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+
+        source
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+        let (bundle, report) = source
+            .export_monetary_protocol_snapshot_bundle_v3(
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+        assert!(report.restore_guarantees_explicit);
+        assert_eq!(
+            bundle.format_version,
+            MONETARY_PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION
+        );
+        assert_eq!(
+            bundle.protocol_bundle.activation_record.fingerprint,
+            bundle.monetary_record.protocol_fingerprint
+        );
+
+        target
+            .import_monetary_protocol_snapshot_bundle_v3(
+                bundle,
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+
+        assert!(target
+            .monetary_protocol_snapshot_sidecar_complete()
+            .unwrap());
+        target
+            .verify_persisted_monetary_identity(
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+
+        drop(source);
+        drop(target);
+        let _ = std::fs::remove_dir_all(source_path);
+        let _ = std::fs::remove_dir_all(target_path);
+    }
+
+    #[test]
+    fn monetary_protocol_bundle_v3_rejects_cadence_substitution_before_import() {
+        let source_path = temp_db_path("monetary-v3-cadence-source");
+        let target_path = temp_db_path("monetary-v3-cadence-target");
+        let source = Storage::open(&source_path).unwrap();
+        let target = Storage::open(&target_path).unwrap();
+        let state = init_chain_state("pulsedag-monetary-bundle-cadence".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        source
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+        let (bundle, _) = source
+            .export_monetary_protocol_snapshot_bundle_v3(
+                &expected,
+                &MONETARY_TEST_CADENCE,
+                MONETARY_TEST_FINALITY,
+            )
+            .unwrap();
+
+        let alternate = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 500_000_000,
+        }];
+        assert!(target
+            .import_monetary_protocol_snapshot_bundle_v3(
+                bundle,
+                &expected,
+                &alternate,
+                MONETARY_TEST_FINALITY,
+            )
+            .is_err());
+        assert!(target
+            .protocol_monetary_activation_record()
+            .unwrap()
+            .is_none());
+        assert!(target.load_chain_state().unwrap().is_none());
 
         drop(source);
         drop(target);
