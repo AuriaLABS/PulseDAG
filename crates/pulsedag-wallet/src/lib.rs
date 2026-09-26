@@ -55,8 +55,9 @@ pub use pending_persistence::{
 pub use plan::{
     build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
     build_transaction_plan, build_transaction_plan_with_safety, derive_wallet_plan_nonce_v1,
-    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
-    WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
+    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletProtocolBindingV2,
+    WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
+    WalletTransactionPlan,
     WALLET_NONCE_DOMAIN_V1,
 };
 pub use pulse_view::{
