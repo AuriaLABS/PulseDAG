@@ -2,7 +2,7 @@
 
 Status: **SMOOTH FAIR-EMISSION POLICY IMPLEMENTED / EXACT-CANDIDATE EVIDENCE PENDING**
 
-Authority: #781, #794, #1045. The prior 500M year-one / annual-halving curve and the older #1016 tail-emission proposal are superseded for the active #1045 integration line.
+Authority: #781, #794, #1045. The prior 500M year-one / annual-halving curve, the superseded #1016 tail-emission proposal, and the temporary non-normalized smooth fingerprint are not launch authority.
 
 ## Mainnet policy candidate
 
@@ -10,13 +10,16 @@ Authority: #781, #794, #1045. The prior 500M year-one / annual-halving curve and
 - atomic precision: **8 decimals**
 - spendable mainnet genesis issuance: **0**
 - premine / treasury / foundation allocation: **0**
-- emission model: **deterministic smooth exponential decay**
-- monetary half-life: **3 economic years / 94,608,000 economic seconds**
+- emission model: **normalized deterministic Q64 exponential decay**
+- exact monetary half-life: **3 economic years / 94,608,000 economic seconds**
 - fixed-point emission quantum: **21,600 economic seconds (6 hours)**
+- quanta per half-life: **4,380**
 - Q64 decay factor per quantum: **18,443,825,056,137,834,748**
-- year-one cumulative target: **206,299,474.01590029 PDG**
+- frozen Q64 factor at one half-life: **9,223,372,036,854,774,856**
+- year-one cumulative target: **206,299,474.01590026 PDG**
+- year-three cumulative target: **500,000,000.00000000 PDG exactly**
 - tail emission: **none**
-- terminal residual settlement: **quantum 247,333 / 5,342,392,800 economic seconds**
+- terminal residual settlement: **half-life 57 / economic year 171 / quantum 249,660**
 - coinbase maturity: **3,600 economic seconds**, plus the separately frozen settlement/finality rule
 - ordinary transaction fees: **100% to the eligible reward recipient**
 - consensus burn: **0%**
@@ -32,32 +35,41 @@ Canonical bytes are embedded in `MONETARY_POLICY_CANONICAL_V3`.
 
 SHA-256:
 
-`1c1cdf61e46a59418d10315dd0fa705d7e7fd4dbe4d1bb0f855a808148838e36`
+`134009249c301682df78d0c950fc1a70604eeddb9396361e9594e6fac121680b`
 
-The policy version is `pulsedag-monetary-v3.0.0-smooth-v1`.
+Policy version:
 
-This digest binds economic rules only. The cadence table has a separate canonical SHA-256 produced by `monetary_cadence_fingerprint_v3`; persistence binds **protocol fingerprint + monetary-policy fingerprint + cadence fingerprint + explicit reward-finality policy version**. Final launch evidence must additionally bind the exact source/tree SHA, network identities, deterministic genesis identities, settlement/finality identity and artifact digests.
+`pulsedag-monetary-v3.0.0-smooth-v1`
+
+This digest binds the exact economic semantics. The cadence table has a separate canonical SHA-256 produced by `monetary_cadence_fingerprint_v3`; persistence binds **protocol fingerprint + monetary-policy fingerprint + cadence fingerprint + explicit reward-finality policy version**. Final launch evidence must additionally bind the exact source/tree SHA, network identities, deterministic genesis identities, settlement/finality identity and artifact digests.
 
 ## Exact issuance rule
 
-Let the hard cap be `Smax = 100,000,000,000,000,000` atoms. The intended continuous economic curve is:
+The ideal continuous reference is:
 
 `S(t) = Smax * (1 - 2^(-t / 3 years))`
 
-Consensus does not evaluate floating point, logarithms or runtime powers. Instead it freezes:
+Consensus does not evaluate floating point, logarithms or host-dependent transcendental functions. It freezes:
 
 - `EMISSION_QUANTUM_SECONDS = 21,600`
 - `HALF_LIFE_QUANTA = 4,380`
 - `Q64_ONE = 2^64`
 - `DECAY_FACTOR_Q64 = 18,443,825,056,137,834,748`
+- `HALF_LIFE_END_FACTOR_Q64 = 9,223,372,036,854,774,856`
 
-At exact six-hour quantum `q`, remaining supply is derived with Q64 exponentiation by squaring. Between adjacent quantum checkpoints, cumulative issuance is interpolated using integer arithmetic only. Therefore emission changes smoothly at block cadence while the expensive exponential calculation remains deterministic and bounded.
+For each three-year interval:
 
-For canonical score `s`:
+1. the exact integer remaining supply at the interval boundaries is determined first;
+2. the six-hour Q64 decay determines relative progress inside the interval;
+3. that progress is normalized against `HALF_LIFE_END_FACTOR_Q64`, so the boundary lands exactly on the integer half-life target;
+4. cumulative issuance is linearly interpolated with integer arithmetic inside each six-hour quantum;
+5. per-score subsidy remains the cumulative difference:
 
 `subsidy(s) = total_supply(s) - total_supply(s - 1)`
 
-The cumulative-difference rule deterministically carries every rounding remainder. Due to fixed-point precision, the three-year checkpoint is **500,000,000.00000006 PDG**, a deterministic six-atom deviation from the ideal mathematical half. The final residual atom is settled at quantum 247,333, after which total supply is exactly the hard cap forever.
+Non-terminal half-life boundaries round the sub-atom geometric remainder upward. This prevents issuance from exceeding the authorized geometric envelope before terminal cleanup.
+
+At half-life 57 (economic year 171), the theoretical remainder is below one atomic unit. The terminal rule folds that residual into the final three-year budget. Therefore the state one nanosecond before the terminal boundary is exactly one atom below the hard cap, the terminal boundary reaches the hard cap exactly, and scheduled subsidy remains zero forever afterwards.
 
 Fees are transfers and never increase total supply.
 
@@ -66,17 +78,19 @@ Fees are transfers and never increase total supply.
 | Economic time | Cumulative PDG | Share of cap |
 |---|---:|---:|
 | 0 | 0.00000000 | 0% |
-| 1 year | 206,299,474.01590029 | ~20.63% |
-| 2 years | 370,039,475.05256347 | ~37.00% |
-| 3 years | 500,000,000.00000006 | ~50.00% |
-| 4 years | 603,149,737.00795019 | ~60.31% |
-| 6 years | 750,000,000.00000006 | ~75.00% |
-| 10 years | 900,787,434.25198757 | ~90.08% |
-| 20 years | 990,156,866.79769632 | ~99.02% |
-| 30 years | 999,023,437.50000001 | ~99.90% |
-| terminal quantum | 1,000,000,000.00000000 | 100% |
+| 1 year | 206,299,474.01590026 | ~20.63% |
+| 2 years | 370,039,475.05256342 | ~37.00% |
+| 3 years | 500,000,000.00000000 | 50% |
+| 4 years | 603,149,737.00795013 | ~60.31% |
+| 6 years | 750,000,000.00000000 | 75% |
+| 10 years | 900,787,434.25198753 | ~90.08% |
+| 12 years | 937,500,000.00000000 | 93.75% |
+| 15 years | 968,750,000.00000000 | 96.875% |
+| 20 years | 990,156,866.79769630 | ~99.02% |
+| 30 years | 999,023,437.50000000 | 99.90234375% |
+| year 171 | 1,000,000,000.00000000 | 100% |
 
-These values are consensus golden vectors, not floating-point calculations used at runtime.
+These values are consensus golden vectors. Floating-point arithmetic is not used to calculate them at runtime.
 
 ## Cadence and monetary time
 
@@ -87,23 +101,25 @@ Consensus economic time is derived from a versioned list of:
 
 A cadence change must activate at an exact canonical monetary score. Changing from 1 BPS to 2 BPS or 4 BPS changes reward granularity only; equal economic time maps to equal cumulative issuance.
 
-This property is mandatory for a DAG: block count or DAG width must never change gross PDG issuance.
+The DAG invariant is:
+
+**economic time determines how much PDG may exist; raw block count and DAG width never determine gross issuance.**
 
 The production mainnet/testnet cadence tables are separate network-freeze inputs and remain invalid to invent before #781 freezes them. Until then, RPC policy metadata reports `production_cadence_frozen=false` and no production cadence fingerprint.
 
 ## Fair-launch and fee rules
 
-The production v3 genesis creates **zero spendable PDG**. There is no premine, protocol treasury, foundation allocation, presale or ICO issuance path.
+The production v3 genesis creates **zero spendable PDG**. There is no premine, protocol treasury, foundation allocation, presale, ICO or bootstrap issuance path.
 
 v3.0.0 fee disposition remains:
 
 `eligible miner reward = scheduled subsidy + 100% eligible ordinary transaction fees`
 
-Consensus burn is zero. There is no reflection mechanism and no permanent tail inflation. A future change to fee disposition, burn or issuance requires a separately versioned policy fingerprint and activation decision.
+Consensus burn is zero. There is no reflection mechanism and no permanent tail inflation. Any future treasury, burn, redistribution or programmable-fee split requires a separately versioned monetary-policy decision and a new fingerprint.
 
 ## Smart-contract boundary
 
-v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Monetary snapshot persistence fails closed if the chain state has contracts enabled. Therefore programmable compute/state/proof fee paths must not become consensus-active and cannot create, redirect or burn supply. Any later activation requires a separately versioned protocol decision and monetary-policy compatibility review.
+v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Monetary snapshot persistence fails closed if the chain state has contracts enabled. Programmable compute/state/proof fee paths cannot become consensus-active and cannot create, redirect or burn supply in this release.
 
 ## Live integration status
 
@@ -125,7 +141,7 @@ Legacy v2.x subsidy constants remain available for historical compatibility and 
 
 This implementation does **not** by itself close #1045 or claim #781 launch readiness. The exact v3 candidate must still bind and prove:
 
-- clean exact-head CI for this changed monetary fingerprint and all golden vectors;
+- clean exact-head CI for fingerprint `134009249c301682df78d0c950fc1a70604eeddb9396361e9594e6fac121680b` and all golden vectors;
 - exact production mainnet/testnet cadence tables and fingerprints;
 - exact production chain IDs, deterministic genesis timestamps/hashes and zero-allocation genesis identities;
 - final production reward-finality policy;
@@ -133,4 +149,4 @@ This implementation does **not** by itself close #1045 or claim #781 launch read
 - exact-candidate reachability evidence demonstrating that no legacy or alternate issuance path is reachable;
 - artifact/evidence digests tied to the exact #781 source/tree and network identities.
 
-Any evidence bound to the superseded annual-halving policy fingerprint must be treated as invalid for this policy.
+Any evidence bound to the old annual-halving fingerprint, the temporary non-normalized smooth fingerprint, or draft #1254's fingerprint is superseded and must not be mixed with this candidate.
