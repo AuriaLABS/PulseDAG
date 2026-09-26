@@ -1,13 +1,15 @@
 use std::{error::Error, fmt};
 
 use ed25519_dalek::{Signer, SigningKey};
-use pulsedag_core::{compute_txid, signing_message, types::Transaction};
+use pulsedag_core::{
+    compute_txid, compute_txid_v2, signing_message, signing_message_v2, types::Transaction,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    WalletDerivationBranch, WalletNetworkIdentity, WalletPlanError, WalletReviewSummary,
-    WalletSecretKey, WalletSession, WalletSessionError, WalletSigningPreparation,
-    WalletTransactionPlan,
+    WalletDerivationBranch, WalletNetworkIdentity, WalletPlanError, WalletProtocolBindingV2,
+    WalletReviewSummary, WalletSecretKey, WalletSession, WalletSessionError,
+    WalletSigningPreparation, WalletTransactionPlan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,8 @@ pub enum WalletPlanSigner {
 pub struct WalletSignedTransaction {
     pub network: WalletNetworkIdentity,
     pub review: WalletReviewSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
     pub transaction: Transaction,
 }
 
@@ -125,7 +129,12 @@ fn sign_with_secret(
     let signing_key = SigningKey::from_bytes(secret.expose_secret());
     let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
     let prepared = plan.prepare_signing(network, &public_key_hex)?;
-    let message = signing_message(&prepared.transaction);
+    let message = hex::decode(&prepared.signing_message).map_err(|_| {
+        WalletPlanError::InvalidPlanField {
+            field: "signing_message",
+            reason: "prepared signing message is not canonical hexadecimal",
+        }
+    })?;
     let signature_hex = hex::encode(signing_key.sign(&message).to_bytes());
     finalize_signed_transaction(prepared, signature_hex)
 }
@@ -137,11 +146,18 @@ fn finalize_signed_transaction(
     let WalletSigningPreparation {
         network,
         review,
+        protocol_binding_v2,
         mut transaction,
         signing_message: expected_signing_message,
         ..
     } = prepared;
-    let actual_signing_message = hex::encode(signing_message(&transaction));
+    let actual_signing_message = match &protocol_binding_v2 {
+        Some(binding) => hex::encode(
+            signing_message_v2(&transaction, &binding.identity.chain_id)
+                .map_err(WalletPlanError::Build)?,
+        ),
+        None => hex::encode(signing_message(&transaction)),
+    };
     if actual_signing_message != expected_signing_message {
         return Err(WalletPlanError::InvalidPlanField {
             field: "signing_message",
@@ -151,10 +167,15 @@ fn finalize_signed_transaction(
     for input in &mut transaction.inputs {
         input.signature = signature_hex.clone();
     }
-    transaction.txid = compute_txid(&transaction);
+    transaction.txid = match &protocol_binding_v2 {
+        Some(binding) => compute_txid_v2(&transaction, &binding.identity.chain_id)
+            .map_err(WalletPlanError::Build)?,
+        None => compute_txid(&transaction),
+    };
     Ok(WalletSignedTransaction {
         network,
         review,
+        protocol_binding_v2,
         transaction,
     })
 }
