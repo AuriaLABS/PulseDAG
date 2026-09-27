@@ -487,6 +487,8 @@ fn ioerr(operation: &'static str, error: io::Error) -> WalletBackupVerificationE
 
 #[cfg(test)]
 mod tests {
+    use sha2::Digest;
+
     use super::*;
 
     fn signed_receipt(seed: u8, genesis_label: &str) -> WalletBackupVerificationReceipt {
