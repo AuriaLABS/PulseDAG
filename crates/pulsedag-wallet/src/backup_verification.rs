@@ -140,6 +140,7 @@ pub fn create_wallet_backup_verification_receipt(
         .ok_or(WalletBackupVerificationError::Session(
             WalletSessionError::Locked,
         ))?;
+    let expected_identity = identity.clone();
     let message = canonical_receipt_message(
         &identity.network_profile,
         &identity.chain_id,
@@ -176,7 +177,7 @@ pub fn create_wallet_backup_verification_receipt(
         signer_public_key_hex,
         signature_hex,
     };
-    verify_wallet_backup_verification_receipt(&receipt, &receipt_identity(&receipt))?;
+    verify_wallet_backup_verification_receipt(&receipt, &expected_identity)?;
     Ok(receipt)
 }
 
