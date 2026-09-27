@@ -1,0 +1,116 @@
+name: v3 monetary reachability exact-candidate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/v3-monetary-reachability.yml
+      - scripts/v3_monetary_reachability.py
+      - crates/**/src/**/*.rs
+      - apps/**/src/**/*.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-monetary-reachability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reachability:
+    name: monetary issuance reachability
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Audit static monetary authority reachability
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-monetary-reachability
+          python scripts/v3_monetary_reachability.py --self-test
+          python scripts/v3_monetary_reachability.py \
+            --repo-root . \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --out ci-evidence/v3-monetary-reachability/static-reachability.json
+          jq -e '
+            .result == "PASS" and
+            .claim_boundary.proves_static_live_authority_shape == true and
+            .claim_boundary.requires_dynamic_guard_tests == true and
+            .claim_boundary.selects_production_cadence == false and
+            .claim_boundary.freezes_network_identity == false and
+            .claim_boundary.authorizes_launch == false and
+            (.v3_live_forbidden_legacy_authority_hits | length) == 0 and
+            (.errors | length) == 0
+          ' ci-evidence/v3-monetary-reachability/static-reachability.json >/dev/null
+
+      - name: Run dynamic no-alternate-issuance guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core mined_block_v3::tests::legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation -- --nocapture
+          cargo test --locked -p pulsedag-core network_block_v3::tests::legacy_height_subsidy_block_is_rejected_before_p2p_staging -- --nocapture
+          cargo test --locked -p pulsedag-core validation_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-core monetary_audit_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface -- --nocapture
+          cargo test --locked -p pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup -- --nocapture
+          cat > ci-evidence/v3-monetary-reachability/dynamic-tests.txt <<'EOF'
+result=PASS
+mined_v3_rejects_legacy_height_subsidy=PASS
+p2p_v3_rejects_legacy_height_subsidy=PASS
+validation_v3_vectors=PASS
+monetary_audit_v3_vectors=PASS
+rpc_legacy_mining_surfaces_disabled=PASS
+daemon_legacy_startup_fallback_disabled=PASS
+EOF
+
+      - name: Record evidence provenance and digests
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-monetary-reachability
+          {
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "candidate_tree_sha=${CANDIDATE_TREE:-unknown}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+          } > ci-evidence/v3-monetary-reachability/provenance.txt
+          find ci-evidence/v3-monetary-reachability -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ci-evidence/v3-monetary-reachability/SHA256SUMS
+
+      - name: Upload exact-candidate reachability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-monetary-reachability-${{ env.CANDIDATE_SHA }}
+          path: ci-evidence/v3-monetary-reachability
+          if-no-files-found: error
+          retention-days: 90
