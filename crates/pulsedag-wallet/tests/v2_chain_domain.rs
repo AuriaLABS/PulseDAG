@@ -4,8 +4,13 @@ use pulsedag_core::{
     types::{OutPoint, Utxo},
     ProtocolActivationIdentity, TRANSACTION_VERSION_V2,
 };
-use pulsedag_wallet::protocol_v2::{
-    finalize_wallet_v2_signed_plan, prepare_wallet_v2_signing_plan, WalletV2PlanRequest,
+use pulsedag_wallet::{
+    protocol_v2::{
+        finalize_wallet_v2_signed_plan, prepare_wallet_v2_signing_plan, WalletV2PlanRequest,
+    },
+    verify_wallet_protocol_authorization_v1, wallet_protocol_authorization_message_v1,
+    WalletProtocolAuthorizationV1, WalletProtocolBindingV2,
+    WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1,
 };
 
 const PUBLIC_KEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
@@ -175,4 +180,39 @@ fn same_chain_id_with_different_genesis_is_rejected_before_signing() {
         error,
         pulsedag_core::errors::PulseError::InvalidTransaction(_)
     ));
+}
+
+#[test]
+fn full_identity_authorization_rejects_same_chain_id_genesis_substitution() {
+    let expected = identity("pulsedag-v3-domain", "testnet-genesis-v3");
+    let substituted = identity("pulsedag-v3-domain", "mainnet-genesis-v3");
+    let plan = prepare(&expected);
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+
+    let binding = WalletProtocolBindingV2::new(expected).expect("expected binding");
+    let authorization_message =
+        wallet_protocol_authorization_message_v1(&binding, &plan.transaction)
+            .expect("authorization bytes");
+    let authorization = WalletProtocolAuthorizationV1 {
+        domain: WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.to_string(),
+        protocol_fingerprint: binding.fingerprint.clone(),
+        signature: hex::encode(signing_key.sign(&authorization_message).to_bytes()),
+    };
+    verify_wallet_protocol_authorization_v1(&binding, &plan.transaction, &authorization)
+        .expect("authorization must validate for the reviewed full identity");
+
+    let substituted_binding =
+        WalletProtocolBindingV2::new(substituted).expect("substituted binding");
+    let mut relabeled = authorization;
+    relabeled.protocol_fingerprint = substituted_binding.fingerprint.clone();
+
+    assert!(
+        verify_wallet_protocol_authorization_v1(
+            &substituted_binding,
+            &plan.transaction,
+            &relabeled,
+        )
+        .is_err(),
+        "changing genesis while keeping chain_id must invalidate the signed wallet authorization"
+    );
 }
