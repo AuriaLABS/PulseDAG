@@ -328,16 +328,21 @@ pub fn persist_wallet_backup_verification_receipt(
         }
         drop(file);
 
-        if let Err(error) = fs::rename(&temp_path, &path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(ioerr("publish receipt", error));
+        match fs::hard_link(&temp_path, &path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(WalletBackupVerificationError::AlreadyExists);
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(ioerr("publish receipt without replacement", error));
+            }
         }
+        let _ = fs::remove_file(&temp_path);
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|error| ioerr("secure receipt", error))?;
             File::open(parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| ioerr("sync receipt directory", error))?;
@@ -555,6 +560,56 @@ mod tests {
             ),
             Err(WalletBackupVerificationError::AnchorSignerMismatch)
         ));
+    }
+
+    #[test]
+    fn concurrent_receipt_publication_never_replaces_the_winner() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-backup-verification-race-{}-{}",
+            std::process::id(),
+            hex::encode(random)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let keystore = dir.join("wallet.json");
+        fs::write(&keystore, b"fixture").unwrap();
+
+        let first = signed_receipt(11, "backup-first");
+        let second = signed_receipt(12, "backup-second");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let spawn = |receipt: WalletBackupVerificationReceipt| {
+            let barrier = Arc::clone(&barrier);
+            let keystore = keystore.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                persist_wallet_backup_verification_receipt(&keystore, &receipt)
+                    .map(|_| receipt)
+            })
+        };
+        let a = spawn(first);
+        let b = spawn(second);
+        barrier.wait();
+
+        let a = a.join().unwrap();
+        let b = b.join().unwrap();
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        assert!(
+            matches!(a, Err(WalletBackupVerificationError::AlreadyExists))
+                || matches!(b, Err(WalletBackupVerificationError::AlreadyExists))
+        );
+
+        let winner = if let Ok(receipt) = a { receipt } else { b.unwrap() };
+        assert_eq!(
+            load_wallet_backup_verification_receipt(&keystore).unwrap(),
+            winner
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
