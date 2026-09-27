@@ -614,10 +614,7 @@ fn read_manifest(path: &Path) -> CliResult<WalletWatchOnlyManifest> {
     Ok(manifest)
 }
 
-fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
-    let bytes = read_bounded_json(path, "wallet transaction plan")?;
-    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
-        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+fn validate_cli_signable_plan(plan: &WalletTransactionPlan) -> CliResult<()> {
     plan.validate_structure()?;
     if plan.nonce_policy != WalletNoncePolicy::DeterministicPlanV1 {
         return Err(
@@ -630,6 +627,14 @@ fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
         )
         .into());
     }
+    Ok(())
+}
+
+fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
+    let bytes = read_bounded_json(path, "wallet transaction plan")?;
+    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
+        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+    validate_cli_signable_plan(&plan)?;
     Ok(plan)
 }
 
@@ -1150,7 +1155,11 @@ async fn main() {
 mod tests {
     use std::io::Cursor;
 
-    use pulsedag_core::types::OutPoint;
+    use pulsedag_core::{
+        address_from_public_key,
+        types::{OutPoint, Utxo},
+        ProtocolActivationIdentity,
+    };
 
     use super::*;
 
@@ -1160,6 +1169,44 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[test]
+    fn production_cli_refuses_unbound_v1_plan_and_accepts_bound_v2_plan() {
+        let sender = address_from_public_key(&"11".repeat(32));
+        let recipient = address_from_public_key(&"22".repeat(32));
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-testnet").unwrap();
+        let policy = WalletSpendPolicy::new(100, 1_000, 8).unwrap();
+        let intent = WalletTransactionIntent::new(&sender, &recipient, 400, 10).unwrap();
+        let available = [Utxo {
+            outpoint: OutPoint {
+                txid: "33".repeat(32),
+                index: 0,
+            },
+            address: sender,
+            amount: 1_000,
+            coinbase: false,
+            height: 10,
+        }];
+
+        let legacy = build_deterministic_transaction_plan_with_safety(
+            network,
+            policy,
+            intent,
+            &available,
+            WalletSafetyAcknowledgements::none(),
+        )
+        .unwrap();
+        assert!(validate_cli_signable_plan(&legacy).is_err());
+
+        let bound = legacy
+            .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+                "pulsedag-testnet",
+                "testnet-genesis",
+                "ghostdag-order-v1",
+            ))
+            .unwrap();
+        assert!(validate_cli_signable_plan(&bound).is_ok());
     }
 
     #[test]
