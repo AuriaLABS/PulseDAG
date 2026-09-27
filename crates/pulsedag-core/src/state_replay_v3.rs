@@ -88,17 +88,6 @@ pub fn mature_reward_prefix_score_v3(
     Ok(low)
 }
 
-fn block_fees_atoms(block: &crate::types::Block) -> Result<u64, PulseError> {
-    block
-        .transactions
-        .iter()
-        .skip(1)
-        .try_fold(0_u64, |acc, tx| {
-            acc.checked_add(tx.fee)
-                .ok_or_else(|| invalid_replay("reward fee arithmetic overflow"))
-        })
-}
-
 fn insert_reward_utxo(utxo: &mut UtxoState, reward: Utxo) -> Result<(), PulseError> {
     let outpoint = reward.outpoint.clone();
     match utxo.utxos.entry(outpoint.clone()) {
@@ -124,6 +113,7 @@ fn materialize_reward_at_score(
     source: &ChainState,
     ordered: &OrderedDagV2,
     reward_score: u64,
+    eligible_fees_atoms: u64,
     cadence_segments: &[MonetaryCadenceSegment],
 ) -> Result<(), PulseError> {
     let index = usize::try_from(reward_score)
@@ -165,9 +155,8 @@ fn materialize_reward_at_score(
         .clone();
     let subsidy_atoms = subsidy_atoms_for_score(reward_score, cadence_segments)
         .map_err(|error| invalid_replay(error.to_string()))?;
-    let fees_atoms = block_fees_atoms(block)?;
     let amount = subsidy_atoms
-        .checked_add(fees_atoms)
+        .checked_add(eligible_fees_atoms)
         .ok_or_else(|| invalid_replay("reward settlement amount overflow"))?;
     let outpoint = settlement_outpoint_v3(&source.chain_id, block_hash, &claim.txid);
 
@@ -235,6 +224,7 @@ pub fn rebuild_authoritative_state_v3(
     let mut conflict_diagnostics = Vec::new();
     let mut next_reward_score = 1_u64;
     let mut mature_reward_prefix_score = 0_u64;
+    let mut eligible_fees_by_score = vec![0_u64; ordered_dag.blocks.len()];
 
     for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate() {
         if hash == &state.dag.genesis_hash {
@@ -272,6 +262,9 @@ pub fn rebuild_authoritative_state_v3(
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
                     rebuilt = candidate;
+                    eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
+                        .checked_add(tx.fee)
+                        .ok_or_else(|| invalid_replay("eligible fee arithmetic overflow"))?;
                     applied_transactions = applied_transactions.saturating_add(1);
                 }
                 Err(PulseError::UtxoNotFound | PulseError::DuplicateUtxoOutpoint(_)) => {
@@ -294,6 +287,8 @@ pub fn rebuild_authoritative_state_v3(
                 state,
                 &ordered_dag,
                 next_reward_score,
+                eligible_fees_by_score[usize::try_from(next_reward_score)
+                    .map_err(|_| invalid_replay("reward score exceeds platform index width"))?],
                 cadence_segments,
             )?;
             materialized_rewards = materialized_rewards.saturating_add(1);
