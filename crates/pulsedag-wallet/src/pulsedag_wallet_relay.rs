@@ -407,8 +407,9 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
             let authorization = input.protocol_authorization_v1.as_ref().ok_or_else(|| {
                 relay_error("chain-bound signed envelope is missing protocol authorization")
             })?;
-            verify_wallet_protocol_authorization_v1(binding, transaction, authorization)
-                .map_err(|error| relay_error(format!("protocol authorization is invalid: {error}")))?;
+            verify_wallet_protocol_authorization_v1(binding, transaction, authorization).map_err(
+                |error| relay_error(format!("protocol authorization is invalid: {error}")),
+            )?;
             compute_txid_v2(transaction, &binding.identity.chain_id).map_err(|error| {
                 relay_error(format!("v2 transaction identity is invalid: {error}"))
             })?
