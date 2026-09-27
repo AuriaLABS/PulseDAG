@@ -18,10 +18,10 @@ use pulsedag_wallet::{
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
     WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
-    WalletProtocolBindingV2, WalletReviewSummary,
-    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
-    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WalletProtocolBindingV2, WalletReviewSummary, WalletSafetyAcknowledgements, WalletSession,
+    WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy,
+    WalletWatchOnly, WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
+    WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
@@ -1017,10 +1017,7 @@ async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
     let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
     let signed = parse_signed_broadcast(&bytes)?;
     if signed.protocol_binding_v2.is_none() {
-        return Err(invalid_input(
-            "wallet CLI refuses unbound legacy-v1 signed envelopes",
-        )
-        .into());
+        return Err(invalid_input("wallet CLI refuses unbound legacy-v1 signed envelopes").into());
     }
 
     // Complete all local/remote preflight before crossing the durable submit boundary.
