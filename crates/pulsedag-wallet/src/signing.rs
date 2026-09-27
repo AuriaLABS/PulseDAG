@@ -1,8 +1,9 @@
 use std::{error::Error, fmt};
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use pulsedag_core::{
     compute_txid, compute_txid_v2, signing_message, signing_message_v2, types::Transaction,
+    TRANSACTION_VERSION_V2,
 };
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,157 @@ use crate::{
     WalletReviewSummary, WalletSecretKey, WalletSession, WalletSessionError,
     WalletSigningPreparation, WalletTransactionPlan,
 };
+
+pub const WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1: &str =
+    "PulseDAG:wallet-protocol-authorization:v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WalletProtocolAuthorizationV1 {
+    pub domain: String,
+    pub protocol_fingerprint: String,
+    pub signature: String,
+}
+
+fn wallet_protocol_authorization_message_v1(
+    binding: &WalletProtocolBindingV2,
+    transaction: &Transaction,
+) -> Result<Vec<u8>, WalletPlanError> {
+    if transaction.version != TRANSACTION_VERSION_V2 {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "transaction.version",
+            reason: "protocol authorization requires transaction version 2",
+        });
+    }
+
+    let expected_fingerprint =
+        crate::protocol_v2::verify_wallet_v2_node_identity(&binding.identity, &binding.identity)
+            .map_err(WalletPlanError::Build)?;
+    if expected_fingerprint != binding.fingerprint {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "protocol_binding_v2.fingerprint",
+            reason: "does not match activated protocol identity",
+        });
+    }
+
+    let fingerprint = hex::decode(&binding.fingerprint).map_err(|_| {
+        WalletPlanError::InvalidPlanField {
+            field: "protocol_binding_v2.fingerprint",
+            reason: "must be canonical hexadecimal",
+        }
+    })?;
+    if fingerprint.len() != 32 {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "protocol_binding_v2.fingerprint",
+            reason: "must encode exactly 32 bytes",
+        });
+    }
+
+    let mut unsigned = transaction.clone();
+    unsigned.txid.clear();
+    for input in &mut unsigned.inputs {
+        input.signature.clear();
+    }
+    let signing_bytes = signing_message_v2(&unsigned, &binding.identity.chain_id)
+        .map_err(WalletPlanError::Build)?;
+
+    let domain = WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.as_bytes();
+    let domain_len = u32::try_from(domain.len()).map_err(|_| WalletPlanError::InvalidPlanField {
+        field: "protocol_authorization_v1.domain",
+        reason: "domain length exceeds u32",
+    })?;
+    let signing_len =
+        u32::try_from(signing_bytes.len()).map_err(|_| WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.signing_message",
+            reason: "signing message length exceeds u32",
+        })?;
+
+    let mut message =
+        Vec::with_capacity(4 + domain.len() + fingerprint.len() + 4 + signing_bytes.len());
+    message.extend_from_slice(&domain_len.to_le_bytes());
+    message.extend_from_slice(domain);
+    message.extend_from_slice(&fingerprint);
+    message.extend_from_slice(&signing_len.to_le_bytes());
+    message.extend_from_slice(&signing_bytes);
+    Ok(message)
+}
+
+fn sign_wallet_protocol_authorization_v1(
+    signing_key: &SigningKey,
+    binding: &WalletProtocolBindingV2,
+    transaction: &Transaction,
+) -> Result<WalletProtocolAuthorizationV1, WalletPlanError> {
+    let message = wallet_protocol_authorization_message_v1(binding, transaction)?;
+    Ok(WalletProtocolAuthorizationV1 {
+        domain: WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.to_string(),
+        protocol_fingerprint: binding.fingerprint.clone(),
+        signature: hex::encode(signing_key.sign(&message).to_bytes()),
+    })
+}
+
+pub fn verify_wallet_protocol_authorization_v1(
+    binding: &WalletProtocolBindingV2,
+    transaction: &Transaction,
+    authorization: &WalletProtocolAuthorizationV1,
+) -> Result<(), WalletPlanError> {
+    if authorization.domain != WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1 {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.domain",
+            reason: "unsupported wallet protocol authorization domain",
+        });
+    }
+    if authorization.protocol_fingerprint != binding.fingerprint {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.protocol_fingerprint",
+            reason: "does not match signed protocol binding",
+        });
+    }
+    let first = transaction.inputs.first().ok_or(WalletPlanError::InvalidPlanField {
+        field: "transaction.inputs",
+        reason: "protocol authorization requires at least one input",
+    })?;
+    if transaction
+        .inputs
+        .iter()
+        .any(|input| input.public_key != first.public_key)
+    {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "transaction.inputs",
+            reason: "protocol authorization requires one wallet signing key",
+        });
+    }
+
+    let public_key: [u8; 32] = hex::decode(&first.public_key)
+        .map_err(|_| WalletPlanError::InvalidPublicKey {
+            reason: "must be hexadecimal",
+        })?
+        .try_into()
+        .map_err(|_| WalletPlanError::InvalidPublicKey {
+            reason: "must encode exactly 32 bytes",
+        })?;
+    let signature: [u8; 64] = hex::decode(&authorization.signature)
+        .map_err(|_| WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.signature",
+            reason: "must be hexadecimal",
+        })?
+        .try_into()
+        .map_err(|_| WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.signature",
+            reason: "must encode exactly 64 bytes",
+        })?;
+
+    let verifying_key =
+        VerifyingKey::from_bytes(&public_key).map_err(|_| WalletPlanError::InvalidPublicKey {
+            reason: "is not a valid Ed25519 public key",
+        })?;
+    let message = wallet_protocol_authorization_message_v1(binding, transaction)?;
+    verifying_key
+        .verify(&message, &Signature::from_bytes(&signature))
+        .map_err(|_| WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.signature",
+            reason: "does not authorize the bound protocol identity",
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalletPlanSigner {
@@ -29,6 +181,8 @@ pub struct WalletSignedTransaction {
     pub review: WalletReviewSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     pub transaction: Transaction,
 }
 
@@ -135,12 +289,21 @@ fn sign_with_secret(
             reason: "prepared signing message is not canonical hexadecimal",
         })?;
     let signature_hex = hex::encode(signing_key.sign(&message).to_bytes());
-    finalize_signed_transaction(prepared, signature_hex)
+    let protocol_authorization_v1 = match &prepared.protocol_binding_v2 {
+        Some(binding) => Some(sign_wallet_protocol_authorization_v1(
+            &signing_key,
+            binding,
+            &prepared.transaction,
+        )?),
+        None => None,
+    };
+    finalize_signed_transaction(prepared, signature_hex, protocol_authorization_v1)
 }
 
 fn finalize_signed_transaction(
     prepared: WalletSigningPreparation,
     signature_hex: String,
+    protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
 ) -> Result<WalletSignedTransaction, WalletPlanError> {
     let WalletSigningPreparation {
         network,
@@ -163,6 +326,17 @@ fn finalize_signed_transaction(
             reason: "changed after reviewed signing preparation",
         });
     }
+    if let (Some(binding), Some(authorization)) =
+        (&protocol_binding_v2, &protocol_authorization_v1)
+    {
+        verify_wallet_protocol_authorization_v1(binding, &transaction, authorization)?;
+    } else if protocol_binding_v2.is_some() || protocol_authorization_v1.is_some() {
+        return Err(WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1",
+            reason: "must be present exactly when protocol_binding_v2 is present",
+        });
+    }
+
     for input in &mut transaction.inputs {
         input.signature = signature_hex.clone();
     }
@@ -175,6 +349,7 @@ fn finalize_signed_transaction(
         network,
         review,
         protocol_binding_v2,
+        protocol_authorization_v1,
         transaction,
     })
 }
