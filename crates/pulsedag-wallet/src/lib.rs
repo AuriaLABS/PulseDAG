@@ -57,8 +57,7 @@ pub use plan::{
     build_transaction_plan, build_transaction_plan_with_safety, derive_wallet_plan_nonce_v1,
     WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletProtocolBindingV2,
     WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan,
-    WALLET_NONCE_DOMAIN_V1,
+    WalletTransactionPlan, WALLET_NONCE_DOMAIN_V1,
 };
 pub use pulse_view::{
     wallet_covenant_delay_pulse, wallet_pulse_view_v1, WalletPulseAdmissionV1, WalletPulseV1Error,
