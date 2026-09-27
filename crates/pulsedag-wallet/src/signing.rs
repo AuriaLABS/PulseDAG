@@ -45,12 +45,11 @@ pub fn wallet_protocol_authorization_message_v1(
         });
     }
 
-    let fingerprint = hex::decode(&binding.fingerprint).map_err(|_| {
-        WalletPlanError::InvalidPlanField {
+    let fingerprint =
+        hex::decode(&binding.fingerprint).map_err(|_| WalletPlanError::InvalidPlanField {
             field: "protocol_binding_v2.fingerprint",
             reason: "must be canonical hexadecimal",
-        }
-    })?;
+        })?;
     if fingerprint.len() != 32 {
         return Err(WalletPlanError::InvalidPlanField {
             field: "protocol_binding_v2.fingerprint",
@@ -67,10 +66,11 @@ pub fn wallet_protocol_authorization_message_v1(
         .map_err(WalletPlanError::Build)?;
 
     let domain = WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.as_bytes();
-    let domain_len = u32::try_from(domain.len()).map_err(|_| WalletPlanError::InvalidPlanField {
-        field: "protocol_authorization_v1.domain",
-        reason: "domain length exceeds u32",
-    })?;
+    let domain_len =
+        u32::try_from(domain.len()).map_err(|_| WalletPlanError::InvalidPlanField {
+            field: "protocol_authorization_v1.domain",
+            reason: "domain length exceeds u32",
+        })?;
     let signing_len =
         u32::try_from(signing_bytes.len()).map_err(|_| WalletPlanError::InvalidPlanField {
             field: "protocol_authorization_v1.signing_message",
@@ -117,10 +117,13 @@ pub fn verify_wallet_protocol_authorization_v1(
             reason: "does not match signed protocol binding",
         });
     }
-    let first = transaction.inputs.first().ok_or(WalletPlanError::InvalidPlanField {
-        field: "transaction.inputs",
-        reason: "protocol authorization requires at least one input",
-    })?;
+    let first = transaction
+        .inputs
+        .first()
+        .ok_or(WalletPlanError::InvalidPlanField {
+            field: "transaction.inputs",
+            reason: "protocol authorization requires at least one input",
+        })?;
     if transaction
         .inputs
         .iter()
@@ -326,8 +329,7 @@ fn finalize_signed_transaction(
             reason: "changed after reviewed signing preparation",
         });
     }
-    if let (Some(binding), Some(authorization)) =
-        (&protocol_binding_v2, &protocol_authorization_v1)
+    if let (Some(binding), Some(authorization)) = (&protocol_binding_v2, &protocol_authorization_v1)
     {
         verify_wallet_protocol_authorization_v1(binding, &transaction, authorization)?;
     } else if protocol_binding_v2.is_some() || protocol_authorization_v1.is_some() {
@@ -643,14 +645,13 @@ mod tests {
         verify_wallet_protocol_authorization_v1(binding, &signed.transaction, authorization)
             .expect("full protocol identity authorization");
 
-        let foreign_binding = WalletProtocolBindingV2::new(
-            ProtocolActivationIdentity::activated_v2(
+        let foreign_binding =
+            WalletProtocolBindingV2::new(ProtocolActivationIdentity::activated_v2(
                 CHAIN_ID,
                 "same-chain-id-different-genesis",
                 "ghostdag-order-v1",
-            ),
-        )
-        .expect("foreign binding");
+            ))
+            .expect("foreign binding");
         let mut relabeled_authorization = authorization.clone();
         relabeled_authorization.protocol_fingerprint = foreign_binding.fingerprint.clone();
         assert!(
