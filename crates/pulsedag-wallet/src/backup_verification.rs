@@ -539,6 +539,25 @@ mod tests {
             verify_wallet_backup_verification_receipt(&receipt, &foreign),
             Err(WalletBackupVerificationError::IdentityMismatch)
         ));
+
+        let substitute_key = SigningKey::from_bytes(&[8_u8; 32]);
+        let mut substituted_signer = receipt.clone();
+        substituted_signer.signer_public_key_hex =
+            hex::encode(substitute_key.verifying_key().to_bytes());
+        let substitute_message = canonical_receipt_message(
+            &substituted_signer.network_profile,
+            &substituted_signer.chain_id,
+            &substituted_signer.wallet_anchor_address,
+            &substituted_signer.manifest_checksum_hex,
+            substituted_signer.manifest_account,
+        )
+        .unwrap();
+        substituted_signer.signature_hex =
+            hex::encode(substitute_key.sign(&substitute_message).to_bytes());
+        assert!(matches!(
+            verify_wallet_backup_verification_receipt(&substituted_signer, &receipt_identity(&receipt)),
+            Err(WalletBackupVerificationError::AnchorSignerMismatch)
+        ));
     }
 
     #[test]
