@@ -94,6 +94,7 @@ struct TxPreviewArgs {
     pending_journal: PathBuf,
     utxos_file: PathBuf,
     relay: String,
+    protocol_fingerprint: String,
     network_profile: String,
     chain_id: String,
     to: String,
@@ -413,6 +414,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "pending-journal",
                     "utxos-file",
                     "relay",
+                    "protocol-fingerprint",
                     "network-profile",
                     "chain-id",
                     "to",
@@ -436,6 +438,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
                 relay: required(&flags, "relay")?,
+                protocol_fingerprint: required(&flags, "protocol-fingerprint")?,
                 network_profile: required(&flags, "network-profile")?,
                 chain_id: required(&flags, "chain-id")?,
                 to: required(&flags, "to")?,
@@ -845,7 +848,24 @@ async fn run_tx_preview(
         args.ack_spend_all,
         args.ack_high_fee,
     );
+    if args.protocol_fingerprint.len() != 64
+        || !args
+            .protocol_fingerprint
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_input(
+            "--protocol-fingerprint must be canonical lowercase SHA-256 hex",
+        )
+        .into());
+    }
     let protocol = fetch_protocol_identity(&args.relay, &expected_network).await?;
+    if protocol.protocol_identity_fingerprint != args.protocol_fingerprint {
+        return Err(invalid_input(
+            "relay protocol identity does not match the expected launch fingerprint",
+        )
+        .into());
+    }
     let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
@@ -1269,6 +1289,8 @@ mod tests {
                 "utxos.json",
                 "--relay",
                 "https://relay.example",
+                "--protocol-fingerprint",
+                "1111111111111111111111111111111111111111111111111111111111111111",
                 "--network-profile",
                 "public-testnet",
                 "--chain-id",
@@ -1430,6 +1452,8 @@ mod tests {
             "utxos.json",
             "--relay",
             "https://relay.example",
+            "--protocol-fingerprint",
+            "1111111111111111111111111111111111111111111111111111111111111111",
             "--network-profile",
             "public-testnet",
             "--chain-id",
