@@ -509,6 +509,20 @@ fn parse_command() -> CliResult<Command> {
     parse_command_from(env::args().skip(1))
 }
 
+fn validate_protocol_fingerprint_arg(value: &str) -> CliResult<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_input(
+            "--protocol-fingerprint must be canonical lowercase SHA-256 hex",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn strip_line_ending(mut value: String) -> String {
     while value.ends_with('\n') || value.ends_with('\r') {
         value.pop();
@@ -848,17 +862,7 @@ async fn run_tx_preview(
         args.ack_spend_all,
         args.ack_high_fee,
     );
-    if args.protocol_fingerprint.len() != 64
-        || !args
-            .protocol_fingerprint
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        return Err(invalid_input(
-            "--protocol-fingerprint must be canonical lowercase SHA-256 hex",
-        )
-        .into());
-    }
+    validate_protocol_fingerprint_arg(&args.protocol_fingerprint)?;
     let protocol = fetch_protocol_identity(&args.relay, &expected_network).await?;
     if protocol.protocol_identity_fingerprint != args.protocol_fingerprint {
         return Err(invalid_input(
@@ -1274,6 +1278,14 @@ mod tests {
             "secret"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn protocol_fingerprint_pin_requires_canonical_lowercase_sha256() {
+        assert!(validate_protocol_fingerprint_arg(&"11".repeat(32)).is_ok());
+        assert!(validate_protocol_fingerprint_arg(&"AA".repeat(32)).is_err());
+        assert!(validate_protocol_fingerprint_arg("abc").is_err());
+        assert!(validate_protocol_fingerprint_arg(&"gg".repeat(32)).is_err());
     }
 
     #[test]
