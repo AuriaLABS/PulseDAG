@@ -68,6 +68,8 @@ jobs:
             .claim_boundary.selects_production_cadence == false and
             .claim_boundary.freezes_network_identity == false and
             .claim_boundary.authorizes_launch == false and
+            (.monetary_policy_fingerprint | type) == "string" and
+            (.legacy_height_subsidy_authority.unexpected_live_calls | length) == 0 and
             (.v3_live_forbidden_legacy_authority_hits | length) == 0 and
             (.errors | length) == 0
           ' ci-evidence/v3-monetary-reachability/static-reachability.json >/dev/null
