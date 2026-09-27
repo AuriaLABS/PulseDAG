@@ -842,15 +842,36 @@ fn require_backup_verified(
 
 fn run_backup_verify(
     args: BackupVerifyArgs,
-    password: &SecretString,
+    secrets: RestoreSecrets,
 ) -> CliResult<BackupVerifyOutput> {
     let manifest = read_manifest(&args.manifest)?;
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
+    let mut session = unlocked_session(&keystore, &secrets.password)?;
     let identity = session
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+
+    let recovery_seed =
+        wallet_seed_from_mnemonic(&secrets.mnemonic, secrets.bip39_passphrase.as_ref())?;
+    let recovery_network =
+        WalletNetworkContext::new(&identity.network_profile, &identity.chain_id)?;
+    let recovery_anchor = derive_wallet_key_from_seed(
+        &recovery_seed,
+        &recovery_network,
+        0,
+        WalletDerivationBranch::Receive,
+        0,
+    )?;
+    if recovery_anchor.address() != identity.address {
+        return Err(invalid_input(
+            "recovery mnemonic/passphrase does not restore this wallet anchor",
+        )
+        .into());
+    }
+    drop(recovery_anchor);
+    drop(recovery_seed);
+
     let receipt = create_wallet_backup_verification_receipt(&session, &manifest)?;
     let receipt_path = match persist_wallet_backup_verification_receipt(&args.keystore, &receipt) {
         Ok(path) => path,
@@ -1166,8 +1187,8 @@ async fn run() -> CliResult<()> {
         }
         Command::WatchImport(args) => write_json(&run_watch_import(args)?),
         Command::BackupVerify(args) => {
-            let password = read_password_from_stdin()?;
-            write_json(&run_backup_verify(args, &password)?)
+            let secrets = read_restore_secrets_from_stdin()?;
+            write_json(&run_backup_verify(args, secrets)?)
         }
         Command::Balance(args) => write_json(&run_balance(args).await?),
         Command::Utxos(args) => write_json(&run_utxos(args).await?),
@@ -1290,7 +1311,11 @@ mod tests {
                 keystore: keystore_path.clone(),
                 manifest: manifest_path,
             },
-            &SecretString::new(PASSWORD),
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
         )
         .expect("backup verify");
         assert!(verified.verified);
@@ -1298,6 +1323,21 @@ mod tests {
             verified.initialization_state,
             WalletInitializationState::BackupVerified
         );
+
+        let wrong_backup = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: dir.join("watch.json"),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(
+                    "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                ),
+                bip39_passphrase: None,
+            },
+        );
+        assert!(wrong_backup.is_err());
         assert!(require_backup_verified(&keystore_path, &identity).is_ok());
 
         let receipt_path = wallet_backup_verification_receipt_path(&keystore_path).unwrap();
