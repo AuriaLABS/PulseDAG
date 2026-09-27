@@ -60,6 +60,16 @@ The v1 namespace exposes read-mostly public chain, explorer, wallet-broadcast, m
 
 No smart-contract endpoints are part of API v1. `contracts_enabled` on `/status` must remain `false` on the Task31 line.
 
+### Activated protocol identity on node status
+
+`GET /api/v1/status` / `GET /status` exposes the persisted activated protocol identity separately from the internal runtime consensus selector:
+
+- `protocol_consensus_mode`: activated protocol mode;
+- `protocol_identity`: the full persisted `ProtocolActivationIdentity` when an activated identity exists, otherwise `null`;
+- `protocol_identity_fingerprint`: SHA-256 fingerprint derived from that exact persisted identity, otherwise `null`.
+
+Wallets must not reconstruct signing identity from operator defaults. Transaction-v2 preparation may consume these fields only after also verifying release/network identity; a degraded or stale status response is not authorization evidence. The activated identity binds chain ID, genesis, transaction/header protocol versions, consensus mode and DAG-ordering identity.
+
 ### P2P diagnostics payload (historical v2.2.15 fields, still current)
 
 `GET /api/v1/p2p/status` / `GET /p2p/status` remains a public, read-only diagnostic endpoint. It includes operator fields for chain-id isolation and peer troubleshooting without moving admin-only data onto the public surface:
