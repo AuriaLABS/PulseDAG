@@ -17,14 +17,15 @@ use pulsedag_wallet::{
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
-    WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolBindingV2, WalletReviewSummary,
     WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
     WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
-    fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast, submit_prepared,
+    fetch_protocol_identity, fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast,
+    submit_prepared,
     AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput,
     PulseObservationOutput, RelayEnvelope,
 };
@@ -92,6 +93,7 @@ struct TxPreviewArgs {
     keystore: PathBuf,
     pending_journal: PathBuf,
     utxos_file: PathBuf,
+    relay: String,
     network_profile: String,
     chain_id: String,
     to: String,
@@ -203,6 +205,8 @@ struct TxPreviewOutput {
 struct TxSignOutput {
     network: WalletNetworkIdentity,
     review: WalletReviewSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_binding_v2: Option<WalletProtocolBindingV2>,
     final_txid: String,
     relay: RelayEnvelope,
 }
@@ -408,6 +412,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "keystore",
                     "pending-journal",
                     "utxos-file",
+                    "relay",
                     "network-profile",
                     "chain-id",
                     "to",
@@ -430,6 +435,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
+                relay: required(&flags, "relay")?,
                 network_profile: required(&flags, "network-profile")?,
                 chain_id: required(&flags, "chain-id")?,
                 to: required(&flags, "to")?,
@@ -803,7 +809,10 @@ fn run_backup_verify(
     })
 }
 
-fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxPreviewOutput> {
+async fn run_tx_preview(
+    args: TxPreviewArgs,
+    password: &SecretString,
+) -> CliResult<TxPreviewOutput> {
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
     let mut session = unlocked_session(&keystore, password)?;
     let identity = session
@@ -833,13 +842,15 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
         args.ack_spend_all,
         args.ack_high_fee,
     );
+    let protocol = fetch_protocol_identity(&args.relay, &expected_network).await?;
     let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
         intent,
         &available_utxos,
         safety_acknowledgements,
-    )?;
+    )?
+    .bind_activated_v2_protocol(protocol.protocol_identity)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let snapshot = pending_store.load_or_new(&plan.network)?;
     snapshot
@@ -927,6 +938,7 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     Ok(TxSignOutput {
         network: signed.network,
         review: signed.review,
+        protocol_binding_v2: signed.protocol_binding_v2,
         final_txid,
         relay: RelayEnvelope {
             transaction: signed.transaction,
@@ -1077,7 +1089,7 @@ async fn run() -> CliResult<()> {
         Command::Pulse(args) => write_json(&run_pulse(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
-            write_json(&run_tx_preview(args, &password)?)
+            write_json(&run_tx_preview(args, &password).await?)
         }
         Command::TxSign(args) => {
             let password = read_password_from_stdin()?;
