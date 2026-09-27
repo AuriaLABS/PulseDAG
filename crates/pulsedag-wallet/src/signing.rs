@@ -186,8 +186,9 @@ mod tests {
 
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use pulsedag_core::{
-        address_from_public_key,
+        address_from_public_key, compute_txid_v2, signing_message_v2,
         types::{OutPoint, Utxo},
+        ProtocolActivationIdentity,
     };
     use rand::{rngs::OsRng, RngCore};
 
@@ -392,6 +393,72 @@ mod tests {
                 WalletSessionError::WrongSecretKind
             ))
         ));
+        cleanup(dir, file, session);
+    }
+
+    #[test]
+    fn activated_v2_high_level_plan_signs_chain_bound_bytes_and_txid() {
+        let (dir, file, anchor) = seed_fixture("activated-v2");
+        let mut session = WalletSession::new(policy(Duration::from_secs(5))).expect("session");
+        session
+            .unlock(&file, &SecretString::new(PASSWORD))
+            .expect("unlock");
+
+        let identity = ProtocolActivationIdentity::activated_v2(
+            CHAIN_ID,
+            "wallet-signing-domain-test-genesis",
+            "ghostdag-order-v1",
+        );
+        let plan = transaction_plan(&anchor, CHAIN_ID)
+            .bind_activated_v2_protocol(identity.clone())
+            .expect("bind activated-v2 identity");
+        assert_eq!(plan.transaction.version, pulsedag_core::TRANSACTION_VERSION_V2);
+
+        let signed = session
+            .sign_transaction_plan(
+                &plan,
+                WalletPlanSigner::DeterministicV2 {
+                    account: 0,
+                    branch: WalletDerivationBranch::Receive,
+                    index: 0,
+                },
+            )
+            .expect("sign activated-v2 plan");
+
+        let binding = signed
+            .protocol_binding_v2
+            .as_ref()
+            .expect("signed result preserves protocol binding");
+        assert_eq!(binding.identity, identity);
+        assert_eq!(
+            binding.fingerprint,
+            binding.identity.fingerprint().expect("fingerprint")
+        );
+        assert_eq!(
+            signed.transaction.txid,
+            compute_txid_v2(&signed.transaction, CHAIN_ID).expect("v2 txid")
+        );
+
+        let first = signed.transaction.inputs.first().expect("signed input");
+        let public_key_bytes: [u8; 32] = hex::decode(&first.public_key)
+            .expect("public key hex")
+            .try_into()
+            .expect("public key length");
+        let signature_bytes: [u8; 64] = hex::decode(&first.signature)
+            .expect("signature hex")
+            .try_into()
+            .expect("signature length");
+        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes).expect("verifying key");
+        let signature = Signature::from_bytes(&signature_bytes);
+        let message = signing_message_v2(&signed.transaction, CHAIN_ID).expect("v2 signing bytes");
+        verifying_key
+            .verify(&message, &signature)
+            .expect("chain-bound v2 signature");
+
+        let wrong_domain =
+            signing_message_v2(&signed.transaction, "pulsedag-wrong-chain").expect("wrong domain");
+        assert!(verifying_key.verify(&wrong_domain, &signature).is_err());
+
         cleanup(dir, file, session);
     }
 
