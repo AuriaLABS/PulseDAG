@@ -72,9 +72,8 @@ pub struct WalletProtocolBindingV2 {
 
 impl WalletProtocolBindingV2 {
     pub fn new(identity: ProtocolActivationIdentity) -> Result<Self, WalletPlanError> {
-        let fingerprint =
-            crate::protocol_v2::verify_wallet_v2_node_identity(&identity, &identity)
-                .map_err(WalletPlanError::Build)?;
+        let fingerprint = crate::protocol_v2::verify_wallet_v2_node_identity(&identity, &identity)
+            .map_err(WalletPlanError::Build)?;
         Ok(Self {
             identity,
             fingerprint,
@@ -478,9 +477,8 @@ impl WalletTransactionPlan {
         let binding = WalletProtocolBindingV2::new(identity)?;
         binding.validate_for_network(&self.network)?;
         self.transaction.version = TRANSACTION_VERSION_V2;
-        self.transaction.txid =
-            compute_txid_v2(&self.transaction, &binding.identity.chain_id)
-                .map_err(WalletPlanError::Build)?;
+        self.transaction.txid = compute_txid_v2(&self.transaction, &binding.identity.chain_id)
+            .map_err(WalletPlanError::Build)?;
         self.protocol_binding_v2 = Some(binding);
         self.validate_structure()?;
         Ok(self)
