@@ -69,6 +69,7 @@ pub mod selection_v2;
 pub mod snapshot_transfer;
 pub mod state;
 pub mod state_replay_v2;
+pub mod state_replay_v3;
 pub mod sync_pipeline;
 pub mod tx;
 pub mod tx_protocol;
@@ -336,6 +337,10 @@ pub use ordering_v2::{
 pub use state_replay_v2::{
     materialize_authoritative_state_v2, rebuild_authoritative_state_v2,
     verify_authoritative_state_snapshot_v2, StateReplayV2, StateReplayV2Diagnostics,
+};
+pub use state_replay_v3::{
+    mature_reward_prefix_score_v3, rebuild_authoritative_state_v3, StateReplayV3,
+    StateReplayV3Diagnostics, REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 pub use apply::{
