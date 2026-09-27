@@ -427,10 +427,7 @@ fn encode_len_prefixed(
     Ok(())
 }
 
-fn validate_text(
-    field: &'static str,
-    value: &str,
-) -> Result<(), WalletBackupVerificationError> {
+fn validate_text(field: &'static str, value: &str) -> Result<(), WalletBackupVerificationError> {
     if value.is_empty() || value.trim() != value {
         return Err(invalid(field, "must be non-empty canonical text"));
     }
@@ -474,10 +471,7 @@ fn ensure_size(actual: u64) -> Result<(), WalletBackupVerificationError> {
     Ok(())
 }
 
-fn invalid(
-    field: &'static str,
-    reason: &'static str,
-) -> WalletBackupVerificationError {
+fn invalid(field: &'static str, reason: &'static str) -> WalletBackupVerificationError {
     WalletBackupVerificationError::InvalidReceipt { field, reason }
 }
 
@@ -555,7 +549,10 @@ mod tests {
         substituted_signer.signature_hex =
             hex::encode(substitute_key.sign(&substitute_message).to_bytes());
         assert!(matches!(
-            verify_wallet_backup_verification_receipt(&substituted_signer, &receipt_identity(&receipt)),
+            verify_wallet_backup_verification_receipt(
+                &substituted_signer,
+                &receipt_identity(&receipt)
+            ),
             Err(WalletBackupVerificationError::AnchorSignerMismatch)
         ));
     }
