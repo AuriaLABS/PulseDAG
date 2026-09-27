@@ -106,10 +106,9 @@ REQUIRED_REGRESSION_MARKERS = {
 }
 
 TEST_MODULE_RE = re.compile(
-    r"(?ms)^\\s*#\\[cfg\\(test\\)\\]\\s*\\n\\s*mod\\s+tests\\s*\\{"
+    r"(?ms)^\s*#\[cfg\(test\)\]\s*\n\s*mod\s+tests\s*\{"
 )
-BLOCK_SUBSIDY_RE = re.compile(r"\\bblock_subsidy\\s*\\(")
-BLOCK_SUBSIDY_DEF_RE = re.compile(r"\\bfn\\s+block_subsidy\\s*\\(")
+BLOCK_SUBSIDY_RE = re.compile(r"\bblock_subsidy\s*\(")
 
 
 def production_source(text: str) -> str:
@@ -118,7 +117,7 @@ def production_source(text: str) -> str:
 
 
 def line_for_offset(text: str, offset: int) -> int:
-    return text.count("\\n", 0, offset) + 1
+    return text.count("\n", 0, offset) + 1
 
 
 def rust_source_paths(root: Path) -> list[Path]:
@@ -127,8 +126,7 @@ def rust_source_paths(root: Path) -> list[Path]:
         top = root / base
         if not top.exists():
             continue
-        for path in top.glob("*/src/**/*.rs"):
-            paths.append(path)
+        paths.extend(top.glob("*/src/**/*.rs"))
     return sorted(paths)
 
 
@@ -153,7 +151,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         rp = rel(root, path)
         for match in BLOCK_SUBSIDY_RE.finditer(text):
             prefix = text[max(0, match.start() - 16):match.start()]
-            is_definition = bool(re.search(r"\\bfn\\s+$", prefix))
+            is_definition = bool(re.search(r"\bfn\s+$", prefix))
             item = {"path": rp, "line": line_for_offset(text, match.start())}
             if is_definition:
                 definitions.append(item)
@@ -201,7 +199,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
 
     monetary_src = read_required(root, "crates/pulsedag-core/src/monetary_v3.rs")
     fp_match = re.search(
-        r'MONETARY_POLICY_FINGERPRINT_V3:\\s*&str\\s*=\\s*"([0-9a-f]{64})"',
+        r'MONETARY_POLICY_FINGERPRINT_V3:\s*&str\s*=\s*"([0-9a-f]{64})"',
         monetary_src,
     )
     if not fp_match:
@@ -241,16 +239,16 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
 
 def self_test() -> None:
     sample = (
-        "fn live() { block_subsidy(1); }\\n"
-        "#[cfg(test)]\\n"
-        "mod tests {\\n"
-        "  fn test_only() { block_subsidy(2); }\\n"
-        "}\\n"
+        "fn live() { block_subsidy(1); }\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "  fn test_only() { block_subsidy(2); }\n"
+        "}\n"
     )
     prod = production_source(sample)
     assert "block_subsidy(1)" in prod
     assert "block_subsidy(2)" not in prod
-    assert line_for_offset("a\\nb\\nc", 2) == 2
+    assert line_for_offset("a\nb\nc", 2) == 2
     print("v3 monetary reachability auditor self-test: PASS")
 
 
@@ -274,7 +272,7 @@ def main() -> int:
     evidence = audit(root, args.candidate_sha, args.candidate_tree)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    out.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(evidence, sort_keys=True))
     return 0 if evidence["result"] == "PASS" else 1
 
