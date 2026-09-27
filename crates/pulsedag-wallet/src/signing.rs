@@ -129,12 +129,11 @@ fn sign_with_secret(
     let signing_key = SigningKey::from_bytes(secret.expose_secret());
     let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
     let prepared = plan.prepare_signing(network, &public_key_hex)?;
-    let message = hex::decode(&prepared.signing_message).map_err(|_| {
-        WalletPlanError::InvalidPlanField {
+    let message =
+        hex::decode(&prepared.signing_message).map_err(|_| WalletPlanError::InvalidPlanField {
             field: "signing_message",
             reason: "prepared signing message is not canonical hexadecimal",
-        }
-    })?;
+        })?;
     let signature_hex = hex::encode(signing_key.sign(&message).to_bytes());
     finalize_signed_transaction(prepared, signature_hex)
 }
@@ -412,7 +411,10 @@ mod tests {
         let plan = transaction_plan(&anchor, CHAIN_ID)
             .bind_activated_v2_protocol(identity.clone())
             .expect("bind activated-v2 identity");
-        assert_eq!(plan.transaction.version, pulsedag_core::TRANSACTION_VERSION_V2);
+        assert_eq!(
+            plan.transaction.version,
+            pulsedag_core::TRANSACTION_VERSION_V2
+        );
 
         let signed = session
             .sign_transaction_plan(
