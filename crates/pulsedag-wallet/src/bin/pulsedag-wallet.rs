@@ -624,6 +624,12 @@ fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
             invalid_input("wallet CLI signs deterministic_plan_v1 transaction plans only").into(),
         );
     }
+    if plan.protocol_binding_v2.is_none() {
+        return Err(invalid_input(
+            "wallet CLI requires an activated-v2 protocol binding from tx-preview",
+        )
+        .into());
+    }
     Ok(plan)
 }
 
@@ -1001,6 +1007,12 @@ fn ensure_broadcast_reservation_binding(
 async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
     let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
     let signed = parse_signed_broadcast(&bytes)?;
+    if signed.protocol_binding_v2.is_none() {
+        return Err(invalid_input(
+            "wallet CLI refuses unbound legacy-v1 signed envelopes",
+        )
+        .into());
+    }
 
     // Complete all local/remote preflight before crossing the durable submit boundary.
     let prepared = prepare_broadcast(&args.relay, &signed).await?;
