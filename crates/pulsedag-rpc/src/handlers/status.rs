@@ -939,9 +939,10 @@ mod tests {
             .expect("activated-v2 status must expose persisted protocol identity");
         assert_eq!(identity.consensus_mode.to_string(), "ghostdag_v1");
         assert_eq!(identity.chain_id, "pulsedag-private-v2.4.0");
+        let expected_fingerprint = identity.fingerprint().unwrap();
         assert_eq!(
             data.protocol_identity_fingerprint.as_deref(),
-            Some(identity.fingerprint().unwrap().as_str())
+            Some(expected_fingerprint.as_str())
         );
         assert!(!data.high_cadence_allowed);
         assert_eq!(
