@@ -393,17 +393,17 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
                 ));
             }
             let expected_fingerprint =
-                verify_wallet_v2_node_identity(&binding.identity, &binding.identity)
-                    .map_err(|error| {
-                        relay_error(format!("signed protocol identity is invalid: {error}"))
-                    })?;
+                verify_wallet_v2_node_identity(&binding.identity, &binding.identity).map_err(
+                    |error| relay_error(format!("signed protocol identity is invalid: {error}")),
+                )?;
             if binding.fingerprint != expected_fingerprint {
                 return Err(relay_error(
                     "signed protocol fingerprint does not match signed protocol identity",
                 ));
             }
-            compute_txid_v2(transaction, &binding.identity.chain_id)
-                .map_err(|error| relay_error(format!("v2 transaction identity is invalid: {error}")))?
+            compute_txid_v2(transaction, &binding.identity.chain_id).map_err(|error| {
+                relay_error(format!("v2 transaction identity is invalid: {error}"))
+            })?
         }
         None => {
             if transaction.version != 1 {
@@ -680,9 +680,7 @@ fn protocol_identity_output(
         .data
         .ok_or_else(|| relay_error("protocol identity response is missing data"))?;
     if data.rpc_response_degraded || data.rpc_response_stale {
-        return Err(relay_error(
-            "protocol identity status is degraded or stale",
-        ));
+        return Err(relay_error("protocol identity status is degraded or stale"));
     }
     if data.chain_id != release_identity.network.chain_id {
         return Err(relay_error(
@@ -1487,11 +1485,7 @@ mod tests {
         assert!(ensure_protocol_binding_matches_observed(&binding, &foreign).is_err());
 
         let mut tampered = signed.clone();
-        tampered
-            .protocol_binding_v2
-            .as_mut()
-            .unwrap()
-            .fingerprint = "00".repeat(32);
+        tampered.protocol_binding_v2.as_mut().unwrap().fingerprint = "00".repeat(32);
         assert!(validate_signed_broadcast(&tampered).is_err());
 
         let mut unbound_v2 = signed;
@@ -1665,18 +1659,17 @@ mod tests {
             "ghostdag-order-v1",
         );
 
-        let output = protocol_identity_output(
-            &release,
-            protocol_status_response(Some(identity.clone())),
-        )
-        .unwrap();
+        let output =
+            protocol_identity_output(&release, protocol_status_response(Some(identity.clone())))
+                .unwrap();
         assert_eq!(output.protocol_identity, identity);
         assert_eq!(
             output.protocol_identity_fingerprint,
             output.protocol_identity.fingerprint().unwrap()
         );
 
-        let mut wrong_fingerprint = protocol_status_response(Some(output.protocol_identity.clone()));
+        let mut wrong_fingerprint =
+            protocol_status_response(Some(output.protocol_identity.clone()));
         wrong_fingerprint
             .data
             .as_mut()
@@ -1717,8 +1710,7 @@ mod tests {
     #[test]
     fn protocol_identity_release_requires_status_endpoint() {
         let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
-        let mut response =
-            protocol_identity_release_response("testnet", "pulsedag-testnet");
+        let mut response = protocol_identity_release_response("testnet", "pulsedag-testnet");
         response.data.as_mut().unwrap().core_endpoints.clear();
         assert!(validate_protocol_status_identity(&network, response).is_err());
     }
