@@ -5,6 +5,7 @@ use crate::{
     errors::PulseError,
     genesis::init_chain_state,
     genesis_v2::init_chain_state_v2,
+    genesis_v3::init_chain_state_v3,
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, GHOSTDAG_V1_ORDERING_VERSION},
     protocol::{BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2},
     state::{ChainState, UtxoState},
@@ -37,6 +38,24 @@ fn replay_base_state_for_genesis(state: &ChainState) -> Result<ChainState, Pulse
         .ok_or_else(|| {
             PulseError::NonDeterministicState("v2 replay genesis block missing".into())
         })?;
+    if genesis.transactions.is_empty() {
+        if genesis.header.version != BLOCK_HEADER_VERSION_V2 {
+            return Err(PulseError::NonDeterministicState(format!(
+                "transactionless genesis requires block header version {BLOCK_HEADER_VERSION_V2}, got {}",
+                genesis.header.version
+            )));
+        }
+
+        let rebuilt = init_chain_state_v3(state.chain_id.clone(), genesis.header.timestamp)?;
+        if rebuilt.dag.genesis_hash != state.dag.genesis_hash {
+            return Err(PulseError::NonDeterministicState(format!(
+                "chain-bound v3 zero-allocation genesis mismatch: expected {}, rebuilt {}",
+                state.dag.genesis_hash, rebuilt.dag.genesis_hash
+            )));
+        }
+        return Ok(rebuilt);
+    }
+
     let first_tx = genesis.transactions.first().ok_or_else(|| {
         PulseError::NonDeterministicState("v2 replay genesis transaction missing".into())
     })?;
@@ -451,6 +470,37 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         compact_snapshot_to_retained_blocks(full, &retained).unwrap()
+    }
+
+    #[test]
+    fn clean_chain_bound_v3_zero_allocation_genesis_replays_from_empty_utxo() {
+        let state =
+            crate::genesis_v3::init_chain_state_v3("pulsedag-v3-replay".to_string(), 1_800_000_000)
+                .unwrap();
+        let replay = rebuild_authoritative_state_v2(&state).unwrap();
+        let expected_root = state.utxo.compute_state_root().unwrap();
+
+        assert_eq!(replay.diagnostics.state_root, expected_root);
+        assert!(replay.utxo.utxos.is_empty());
+        assert!(replay.utxo.address_index.is_empty());
+        verify_authoritative_state_snapshot_v2(&state).unwrap();
+    }
+
+    #[test]
+    fn transactionless_noncanonical_v3_genesis_fails_closed() {
+        let mut state = crate::genesis_v3::init_chain_state_v3(
+            "pulsedag-v3-replay-tamper".to_string(),
+            1_800_000_000,
+        )
+        .unwrap();
+        let genesis = state.dag.genesis_hash.clone();
+        state.dag.blocks.get_mut(&genesis).unwrap().header.timestamp += 1;
+
+        let error = rebuild_authoritative_state_v2(&state)
+            .expect_err("tampered transactionless v3 genesis must fail closed");
+        assert!(error
+            .to_string()
+            .contains("zero-allocation genesis mismatch"));
     }
 
     #[test]

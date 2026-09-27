@@ -19,6 +19,11 @@ mod signing;
 mod watch_only;
 use session_v1 as session_core;
 
+pub use pulsedag_core::{
+    format_pdg_atoms_v3, parse_pdg_decimal_v3, DenominationV3Error, PdgAmountV3, PDG_DECIMALS_V3,
+    PDG_SYMBOL_V3,
+};
+
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
     generate_wallet_mnemonic, wallet_seed_from_mnemonic, WalletDerivationBranch, WalletDerivedKey,

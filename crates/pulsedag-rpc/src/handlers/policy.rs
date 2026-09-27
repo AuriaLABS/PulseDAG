@@ -57,12 +57,76 @@ impl From<pulsedag_core::MempoolResourcePolicyV1> for MempoolResourcePolicyV1Dat
     }
 }
 
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub struct MonetaryPolicyV3Data {
+    pub activation_state: &'static str,
+    pub policy_version: &'static str,
+    pub policy_fingerprint: String,
+    pub production_cadence_fingerprint: Option<String>,
+    pub production_cadence_frozen: bool,
+    pub symbol: &'static str,
+    pub decimals: u32,
+    pub atoms_per_coin: String,
+    pub max_supply_atoms: String,
+    pub genesis_issuance_atoms: String,
+    pub year1_target_issuance_atoms: String,
+    pub economic_year_seconds: u64,
+    pub half_life_years: u64,
+    pub half_life_seconds: u64,
+    pub emission_quantum_seconds: u64,
+    pub decay_factor_q64: String,
+    pub half_life_end_factor_q64: String,
+    pub terminal_half_lives: u32,
+    pub terminal_economic_year: u64,
+    pub terminal_emission_quantum: u64,
+    pub terminal_emission_seconds: u64,
+    pub coinbase_maturity_seconds: u64,
+    pub ordinary_fee_recipient_bps: u16,
+    pub consensus_burn_bps: u16,
+    pub tail_emission_atoms: String,
+    pub programmable_resource_fees_active: bool,
+}
+
+impl MonetaryPolicyV3Data {
+    pub fn candidate_unactivated() -> Self {
+        Self {
+            activation_state: "candidate_not_activated",
+            policy_version: pulsedag_core::MONETARY_POLICY_VERSION_V3,
+            policy_fingerprint: pulsedag_core::monetary_policy_fingerprint_v3(),
+            production_cadence_fingerprint: None,
+            production_cadence_frozen: false,
+            symbol: pulsedag_core::PDG_SYMBOL_V3,
+            decimals: pulsedag_core::PDG_DECIMALS_V3,
+            atoms_per_coin: pulsedag_core::ATOMS_PER_COIN.to_string(),
+            max_supply_atoms: pulsedag_core::MAX_SUPPLY_ATOMS.to_string(),
+            genesis_issuance_atoms: pulsedag_core::GENESIS_ISSUANCE_ATOMS.to_string(),
+            year1_target_issuance_atoms: pulsedag_core::YEAR1_TARGET_ISSUANCE_ATOMS.to_string(),
+            economic_year_seconds: pulsedag_core::ECONOMIC_YEAR_SECONDS,
+            half_life_years: pulsedag_core::HALF_LIFE_YEARS,
+            half_life_seconds: pulsedag_core::HALF_LIFE_SECONDS,
+            emission_quantum_seconds: pulsedag_core::EMISSION_QUANTUM_SECONDS,
+            decay_factor_q64: pulsedag_core::DECAY_FACTOR_Q64.to_string(),
+            half_life_end_factor_q64: pulsedag_core::HALF_LIFE_END_FACTOR_Q64.to_string(),
+            terminal_half_lives: pulsedag_core::TERMINAL_HALF_LIVES,
+            terminal_economic_year: pulsedag_core::TERMINAL_ECONOMIC_YEAR,
+            terminal_emission_quantum: pulsedag_core::TERMINAL_EMISSION_QUANTUM,
+            terminal_emission_seconds: pulsedag_core::TERMINAL_EMISSION_SECONDS,
+            coinbase_maturity_seconds: pulsedag_core::COINBASE_MATURITY_SECONDS,
+            ordinary_fee_recipient_bps: pulsedag_core::ORDINARY_FEE_RECIPIENT_BPS,
+            consensus_burn_bps: pulsedag_core::CONSENSUS_BURN_BPS,
+            tail_emission_atoms: pulsedag_core::TAIL_EMISSION_ATOMS.to_string(),
+            programmable_resource_fees_active: false,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct PolicyData {
     pub version: String,
     pub stage: String,
     pub mempool_v3: MempoolPolicyV3Data,
     pub mempool_resource_v1: MempoolResourcePolicyV1Data,
+    pub monetary_v3: MonetaryPolicyV3Data,
     pub mempool_policy: Vec<String>,
     pub transaction_rules: Vec<String>,
     pub block_rules: Vec<String>,
@@ -85,6 +149,7 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
         stage: operator_stage(),
         mempool_v3,
         mempool_resource_v1,
+        monetary_v3: MonetaryPolicyV3Data::candidate_unactivated(),
         mempool_policy: vec![
             "reject double spends".into(),
             "require structurally valid transactions".into(),
@@ -119,6 +184,46 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monetary_v3_policy_wire_view_is_explicitly_non_activating() {
+        let data = MonetaryPolicyV3Data::candidate_unactivated();
+        assert_eq!(data.activation_state, "candidate_not_activated");
+        assert!(!data.production_cadence_frozen);
+        assert_eq!(data.production_cadence_fingerprint, None);
+        assert_eq!(
+            data.policy_fingerprint,
+            pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3
+        );
+        assert_eq!(data.symbol, "PDG");
+        assert_eq!(data.decimals, 8);
+        assert_eq!(data.max_supply_atoms, "100000000000000000");
+        assert!(!data.programmable_resource_fees_active);
+    }
+
+    #[test]
+    fn monetary_v3_large_amounts_are_json_strings_not_unsafe_floats() {
+        let json = serde_json::to_value(MonetaryPolicyV3Data::candidate_unactivated())
+            .expect("serialize monetary policy v3");
+        assert_eq!(
+            json["max_supply_atoms"],
+            serde_json::Value::String("100000000000000000".into())
+        );
+        assert_eq!(
+            json["year1_target_issuance_atoms"],
+            serde_json::Value::String("20629947401590026".into())
+        );
+        assert_eq!(
+            json["decay_factor_q64"],
+            serde_json::Value::String("18443825056137834748".into())
+        );
+        assert_eq!(
+            json["half_life_end_factor_q64"],
+            serde_json::Value::String("9223372036854774856".into())
+        );
+        assert_eq!(json["terminal_economic_year"], 171);
+        assert_eq!(json["terminal_emission_quantum"], 249660);
+    }
 
     #[test]
     fn mempool_v3_policy_wire_view_is_identity_bound_and_lossless() {

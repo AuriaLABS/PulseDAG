@@ -7,14 +7,18 @@ use std::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_activated_v2_mined_block_atomically, accept_block_atomically, evaluate_pow_for_protocol,
-    pow_validation_result, preferred_tip_hash, resolve_pow_validation_path, AcceptSource,
-    AtomicBlockAcceptance, Block, BlockAcceptanceResult, ChainState, PowValidationPath,
-    ProtocolActivationIdentity, PulseError, BLOCK_HEADER_VERSION_V1,
+    accept_activated_v2_mined_block_atomically, accept_block_atomically,
+    accept_monetary_v3_mined_block_atomically, evaluate_pow_for_protocol, pow_validation_result,
+    preferred_tip_hash, resolve_pow_validation_path, AcceptSource, AtomicBlockAcceptance, Block,
+    BlockAcceptanceResult, ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError,
+    BLOCK_HEADER_VERSION_V1,
 };
 use tokio::time::timeout;
 
 pub use super::mining_submit_legacy::MiningSubmitData;
+use super::monetary_activation_guard::{
+    ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+};
 
 const MAX_TEMPLATE_PROTOCOL_BINDINGS: usize = 4_096;
 const SUBMIT_V2_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -417,6 +421,50 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
     };
 
     let storage = state.storage();
+    let monetary_activation = match storage.protocol_monetary_activation_record() {
+        Ok(record) => record,
+        Err(error) => {
+            return rejected_response(
+                &req,
+                "storage_rejected",
+                format!("v3 monetary activation sidecar is invalid: {error}"),
+                None,
+            );
+        }
+    };
+    if let Some(record) = monetary_activation.as_ref() {
+        if record.identity != local_identity {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                "v3 monetary activation identity does not match the local protocol identity",
+                None,
+            );
+        }
+        if record.reward_finality_policy_version
+            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                format!(
+                    "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+                    record.reward_finality_policy_version,
+                    pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                ),
+                None,
+            );
+        }
+        if chain.contracts.config.enabled {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                "v3.0.0 monetary activation requires smart-contract execution to remain inactive",
+                None,
+            );
+        }
+    }
+
     let (durable_chain, activated_v2_runtime) =
         match storage.load_activated_v2_p2p_runtime_snapshot(&local_identity) {
             Ok(snapshot) => snapshot,
@@ -486,19 +534,39 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         );
     }
 
-    let acceptance = match accept_mined_block_for_protocol(
-        req.block.clone(),
-        &mut chain,
-        Some(&local_identity),
-        |block, committed_chain| {
-            storage.persist_activated_v2_p2p_block_and_runtime(
-                block,
-                &local_identity,
-                committed_chain,
-                &activated_v2_runtime,
-            )
-        },
-    ) {
+    let acceptance_result = if let Some(record) = monetary_activation.as_ref() {
+        accept_monetary_v3_mined_block_atomically(
+            req.block.clone(),
+            &mut chain,
+            AcceptSource::Rpc,
+            &local_identity,
+            &record.monetary_cadence_segments,
+            |block, committed_chain| {
+                storage.persist_activated_v2_p2p_block_and_runtime(
+                    block,
+                    &local_identity,
+                    committed_chain,
+                    &activated_v2_runtime,
+                )
+            },
+            |_block| Ok(()),
+        )
+    } else {
+        accept_mined_block_for_protocol(
+            req.block.clone(),
+            &mut chain,
+            Some(&local_identity),
+            |block, committed_chain| {
+                storage.persist_activated_v2_p2p_block_and_runtime(
+                    block,
+                    &local_identity,
+                    committed_chain,
+                    &activated_v2_runtime,
+                )
+            },
+        )
+    };
+    let acceptance = match acceptance_result {
         Ok(acceptance) => acceptance,
         Err(error) => {
             let reason_code = if matches!(&error, PulseError::StorageError(_)) {
@@ -535,6 +603,17 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     Json(req): Json<SubmitMinedBlockRequest>,
 ) -> Json<ApiResponse<MiningSubmitData>> {
     if req.block.header.version == BLOCK_HEADER_VERSION_V1 {
+        if let Err(error) = ensure_legacy_mining_disabled_when_monetary_v3_active(
+            &state,
+            "/mining/submit legacy-v1 fallback",
+        ) {
+            return rejected_response(
+                &req,
+                "protocol_mismatch",
+                format!("{MONETARY_V3_LEGACY_MINING_DISABLED}: {error}"),
+                None,
+            );
+        }
         return super::mining_submit_legacy::post_mining_submit(State(state), Json(req)).await;
     }
     post_activated_v2_mining_submit(state, req).await

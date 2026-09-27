@@ -1,0 +1,158 @@
+name: v3 monetary policy exact-candidate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/v3-monetary-policy.yml
+      - crates/pulsedag-core/src/monetary_v3.rs
+      - crates/pulsedag-core/src/monetary_audit_v3.rs
+      - crates/pulsedag-core/src/validation_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/mining_template_v3.rs
+      - crates/pulsedag-core/src/mined_block_v3.rs
+      - crates/pulsedag-core/src/network_block_v3.rs
+      - crates/pulsedag-core/src/network_runtime_v3.rs
+      - crates/pulsedag-rpc/src/handlers/policy.rs
+      - crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs
+      - crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs
+      - crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs
+      - crates/pulsedag-rpc/src/handlers/block_validate.rs
+      - docs/MONETARY_POLICY_V3_0_0.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-monetary-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-candidate:
+    name: monetary policy exact-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify canonical policy fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-monetary-policy
+          python - <<'PY'
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+          import os
+
+          src = Path("crates/pulsedag-core/src/monetary_v3.rs").read_text(encoding="utf-8")
+          docs = Path("docs/MONETARY_POLICY_V3_0_0.md").read_text(encoding="utf-8")
+
+          canonical_match = re.search(
+              r'MONETARY_POLICY_CANONICAL_V3: &\[u8\] = br#"(.*?)"#;',
+              src,
+              re.S,
+          )
+          fingerprint_match = re.search(
+              r'MONETARY_POLICY_FINGERPRINT_V3: &str =\s*"([0-9a-f]{64})";',
+              src,
+          )
+          version_match = re.search(
+              r'MONETARY_POLICY_VERSION_V3: &str = "([^"]+)";',
+              src,
+          )
+          if not canonical_match or not fingerprint_match or not version_match:
+              raise SystemExit("unable to parse frozen monetary policy identity")
+
+          canonical = canonical_match.group(1).encode("utf-8")
+          expected = fingerprint_match.group(1)
+          observed = hashlib.sha256(canonical).hexdigest()
+          if observed != expected:
+              raise SystemExit(f"policy fingerprint mismatch: expected={expected} observed={observed}")
+          if expected not in docs:
+              raise SystemExit("policy documentation does not carry the exact frozen fingerprint")
+
+          evidence = {
+              "schema": "pulsedag.v3-monetary-policy-evidence.v1",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "candidate_tree_sha": os.environ["CANDIDATE_TREE"],
+              "policy_version": version_match.group(1),
+              "policy_fingerprint": expected,
+              "canonical_sha256": observed,
+          }
+          Path("ci-evidence/v3-monetary-policy/identity.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+
+      - name: Run monetary consensus vectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core monetary_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-core monetary_audit_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-core validation_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-core reward_settlement_v3::tests -- --nocapture
+
+      - name: Run monetary RPC and legacy-fallback guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-rpc monetary_v3_ -- --nocapture
+          cargo test --locked -p pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface -- --nocapture
+
+      - name: Record evidence digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "candidate_tree_sha=$CANDIDATE_TREE"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+          } > ci-evidence/v3-monetary-policy/provenance.txt
+          find ci-evidence/v3-monetary-policy -maxdepth 1 -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 sha256sum > ci-evidence/v3-monetary-policy/SHA256SUMS
+
+      - name: Upload exact-candidate monetary evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-monetary-policy-${{ env.CANDIDATE_SHA }}
+          path: ci-evidence/v3-monetary-policy
+          if-no-files-found: error
+          retention-days: 90

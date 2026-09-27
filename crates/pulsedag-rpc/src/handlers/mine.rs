@@ -1,4 +1,9 @@
-use crate::api::{ApiResponse, MineRequest, RpcStateLike};
+use crate::{
+    api::{ApiResponse, MineRequest, RpcStateLike},
+    handlers::monetary_activation_guard::{
+        ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+    },
+};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, consensus_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
@@ -43,6 +48,11 @@ pub async fn post_mine_preview<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<MineRequest>,
 ) -> Json<ApiResponse<MinePreviewData>> {
+    if let Err(error) =
+        ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mine/preview")
+    {
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
+    }
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let parent_hashes = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
@@ -92,6 +102,9 @@ pub async fn post_mine<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<MineRequest>,
 ) -> Json<ApiResponse<MineData>> {
+    if let Err(error) = ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/mine") {
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
+    }
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
     let parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();

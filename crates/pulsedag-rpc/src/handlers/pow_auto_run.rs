@@ -1,4 +1,9 @@
-use crate::api::{ApiResponse, RpcStateLike};
+use crate::{
+    api::{ApiResponse, RpcStateLike},
+    handlers::monetary_activation_guard::{
+        ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+    },
+};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, consensus_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
@@ -41,6 +46,11 @@ pub async fn post_pow_auto_run<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<PowAutoRunRequest>,
 ) -> Json<ApiResponse<PowAutoRunData>> {
+    if let Err(error) =
+        ensure_legacy_mining_disabled_when_monetary_v3_active(&state, "/pow/auto-run")
+    {
+        return Json(ApiResponse::err(MONETARY_V3_LEGACY_MINING_DISABLED, error));
+    }
     let rounds = req.rounds.unwrap_or(3).clamp(1, 25);
     let max_tries = req.pow_max_tries.unwrap_or(10_000).min(1_000_000);
     let chain_handle = state.chain();

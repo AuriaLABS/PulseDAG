@@ -13,16 +13,19 @@ pub mod contract_v3;
 pub mod contracts_gate;
 pub mod covenant_utxo_v1;
 pub mod covenant_v1;
+pub mod denomination_v3;
 pub mod errors;
 pub mod explorer_dag_v1;
 pub mod finality_envelope_v1;
 pub mod finality_v2;
 pub mod genesis;
 pub mod genesis_v2;
+pub mod genesis_v3;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod htlc_v1;
+pub mod live_reward_settlement_v3;
 pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
@@ -30,15 +33,21 @@ pub mod mempool_replacement_v3;
 pub mod mempool_resource_v1;
 pub mod mempool_v3;
 pub mod mined_block_v2;
+pub mod mined_block_v3;
 pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
+pub mod mining_template_v3;
 pub mod mining_v2;
+pub mod monetary_audit_v3;
+pub mod monetary_v3;
 pub mod multisig_v1;
 pub mod network_block_v2;
+pub mod network_block_v3;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
+pub mod network_runtime_v3;
 pub mod network_staging_v2;
 pub mod ordering;
 pub mod ordering_v2;
@@ -54,6 +63,7 @@ pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
+pub mod reward_settlement_v3;
 pub mod selection;
 pub mod selection_v2;
 pub mod snapshot_transfer;
@@ -68,6 +78,7 @@ pub mod tx_v3;
 pub mod types;
 pub mod validation;
 pub mod validation_v2;
+pub mod validation_v3;
 pub mod vault_v1;
 pub mod verify_receipt_v1;
 pub mod wallet_pulse_v1;
@@ -85,8 +96,20 @@ pub use contracts_gate::{
     contracts_compile_identity, contracts_compile_time_executable, contracts_may_execute,
     reject_inactive_contract_apply, EXECUTABLE_CONTRACTS_COMPILED,
 };
+pub use denomination_v3::{
+    format_pdg_atoms_v3, parse_pdg_decimal_v3, DenominationV3Error, PdgAmountV3, PDG_DECIMALS_V3,
+    PDG_SYMBOL_V3,
+};
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
+};
+pub use mining_template_v3::{
+    build_monetary_mining_template_v3, finalize_monetary_mining_template_v3,
+    FinalizedMonetaryMiningCandidateV3, MonetaryMiningTemplateV3,
+    MONETARY_MINING_TEMPLATE_SCHEMA_V3,
+};
+pub use monetary_audit_v3::{
+    audit_monetary_state_v3, MonetaryStateAuditV3, MonetaryStateAuditV3Error,
 };
 pub use pqc::{
     address_from_hybrid_public_key_v1, decode_hybrid_public_key_v1, decode_hybrid_signature_v1,
@@ -112,6 +135,11 @@ pub use tx_rejection::{
     classify_transaction_version, classify_typed_transaction_error, TransactionRejectionClass,
 };
 pub use tx_submission::compute_submission_id_v2;
+
+pub use validation_v3::{
+    validate_ordered_monetary_reward_v3, MonetaryValidationV3Error, ValidatedMonetaryRewardV3,
+};
+
 pub use tx_v3::{
     canonical_transaction_bytes_v3, canonical_unsigned_transaction_bytes_v3, compute_txid_v3,
     signing_message_v3, TRANSACTION_VERSION_V3,
@@ -121,6 +149,20 @@ pub use types::*;
 pub use retarget::{
     consensus_difficulty_snapshot, expected_difficulty, expected_target_u64,
     ConsensusDifficultySnapshot, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
+};
+
+pub use live_reward_settlement_v3::{
+    derive_live_reward_finality_boundary_v3, validate_live_reward_settlement_v3,
+};
+
+pub use reward_settlement_v3::{
+    bind_reward_finality_boundary_v3, build_reward_claim_transaction_v3,
+    compute_reward_claim_txid_v3, derive_reward_settlement_snapshot_v3,
+    materializable_reward_utxos_v3, settlement_outpoint_v3, validate_reward_claim_transaction_v3,
+    validate_reward_finality_boundary_v3, RewardClaimSettlementV3, RewardClaimStatusV3,
+    RewardFinalityBoundaryV3, RewardSettlementSnapshotV3, RewardSettlementV3Error,
+    REWARD_CLAIM_WIRE_TRANSACTION_VERSION_V3, REWARD_FINALITY_BINDING_SCHEMA_VERSION_V3,
+    REWARD_SETTLEMENT_SCHEMA_VERSION_V3,
 };
 
 pub use replay::{
@@ -156,13 +198,30 @@ pub use pow_protocol::{
 };
 pub use pow_v2::{canonical_pow_v2_adapter, CanonicalPowV2Adapter};
 
+pub use genesis_v3::{genesis_block_v3, init_chain_state_v3};
+pub use monetary_v3::{
+    authorized_issuance_atoms, canonical_monetary_cadence_bytes_v3, economic_maturity_reached,
+    economic_time_ns_for_score, max_coinbase_claim_atoms, monetary_cadence_fingerprint_v3,
+    monetary_policy_fingerprint_v3, subsidy_atoms_for_score, target_issuance_atoms,
+    total_supply_atoms_for_score, MonetaryCadenceSegment, MonetaryV3Error, ATOMS_PER_COIN,
+    COINBASE_MATURITY_NS, COINBASE_MATURITY_SECONDS, CONSENSUS_BURN_BPS, DECAY_FACTOR_Q64,
+    ECONOMIC_YEAR_NS, ECONOMIC_YEAR_SECONDS, EMISSION_QUANTUM_NS, EMISSION_QUANTUM_SECONDS,
+    GENESIS_ISSUANCE_ATOMS, HALF_LIFE_END_FACTOR_Q64, HALF_LIFE_NS, HALF_LIFE_QUANTA,
+    HALF_LIFE_SECONDS, HALF_LIFE_YEARS, MAX_SUPPLY_ATOMS, MONETARY_CADENCE_FINGERPRINT_DOMAIN_V3,
+    MONETARY_POLICY_CANONICAL_V3, MONETARY_POLICY_FINGERPRINT_V3, MONETARY_POLICY_VERSION_V3,
+    ORDINARY_FEE_RECIPIENT_BPS, Q64_ONE, TAIL_EMISSION_ATOMS, TERMINAL_ECONOMIC_YEAR,
+    TERMINAL_EMISSION_QUANTUM, TERMINAL_EMISSION_SECONDS, TERMINAL_HALF_LIVES,
+    YEAR1_TARGET_ISSUANCE_ATOMS,
+};
 pub use protocol::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
     BLOCK_HEADER_VERSION_V2,
 };
 pub use protocol_persistence::{
-    verify_protocol_restore_identity, ProtocolActivationRecordV1, ProtocolRestoreIdentityGate,
-    PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
+    verify_protocol_restore_identity, ProtocolActivationRecordV1,
+    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
+    PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION, PROTOCOL_MONETARY_ACTIVATION_RECORD_SCHEMA_VERSION,
+    PROTOCOL_MONETARY_BINDING_DOMAIN_V2,
 };
 
 pub use header_v2::{
@@ -346,6 +405,7 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use mined_block_v2::{
     accept_activated_v2_mined_block_atomically, prepare_activated_v2_mined_block_state,
 };
+pub use mined_block_v3::accept_monetary_v3_mined_block_atomically;
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
@@ -369,6 +429,10 @@ pub use network_block_v2::{
     accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
     prepare_activated_v2_p2p_block_state, ActivatedV2P2pDisposition,
 };
+pub use network_block_v3::{
+    accept_monetary_v3_p2p_block_atomically, preflight_monetary_v3_p2p_block,
+    prepare_monetary_v3_p2p_block_state, validate_monetary_v3_p2p_staging_envelope,
+};
 pub use network_context_v2::{
     validate_activated_v2_p2p_block_context, ActivatedV2P2pContextDisposition,
     ActivatedV2P2pContextValidation,
@@ -377,6 +441,9 @@ pub use network_runtime_v2::{
     drive_activated_v2_p2p_block_atomically, drive_activated_v2_p2p_block_with_runtime_persistence,
     ActivatedV2P2pDriveResult, ActivatedV2P2pRuntime, ActivatedV2P2pRuntimeOutcome,
     ActivatedV2P2pRuntimePersistence, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
+};
+pub use network_runtime_v3::{
+    drive_monetary_v3_p2p_block_with_runtime_persistence, validate_monetary_v3_p2p_runtime_snapshot,
 };
 pub use network_staging_v2::{
     promote_activated_v2_p2p_anchor_atomically, stage_activated_v2_p2p_block,

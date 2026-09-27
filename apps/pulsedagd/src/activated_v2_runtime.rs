@@ -1,5 +1,8 @@
 use anyhow::Result;
-use pulsedag_core::{ActivatedV2P2pRuntime, ChainState, ProtocolActivationIdentity};
+use pulsedag_core::{
+    validate_monetary_v3_p2p_runtime_snapshot, ActivatedV2P2pRuntime, ChainState,
+    ProtocolActivationIdentity,
+};
 use pulsedag_p2p::messages::ProtocolCapabilitiesV1;
 use pulsedag_storage::Storage;
 
@@ -8,10 +11,12 @@ use crate::block_protocol::resolve_activated_v2_runtime_restore_identity;
 /// Restore the transient activated-v2 P2P runtime only when the local P2P
 /// capabilities explicitly select the exact canonical activated-v2 identity.
 ///
-/// Sidecar presence is deliberately not consulted when capabilities are absent,
-/// preserving the historical startup path. Once activated-v2 capabilities are
-/// explicit, the storage restore is strict: a missing/corrupt/mismatched sidecar
-/// is a startup error rather than an implicit fallback or first activation.
+/// The monetary sidecar never activates consensus by itself. However, once a
+/// monetary activation record exists, missing activated-v2 capabilities are an
+/// inconsistent configuration and legacy startup fallback is refused. With
+/// explicit activated-v2 capabilities, storage restore is strict: a
+/// missing/corrupt/mismatched sidecar is a startup error rather than an implicit
+/// fallback or first activation.
 pub fn restore_activated_v2_p2p_runtime_for_startup(
     storage: &Storage,
     capabilities: Option<&ProtocolCapabilitiesV1>,
@@ -24,11 +29,56 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
     let identity = resolve_activated_v2_runtime_restore_identity(capabilities, &state)
         .map_err(anyhow::Error::msg)?;
     let Some(identity) = identity else {
-        return Ok((state, ActivatedV2P2pRuntime::default(), None));
+        match storage.protocol_monetary_activation_record() {
+            Ok(None) => return Ok((state, ActivatedV2P2pRuntime::default(), None)),
+            Ok(Some(record)) => {
+                anyhow::bail!(
+                    "v3 monetary activation {} is present but local P2P capabilities do not select activated-v2; refusing legacy startup fallback",
+                    record.binding_fingerprint
+                );
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "cannot validate v3 monetary activation while resolving legacy startup fallback: {error}"
+                ));
+            }
+        }
     };
 
     let (restored_state, restored_runtime) =
         storage.load_activated_v2_p2p_runtime_snapshot(&identity)?;
+
+    // A monetary sidecar is never sufficient to activate this path: reaching
+    // here already required explicit matching P2P capabilities. Once present,
+    // however, it becomes an additional fail-closed restore constraint.
+    if let Some(monetary) = storage.protocol_monetary_activation_record()? {
+        if monetary.identity != identity {
+            anyhow::bail!(
+                "v3 monetary activation identity does not match activated-v2 startup identity"
+            );
+        }
+        if monetary.reward_finality_policy_version
+            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        {
+            anyhow::bail!(
+                "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+                monetary.reward_finality_policy_version,
+                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            );
+        }
+        storage.verify_persisted_monetary_identity(
+            &identity,
+            &monetary.monetary_cadence_segments,
+            &monetary.reward_finality_policy_version,
+        )?;
+        validate_monetary_v3_p2p_runtime_snapshot(
+            &restored_state,
+            &restored_runtime,
+            &identity,
+            &monetary.monetary_cadence_segments,
+        )?;
+    }
+
     Ok((restored_state, restored_runtime, Some(identity)))
 }
 
@@ -37,8 +87,8 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
-        materialize_authoritative_state_v2, CONSENSUS_METADATA_SCHEMA_VERSION,
-        GHOSTDAG_V1_ORDERING_VERSION,
+        init_chain_state_v3, materialize_authoritative_state_v2, MonetaryCadenceSegment,
+        CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
     };
     use pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION;
 
@@ -93,6 +143,43 @@ mod tests {
         assert!(runtime.pending_is_empty());
         assert!(runtime.staging().is_empty());
         assert!(identity.is_none());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn monetary_sidecar_without_activated_capabilities_refuses_legacy_startup() {
+        let path = temp_db_path("monetary-without-capabilities");
+        let storage = Storage::open(&path).unwrap();
+        let state = init_chain_state_v3(
+            "task1045-daemon-no-legacy-fallback".to_string(),
+            1_800_000_000,
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 1_000_000_000,
+        }];
+        storage
+            .persist_chain_state_with_monetary_protocol_record(
+                &state,
+                &identity,
+                &cadence,
+                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            )
+            .unwrap();
+
+        let error = restore_activated_v2_p2p_runtime_for_startup(&storage, None, state)
+            .expect_err("monetary sidecar must never permit legacy startup fallback");
+        assert!(error
+            .to_string()
+            .contains("refusing legacy startup fallback"));
+
+        drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
 

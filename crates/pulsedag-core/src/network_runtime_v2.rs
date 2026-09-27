@@ -44,6 +44,14 @@ impl ActivatedV2P2pRuntime {
         self.pending_missing.keys().cloned().collect()
     }
 
+    /// Read-only pending block view for higher-version fail-closed wrappers.
+    ///
+    /// v2 runtime ownership remains unchanged; callers cannot mutate or insert
+    /// through this surface.
+    pub fn pending_blocks(&self) -> impl Iterator<Item = &Block> {
+        self.pending_missing.values()
+    }
+
     fn queue_missing(&mut self, block: Block) -> Result<(), PulseError> {
         if !self.pending_missing.contains_key(&block.hash)
             && self.pending_missing.len() >= ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS
