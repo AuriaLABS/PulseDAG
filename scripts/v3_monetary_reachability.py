@@ -210,6 +210,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
 
     return {
         "schema": SCHEMA,
+        "auditor_version": 1,
         "candidate_sha": candidate_sha,
         "candidate_tree_sha": candidate_tree,
         "monetary_policy_fingerprint": policy_fingerprint,
@@ -225,6 +226,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         "v3_live_forbidden_legacy_authority_hits": forbidden_hits,
         "required_live_guard_checks": marker_checks,
         "required_regression_checks": regression_checks,
+        "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
         "claim_boundary": {
             "proves_static_live_authority_shape": True,
             "requires_dynamic_guard_tests": True,
