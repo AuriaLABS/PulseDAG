@@ -771,6 +771,20 @@ fn rejected_broadcast_output(
     }
 }
 
+fn ensure_protocol_binding_matches_observed(
+    binding: &WalletProtocolBindingV2,
+    observed: &ProtocolIdentityOutput,
+) -> Result<(), RelayClientError> {
+    if observed.protocol_identity != binding.identity
+        || observed.protocol_identity_fingerprint != binding.fingerprint
+    {
+        return Err(relay_error(
+            "relay activated protocol identity does not match signed transaction binding",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn prepare_broadcast(
     relay_url: &str,
     signed: &SignedBroadcastInput,
@@ -782,13 +796,7 @@ pub async fn prepare_broadcast(
 
     if let Some(binding) = &signed.protocol_binding_v2 {
         let observed = fetch_protocol_identity(relay_url, &signed.network).await?;
-        if observed.protocol_identity != binding.identity
-            || observed.protocol_identity_fingerprint != binding.fingerprint
-        {
-            return Err(relay_error(
-                "relay activated protocol identity does not match signed transaction binding",
-            ));
-        }
+        ensure_protocol_binding_matches_observed(binding, &observed)?;
     }
     let submit_url = base
         .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
@@ -1433,6 +1441,62 @@ mod tests {
             .unwrap()
             .insert("high_fee".to_string(), serde_json::Value::Null);
         assert!(parse_signed_broadcast(&serde_json::to_vec(&high_null).unwrap()).is_err());
+    }
+
+    #[test]
+    fn chain_bound_envelope_requires_v2_txid_and_exact_binding() {
+        let mut signed = signed_fixture();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+        let binding = WalletProtocolBindingV2::new(identity.clone()).expect("binding");
+        signed.network =
+            WalletNetworkIdentity::new("testnet", identity.chain_id.clone()).expect("network");
+        signed.review.network_profile = "testnet".to_string();
+        signed.review.chain_id = identity.chain_id.clone();
+        signed.protocol_binding_v2 = Some(binding.clone());
+        signed.relay.transaction.version = TRANSACTION_VERSION_V2;
+        signed.relay.transaction.txid =
+            compute_txid_v2(&signed.relay.transaction, &identity.chain_id).expect("v2 txid");
+        signed.final_txid = signed.relay.transaction.txid.clone();
+
+        validate_signed_broadcast(&signed).expect("valid bound v2 envelope");
+
+        let observed = ProtocolIdentityOutput {
+            network_profile: "testnet".to_string(),
+            chain_id: identity.chain_id.clone(),
+            protocol_identity: identity.clone(),
+            protocol_identity_fingerprint: binding.fingerprint.clone(),
+        };
+        ensure_protocol_binding_matches_observed(&binding, &observed)
+            .expect("matching observed identity");
+
+        let foreign_identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "different-genesis",
+            "ghostdag-order-v1",
+        );
+        let foreign = ProtocolIdentityOutput {
+            network_profile: "testnet".to_string(),
+            chain_id: foreign_identity.chain_id.clone(),
+            protocol_identity_fingerprint: foreign_identity.fingerprint().unwrap(),
+            protocol_identity: foreign_identity,
+        };
+        assert!(ensure_protocol_binding_matches_observed(&binding, &foreign).is_err());
+
+        let mut tampered = signed.clone();
+        tampered
+            .protocol_binding_v2
+            .as_mut()
+            .unwrap()
+            .fingerprint = "00".repeat(32);
+        assert!(validate_signed_broadcast(&tampered).is_err());
+
+        let mut unbound_v2 = signed;
+        unbound_v2.protocol_binding_v2 = None;
+        assert!(validate_signed_broadcast(&unbound_v2).is_err());
     }
 
     #[test]
