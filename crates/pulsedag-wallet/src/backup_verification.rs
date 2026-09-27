@@ -597,13 +597,17 @@ mod tests {
 
         let a = a.join().unwrap();
         let b = b.join().unwrap();
-        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        assert_eq!((a.is_ok() as usize) + (b.is_ok() as usize), 1);
         assert!(
-            matches!(a, Err(WalletBackupVerificationError::AlreadyExists))
-                || matches!(b, Err(WalletBackupVerificationError::AlreadyExists))
+            matches!(&a, Err(WalletBackupVerificationError::AlreadyExists))
+                || matches!(&b, Err(WalletBackupVerificationError::AlreadyExists))
         );
 
-        let winner = if let Ok(receipt) = a { receipt } else { b.unwrap() };
+        let winner = if let Ok(receipt) = a {
+            receipt
+        } else {
+            b.unwrap()
+        };
         assert_eq!(
             load_wallet_backup_verification_receipt(&keystore).unwrap(),
             winner
