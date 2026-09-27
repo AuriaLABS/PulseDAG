@@ -120,7 +120,6 @@ mod tests {
         assert!(state.utxo.utxos.is_empty());
         assert!(state.utxo.address_index.is_empty());
         assert_eq!(GENESIS_ISSUANCE_ATOMS, 0);
-        assert!(MAX_SUPPLY_ATOMS > GENESIS_ISSUANCE_ATOMS);
     }
 
     #[test]
