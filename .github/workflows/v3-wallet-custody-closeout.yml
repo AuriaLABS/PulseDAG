@@ -70,6 +70,9 @@ jobs:
       - name: Wallet CLI tests
         run: cargo test -p pulsedag-wallet --bin pulsedag-wallet --locked
 
+      - name: Activated-v2 signing-domain replay tests
+        run: cargo test -p pulsedag-wallet --test v2_chain_domain --locked -- --nocapture
+
       - name: Wallet clippy
         run: cargo clippy -p pulsedag-wallet --all-targets --locked -- -D warnings
 
