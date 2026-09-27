@@ -253,8 +253,9 @@ pub enum WalletNoncePolicy {
 }
 
 /// Compact values a CLI/UI can display immediately before authorization.
-/// `unsigned_template_txid` is not the final broadcast txid: v1 recomputes the
-/// txid after public keys and signatures are attached.
+/// `unsigned_template_txid` is not the final broadcast txid: the active
+/// transaction protocol recomputes the txid after public keys and signatures
+/// are attached.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletReviewSummary {
@@ -702,7 +703,7 @@ pub fn derive_wallet_plan_nonce_v1(
     )))
 }
 
-/// Build the supported wallet v1 plan with a deterministic nonce. Identical
+/// Build the compatibility base plan with a deterministic nonce. Identical
 /// intent plus identical selected inputs produces the same nonce and unsigned
 /// template identifier for safe retry/resubmission. Any recipient, amount, fee,
 /// or selected-input change produces a distinct nonce with overwhelming
