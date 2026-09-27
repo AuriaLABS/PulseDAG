@@ -636,6 +636,33 @@ mod tests {
             signing_message_v2(&signed.transaction, "pulsedag-wrong-chain").expect("wrong domain");
         assert!(verifying_key.verify(&wrong_domain, &signature).is_err());
 
+        let authorization = signed
+            .protocol_authorization_v1
+            .as_ref()
+            .expect("activated-v2 result must carry full-identity authorization");
+        verify_wallet_protocol_authorization_v1(binding, &signed.transaction, authorization)
+            .expect("full protocol identity authorization");
+
+        let foreign_binding = WalletProtocolBindingV2::new(
+            ProtocolActivationIdentity::activated_v2(
+                CHAIN_ID,
+                "same-chain-id-different-genesis",
+                "ghostdag-order-v1",
+            ),
+        )
+        .expect("foreign binding");
+        let mut relabeled_authorization = authorization.clone();
+        relabeled_authorization.protocol_fingerprint = foreign_binding.fingerprint.clone();
+        assert!(
+            verify_wallet_protocol_authorization_v1(
+                &foreign_binding,
+                &signed.transaction,
+                &relabeled_authorization,
+            )
+            .is_err(),
+            "same-chain-id binding substitution must invalidate the signed authorization"
+        );
+
         cleanup(dir, file, session);
     }
 
