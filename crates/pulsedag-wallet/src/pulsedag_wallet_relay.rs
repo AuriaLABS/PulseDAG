@@ -1201,6 +1201,7 @@ pub async fn fetch_pulse_observation(
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
     use pulsedag_core::types::{OutPoint, TxInput, TxOutput};
 
     use super::*;
@@ -1456,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_bound_envelope_requires_v2_txid_and_exact_binding() {
+    fn chain_bound_envelope_cryptographically_authorizes_full_protocol_identity() {
         let mut signed = signed_fixture();
         let identity = ProtocolActivationIdentity::activated_v2(
             "pulsedag-testnet",
@@ -1464,15 +1465,30 @@ mod tests {
             "ghostdag-order-v1",
         );
         let binding = WalletProtocolBindingV2::new(identity.clone()).expect("binding");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+
         signed.network =
             WalletNetworkIdentity::new("testnet", identity.chain_id.clone()).expect("network");
         signed.review.network_profile = "testnet".to_string();
         signed.review.chain_id = identity.chain_id.clone();
         signed.protocol_binding_v2 = Some(binding.clone());
         signed.relay.transaction.version = TRANSACTION_VERSION_V2;
+        signed.relay.transaction.inputs[0].public_key =
+            hex::encode(signing_key.verifying_key().to_bytes());
         signed.relay.transaction.txid =
             compute_txid_v2(&signed.relay.transaction, &identity.chain_id).expect("v2 txid");
         signed.final_txid = signed.relay.transaction.txid.clone();
+
+        let authorization_message = pulsedag_wallet::wallet_protocol_authorization_message_v1(
+            &binding,
+            &signed.relay.transaction,
+        )
+        .expect("authorization message");
+        signed.protocol_authorization_v1 = Some(WalletProtocolAuthorizationV1 {
+            domain: pulsedag_wallet::WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.to_string(),
+            protocol_fingerprint: binding.fingerprint.clone(),
+            signature: hex::encode(signing_key.sign(&authorization_message).to_bytes()),
+        });
 
         validate_signed_broadcast(&signed).expect("valid bound v2 envelope");
 
@@ -1490,20 +1506,42 @@ mod tests {
             "different-genesis",
             "ghostdag-order-v1",
         );
+        let foreign_binding =
+            WalletProtocolBindingV2::new(foreign_identity.clone()).expect("foreign binding");
         let foreign = ProtocolIdentityOutput {
             network_profile: "testnet".to_string(),
             chain_id: foreign_identity.chain_id.clone(),
-            protocol_identity_fingerprint: foreign_identity.fingerprint().unwrap(),
+            protocol_identity_fingerprint: foreign_binding.fingerprint.clone(),
             protocol_identity: foreign_identity,
         };
-        assert!(ensure_protocol_binding_matches_observed(&binding, &foreign).is_err());
+
+        let mut substituted = signed.clone();
+        substituted.protocol_binding_v2 = Some(foreign_binding.clone());
+        substituted
+            .protocol_authorization_v1
+            .as_mut()
+            .unwrap()
+            .protocol_fingerprint = foreign_binding.fingerprint.clone();
+        assert!(
+            ensure_protocol_binding_matches_observed(&foreign_binding, &foreign).is_ok(),
+            "metadata-only relay/binding substitution would otherwise look coherent"
+        );
+        assert!(
+            validate_signed_broadcast(&substituted).is_err(),
+            "full-identity authorization signature must reject same-chain-id genesis substitution"
+        );
 
         let mut tampered = signed.clone();
         tampered.protocol_binding_v2.as_mut().unwrap().fingerprint = "00".repeat(32);
         assert!(validate_signed_broadcast(&tampered).is_err());
 
+        let mut missing_authorization = signed.clone();
+        missing_authorization.protocol_authorization_v1 = None;
+        assert!(validate_signed_broadcast(&missing_authorization).is_err());
+
         let mut unbound_v2 = signed;
         unbound_v2.protocol_binding_v2 = None;
+        unbound_v2.protocol_authorization_v1 = None;
         assert!(validate_signed_broadcast(&unbound_v2).is_err());
     }
 
