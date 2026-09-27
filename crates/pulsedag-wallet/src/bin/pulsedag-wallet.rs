@@ -1217,6 +1217,99 @@ mod tests {
             .into_iter()
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn backup_verification_receipt_is_required_before_spending_and_tamper_fails_closed() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        const MNEMONIC: &str =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        const PASSWORD: &str = "backup-verification-cli-test";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-backup-gate-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let keystore_path = dir.join("wallet.json");
+        let manifest_path = dir.join("watch.json");
+
+        let restore = run_restore(
+            RestoreArgs {
+                keystore: keystore_path.clone(),
+                network_profile: "testnet".to_string(),
+                chain_id: "pulsedag-testnet".to_string(),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
+        )
+        .expect("restore");
+        assert_eq!(
+            restore.initialization_state,
+            WalletInitializationState::BackupVerificationRequired
+        );
+
+        let identity = {
+            let keystore = WalletKeystoreFile::try_acquire(&keystore_path).unwrap();
+            let mut session =
+                unlocked_session(&keystore, &SecretString::new(PASSWORD)).expect("unlock");
+            let identity = session.status().identity.expect("identity");
+            assert!(require_backup_verified(&keystore_path, &identity).is_err());
+            session.lock();
+            identity
+        };
+
+        let manifest = run_watch_export(
+            WatchExportArgs {
+                keystore: keystore_path.clone(),
+                account: 0,
+                receive_count: 2,
+                change_count: 1,
+            },
+            &SecretString::new(PASSWORD),
+        )
+        .expect("watch export");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
+        )
+        .unwrap();
+
+        let verified = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: manifest_path,
+            },
+            &SecretString::new(PASSWORD),
+        )
+        .expect("backup verify");
+        assert!(verified.verified);
+        assert_eq!(
+            verified.initialization_state,
+            WalletInitializationState::BackupVerified
+        );
+        assert!(require_backup_verified(&keystore_path, &identity).is_ok());
+
+        let receipt_path = wallet_backup_verification_receipt_path(&keystore_path).unwrap();
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        receipt["signature_hex"] = serde_json::Value::String("00".repeat(64));
+        fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        assert!(require_backup_verified(&keystore_path, &identity).is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn production_cli_refuses_unbound_v1_plan_and_accepts_bound_v2_plan() {
         let sender = address_from_public_key(&"11".repeat(32));
