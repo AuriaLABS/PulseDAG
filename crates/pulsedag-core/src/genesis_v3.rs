@@ -107,7 +107,6 @@ pub fn init_chain_state_v3(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monetary_v3::MAX_SUPPLY_ATOMS;
 
     const FROZEN_TS: u64 = 1_800_000_000;
 
