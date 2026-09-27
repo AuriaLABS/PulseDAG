@@ -85,14 +85,14 @@ jobs:
           cargo test --locked -p pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface -- --nocapture
           cargo test --locked -p pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup -- --nocapture
           cat > ci-evidence/v3-monetary-reachability/dynamic-tests.txt <<'EOF'
-result=PASS
-mined_v3_rejects_legacy_height_subsidy=PASS
-p2p_v3_rejects_legacy_height_subsidy=PASS
-validation_v3_vectors=PASS
-monetary_audit_v3_vectors=PASS
-rpc_legacy_mining_surfaces_disabled=PASS
-daemon_legacy_startup_fallback_disabled=PASS
-EOF
+          result=PASS
+          mined_v3_rejects_legacy_height_subsidy=PASS
+          p2p_v3_rejects_legacy_height_subsidy=PASS
+          validation_v3_vectors=PASS
+          monetary_audit_v3_vectors=PASS
+          rpc_legacy_mining_surfaces_disabled=PASS
+          daemon_legacy_startup_fallback_disabled=PASS
+          EOF
 
       - name: Record evidence provenance and digests
         if: always()
