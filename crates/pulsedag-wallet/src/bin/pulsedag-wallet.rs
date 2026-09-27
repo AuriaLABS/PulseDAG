@@ -13,8 +13,11 @@ use std::{
 
 use pulsedag_core::types::{OutPoint, Utxo};
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
-    encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
+    build_deterministic_transaction_plan_with_safety, create_wallet_backup_verification_receipt,
+    derive_wallet_key_from_seed, encrypt_wallet_seed, load_wallet_backup_verification_receipt,
+    persist_wallet_backup_verification_receipt, verify_wallet_backup_verification_receipt,
+    wallet_backup_verification_receipt_path, wallet_seed_from_mnemonic, SecretString,
+    WalletBackupVerificationError, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
     WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
@@ -193,6 +196,7 @@ struct BackupVerifyOutput {
     account: u32,
     entry_count: usize,
     checksum_hex: String,
+    verification_receipt: String,
     initialization_state: WalletInitializationState,
 }
 
@@ -819,6 +823,23 @@ async fn run_pulse(args: NetworkReadOnlyArgs) -> CliResult<PulseObservationOutpu
     Ok(fetch_pulse_observation(&args.relay, &network).await?)
 }
 
+fn require_backup_verified(
+    keystore_path: &Path,
+    identity: &pulsedag_wallet::WalletSessionIdentity,
+) -> CliResult<()> {
+    let receipt = load_wallet_backup_verification_receipt(keystore_path).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification is required before spending: {error}"
+        ))
+    })?;
+    verify_wallet_backup_verification_receipt(&receipt, identity).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification receipt is invalid: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
 fn run_backup_verify(
     args: BackupVerifyArgs,
     password: &SecretString,
@@ -826,7 +847,26 @@ fn run_backup_verify(
     let manifest = read_manifest(&args.manifest)?;
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
     let mut session = unlocked_session(&keystore, password)?;
-    session.verify_watch_only_manifest(&manifest)?;
+    let identity = session
+        .status()
+        .identity
+        .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+    let receipt = create_wallet_backup_verification_receipt(&session, &manifest)?;
+    let receipt_path = match persist_wallet_backup_verification_receipt(&args.keystore, &receipt) {
+        Ok(path) => path,
+        Err(WalletBackupVerificationError::AlreadyExists) => {
+            let existing = load_wallet_backup_verification_receipt(&args.keystore)?;
+            verify_wallet_backup_verification_receipt(&existing, &identity)?;
+            if existing != receipt {
+                return Err(invalid_input(
+                    "wallet is already initialized by a different verified backup receipt",
+                )
+                .into());
+            }
+            wallet_backup_verification_receipt_path(&args.keystore)?
+        }
+        Err(error) => return Err(error.into()),
+    };
     session.lock();
     Ok(BackupVerifyOutput {
         verified: true,
@@ -835,6 +875,7 @@ fn run_backup_verify(
         account: manifest.account(),
         entry_count: manifest.entries().len(),
         checksum_hex: manifest.checksum_hex().to_string(),
+        verification_receipt: receipt_path.to_string_lossy().into_owned(),
         initialization_state: WalletInitializationState::BackupVerified,
     })
 }
@@ -846,7 +887,9 @@ async fn run_tx_preview(args: TxPreviewArgs, password: SecretString) -> CliResul
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     let expected_network = WalletNetworkIdentity::new(&args.network_profile, &args.chain_id)?;
     expected_network.ensure_matches(&keystore_network)?;
     let signer_address =
@@ -944,7 +987,9 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     plan.verify_keystore_identity(&keystore_network)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let mut snapshot = pending_store.load_or_new(&plan.network)?;
