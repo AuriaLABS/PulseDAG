@@ -25,9 +25,8 @@ use pulsedag_wallet::{
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
     fetch_protocol_identity, fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast,
-    submit_prepared,
-    AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput,
-    PulseObservationOutput, RelayEnvelope,
+    submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput,
+    MempoolFeeEstimateOutput, PulseObservationOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -826,10 +825,7 @@ fn run_backup_verify(
     })
 }
 
-async fn run_tx_preview(
-    args: TxPreviewArgs,
-    password: SecretString,
-) -> CliResult<TxPreviewOutput> {
+async fn run_tx_preview(args: TxPreviewArgs, password: SecretString) -> CliResult<TxPreviewOutput> {
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
     let mut session = unlocked_session(&keystore, &password)?;
     let identity = session
