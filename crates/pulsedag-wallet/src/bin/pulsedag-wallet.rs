@@ -811,10 +811,10 @@ fn run_backup_verify(
 
 async fn run_tx_preview(
     args: TxPreviewArgs,
-    password: &SecretString,
+    password: SecretString,
 ) -> CliResult<TxPreviewOutput> {
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
+    let mut session = unlocked_session(&keystore, &password)?;
     let identity = session
         .status()
         .identity
@@ -827,6 +827,9 @@ async fn run_tx_preview(
             derived.address().to_string()
         })?;
     session.lock();
+    drop(session);
+    drop(keystore);
+    drop(password);
 
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
@@ -1089,7 +1092,7 @@ async fn run() -> CliResult<()> {
         Command::Pulse(args) => write_json(&run_pulse(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
-            write_json(&run_tx_preview(args, &password).await?)
+            write_json(&run_tx_preview(args, password).await?)
         }
         Command::TxSign(args) => {
             let password = read_password_from_stdin()?;
