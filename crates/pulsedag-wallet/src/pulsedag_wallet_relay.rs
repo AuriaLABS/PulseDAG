@@ -1,13 +1,13 @@
 use std::{error::Error, fmt, net::IpAddr, time::Duration};
 
 use pulsedag_core::{
-    compute_txid,
+    compute_txid, compute_txid_v2,
     mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
-    ProtocolActivationIdentity, PULSE_VERSION_V1,
+    ProtocolActivationIdentity, PULSE_VERSION_V1, TRANSACTION_VERSION_V2,
 };
 use pulsedag_wallet::{
-    protocol_v2::verify_wallet_v2_node_identity, WalletNetworkIdentity,
+    protocol_v2::verify_wallet_v2_node_identity, WalletNetworkIdentity, WalletProtocolBindingV2,
 };
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,8 @@ impl SignedBroadcastReview {
 pub struct SignedBroadcastInput {
     pub network: WalletNetworkIdentity,
     pub review: SignedBroadcastReview,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
     pub final_txid: String,
     pub relay: RelayEnvelope,
 }
@@ -378,7 +380,40 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
         }
     }
 
-    let canonical_txid = compute_txid(transaction);
+    let canonical_txid = match &input.protocol_binding_v2 {
+        Some(binding) => {
+            if transaction.version != TRANSACTION_VERSION_V2 {
+                return Err(relay_error(
+                    "chain-bound signed envelope must use transaction version 2",
+                ));
+            }
+            if binding.identity.chain_id != input.network.chain_id {
+                return Err(relay_error(
+                    "signed protocol identity chain_id does not match signed network metadata",
+                ));
+            }
+            let expected_fingerprint =
+                verify_wallet_v2_node_identity(&binding.identity, &binding.identity)
+                    .map_err(|error| {
+                        relay_error(format!("signed protocol identity is invalid: {error}"))
+                    })?;
+            if binding.fingerprint != expected_fingerprint {
+                return Err(relay_error(
+                    "signed protocol fingerprint does not match signed protocol identity",
+                ));
+            }
+            compute_txid_v2(transaction, &binding.identity.chain_id)
+                .map_err(|error| relay_error(format!("v2 transaction identity is invalid: {error}")))?
+        }
+        None => {
+            if transaction.version != 1 {
+                return Err(relay_error(
+                    "unbound signed envelope must use legacy transaction version 1",
+                ));
+            }
+            compute_txid(transaction)
+        }
+    };
     if transaction.txid != canonical_txid {
         return Err(relay_error(
             "signed transaction txid does not match canonical transaction bytes",
@@ -744,6 +779,17 @@ pub async fn prepare_broadcast(
     let base = relay_base_url(relay_url)?;
     let client = build_client()?;
     let identity = fetch_identity(&client, &base, &signed.network).await?;
+
+    if let Some(binding) = &signed.protocol_binding_v2 {
+        let observed = fetch_protocol_identity(relay_url, &signed.network).await?;
+        if observed.protocol_identity != binding.identity
+            || observed.protocol_identity_fingerprint != binding.fingerprint
+        {
+            return Err(relay_error(
+                "relay activated protocol identity does not match signed transaction binding",
+            ));
+        }
+    }
     let submit_url = base
         .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
         .map_err(|_| relay_error("failed to construct relay submit URL"))?;
@@ -1187,6 +1233,7 @@ mod tests {
                 high_fee: Some(true),
                 high_fee_acknowledged: Some(true),
             },
+            protocol_binding_v2: None,
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
         }
