@@ -121,7 +121,6 @@ fn prepared_signing_bytes_cannot_be_reinterpreted_under_another_chain_id() {
     assert_ne!(plan.signing_message, hex::encode(wrong_domain));
 }
 
-
 #[test]
 fn signature_valid_on_testnet_is_rejected_under_mainnet_chain_domain() {
     let testnet = identity("pulsedag-testnet-v3", "testnet-genesis-v3");
