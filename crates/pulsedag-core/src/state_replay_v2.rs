@@ -488,9 +488,11 @@ mod tests {
 
     #[test]
     fn transactionless_noncanonical_v3_genesis_fails_closed() {
-        let mut state =
-            crate::genesis_v3::init_chain_state_v3("pulsedag-v3-replay-tamper".to_string(), 1_800_000_000)
-                .unwrap();
+        let mut state = crate::genesis_v3::init_chain_state_v3(
+            "pulsedag-v3-replay-tamper".to_string(),
+            1_800_000_000,
+        )
+        .unwrap();
         let genesis = state.dag.genesis_hash.clone();
         state.dag.blocks.get_mut(&genesis).unwrap().header.timestamp += 1;
 
