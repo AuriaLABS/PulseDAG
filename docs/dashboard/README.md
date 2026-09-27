@@ -48,3 +48,5 @@ Run the exporter beside the node and keep node RPC bound to loopback/private man
 ## Scope
 
 This is a candidate/rehearsal operations baseline. It does not claim release authorization, public-testnet GO, public-testnet live status, Day 0, high-cadence authorization or smart-contract activation, and it does not start the 30-day public-testnet clock.
+
+`GET /dashboard` summary may include observational `pulse` (`pulse_height`, `pulse_time`, `uncertainty_secs`, `finality_lag`, `selected_tip`) from PulseClock. The field is omitted when PulseClock cannot be derived. This is not host time and does not activate covenants.
