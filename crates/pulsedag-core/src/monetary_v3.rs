@@ -191,7 +191,7 @@ pub fn economic_time_ns_for_score(
 
 fn ceil_div_u128(numerator: u128, denominator: u128) -> u128 {
     let quotient = numerator / denominator;
-    quotient + u128::from(numerator % denominator != 0)
+    quotient + u128::from(!numerator.is_multiple_of(denominator))
 }
 
 fn q64_mul(lhs: u128, rhs: u128) -> Result<u128, MonetaryV3Error> {
