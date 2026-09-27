@@ -31,6 +31,7 @@ pub const REWARD_FINALITY_POLICY_VERSION_V3: &str =
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateReplayV3Diagnostics {
+    pub validated_reward_claims: usize,
     pub applied_transactions: usize,
     pub skipped_conflicting_transactions: usize,
     pub materialized_rewards: usize,
@@ -218,6 +219,7 @@ pub fn rebuild_authoritative_state_v3(
     rebuilt.dag.consensus_mode = state.dag.consensus_mode;
     rebuilt.dag.selected_parent_policy = state.dag.selected_parent_policy;
 
+    let mut validated_reward_claims = 0usize;
     let mut applied_transactions = 0usize;
     let mut skipped_conflicting_transactions = 0usize;
     let mut materialized_rewards = 0usize;
@@ -254,8 +256,10 @@ pub fn rebuild_authoritative_state_v3(
             )));
         }
 
-        apply_transaction(claim, &mut rebuilt, block.header.height)?;
-        applied_transactions = applied_transactions.saturating_add(1);
+        // The amountless claim is an authorization envelope, not a spendable
+        // transaction output. Its beneficiary is consumed only when the
+        // synthetic settlement UTXO is materialized after maturity.
+        validated_reward_claims = validated_reward_claims.saturating_add(1);
 
         for tx in block.transactions.iter().skip(1) {
             let mut candidate = rebuilt.clone();
@@ -300,6 +304,7 @@ pub fn rebuild_authoritative_state_v3(
     Ok(StateReplayV3 {
         utxo: rebuilt.utxo,
         diagnostics: StateReplayV3Diagnostics {
+            validated_reward_claims,
             applied_transactions,
             skipped_conflicting_transactions,
             materialized_rewards,
@@ -435,7 +440,16 @@ mod tests {
         let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
         assert_eq!(replay.diagnostics.mature_reward_prefix_score, 2);
         assert_eq!(replay.diagnostics.materialized_rewards, 2);
+        assert_eq!(replay.diagnostics.validated_reward_claims, 3);
         assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 0);
+        assert!(!replay.utxo.utxos.keys().any(|outpoint| {
+            state
+                .dag
+                .blocks
+                .values()
+                .filter_map(|block| block.transactions.first())
+                .any(|claim| outpoint.txid == claim.txid)
+        }));
         assert!(!replay.utxo.utxos.contains_key(&reward1_outpoint));
         assert!(replay
             .utxo
