@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod backup_verification;
 mod deterministic;
 mod keystore;
 mod keystore_crypto;
@@ -19,6 +20,14 @@ mod signing;
 mod watch_only;
 use session_v1 as session_core;
 
+pub use backup_verification::{
+    create_wallet_backup_verification_receipt, load_wallet_backup_verification_receipt,
+    persist_wallet_backup_verification_receipt, verify_wallet_backup_verification_receipt,
+    wallet_backup_verification_receipt_path, WalletBackupVerificationError,
+    WalletBackupVerificationReceipt, WALLET_BACKUP_VERIFICATION_DOMAIN_V1,
+    WALLET_BACKUP_VERIFICATION_FORMAT, WALLET_BACKUP_VERIFICATION_MAX_BYTES,
+    WALLET_BACKUP_VERIFICATION_VERSION,
+};
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
     generate_wallet_mnemonic, wallet_seed_from_mnemonic, WalletDerivationBranch, WalletDerivedKey,
