@@ -17,7 +17,8 @@ use pulsedag_wallet::{
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
-    WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolBindingV2, WalletReviewSummary,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
+    WalletProtocolBindingV2, WalletReviewSummary,
     WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
     WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
@@ -207,6 +208,8 @@ struct TxSignOutput {
     review: WalletReviewSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     final_txid: String,
     relay: RelayEnvelope,
 }
@@ -973,6 +976,7 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
         network: signed.network,
         review: signed.review,
         protocol_binding_v2: signed.protocol_binding_v2,
+        protocol_authorization_v1: signed.protocol_authorization_v1,
         final_txid,
         relay: RelayEnvelope {
             transaction: signed.transaction,
