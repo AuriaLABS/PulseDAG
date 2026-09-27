@@ -24,7 +24,7 @@ pub struct WalletProtocolAuthorizationV1 {
     pub signature: String,
 }
 
-fn wallet_protocol_authorization_message_v1(
+pub fn wallet_protocol_authorization_message_v1(
     binding: &WalletProtocolBindingV2,
     transaction: &Transaction,
 ) -> Result<Vec<u8>, WalletPlanError> {
