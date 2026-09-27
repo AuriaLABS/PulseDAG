@@ -295,8 +295,7 @@ pub fn target_issuance_atoms(economic_time_ns: u128) -> Result<u64, MonetaryV3Er
     let within_quantum_ns = within_half_life_ns % EMISSION_QUANTUM_NS;
 
     let issued_at_quantum = issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum)?;
-    let issued_at_next =
-        issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum + 1)?;
+    let issued_at_next = issuance_within_half_life_at_quantum(half_life_budget_atoms, quantum + 1)?;
     let quantum_delta = issued_at_next
         .checked_sub(issued_at_quantum)
         .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
