@@ -13,9 +13,10 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    verify_watch_only_manifest, WalletDerivationBranch, WalletSession, WalletSessionError,
-    WalletSessionIdentity, WalletWatchOnlyManifest, WalletWatchOnlyOperationError,
-    WALLET_DERIVATION_MAX_INDEX,
+    derive_wallet_key_from_seed, verify_watch_only_manifest, wallet_seed_from_mnemonic,
+    SecretString, WalletDerivationBranch, WalletDeterministicError, WalletNetworkContext,
+    WalletSession, WalletSessionError, WalletSessionIdentity, WalletWatchOnlyManifest,
+    WalletWatchOnlyOperationError, WALLET_DERIVATION_MAX_INDEX,
 };
 
 pub const WALLET_BACKUP_VERIFICATION_FORMAT: &str = "pulsedag-wallet-backup-verification";
@@ -23,7 +24,13 @@ pub const WALLET_BACKUP_VERIFICATION_VERSION: u32 = 1;
 pub const WALLET_BACKUP_VERIFICATION_DOMAIN_V1: &[u8] =
     b"PulseDAG:wallet-backup-verification:v1";
 pub const WALLET_BACKUP_VERIFICATION_MAX_BYTES: u64 = 16 * 1024;
+pub const WALLET_RECOVERY_MATERIAL_PROOF_VERSION: u32 = 1;
 const TEMP_ATTEMPTS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletRecoveryMaterialProof {
+    identity: WalletSessionIdentity,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +42,7 @@ pub struct WalletBackupVerificationReceipt {
     pub wallet_anchor_address: String,
     pub manifest_checksum_hex: String,
     pub manifest_account: u32,
+    pub recovery_proof_version: u32,
     pub signer_public_key_hex: String,
     pub signature_hex: String,
 }
@@ -46,6 +54,7 @@ pub enum WalletBackupVerificationError {
         reason: &'static str,
     },
     IdentityMismatch,
+    RecoveryMaterialMismatch,
     AnchorSignerMismatch,
     InvalidSignature,
     AlreadyExists,
@@ -58,6 +67,7 @@ pub enum WalletBackupVerificationError {
     RandomnessUnavailable,
     WatchOnly(WalletWatchOnlyOperationError),
     Session(WalletSessionError),
+    Deterministic(WalletDeterministicError),
     Json(serde_json::Error),
     Io(&'static str, io::Error),
 }
@@ -70,6 +80,9 @@ impl fmt::Display for WalletBackupVerificationError {
             }
             Self::IdentityMismatch => {
                 f.write_str("wallet backup verification receipt does not match unlocked wallet identity")
+            }
+            Self::RecoveryMaterialMismatch => {
+                f.write_str("recovery mnemonic/passphrase does not restore this wallet anchor")
             }
             Self::AnchorSignerMismatch => {
                 f.write_str("wallet backup verification signer does not control the wallet anchor")
@@ -97,6 +110,9 @@ impl fmt::Display for WalletBackupVerificationError {
             }
             Self::WatchOnly(error) => write!(f, "wallet backup verification failed: {error}"),
             Self::Session(error) => write!(f, "wallet backup verification session failed: {error}"),
+            Self::Deterministic(error) => {
+                write!(f, "wallet recovery material validation failed: {error}")
+            }
             Self::Json(_) => f.write_str("wallet backup verification receipt JSON is invalid"),
             Self::Io(operation, _) => {
                 write!(f, "wallet backup verification receipt I/O failed during {operation}")
@@ -110,6 +126,7 @@ impl Error for WalletBackupVerificationError {
         match self {
             Self::WatchOnly(error) => Some(error),
             Self::Session(error) => Some(error),
+            Self::Deterministic(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::Io(_, error) => Some(error),
             _ => None,
@@ -129,9 +146,39 @@ impl From<WalletSessionError> for WalletBackupVerificationError {
     }
 }
 
+impl From<WalletDeterministicError> for WalletBackupVerificationError {
+    fn from(value: WalletDeterministicError) -> Self {
+        Self::Deterministic(value)
+    }
+}
+
+pub fn prove_wallet_recovery_material(
+    expected_identity: &WalletSessionIdentity,
+    mnemonic: &SecretString,
+    bip39_passphrase: Option<&SecretString>,
+) -> Result<WalletRecoveryMaterialProof, WalletBackupVerificationError> {
+    let seed = wallet_seed_from_mnemonic(mnemonic, bip39_passphrase)?;
+    let network =
+        WalletNetworkContext::new(&expected_identity.network_profile, &expected_identity.chain_id)?;
+    let anchor = derive_wallet_key_from_seed(
+        &seed,
+        &network,
+        0,
+        WalletDerivationBranch::Receive,
+        0,
+    )?;
+    if anchor.address() != expected_identity.address {
+        return Err(WalletBackupVerificationError::RecoveryMaterialMismatch);
+    }
+    Ok(WalletRecoveryMaterialProof {
+        identity: expected_identity.clone(),
+    })
+}
+
 pub fn create_wallet_backup_verification_receipt(
     session: &WalletSession,
     manifest: &WalletWatchOnlyManifest,
+    recovery_proof: &WalletRecoveryMaterialProof,
 ) -> Result<WalletBackupVerificationReceipt, WalletBackupVerificationError> {
     verify_watch_only_manifest(session, manifest)?;
     let identity = session
@@ -140,6 +187,9 @@ pub fn create_wallet_backup_verification_receipt(
         .ok_or(WalletBackupVerificationError::Session(
             WalletSessionError::Locked,
         ))?;
+    if recovery_proof.identity != identity {
+        return Err(WalletBackupVerificationError::RecoveryMaterialMismatch);
+    }
     let expected_identity = identity.clone();
     let message = canonical_receipt_message(
         &identity.network_profile,
@@ -147,6 +197,7 @@ pub fn create_wallet_backup_verification_receipt(
         &identity.address,
         manifest.checksum_hex(),
         manifest.account(),
+        WALLET_RECOVERY_MATERIAL_PROOF_VERSION,
     )?;
 
     let (signer_address, signer_public_key_hex, signature_hex) = session.with_derived_key(
@@ -174,6 +225,7 @@ pub fn create_wallet_backup_verification_receipt(
         wallet_anchor_address: identity.address,
         manifest_checksum_hex: manifest.checksum_hex().to_string(),
         manifest_account: manifest.account(),
+        recovery_proof_version: WALLET_RECOVERY_MATERIAL_PROOF_VERSION,
         signer_public_key_hex,
         signature_hex,
     };
@@ -212,6 +264,7 @@ pub fn verify_wallet_backup_verification_receipt(
         &receipt.wallet_anchor_address,
         &receipt.manifest_checksum_hex,
         receipt.manifest_account,
+        receipt.recovery_proof_version,
     )?;
     verifying_key
         .verify(&message, &Signature::from_bytes(&signature))
@@ -376,6 +429,12 @@ fn validate_receipt_structure(
             "exceeds the hardened derivation range",
         ));
     }
+    if receipt.recovery_proof_version != WALLET_RECOVERY_MATERIAL_PROOF_VERSION {
+        return Err(invalid(
+            "recovery_proof_version",
+            "unsupported recovery-material proof version",
+        ));
+    }
     validate_hex_len(
         "manifest_checksum_hex",
         &receipt.manifest_checksum_hex,
@@ -395,6 +454,7 @@ fn canonical_receipt_message(
     wallet_anchor_address: &str,
     manifest_checksum_hex: &str,
     manifest_account: u32,
+    recovery_proof_version: u32,
 ) -> Result<Vec<u8>, WalletBackupVerificationError> {
     validate_text("network_profile", network_profile)?;
     validate_text("chain_id", chain_id)?;
@@ -411,6 +471,7 @@ fn canonical_receipt_message(
     encode_len_prefixed(&mut out, wallet_anchor_address.as_bytes())?;
     out.extend_from_slice(&checksum);
     out.extend_from_slice(&manifest_account.to_be_bytes());
+    out.extend_from_slice(&recovery_proof_version.to_be_bytes());
     Ok(out)
 }
 
@@ -502,6 +563,7 @@ mod tests {
             &anchor,
             &checksum,
             0,
+            WALLET_RECOVERY_MATERIAL_PROOF_VERSION,
         )
         .unwrap();
         WalletBackupVerificationReceipt {
@@ -512,6 +574,7 @@ mod tests {
             wallet_anchor_address: anchor,
             manifest_checksum_hex: checksum,
             manifest_account: 0,
+            recovery_proof_version: WALLET_RECOVERY_MATERIAL_PROOF_VERSION,
             signer_public_key_hex: public_key,
             signature_hex: hex::encode(signing_key.sign(&message).to_bytes()),
         }
@@ -550,6 +613,7 @@ mod tests {
             &substituted_signer.wallet_anchor_address,
             &substituted_signer.manifest_checksum_hex,
             substituted_signer.manifest_account,
+            substituted_signer.recovery_proof_version,
         )
         .unwrap();
         substituted_signer.signature_hex =
