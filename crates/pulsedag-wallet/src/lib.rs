@@ -79,9 +79,9 @@ pub use session_v1::{
 };
 pub use signing::{
     sign_transaction_plan, verify_wallet_protocol_authorization_v1,
-    wallet_protocol_authorization_message_v1, WalletPlanSigner,
-    WalletPlanSigningError, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
-    WalletSignedTransaction, WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1,
+    wallet_protocol_authorization_message_v1, WalletPlanSigner, WalletPlanSigningError,
+    WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1, WalletSignedTransaction,
+    WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1,
 };
 pub use watch_only::{
     export_watch_only_manifest, verify_watch_only_manifest, WalletWatchOnly, WalletWatchOnlyBranch,
