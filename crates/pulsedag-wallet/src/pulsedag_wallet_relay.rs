@@ -7,7 +7,8 @@ use pulsedag_core::{
     ProtocolActivationIdentity, PULSE_VERSION_V1, TRANSACTION_VERSION_V2,
 };
 use pulsedag_wallet::{
-    protocol_v2::verify_wallet_v2_node_identity, WalletNetworkIdentity, WalletProtocolBindingV2,
+    protocol_v2::verify_wallet_v2_node_identity, verify_wallet_protocol_authorization_v1,
+    WalletNetworkIdentity, WalletProtocolAuthorizationV1, WalletProtocolBindingV2,
 };
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,8 @@ pub struct SignedBroadcastInput {
     pub review: SignedBroadcastReview,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     pub final_txid: String,
     pub relay: RelayEnvelope,
 }
@@ -401,11 +404,21 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
                     "signed protocol fingerprint does not match signed protocol identity",
                 ));
             }
+            let authorization = input.protocol_authorization_v1.as_ref().ok_or_else(|| {
+                relay_error("chain-bound signed envelope is missing protocol authorization")
+            })?;
+            verify_wallet_protocol_authorization_v1(binding, transaction, authorization)
+                .map_err(|error| relay_error(format!("protocol authorization is invalid: {error}")))?;
             compute_txid_v2(transaction, &binding.identity.chain_id).map_err(|error| {
                 relay_error(format!("v2 transaction identity is invalid: {error}"))
             })?
         }
         None => {
+            if input.protocol_authorization_v1.is_some() {
+                return Err(relay_error(
+                    "protocol authorization must not exist without a v2 protocol binding",
+                ));
+            }
             if transaction.version != 1 {
                 return Err(relay_error(
                     "unbound signed envelope must use legacy transaction version 1",
@@ -1240,6 +1253,7 @@ mod tests {
                 high_fee_acknowledged: Some(true),
             },
             protocol_binding_v2: None,
+            protocol_authorization_v1: None,
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
         }
