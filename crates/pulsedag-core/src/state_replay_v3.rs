@@ -487,6 +487,89 @@ mod tests {
     }
 
     #[test]
+    fn conflict_skipped_transaction_fee_is_not_paid_to_miner() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-fees".into(), 1_800_000_015).unwrap();
+        let chain_id = state.chain_id.clone();
+
+        append_linear_block(
+            &mut state,
+            "b1",
+            vec![claim(&chain_id, "pulse1miner1", 31)],
+            1,
+        );
+        append_linear_block(
+            &mut state,
+            "b2",
+            vec![claim(&chain_id, "pulse1miner2", 32)],
+            2,
+        );
+
+        let reward1_claim = state.dag.blocks["b1"].transactions[0].clone();
+        let reward1 = settlement_outpoint_v3(&chain_id, "b1", &reward1_claim.txid);
+        let first_spend = Transaction {
+            txid: "first-spend".into(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: reward1.clone(),
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1first".into(),
+                amount: 1,
+            }],
+            fee: 5,
+            nonce: 33,
+        };
+        append_linear_block(
+            &mut state,
+            "b3",
+            vec![claim(&chain_id, "pulse1miner3", 33), first_spend],
+            3,
+        );
+
+        let conflicting_spend = Transaction {
+            txid: "conflicting-spend".into(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: reward1,
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1conflict".into(),
+                amount: 1,
+            }],
+            fee: 99,
+            nonce: 34,
+        };
+        append_linear_block(
+            &mut state,
+            "b4",
+            vec![claim(&chain_id, "pulse1miner4", 34), conflicting_spend],
+            4,
+        );
+        append_linear_block(
+            &mut state,
+            "b5",
+            vec![claim(&chain_id, "pulse1miner5", 35)],
+            5,
+        );
+
+        let b4_claim = state.dag.blocks["b4"].transactions[0].clone();
+        let b4_reward = settlement_outpoint_v3(&chain_id, "b4", &b4_claim.txid);
+        let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        let settled = replay.utxo.utxos.get(&b4_reward).unwrap();
+
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
+        assert_eq!(
+            settled.amount,
+            subsidy_atoms_for_score(4, &ONE_HOUR_PER_SCORE).unwrap()
+        );
+    }
+
+    #[test]
     fn additional_inputless_transaction_fails_closed() {
         let mut state =
             init_chain_state_v3("reward-replay-v3-hidden".into(), 1_800_000_020).unwrap();
