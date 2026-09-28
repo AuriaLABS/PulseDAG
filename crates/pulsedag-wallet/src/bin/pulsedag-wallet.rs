@@ -2116,7 +2116,13 @@ mod tests {
         let plan = pulsedag_wallet::build_deterministic_transaction_plan(
             network, policy, intent, &available,
         )
-        .expect("plan");
+        .expect("plan")
+        .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+            "pulsedag-public-testnet",
+            "cli-import-test-genesis",
+            "ghostdag-order-v1",
+        ))
+        .expect("bind activated-v2 protocol");
         fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(
             read_transaction_plan(&path)
