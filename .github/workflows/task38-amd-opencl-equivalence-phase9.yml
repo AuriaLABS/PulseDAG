@@ -1,4 +1,4 @@
-name: v3 launch Task 38 AMD OpenCL equivalence phase 9
+name: v3.0 launch Task 38 AMD OpenCL equivalence phase 9
 
 on:
   pull_request:

@@ -1,14 +1,7 @@
-name: v2.4.x wallet custody port probe
-
-on:
-  push:
-    branches:
-      - feature/v2.4.x-wallet-custody-foundation
-    paths:
-      - Cargo.lock
-      - crates/pulsedag-wallet/**
-      - .github/workflows/v2_4_x_wallet_custody_port.yml
+name: Historical v2.4.x wallet custody pon:
   workflow_dispatch:
+
+workflow_dispatch:
 
 permissions:
   contents: read

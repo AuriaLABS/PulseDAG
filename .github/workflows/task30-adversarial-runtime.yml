@@ -1,4 +1,4 @@
-name: v2.4.0 Task 30 adversarial runtime
+name: v3.0 Task 30 adversarial runtime
 
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ on:
       - .github/workflows/task30-adversarial-runtime.yml
       - .github/workflows/task30-acceptance.yml
       - scripts/v2_2_20_preflight_check.sh
+      - scripts/v3_0_0_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -26,6 +27,7 @@ on:
       - .github/workflows/task30-adversarial-runtime.yml
       - .github/workflows/task30-acceptance.yml
       - scripts/v2_2_20_preflight_check.sh
+      - scripts/v3_0_0_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -62,7 +64,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test -z "$(git status --porcelain)"
 
-      - name: Validate v2.4 preflight and runtime adapters
+      - name: Validate v3.0 preflight and retained runtime adapters
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/task30/adapter-preflight"
@@ -70,10 +72,10 @@ jobs:
           python3 -m py_compile \
             scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
             scripts/lib/patch_task30_runtime_topology.py
-          PULSEDAG_REHEARSAL_VERSION=v2.4.0 \
-          PULSEDAG_REHEARSAL_VERSION_SLUG=v2_4_0 \
+          PULSEDAG_REHEARSAL_VERSION=v3.0.0 \
+          PULSEDAG_REHEARSAL_VERSION_SLUG=v3_0_0 \
           OUT_DIR="$out/version-preflight" \
-            bash scripts/v2_2_20_preflight_check.sh
+            bash scripts/v3_0_0_preflight_check.sh
           bash -n scripts/v2_2_20_private_5n_4m_rehearsal.sh
           python3 scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
             scripts/lib/v2_3_0_runtime_harness.sh "$out/lag-runtime.sh"
@@ -132,8 +134,9 @@ jobs:
           GLOBAL_DEADLINE_SECS: 1500
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.miners }}m
           OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
-          PULSEDAG_REHEARSAL_VERSION: v2.4.0
-          PULSEDAG_REHEARSAL_VERSION_SLUG: v2_4_0
+          PULSEDAG_REHEARSAL_VERSION: v3.0.0
+          PULSEDAG_REHEARSAL_VERSION_SLUG: v3_0_0
+          PULSEDAG_REHEARSAL_PREFLIGHT_SCRIPT: ${{ github.workspace }}/scripts/v3_0_0_preflight_check.sh
         run: bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
 
       - name: Enforce exact Task30 multi-miner gate
@@ -479,7 +482,7 @@ jobs:
           }
           passed = all(value == "success" for value in results.values())
           payload = {
-              "task": "v2.4.0-task30-adversarial-runtime",
+              "task": "v3.0.0-task30-adversarial-runtime",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
               "captured_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
               "result": "PASS" if passed else "FAIL",

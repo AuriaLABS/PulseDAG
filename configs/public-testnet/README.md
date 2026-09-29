@@ -1,4 +1,4 @@
-# v2.4.0 public-testnet package templates
+# v3.0.0 public-testnet package templates
 
 These files are **pre-GO templates**, not launch configuration and not a frozen public network identity.
 
@@ -25,6 +25,6 @@ After the private burn-in and 5-node/4-miner rehearsal pass on one exact release
 
 Only then may an operator copy a template to a host-local file and replace every `__TASK31_FREEZE_REQUIRED__` placeholder with the values recorded in the launch-control evidence. P2P/public exposure remains disabled until the explicit GO is recorded.
 
-The repository validator `scripts/validate_v2_4_0_public_hardening.py` fails if a pre-GO template loses these guardrails or accidentally contains apparent credentials/private keys.
+The repository validator `scripts/validate_v3_0_0_public_hardening.py` fails if a pre-GO template loses these guardrails or accidentally contains apparent credentials/private keys.
 
-See `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md` and root `SECURITY.md`.
+See `docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md` and root `SECURITY.md`.

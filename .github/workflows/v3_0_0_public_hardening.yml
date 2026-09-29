@@ -1,0 +1,144 @@
+name: v3.0 public hardening gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/private-testnet/miner.env.example
+      - configs/public-testnet/**
+      - docs/API_V1.md
+      - docs/dashboard/README.md
+      - docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md
+      - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V3_0_0.md
+      - ops/observability/v3.0.0/**
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v3_0_0_public_hardening.py
+      - scripts/validate_v3_0_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v3_0_0_observability.sh
+      - .github/workflows/v3_0_0_public_hardening.yml
+  push:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/private-testnet/miner.env.example
+      - configs/public-testnet/**
+      - docs/API_V1.md
+      - docs/dashboard/README.md
+      - docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md
+      - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V3_0_0.md
+      - ops/observability/v3.0.0/**
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v3_0_0_public_hardening.py
+      - scripts/validate_v3_0_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v3_0_0_observability.sh
+      - .github/workflows/v3_0_0_public_hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3.0.0-public-hardening-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Fail-closed public-safety and observability prep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact v3 checkout and public hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
+          python -m py_compile scripts/validate_v3_0_0_public_hardening.py
+          python scripts/validate_v3_0_0_public_hardening.py
+
+      - name: Validate v3 observability package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/validate_v3_0_0_observability.py \
+            scripts/validate_observability_package.py \
+            scripts/private_testnet/runtime_metrics_exporter.py
+          python scripts/validate_v3_0_0_observability.py
+          bash scripts/tests/test_v3_0_0_observability.sh
+          
+      - name: Verify v3 no-GO boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'PENDING_EXACT_CANDIDATE_EVIDENCE' docs/VERSION_MATRIX.md
+          grep -Fq '`public_testnet_ready=false`' docs/VERSION_MATRIX.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/VERSION_MATRIX.md
+          grep -Fq '`contracts_enabled=false`' docs/VERSION_MATRIX.md
+          grep -Fq 'ACTIVE v3.0.0 CANDIDATE ROADMAP' docs/ROADMAP_V3_0_0.md
+
+      - name: Record no-GO evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/public-hardening
+          {
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "public_testnet_ready=false"
+            echo "thirty_day_public_testnet_clock_started=false"
+            echo "default_high_cadence_authorized=false"
+            echo "smart_contract_activation_authorized=false"
+            echo "official_end_user_custody_wallet=false"
+            echo "active_release_line=v3.0.0"
+            echo "result=PASS"
+          } > ci-evidence/public-hardening/provenance.txt
+          sha256sum \
+            SECURITY.md \
+            configs/private-testnet/miner.env.example \
+            configs/public-testnet/README.md \
+            configs/public-testnet/seed.env.template \
+            configs/public-testnet/node.env.template \
+            configs/public-testnet/observer.env.template \
+            configs/public-testnet/miner.args.template \
+            docs/API_V1.md \
+            docs/dashboard/README.md \
+            docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md \
+            docs/VERSION_MATRIX.md \
+            docs/ROADMAP_V3_0_0.md \
+            ops/observability/v3.0.0/README.md \
+            ops/observability/v3.0.0/metrics-inventory.json \
+            ops/observability/v3.0.0/prometheus-scrape.example.yml \
+            ops/observability/v3.0.0/alert-rules.yml \
+            ops/observability/v3.0.0/grafana-dashboard.json \
+            scripts/private_testnet/runtime_metrics_exporter.py \
+            scripts/validate_v3_0_0_public_hardening.py \
+            scripts/validate_v3_0_0_observability.py \
+            scripts/validate_observability_package.py \
+            scripts/tests/test_v3_0_0_observability.sh \
+            .github/workflows/v3_0_0_public_hardening.yml \
+            > ci-evidence/public-hardening/SHA256SUMS
+
+      - name: Upload public-hardening evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_public_hardening_${{ github.run_id }}
+          path: ci-evidence/public-hardening
+          if-no-files-found: error
+          retention-days: 180

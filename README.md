@@ -1,33 +1,31 @@
-# PulseDAG v2.4.0
+# PulseDAG v3.0.0
 
-PulseDAG is in the **v2.4.0 Task31 release/activation candidate construction** stage. The repository version has advanced to `v2.4.0`, but the final exact candidate is not frozen and no release or public-testnet launch is authorized.
+PulseDAG is now in **v3.0.0 candidate construction**. The repository and active CI target v3.0.0; earlier v2.x releases remain only as historical, compatibility, migration, and regression inputs.
+
+The exact release/mainnet candidate is not frozen. A version bump or partial CI pass does not authorize a tag, GitHub Release, public-testnet launch, mainnet launch, or activation of disabled protocol features.
 
 ## Current state
 
-- Repository version: `v2.4.0`.
-- Cargo workspace version: `2.4.0`.
-- Tasks 22–29: completed.
-- Task30 replay/adversarial validation: must pass again on the final exact Task31 candidate where affected by release-freeze changes.
-- Task31 release/activation decision: `PENDING_EXACT_CANDIDATE_EVIDENCE`.
-- Target protocol identity: transaction v2, block header v2, `ghostdag_v1`, fresh chain/genesis identity.
-- Activated-v2 startup/storage/P2P release wiring: under validation in the Task31 candidate; not yet approved.
-- External standalone miner: supported and packaged separately from `pulsedagd`.
-- Current release scope: node + standalone miner. No official end-user custody wallet is included in this candidate unless separately ported and revalidated.
-- `v2.4.0` tag: not created.
+- Repository version: `v3.0.0`.
+- Cargo workspace version: `3.0.0`.
+- Candidate decision: `PENDING_EXACT_CANDIDATE_EVIDENCE`.
+- Active CI/readiness target: v3.0.0 only.
+- Core protocol baseline: transaction v2, block header v2, `ghostdag_v1`, plus v3 runtime/evidence work.
+- Fresh v3 chain/genesis identity is required before launch; the final identity is not frozen.
+- External standalone miner remains separate from `pulsedagd`.
+- `v3.0.0` tag: not created.
 - GitHub Release publication: not authorized.
 - `public_testnet_ready=false`.
 - `thirty_day_public_testnet_clock_started=false`.
-- Default high cadence remains experimental/disabled.
+- Default high cadence remains disabled until its v3 evidence gate passes.
 - `contracts_enabled=false`.
-- `main` is a moving Task31 candidate, not a frozen release. Inactive v3/covenant code may be present; it is not part of the v2.4.0 protocol identity.
-- Live control issues: #781, #794, RustSec/public-GO #1127 (historical #803), remaining crate-graph #1139, identity #1131, docs #1128.
+- Historical v2.x tests may remain as compatibility fixtures, but they are not v3 release/readiness gates.
 
 ## Start here
 
-- [Documentation index](docs/README.md)
-- [v2.4.0 roadmap](docs/ROADMAP_V2_4_0.md)
-- [v2.4.0 protocol activation contract](docs/PROTOCOL_ACTIVATION_V2_4_0.md)
+- [v3.0.0 roadmap](docs/ROADMAP_V3_0_0.md)
 - [Version matrix](docs/VERSION_MATRIX.md)
+- [Documentation index](docs/README.md)
 - [Operator runbook](docs/RUNBOOK.md)
 - [Release evidence policy](docs/RELEASE_EVIDENCE.md)
 - [Public-testnet burn-in gate](docs/BURN_IN_GATE.md)
@@ -48,4 +46,4 @@ Repository structure and version-surface checks are enforced by:
 bash scripts/repository_hygiene.sh --strict
 ```
 
-Historical v2.3.x and v2.2.x material is retained for compatibility, evidence and provenance only. It must not be presented as the active v2.4.0 release identity or as authorization to launch a public testnet.
+All new release/readiness evidence must be bound to the exact v3.0.0 candidate SHA. Earlier-version evidence can support compatibility or provenance, but cannot make the v3 candidate ready.

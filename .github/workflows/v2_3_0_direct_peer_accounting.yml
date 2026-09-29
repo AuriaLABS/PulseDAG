@@ -1,18 +1,7 @@
-name: v2.3.0 direct peer accounting
+name: Deprecated v2.3 direct-peer-aon:
+  workflow_dispatch:
 
-on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - crates/pulsedag-p2p/src/lib.rs
-      - .github/workflows/v2_3_0_direct_peer_accounting.yml
-  push:
-    branches:
-      - main
-    paths:
-      - crates/pulsedag-p2p/src/lib.rs
-      - .github/workflows/v2_3_0_direct_peer_accounting.yml
+direct_peer_accounting.yml
   workflow_dispatch:
 
 permissions:
@@ -36,17 +25,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
 
       - name: Run complete PulseDAG P2P library suite
         shell: bash
         run: |
           set +e
-          mkdir -p ci-evidence/v2.3.0-direct-peer-accounting
+          mkdir -p ci-evidence/v3.0.0-direct-peer-accounting
           timeout --signal=TERM --kill-after=30s 30m \
             cargo test --locked -p pulsedag-p2p --lib \
-            2>&1 | tee ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
+            2>&1 | tee ci-evidence/v3.0.0-direct-peer-accounting/p2p-suite.log
           rc=${PIPESTATUS[0]}
           echo "P2P_SUITE_RC=$rc" >> "$GITHUB_ENV"
           exit 0
@@ -56,8 +45,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          log=ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
-          summary=ci-evidence/v2.3.0-direct-peer-accounting/failure-summary.txt
+          log=ci-evidence/v3.0.0-direct-peer-accounting/p2p-suite.log
+          summary=ci-evidence/v3.0.0-direct-peer-accounting/failure-summary.txt
           {
             echo "candidate=${{ github.event.pull_request.head.sha || github.sha }}"
             echo "exit_code=${P2P_SUITE_RC:-1}"
@@ -74,8 +63,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v2_3_0_direct_peer_accounting_${{ github.run_id }}
-          path: ci-evidence/v2.3.0-direct-peer-accounting
+          name: v3_0_0_direct_peer_accounting_${{ github.run_id }}
+          path: ci-evidence/v3.0.0-direct-peer-accounting
           if-no-files-found: error
           retention-days: 90
 

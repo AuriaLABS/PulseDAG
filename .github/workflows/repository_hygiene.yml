@@ -1,4 +1,4 @@
-name: Repository hygiene
+name: v3.0 Repository hygiene
 
 on:
   pull_request:
@@ -36,18 +36,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Preserve v2.4.0 candidate and readiness guardrails
+      - name: Preserve v3.0.0 candidate and readiness guardrails
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
           grep -Fq 'PENDING_EXACT_CANDIDATE_EVIDENCE' README.md
           grep -Fq '`public_testnet_ready=false`' README.md
           grep -Fq '`thirty_day_public_testnet_clock_started=false`' README.md
           grep -Fq '`contracts_enabled=false`' README.md
-          test -f docs/ROADMAP_V2_4_0.md
-          test -f docs/PROTOCOL_ACTIVATION_V2_4_0.md
+          test -f docs/ROADMAP_V3_0_0.md
+          test -f docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
           test -f scripts/repository_version_surface_audit.py
 
       - name: Validate maintenance syntax
@@ -95,7 +95,7 @@ jobs:
             .public_testnet_ready == false and
             .thirty_day_public_testnet_clock_started == false
           ' ci-evidence/repository-hygiene/repository-hygiene.json >/dev/null
-          grep -Fq '[PASS] active repository surfaces identify v2.4.0 consistently' \
+          grep -Fq '[PASS] active repository surfaces identify v3.0.0 consistently' \
             ci-evidence/repository-hygiene/version-surface-audit.txt
           grep -Fq '[PASS] historical documents and workflows are outside active roots' \
             ci-evidence/repository-hygiene/version-surface-audit.txt
