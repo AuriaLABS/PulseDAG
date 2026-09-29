@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use pulsedag_core::types::{Block, Hash, Transaction};
 
@@ -54,6 +54,8 @@ fn saturating_len(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
+const RECENT_FULL_BLOCK_RESOLUTION_LIMIT: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactRelayControllerErrorV1 {
     Runtime(CompactRelayRuntimeSessionErrorV1),
@@ -76,6 +78,7 @@ impl From<CompactRelayErrorV1> for CompactRelayControllerErrorV1 {
 #[derive(Debug, Clone, Default)]
 pub struct CompactRelayControllerV1 {
     pending_announcements: BTreeMap<(String, Hash), CompactBlockAnnouncementV1>,
+    recently_resolved_by_full_block: VecDeque<Hash>,
     telemetry: CompactRelayControllerTelemetryV1,
 }
 
@@ -101,6 +104,22 @@ impl CompactRelayControllerV1 {
             .max(self.pending_announcements.len());
     }
 
+    fn note_full_block_resolution(&mut self, block_hash: &str) {
+        self.recently_resolved_by_full_block
+            .retain(|hash| hash.as_str() != block_hash);
+        self.recently_resolved_by_full_block
+            .push_back(block_hash.to_string());
+        while self.recently_resolved_by_full_block.len() > RECENT_FULL_BLOCK_RESOLUTION_LIMIT {
+            self.recently_resolved_by_full_block.pop_front();
+        }
+    }
+
+    fn was_recently_resolved_by_full_block(&self, block_hash: &str) -> bool {
+        self.recently_resolved_by_full_block
+            .iter()
+            .any(|hash| hash.as_str() == block_hash)
+    }
+
     pub fn peer_disconnected(
         &mut self,
         sessions: &mut CompactRelayRuntimeSessionBookV1,
@@ -121,7 +140,11 @@ impl CompactRelayControllerV1 {
             .retain(|(_, hash), _| hash.as_str() != block_hash);
         let pending_removed = pending_before != self.pending_announcements.len();
         let in_flight_removed = sessions.abandon_block(block_hash) > 0;
-        pending_removed || in_flight_removed
+        let resolved = pending_removed || in_flight_removed;
+        if resolved {
+            self.note_full_block_resolution(block_hash);
+        }
+        resolved
     }
 
     pub fn handle_send_failure(
@@ -283,6 +306,9 @@ impl CompactRelayControllerV1 {
                     .saturating_add(1);
                 let key = (peer_id.to_string(), response.block_hash.clone());
                 let Some(announcement) = self.pending_announcements.get(&key).cloned() else {
+                    if self.was_recently_resolved_by_full_block(&response.block_hash) {
+                        return Ok(Vec::new());
+                    }
                     self.telemetry.invalid_response_total =
                         self.telemetry.invalid_response_total.saturating_add(1);
                     return Err(CompactRelayControllerErrorV1::PendingAnnouncementMissing {
@@ -700,6 +726,26 @@ mod tests {
         assert_eq!(sessions.in_flight_count(peer_b), 0);
         assert_eq!(controller.telemetry().pending_announcements_current, 0);
         assert!(!controller.observe_full_block(&mut sessions, &block.hash));
+
+        let invalid_before = controller.telemetry().invalid_response_total;
+        let late_response = super::super::compact_relay_v1::CompactTransactionResponseV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: block.hash.clone(),
+            transactions: block.transactions[1..].to_vec(),
+        };
+        let actions = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::Transactions(late_response),
+                &known,
+            )
+            .unwrap();
+        assert!(actions.is_empty());
+        assert_eq!(
+            controller.telemetry().invalid_response_total,
+            invalid_before
+        );
     }
 
     #[test]
