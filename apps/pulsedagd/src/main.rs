@@ -62,6 +62,50 @@ use pulsedag_rpc::routes::{
 use pulsedag_storage::Storage;
 use startup_protocol::select_startup_protocol;
 
+fn should_send_getblock_response(request_id: Option<&str>, block_found: bool) -> bool {
+    block_found || request_id.is_some()
+}
+
+#[cfg(test)]
+mod compact_relay_fast_sync_handoff_tests {
+    use super::{
+        fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
+        should_send_getblock_response,
+    };
+
+    #[test]
+    fn tip_refresh_is_requested_only_when_fast_sync_releases_authority() {
+        assert!(fast_sync_authority_release_requires_tip_refresh(
+            true, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            true, true
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, true
+        ));
+    }
+
+    #[test]
+    fn broadcast_getblock_miss_is_silent_but_correlated_miss_is_answered() {
+        assert!(!should_send_getblock_response(None, false));
+        assert!(should_send_getblock_response(None, true));
+        assert!(should_send_getblock_response(Some("request-1"), false));
+        assert!(should_send_getblock_response(Some("request-1"), true));
+    }
+
+    #[test]
+    fn capability_tip_probe_runs_only_while_authority_is_active_and_due() {
+        assert!(fast_sync_authority_requires_tip_probe(true, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(false, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(true, Some(98), 100));
+        assert!(fast_sync_authority_requires_tip_probe(true, Some(95), 100));
+    }
+}
+
 #[cfg(test)]
 mod task27_rejoin_runtime_tests {
     use super::*;
@@ -113,6 +157,49 @@ mod task27_rejoin_runtime_tests {
             task27_rejoin_peer_for_reconcile(&status, &eligible, &local_inventory(220)),
             None
         );
+    }
+
+    #[test]
+    fn task27_idle_detection_ignores_generic_fetch_backlog() {
+        let task27_pending = task27_owned_pending_work(0, 0, false, false, false);
+        let mut tracker = RecoveryProgressTrackerV1::new(30);
+        let decision = tracker.observe(RecoveryProgressObservationV1 {
+            local_selected_height: 14,
+            network_selected_height: Some(17),
+            same_height_divergence: false,
+            compatible_peer_available: true,
+            pending_requests: task27_pending,
+            inflight_requests: 0,
+            pending_missing_parents: 0,
+            orphan_count: 0,
+            missing_parent_responses: 0,
+            orphan_reprocess_attempts: 0,
+            orphan_reprocess_successes: 0,
+        });
+        assert!(matches!(
+            decision,
+            RecoveryProgressDecisionV1::ScheduleRecovery { gap: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn selected_segment_replans_only_when_peer_is_not_direct_and_idle() {
+        let direct = vec!["peer-direct".to_string()];
+        assert!(selected_segment_session_should_replan(
+            "peer-forwarded",
+            &direct,
+            0
+        ));
+        assert!(!selected_segment_session_should_replan(
+            "peer-forwarded",
+            &direct,
+            1
+        ));
+        assert!(!selected_segment_session_should_replan(
+            "peer-direct",
+            &direct,
+            0
+        ));
     }
 
     #[test]
@@ -510,6 +597,31 @@ fn selected_segment_recovery_has_priority(
         || pending_requested_at_unix.is_some_and(|requested_at| {
             now_unix.saturating_sub(requested_at) <= SELECTED_LOCATOR_PRIORITY_GRACE_SECS
         })
+}
+
+fn task27_owned_pending_work(
+    block_request_pending: usize,
+    frontier_queue_depth: usize,
+    pending_dag_frontier: bool,
+    pending_task27_locator: bool,
+    selected_segment_session: bool,
+) -> usize {
+    block_request_pending
+        .saturating_add(frontier_queue_depth)
+        .saturating_add(usize::from(pending_dag_frontier))
+        .saturating_add(usize::from(pending_task27_locator))
+        .saturating_add(usize::from(selected_segment_session))
+}
+
+fn selected_segment_session_should_replan(
+    session_peer: &str,
+    direct_request_peers: &[String],
+    inflight_for_peer: usize,
+) -> bool {
+    inflight_for_peer == 0
+        && !direct_request_peers
+            .iter()
+            .any(|peer| peer == session_peer)
 }
 
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
@@ -998,7 +1110,7 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
         .collect()
 }
 
-fn selected_segment_request_candidates(
+fn selected_segment_missing_hashes(
     headers: &[HeaderInventory],
     limits: SelectedSegmentLimits,
     accepted: &HashSet<String>,
@@ -1007,6 +1119,18 @@ fn selected_segment_request_candidates(
     selected_segment_request_order(headers, limits.headers_per_chunk)
         .into_iter()
         .filter(|hash| !accepted.contains(hash) && !pending.contains(hash))
+        .collect()
+}
+
+#[cfg(test)]
+fn selected_segment_request_candidates(
+    headers: &[HeaderInventory],
+    limits: SelectedSegmentLimits,
+    accepted: &HashSet<String>,
+    pending: &HashSet<String>,
+) -> Vec<String> {
+    selected_segment_missing_hashes(headers, limits, accepted, pending)
+        .into_iter()
         .take(limits.max_inflight_blocks_per_peer)
         .collect()
 }
@@ -1754,6 +1878,23 @@ fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+const FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS: u64 = 5;
+
+fn fast_sync_authority_release_requires_tip_refresh(was_active: bool, is_active: bool) -> bool {
+    was_active && !is_active
+}
+
+fn fast_sync_authority_requires_tip_probe(
+    authority_active: bool,
+    last_probe_unix: Option<u64>,
+    now_unix: u64,
+) -> bool {
+    authority_active
+        && last_probe_unix.is_none_or(|last_probe_unix| {
+            now_unix.saturating_sub(last_probe_unix) >= FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS
+        })
+}
+
 fn update_orphan_backlog_classification(
     runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
     chain: &pulsedag_core::ChainState,
@@ -2281,6 +2422,10 @@ async fn main() -> Result<()> {
         let p2p_protocol_identity = startup_activated_v2_identity.clone();
         tokio::spawn(async move {
             let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
+            let mut fast_sync_authority_was_active = fast_sync_daemon_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.authority_active());
+            let mut fast_sync_authority_last_tip_probe_unix: Option<u64> = None;
             let mut compact_relay_daemon_runtime = compact_relay_daemon_runtime;
             let mut compact_relay_probe_schedule = CompactRelayProbeScheduleV1::default();
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
@@ -2349,7 +2494,55 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    if fast_sync_runtime.authority_active() {
+                    let fast_sync_authority_active = fast_sync_runtime.authority_active();
+                    if fast_sync_authority_requires_tip_probe(
+                        fast_sync_authority_active,
+                        fast_sync_authority_last_tip_probe_unix,
+                        now,
+                    ) {
+                        fast_sync_authority_last_tip_probe_unix = Some(now);
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority active; requested capability-bearing tips probe"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority active but capability-bearing tips probe failed"
+                                );
+                            }
+                        }
+                    }
+                    if fast_sync_authority_release_requires_tip_refresh(
+                        fast_sync_authority_was_active,
+                        fast_sync_authority_active,
+                    ) {
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority released; requested fresh tips for protocol/compact-relay negotiation"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority released but fresh tip request failed"
+                                );
+                            }
+                        }
+                    }
+                    fast_sync_authority_was_active = fast_sync_authority_active;
+                    if fast_sync_authority_active {
                         continue;
                     }
                 }
@@ -2959,6 +3152,37 @@ async fn main() -> Result<()> {
                         .to_string();
                     }
                 }
+                let direct_request_peers = active_peer_ids(&p2p);
+                let stalled_selected_session = selected_segment_session.as_ref().and_then(|session| {
+                    let inflight_for_peer = block_requests
+                        .inflight_by_peer()
+                        .get(&session.peer_id)
+                        .copied()
+                        .unwrap_or_default();
+                    selected_segment_session_should_replan(
+                        &session.peer_id,
+                        &direct_request_peers,
+                        inflight_for_peer,
+                    )
+                    .then(|| (session.session_id, session.peer_id.clone()))
+                });
+                if let Some((session_id, peer_id)) = stalled_selected_session {
+                    selected_segment_session = None;
+                    selected_segment_locator_state.lock().await.pending_locator = None;
+                    let mut rt = runtime.write().await;
+                    rt.active_session_id = None;
+                    rt.active_session_peer = None;
+                    rt.active_session_remote_tip = None;
+                    rt.active_session_remote_height = 0;
+                    rt.active_session_common_ancestor = None;
+                    rt.active_session_remaining_blocks = 0;
+                    rt.sync_state = "catching_up".to_string();
+                    warn!(
+                        session_id,
+                        peer = %peer_id,
+                        "abandoned selected-segment session without a direct request-capable peer; replanning through Task 27"
+                    );
+                }
                 let selected_segment_priority = {
                     let guard = selected_segment_locator_state.lock().await;
                     selected_segment_recovery_has_priority(
@@ -3032,14 +3256,16 @@ async fn main() -> Result<()> {
                         rt.orphan_reprocess_success,
                     )
                 };
-                let task27_pending_work = block_requests
-                    .pending
-                    .len()
-                    .saturating_add(fetch_scheduler.queue_depth())
-                    .saturating_add(frontier_fetch_scheduler.queue_depth())
-                    .saturating_add(usize::from(pending_dag_frontier_peer.is_some()))
-                    .saturating_add(usize::from(pending_task27_locator.is_some()))
-                    .saturating_add(usize::from(selected_segment_session.is_some()));
+                // The generic fetch scheduler is intentionally excluded here. Its queued
+                // inventory is not Task 27 work and must not suppress a direct Protocol-v2
+                // reconcile when the selected chain is still behind or divergent.
+                let task27_pending_work = task27_owned_pending_work(
+                    block_requests.pending.len(),
+                    frontier_fetch_scheduler.queue_depth(),
+                    pending_dag_frontier_peer.is_some(),
+                    pending_task27_locator.is_some(),
+                    selected_segment_session.is_some(),
+                );
                 let task27_recovery_decision =
                     task27_recovery_tracker.observe(RecoveryProgressObservationV1 {
                         local_selected_height,
@@ -4112,6 +4338,37 @@ async fn main() -> Result<()> {
                             let duplicate_count = summary.duplicate_hashes.len() as u64;
                             let rejected_count = summary.rejected.len() as u64;
 
+                            if !summary.staged_hashes.is_empty() {
+                                let staged_relay_blocks = summary
+                                    .staged_hashes
+                                    .iter()
+                                    .filter_map(|hash| {
+                                        activated_v2_p2p_runtime.staging().get(hash).cloned()
+                                    })
+                                    .collect::<Vec<_>>();
+                                if let Some(ref p2p_handle) = p2p {
+                                    for staged_block in staged_relay_blocks {
+                                        match p2p_handle.broadcast_block(&staged_block) {
+                                            Ok(()) => {
+                                                info!(
+                                                    event = "peer_block_v2_staged_relay",
+                                                    block_hash = %staged_block.hash,
+                                                    "relayed validated activated-v2 staged block without authoritative commit"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                warn!(
+                                                    event = "peer_block_v2_staged_relay_failed",
+                                                    block_hash = %staged_block.hash,
+                                                    error = %error,
+                                                    "failed relaying validated activated-v2 staged block; transient staging remains intact"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             block_requests.resolve(&block.hash);
                             for hash in summary
                                 .accepted_hashes
@@ -4803,6 +5060,8 @@ async fn main() -> Result<()> {
                                         rt.selected_segment_blocks_applied_total = rt
                                             .selected_segment_blocks_applied_total
                                             .saturating_add(selected_applied);
+                                        rt.active_session_received_blocks =
+                                            session.received_hashes.len() as u64;
                                         rt.active_session_applied_blocks =
                                             session.accepted_applied_hashes.len() as u64;
                                         rt.active_session_remaining_blocks = session
@@ -4897,10 +5156,10 @@ async fn main() -> Result<()> {
                                 {
                                     let mut issued_hashes = Vec::new();
                                     for hash in candidates {
-                                        if !block_requests.should_issue_getblock_for_peers(
+                                        if !block_requests.promote_getblock_to_peer(
                                             &hash,
                                             now_unix(),
-                                            active_peer_ids(&p2p),
+                                            &peer_id,
                                         ) {
                                             continue;
                                         }
@@ -5288,13 +5547,30 @@ async fn main() -> Result<()> {
                                     if let Some(pending) = pending_selected_locator.as_ref() {
                                         session.accept_header_page(pending, &headers, now_unix());
                                     }
-                                    let candidates = selected_segment_request_candidates(
+                                    // A validated selected-header response is fresh proof that
+                                    // this direct peer can serve these hashes. Reopen any stale
+                                    // generic exhaustion/not-found state before directed promotion.
+                                    if let Some(selected_peer) = peer_id.as_deref() {
+                                        block_requests.note_selected_header_availability(
+                                            selected_peer,
+                                            headers.iter().map(|item| item.hash.clone()),
+                                        );
+                                    }
+                                    // Selected-segment recovery owns these hashes. Existing
+                                    // generic pending requests are promoted below to the selected
+                                    // peer instead of filtering the hashes out of the session.
+                                    let missing_hashes = selected_segment_missing_hashes(
                                         &headers,
                                         selected_limits,
                                         &known,
-                                        &pending,
+                                        &HashSet::new(),
                                     );
-                                    session.missing_hashes = candidates.clone();
+                                    let candidates = missing_hashes
+                                        .iter()
+                                        .take(selected_limits.max_inflight_blocks_per_peer)
+                                        .cloned()
+                                        .collect::<Vec<_>>();
+                                    session.missing_hashes = missing_hashes;
                                     session.state = SelectedSegmentSessionState::RequestingBlocks;
                                     session.updated_at_unix = now_unix();
                                     {
@@ -5338,53 +5614,57 @@ async fn main() -> Result<()> {
                         let mut issued_selected_request_count = 0u64;
                         let mut issued_selected_hashes = Vec::new();
                         for hash in requests {
-                            if block_requests.should_issue_getblock_for_peers(
-                                &hash,
-                                now_unix(),
-                                active_peer_ids(&p2p),
-                            ) {
-                                let mut peer_addressed_request_succeeded = false;
-                                if let Some(ref p2p) = p2p {
-                                    let (result, peer_addressed) = if let Some(session) =
-                                        selected_segment_session
-                                            .as_ref()
-                                            .filter(|_| selected_request_hashes.contains(&hash))
-                                    {
-                                        (
-                                            p2p.request_block_from(&session.peer_id, &hash)
-                                                .map(|_| ()),
-                                            true,
-                                        )
+                            let selected_peer = selected_segment_session
+                                .as_ref()
+                                .filter(|_| selected_request_hashes.contains(&hash))
+                                .map(|session| session.peer_id.clone());
+                            let admitted = if let Some(peer_id) = selected_peer.as_deref() {
+                                block_requests.promote_getblock_to_peer(&hash, now_unix(), peer_id)
+                            } else {
+                                block_requests.should_issue_getblock_for_peers(
+                                    &hash,
+                                    now_unix(),
+                                    active_peer_ids(&p2p),
+                                )
+                            };
+                            if !admitted {
+                                continue;
+                            }
+
+                            let mut peer_addressed_request_succeeded = false;
+                            if let Some(ref p2p) = p2p {
+                                let (result, peer_addressed) =
+                                    if let Some(peer_id) = selected_peer.as_deref() {
+                                        (p2p.request_block_from(peer_id, &hash).map(|_| ()), true)
                                     } else {
                                         (p2p.request_block(&hash), false)
                                     };
-                                    match result {
-                                        Ok(()) => peer_addressed_request_succeeded = peer_addressed,
-                                        Err(e) => {
-                                            block_requests.resolve(&hash);
-                                            warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
-                                        }
+                                match result {
+                                    Ok(()) => peer_addressed_request_succeeded = peer_addressed,
+                                    Err(e) => {
+                                        block_requests.resolve(&hash);
+                                        warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
                                     }
                                 }
-                                if peer_addressed_request_succeeded {
-                                    if let Some(session) = selected_segment_session.as_mut() {
-                                        session.requested_hashes.insert(hash.clone());
-                                        issued_selected_hashes.push(hash.clone());
-                                        session.updated_at_unix = now_unix();
-                                    }
-                                }
-                                let mut rt = runtime.write().await;
-                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                                if peer_addressed_request_succeeded {
-                                    issued_selected_request_count =
-                                        issued_selected_request_count.saturating_add(1);
-                                    rt.peer_addressed_getblock_sent_total =
-                                        rt.peer_addressed_getblock_sent_total.saturating_add(1);
-                                }
-                                rt.pending_block_requests = block_requests.pending.len();
-                                rt.inflight_block_requests = block_requests.pending.len();
-                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
+                            if peer_addressed_request_succeeded {
+                                if let Some(session) = selected_segment_session.as_mut() {
+                                    session.requested_hashes.insert(hash.clone());
+                                    issued_selected_hashes.push(hash.clone());
+                                    session.updated_at_unix = now_unix();
+                                }
+                            }
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            if peer_addressed_request_succeeded {
+                                issued_selected_request_count =
+                                    issued_selected_request_count.saturating_add(1);
+                                rt.peer_addressed_getblock_sent_total =
+                                    rt.peer_addressed_getblock_sent_total.saturating_add(1);
+                            }
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
                         }
                         if !issued_selected_hashes.is_empty() {
                             if let Some(session) = selected_segment_session.as_mut() {
@@ -5982,26 +6262,41 @@ async fn main() -> Result<()> {
                                 None
                             }
                         });
-                        if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.send_block_data_with_request_id(
-                                request_id.as_deref(),
-                                Some(&hash),
-                                block.as_ref(),
-                            ) {
-                                warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
+                        let should_respond =
+                            should_send_getblock_response(request_id.as_deref(), block.is_some());
+                        if should_respond {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.send_block_data_with_request_id(
+                                    request_id.as_deref(),
+                                    Some(&hash),
+                                    block.as_ref(),
+                                ) {
+                                    warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
+                                }
                             }
                         }
                         let mut rt = runtime.write().await;
                         rt.getblock_received = rt.getblock_received.saturating_add(1);
-                        rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
+                        if should_respond {
+                            rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
+                        }
                     }
-                    InboundEvent::BlockDataMissing { hash } => {
+                    InboundEvent::BlockDataMissing {
+                        hash,
+                        peer_id,
+                        request_id,
+                    } => {
                         let mut fallback_getblock_sent = false;
-                        let mut retry_next_peer = false;
-                        let mut all_peers_exhausted = false;
-                        let mut final_height_not_found = false;
-                        let mut final_same_height_not_found = false;
+                        let retry_next_peer;
+                        let all_peers_exhausted;
+                        let final_height_not_found;
+                        let final_same_height_not_found;
                         if let Some(hash) = hash.as_ref() {
+                            if !block_requests
+                                .should_accept_not_found_from_peer(hash, peer_id.as_deref())
+                            {
+                                continue;
+                            }
                             final_height_not_found =
                                 final_quiescence_higher_tip_requests.contains(hash);
                             final_same_height_not_found =
@@ -6019,13 +6314,26 @@ async fn main() -> Result<()> {
                                     warn!(error = %e, block_hash = %hash, "failed issuing fallback headers after BlockData not-found");
                                 }
                                 if outcome.retry {
-                                    if let Err(e) = p2p.request_block(hash) {
-                                        warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
+                                    let send_result = if let Some(peer) = outcome.peer.as_deref() {
+                                        p2p.request_block_from(peer, hash).map(|_| ())
+                                    } else {
+                                        p2p.request_block_broadcast(hash)
+                                    };
+                                    if let Err(e) = send_result {
+                                        warn!(
+                                            error = %e,
+                                            block_hash = %hash,
+                                            requested_peer = ?outcome.peer,
+                                            request_id = ?request_id,
+                                            "failed issuing fallback GetBlock after BlockData not-found"
+                                        );
                                     } else {
                                         fallback_getblock_sent = true;
                                     }
                                 }
                             }
+                        } else {
+                            continue;
                         }
                         if all_peers_exhausted {
                             if let Some(hash) = hash.as_ref() {
@@ -8594,6 +8902,58 @@ mod tests {
         assert_eq!(session.accepted_applied_hashes.len(), 80);
         assert_eq!(session.remote_selected_tip, "selected-080");
         assert_eq!(session.remote_selected_height, 80);
+    }
+
+    #[test]
+    fn selected_segment_retains_full_backlog_beyond_immediate_inflight_window() {
+        let mut headers = Vec::new();
+        let mut parent = "common".to_string();
+        for height in 1..=80 {
+            let hash = format!("selected-{height:03}");
+            headers.push(selected_test_header(&hash, &parent, height));
+            parent = hash;
+        }
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 32,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let accepted = HashSet::from(["common".to_string()]);
+        let pending = HashSet::new();
+
+        let backlog = selected_segment_missing_hashes(&headers, limits, &accepted, &pending);
+        let immediate = selected_segment_request_candidates(&headers, limits, &accepted, &pending);
+        assert_eq!(backlog.len(), 80);
+        assert_eq!(immediate.len(), 32);
+        assert_eq!(backlog.first(), Some(&"selected-001".to_string()));
+        assert_eq!(backlog.last(), Some(&"selected-080".to_string()));
+
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            11,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            20,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = backlog;
+        for hash in &immediate {
+            session.requested_hashes.insert(hash.clone());
+        }
+        assert!(session.start_chunk(immediate.clone(), 1_001));
+        for hash in &immediate {
+            assert!(session.mark_applied(hash, 2_000));
+        }
+        assert!(session.complete_current_chunk_if_applied());
+
+        let continuation = session.continuation_hashes(MAX_INFLIGHT_BLOCK_REQUESTS);
+        assert_eq!(continuation.len(), 48);
+        assert_eq!(continuation.first(), Some(&"selected-033".to_string()));
+        assert_eq!(continuation.last(), Some(&"selected-080".to_string()));
     }
 
     #[test]

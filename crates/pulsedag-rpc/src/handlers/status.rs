@@ -625,7 +625,10 @@ mod tests {
     use std::{
         collections::HashMap,
         path::PathBuf,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::RwLock;
@@ -680,12 +683,18 @@ mod tests {
         }
     }
 
+    static NEXT_TEMP_DB_ID: AtomicU64 = AtomicU64::new(1);
+
     fn temp_db_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+        let sequence = NEXT_TEMP_DB_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "pulsedag-{name}-{}-{unique}-{sequence}",
+            std::process::id()
+        ))
     }
 
     fn mk_state(status: P2pStatus) -> TestState {
