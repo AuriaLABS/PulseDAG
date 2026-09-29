@@ -742,10 +742,7 @@ mod tests {
             )
             .unwrap();
         assert!(actions.is_empty());
-        assert_eq!(
-            controller.telemetry().invalid_response_total,
-            invalid_before
-        );
+        assert_eq!(controller.telemetry().invalid_response_total, invalid_before);
     }
 
     #[test]
