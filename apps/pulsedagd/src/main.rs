@@ -1057,7 +1057,10 @@ impl SelectedSegmentSession {
         let received_new = self.mark_received(inbound_hash, now);
         let mut applied_new = 0u64;
         for hash in authoritative_hashes {
-            if known_blocks.contains(hash) && self.mark_applied(hash, now) {
+            if self.requested_hashes.contains(hash)
+                && known_blocks.contains(hash)
+                && self.mark_applied(hash, now)
+            {
                 applied_new = applied_new.saturating_add(1);
             }
         }
@@ -9311,6 +9314,49 @@ mod tests {
         assert_eq!(session.received_hashes.len(), 3);
         assert_eq!(session.accepted_applied_hashes.len(), 3);
         assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn activated_v2_selected_segment_does_not_count_unrequested_authoritative_hash() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            12,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            21,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+        session.requested_hashes.insert("b1".to_string());
+        assert!(session.start_chunk(vec!["b1".to_string()], 1_001));
+
+        let progress = session.reconcile_authoritative_outcome(
+            "b2",
+            &["b2".to_string()],
+            &HashSet::from([
+                "common".to_string(),
+                "b1".to_string(),
+                "b2".to_string(),
+            ]),
+            Some("b2"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+
+        assert!(!progress.received_new);
+        assert_eq!(progress.applied_new, 0);
+        assert!(!progress.chunk_completed);
+        assert!(progress.session_completed);
+        assert!(!session.received_hashes.contains("b2"));
+        assert!(!session.accepted_applied_hashes.contains("b2"));
     }
 
     #[test]
