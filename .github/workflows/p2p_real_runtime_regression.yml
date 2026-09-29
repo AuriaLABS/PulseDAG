@@ -1,4 +1,4 @@
-name: P2P real-swarm initialization regression
+name: v3.0 P2P real-swarm initialization regression
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - 'apps/pulsedagd/src/main.rs'
       - 'apps/pulsedagd/src/compact_relay.rs'
       - '.github/workflows/p2p_real_runtime_regression.yml'
-      - '.github/workflows/v2_3_0_workspace_validation.yml'
+      - '.github/workflows/v3_0_0_workspace_validation.yml'
   workflow_dispatch:
     inputs:
       candidate_sha:

@@ -1674,7 +1674,8 @@ mark_progress "environment_preflight_start"
 run_rehearsal_environment_preflight
 mark_progress "environment_preflight_complete"
 mark_progress "preflight_start"
-OUT_DIR="$OUT_DIR" run_with_global_timeout preflight "$ROOT_DIR/scripts/v2_2_20_preflight_check.sh"
+PREFLIGHT_SCRIPT="${PULSEDAG_REHEARSAL_PREFLIGHT_SCRIPT:-$ROOT_DIR/scripts/v2_2_20_preflight_check.sh}"
+OUT_DIR="$OUT_DIR" run_with_global_timeout preflight "$PREFLIGHT_SCRIPT"
 mark_progress "preflight_complete"
 ensure_ports_free
 mark_progress "cargo_build_start"

@@ -1,4 +1,4 @@
-name: RPC and Release Validation
+name: v3.0 RPC and Release Validation
 
 on:
   pull_request:

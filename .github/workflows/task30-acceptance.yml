@@ -1,4 +1,4 @@
-name: v2.4.0 Task 30 deterministic baseline
+name: v3.0 Task 30 deterministic baseline
 
 on:
   workflow_dispatch:

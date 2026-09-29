@@ -1,19 +1,29 @@
 # PulseDAG documentation
 
-Active release documentation now targets the `v2.4.0` Task31 candidate constructed from `main`.
+Active development, CI, release evidence, and readiness work target **v3.0.0**.
 
-`main` is the moving Task31 construction line, not a frozen tag. It may contain inactive v3/covenant modules; `contracts_enabled=false` remains mandatory. Live control issues: launch #781 / #794, RustSec/public-GO #1127 (replaces missing #803), identity mix #1131, docs hygiene #1128. See `VERSION_MATRIX.md`. The exact candidate is not yet frozen: activated-v2 startup/storage/P2P wiring and final exact-SHA validation remain in progress. This state does not authorize a release tag, GitHub Release publication, public-testnet launch, Day 0, default high-cadence activation, or smart contracts.
+`main` is the moving v3.0.0 construction line, not a frozen tag. The exact candidate is not yet frozen, and this state does not authorize a GitHub Release, public-testnet launch, mainnet launch, Day 0, default high-cadence activation, or smart contracts.
 
-The `v2.5.0`, `v2.6.0`, and `v3.0.0` roadmaps remain future planning documents. They do not bypass the v2.4.0 release/activation gates.
+Current guardrails:
 
-## Current v2.4.0 authority
+- candidate decision: `PENDING_EXACT_CANDIDATE_EVIDENCE`;
+- `public_testnet_ready=false`;
+- `thirty_day_public_testnet_clock_started=false`;
+- `contracts_enabled=false`;
+- active release/readiness CI must identify v3.0.0;
+- v2.x material is historical/compatibility evidence only.
 
-- [`ROADMAP_V2_4_0.md`](ROADMAP_V2_4_0.md)
-- [`PROTOCOL_ACTIVATION_V2_4_0.md`](PROTOCOL_ACTIVATION_V2_4_0.md)
+## Current v3.0.0 authority
+
+- [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md)
+- [`ROADMAP_V3_0_LONG_LIVED_CORE.md`](ROADMAP_V3_0_LONG_LIVED_CORE.md)
+- [`VERSION_MATRIX.md`](VERSION_MATRIX.md)
 - [`BLOCK_HEADER_V2_CANONICALIZATION.md`](BLOCK_HEADER_V2_CANONICALIZATION.md)
 - [`TRANSACTION_PROTOCOL_V2.md`](TRANSACTION_PROTOCOL_V2.md)
-- [`DIFFICULTY_RETARGET_V2_4_0.md`](DIFFICULTY_RETARGET_V2_4_0.md)
-- [`VERSION_MATRIX.md`](VERSION_MATRIX.md)
+- [`PULSECLOCK_V1.md`](PULSECLOCK_V1.md)
+- [`FINALITY_ENVELOPE_V1.md`](FINALITY_ENVELOPE_V1.md)
+
+Transaction/header v2 documents remain protocol-component specifications inside the v3 candidate; they are not separate release targets.
 
 ## Operator documentation
 
@@ -22,28 +32,16 @@ The `v2.5.0`, `v2.6.0`, and `v3.0.0` roadmaps remain future planning documents. 
 - [`POW_SPEC_FINAL.md`](POW_SPEC_FINAL.md)
 - [`POW_CURRENT_PATH.md`](POW_CURRENT_PATH.md)
 
-The v2.4.0 packaged-binary installation/recovery guide must be frozen from the final exact candidate. Existing v2.3.0 installation and private-testnet documents are historical/compatibility inputs, not the current v2.4.0 release identity.
-
 ## Evidence and launch gates
 
 - [`RELEASE_EVIDENCE.md`](RELEASE_EVIDENCE.md)
 - [`BURN_IN_GATE.md`](BURN_IN_GATE.md)
 - [`checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md`](checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md)
 
-Current authorization remains:
+Evidence generated for v2.x may be retained for regression, compatibility, and provenance. It does not satisfy a v3.0.0 launch gate unless the corresponding v3 workflow reruns it against the exact v3 candidate SHA.
 
-- Task31 decision: `PENDING_EXACT_CANDIDATE_EVIDENCE`;
-- `public_testnet_ready=false`;
-- `thirty_day_public_testnet_clock_started=false`;
-- default high cadence experimental/disabled;
-- `contracts_enabled=false`.
+## v3 product and protocol work
 
-## Future planning
-
-- [`ROADMAP_V2_5_0.md`](ROADMAP_V2_5_0.md)
-- [`ROADMAP_V2_6_0.md`](ROADMAP_V2_6_0.md)
-- [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md)
-- [`PULSECLOCK_V1.md`](PULSECLOCK_V1.md)
 - [`ACCESS_SET_V1.md`](ACCESS_SET_V1.md)
 - [`COVENANT_VAULT_V1.md`](COVENANT_VAULT_V1.md)
 - [`COVENANT_HTLC_V1.md`](COVENANT_HTLC_V1.md)
@@ -55,9 +53,8 @@ Current authorization remains:
 - [`PULSEDAG_VERIFY_V1.md`](PULSEDAG_VERIFY_V1.md)
 - [`WORK_CERTIFICATE_V1.md`](WORK_CERTIFICATE_V1.md)
 - [`USER_SURFACE_V1.md`](USER_SURFACE_V1.md)
-- [`FINALITY_ENVELOPE_V1.md`](FINALITY_ENVELOPE_V1.md)
 
-These files are a later-genesis thesis and planning specs. They do not activate covenants, contracts, PulseVM, or high cadence, and they do not mix v3 identity into the Task31 protocol identity.
+These surfaces remain independently gated. The v3 version identity does not by itself enable contracts, covenants, high cadence, GPU production claims, or any other disabled feature.
 
 ## Maintenance and history
 
@@ -65,4 +62,4 @@ These files are a later-genesis thesis and planning specs. They do not activate 
 - [`archive/README.md`](archive/README.md)
 - [`codex_tasks/`](codex_tasks/)
 
-Historical v2.3.x and v2.2.x evidence remains immutable provenance. Consensus identity changes require a fresh, explicitly versioned chain/activation boundary and exact-candidate evidence; they must never be inferred from an old release branch or old private-testnet database.
+Historical v2.x evidence remains immutable provenance and compatibility material.

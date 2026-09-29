@@ -111,6 +111,21 @@ Other informational warnings likewise remain visible; no warning is hidden merel
 
 Runtime `bincode 1.3.3` remains a separate tracked item with an explicit plan in `docs/security/V3_BINCODE_MIGRATION_PLAN.md`.
 
+## Visible informational unsoundness: `faster-hex 0.9.0`
+
+RustSec `RUSTSEC-2026-0306` covers an x86/x86_64 out-of-bounds read in
+`faster_hex::hex_decode_unchecked`. The active Kaspa parent stack still
+resolves and compiles `faster-hex 0.9.0`, so PulseDAG does not classify this
+package as lock-only.
+
+The v3 dependency gate keeps the advisory visible and fails closed if the
+affected API symbol is referenced by PulseDAG, Kaspa, or workflow source
+packages in the resolved graph. Current reviewed call sites use the checked
+`hex_decode` / `hex_encode` APIs instead. This is a development
+disposition only: it does not mark final v3 launch security ready, and a
+supported parent-stack move to `faster-hex >=0.10.1` remains preferred when
+Kaspa permits that dependency line.
+
 ## Final launch boundary
 
 A PASS of the active dependency workflow means the current development candidate satisfies this dependency-remediation checkpoint. It does not mean `security_ready=true`, does not authorize mainnet/testnet launch and does not replace the final exact-candidate security review required by #1127/#781.

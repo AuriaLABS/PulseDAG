@@ -1,4 +1,4 @@
-name: v3 launch Task 38 packaged GPU miner phase 23
+name: v3.0 launch Task 38 packaged GPU miner phase 23
 
 on:
   pull_request:

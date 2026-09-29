@@ -70,6 +70,15 @@ REQUIRED_VISIBLE_BLOCKERS = {
     ("atty", "0.2.14"),
 }
 
+# RUSTSEC-2026-0306 is an informational unsoundness advisory affecting
+# faster_hex::hex_decode_unchecked on x86/x86_64. The package is reachable
+# through the reviewed Kaspa parent stack, so the gate must keep it visible
+# and prove the affected API is not referenced outside faster-hex itself.
+REQUIRED_VISIBLE_INFORMATIONAL = {
+    ("faster-hex", "0.9.0"),
+}
+AFFECTED_FASTER_HEX_SYMBOL = "hex_decode_unchecked"
+
 
 def fail(message: str) -> None:
     raise SystemExit(f"v3 dependency security validation failed: {message}")
@@ -166,6 +175,44 @@ def compile_clean(root: str, evidence_dir: Path, by_id: dict[str, tuple[str, str
     return compiled
 
 
+def validate_faster_hex_advisory_scope(
+    metadata: dict[str, Any], evidence_dir: Path
+) -> list[str]:
+    call_sites: list[str] = []
+    reviewed_prefixes = ("kaspa-", "workflow-", "pulsedag-")
+    reviewed_exact = {"pulsedagd"}
+
+    for package in metadata["packages"]:
+        name = str(package["name"])
+        if name == "faster-hex":
+            continue
+        if not (name.startswith(reviewed_prefixes) or name in reviewed_exact):
+            continue
+
+        package_root = Path(str(package["manifest_path"])).parent
+        if not package_root.exists():
+            fail(f"package source missing while checking {AFFECTED_FASTER_HEX_SYMBOL}: {name}")
+        for source in package_root.rglob("*.rs"):
+            try:
+                text = source.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                text = source.read_text(encoding="utf-8", errors="replace")
+            if AFFECTED_FASTER_HEX_SYMBOL in text:
+                call_sites.append(f"{name}:{source.relative_to(package_root)}")
+
+    call_sites.sort()
+    (evidence_dir / "faster-hex-0306-call-sites.txt").write_text(
+        "\n".join(call_sites) + ("\n" if call_sites else ""),
+        encoding="utf-8",
+    )
+    if call_sites:
+        fail(
+            "RUSTSEC-2026-0306 affected API is referenced by reviewed launch-source packages: "
+            f"{call_sites}"
+        )
+    return call_sites
+
+
 def main() -> None:
     audit = tomllib.loads((ROOT / ".cargo" / "audit.toml").read_text(encoding="utf-8"))
     ignored = set(audit.get("advisories", {}).get("ignore", []))
@@ -222,6 +269,13 @@ def main() -> None:
             f"{missing_blockers}"
         )
 
+    missing_informational = sorted(REQUIRED_VISIBLE_INFORMATIONAL - locked)
+    if missing_informational:
+        fail(
+            "informational advisory inventory drifted; review before changing the gate: "
+            f"{missing_informational}"
+        )
+
     evidence_dir = ROOT / "ci-evidence" / "dependency-v3-security"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     compiled_by_root: dict[str, set[tuple[str, str]]] = {}
@@ -238,6 +292,8 @@ def main() -> None:
         forbidden_names = sorted(compiled_names & FORBIDDEN_COMPILED_NAMES)
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
+
+    faster_hex_call_sites = validate_faster_hex_advisory_scope(metadata, evidence_dir)
 
     candidate_sha = os.environ.get("CANDIDATE_SHA") or os.environ.get("GITHUB_SHA", "local")
     summary = {
@@ -256,6 +312,10 @@ def main() -> None:
         "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
         "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
         "remaining_launch_blockers": [f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_BLOCKERS)],
+        "visible_informational_advisories": [
+            f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_INFORMATIONAL)
+        ],
+        "faster_hex_0306_affected_api_call_sites": faster_hex_call_sites,
         "compiled_counts": {root: len(compiled) for root, compiled in compiled_by_root.items()},
         "final_v3_launch_security_ready": False,
     }
@@ -275,6 +335,8 @@ def main() -> None:
         "hickory_proto_0_25_2_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "remaining_launch_blockers=atty@0.2.14",
+        "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",
+        "faster_hex_0306_affected_api_call_sites=0",
         "final_v3_launch_security_ready=false",
         "",
     ]), encoding="utf-8")
