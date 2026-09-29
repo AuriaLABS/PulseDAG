@@ -11031,13 +11031,7 @@ mod inventory_tests {
             request_hash: Some(block.hash.clone()),
         })
         .expect("serialize exact correlated block data");
-        dispatch_network_message(
-            "testnet",
-            &exact_wire,
-            Some("peer-b"),
-            &inner,
-            &inbound_tx,
-        );
+        dispatch_network_message("testnet", &exact_wire, Some("peer-b"), &inner, &inbound_tx);
         assert!(inbound_rx.try_recv().is_err());
         {
             let guard = inner.lock().unwrap();
@@ -11098,13 +11092,7 @@ mod inventory_tests {
             );
         }
 
-        dispatch_network_message(
-            "testnet",
-            &exact_wire,
-            Some("peer-a"),
-            &inner,
-            &inbound_tx,
-        );
+        dispatch_network_message("testnet", &exact_wire, Some("peer-a"), &inner, &inbound_tx);
         assert!(matches!(
             inbound_rx.try_recv(),
             Ok(InboundEvent::Block(received)) if received.hash == block.hash
