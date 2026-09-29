@@ -88,6 +88,7 @@ impl CompactRelayDaemonRuntimeV1 {
         })
     }
 
+    #[cfg(test)]
     pub fn handle_inbound(
         &mut self,
         peer_id: &str,
@@ -137,6 +138,7 @@ impl CompactRelayDaemonRuntimeV1 {
     }
 }
 
+#[cfg(test)]
 fn known_transactions_for_wire(
     chain: &ChainState,
     wire: &CompactRelayWireV1,
