@@ -4756,9 +4756,10 @@ fn dispatch_network_message_with_transport_peer(
     let parsed =
         decode_network_message_for_transport(bytes, transport_peer, expected_chain_id, inner);
     // Gossipsub can forward a message authored by one peer through a different
-    // directly connected neighbour. Use the original author for per-sender
-    // accounting/reputation, but fall back to the transport peer for unsigned
-    // traffic. Protocol-v2 extension authorization remains transport-bound.
+    // directly connected neighbour. Keep author accounting/reputation separate
+    // from the authenticated transport neighbour, while enforcing a rate budget
+    // on both identities so rotating signed authors cannot bypass one connection's
+    // aggregate inbound allowance. Protocol-v2 authorization remains transport-bound.
     let source_peer = source_peer.or(transport_peer);
     let msg = match parsed {
         Ok(v) => v,
@@ -4789,15 +4790,32 @@ fn dispatch_network_message_with_transport_peer(
     };
 
     if let Ok(mut guard) = inner.lock() {
+        let now = now_unix();
         if !admit_peer_inbound_message(
             &mut guard,
             source_peer,
-            now_unix(),
+            now,
             msg_class,
             msg_kind,
             requested_blockdata,
         ) {
             guard.last_drop_reason = Some("peer_inbound_rate_limited".into());
+            refresh_connected_peers_from_health(&mut guard);
+            persist_peer_state_if_configured(&guard);
+            return;
+        }
+
+        let distinct_transport_peer =
+            transport_peer.filter(|transport| source_peer != Some(*transport));
+        if !admit_peer_inbound_message(
+            &mut guard,
+            distinct_transport_peer,
+            now,
+            msg_class,
+            msg_kind,
+            requested_blockdata,
+        ) {
+            guard.last_drop_reason = Some("transport_peer_inbound_rate_limited".into());
             refresh_connected_peers_from_health(&mut guard);
             persist_peer_state_if_configured(&guard);
             return;
@@ -12804,7 +12822,7 @@ mod task27_live_capability_io_tests {
     }
 
     #[test]
-    fn forwarded_capability_binds_transport_without_collapsing_author_rate_limits() {
+    fn forwarded_capability_binds_transport_and_enforces_aggregate_transport_budget() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         {
             let mut guard = inner.lock().unwrap();
@@ -12821,8 +12839,8 @@ mod task27_live_capability_io_tests {
         let wire = remote.encode_tip_message(&get_tips()).unwrap();
         let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
 
-        // The aggregate exceeds one peer window, but each authenticated author stays below
-        // its own budget. A shared propagation peer must not inherit the aggregate penalty.
+        // Each authenticated author remains below its own budget, while their aggregate
+        // exceeds the budget of the one directly connected propagation peer.
         for author_index in 0..2 {
             let author = format!("peer-author-{author_index}");
             for _ in 0..(PEER_MAX_INBOUND_MESSAGES_PER_WINDOW / 2 + 1) {
@@ -12838,7 +12856,23 @@ mod task27_live_capability_io_tests {
         }
 
         let guard = inner.lock().unwrap();
-        assert_eq!(guard.peer_message_rate_limited_count, 0);
+        assert!(guard.peer_message_rate_limited_count >= 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("transport_peer_inbound_rate_limited")
+        );
+        assert!(guard
+            .peer_book
+            .get("peer-transport")
+            .and_then(|health| health.last_rate_limited_unix)
+            .is_some());
+        for author in ["peer-author-0", "peer-author-1"] {
+            assert!(guard
+                .peer_book
+                .get(author)
+                .and_then(|health| health.last_rate_limited_unix)
+                .is_none());
+        }
         assert_eq!(
             guard
                 .protocol_capability_transport
