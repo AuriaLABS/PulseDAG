@@ -60,9 +60,9 @@ pub use pending_persistence::{
 pub use plan::{
     build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
     build_transaction_plan, build_transaction_plan_with_safety, derive_wallet_plan_nonce_v1,
-    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
-    WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
-    WALLET_NONCE_DOMAIN_V1,
+    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletProtocolBindingV2,
+    WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
+    WalletTransactionPlan, WALLET_NONCE_DOMAIN_V1,
 };
 pub use pulse_view::{
     wallet_covenant_delay_pulse, wallet_pulse_view_v1, WalletPulseAdmissionV1, WalletPulseV1Error,
@@ -83,8 +83,10 @@ pub use session_v1::{
     WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
 };
 pub use signing::{
-    sign_transaction_plan, WalletPlanSigner, WalletPlanSigningError, WalletPlanSigningSessionExt,
-    WalletSignedTransaction,
+    sign_transaction_plan, verify_wallet_protocol_authorization_v1,
+    wallet_protocol_authorization_message_v1, WalletPlanSigner, WalletPlanSigningError,
+    WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1, WalletSignedTransaction,
+    WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1,
 };
 pub use watch_only::{
     export_watch_only_manifest, verify_watch_only_manifest, WalletWatchOnly, WalletWatchOnlyBranch,

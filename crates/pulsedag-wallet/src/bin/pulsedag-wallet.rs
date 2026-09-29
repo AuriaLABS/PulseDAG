@@ -17,16 +17,17 @@ use pulsedag_wallet::{
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
-    WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
-    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
-    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
+    WalletProtocolBindingV2, WalletReviewSummary, WalletSafetyAcknowledgements, WalletSession,
+    WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy,
+    WalletWatchOnly, WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
+    WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
-    fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast, submit_prepared,
-    AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput,
-    PulseObservationOutput, RelayEnvelope,
+    fetch_protocol_identity, fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast,
+    submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput,
+    MempoolFeeEstimateOutput, PulseObservationOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +93,8 @@ struct TxPreviewArgs {
     keystore: PathBuf,
     pending_journal: PathBuf,
     utxos_file: PathBuf,
+    relay: String,
+    protocol_fingerprint: String,
     network_profile: String,
     chain_id: String,
     to: String,
@@ -203,6 +206,10 @@ struct TxPreviewOutput {
 struct TxSignOutput {
     network: WalletNetworkIdentity,
     review: WalletReviewSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     final_txid: String,
     relay: RelayEnvelope,
 }
@@ -408,6 +415,8 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "keystore",
                     "pending-journal",
                     "utxos-file",
+                    "relay",
+                    "protocol-fingerprint",
                     "network-profile",
                     "chain-id",
                     "to",
@@ -430,6 +439,8 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
+                relay: required(&flags, "relay")?,
+                protocol_fingerprint: required(&flags, "protocol-fingerprint")?,
                 network_profile: required(&flags, "network-profile")?,
                 chain_id: required(&flags, "chain-id")?,
                 to: required(&flags, "to")?,
@@ -498,6 +509,20 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
 
 fn parse_command() -> CliResult<Command> {
     parse_command_from(env::args().skip(1))
+}
+
+fn validate_protocol_fingerprint_arg(value: &str) -> CliResult<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_input(
+            "--protocol-fingerprint must be canonical lowercase SHA-256 hex",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn strip_line_ending(mut value: String) -> String {
@@ -592,16 +617,27 @@ fn read_manifest(path: &Path) -> CliResult<WalletWatchOnlyManifest> {
     Ok(manifest)
 }
 
-fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
-    let bytes = read_bounded_json(path, "wallet transaction plan")?;
-    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
-        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+fn validate_cli_signable_plan(plan: &WalletTransactionPlan) -> CliResult<()> {
     plan.validate_structure()?;
     if plan.nonce_policy != WalletNoncePolicy::DeterministicPlanV1 {
         return Err(
             invalid_input("wallet CLI signs deterministic_plan_v1 transaction plans only").into(),
         );
     }
+    if plan.protocol_binding_v2.is_none() {
+        return Err(invalid_input(
+            "wallet CLI requires an activated-v2 protocol binding from tx-preview",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
+    let bytes = read_bounded_json(path, "wallet transaction plan")?;
+    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
+        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+    validate_cli_signable_plan(&plan)?;
     Ok(plan)
 }
 
@@ -803,9 +839,9 @@ fn run_backup_verify(
     })
 }
 
-fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxPreviewOutput> {
+async fn run_tx_preview(args: TxPreviewArgs, password: SecretString) -> CliResult<TxPreviewOutput> {
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
+    let mut session = unlocked_session(&keystore, &password)?;
     let identity = session
         .status()
         .identity
@@ -818,6 +854,9 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
             derived.address().to_string()
         })?;
     session.lock();
+    drop(session);
+    drop(keystore);
+    drop(password);
 
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
@@ -833,13 +872,22 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
         args.ack_spend_all,
         args.ack_high_fee,
     );
+    validate_protocol_fingerprint_arg(&args.protocol_fingerprint)?;
+    let protocol = fetch_protocol_identity(&args.relay, &expected_network).await?;
+    if protocol.protocol_identity_fingerprint != args.protocol_fingerprint {
+        return Err(invalid_input(
+            "relay protocol identity does not match the expected launch fingerprint",
+        )
+        .into());
+    }
     let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
         intent,
         &available_utxos,
         safety_acknowledgements,
-    )?;
+    )?
+    .bind_activated_v2_protocol(protocol.protocol_identity)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let snapshot = pending_store.load_or_new(&plan.network)?;
     snapshot
@@ -927,6 +975,8 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     Ok(TxSignOutput {
         network: signed.network,
         review: signed.review,
+        protocol_binding_v2: signed.protocol_binding_v2,
+        protocol_authorization_v1: signed.protocol_authorization_v1,
         final_txid,
         relay: RelayEnvelope {
             transaction: signed.transaction,
@@ -966,6 +1016,9 @@ fn ensure_broadcast_reservation_binding(
 async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
     let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
     let signed = parse_signed_broadcast(&bytes)?;
+    if signed.protocol_binding_v2.is_none() {
+        return Err(invalid_input("wallet CLI refuses unbound legacy-v1 signed envelopes").into());
+    }
 
     // Complete all local/remote preflight before crossing the durable submit boundary.
     let prepared = prepare_broadcast(&args.relay, &signed).await?;
@@ -1077,7 +1130,7 @@ async fn run() -> CliResult<()> {
         Command::Pulse(args) => write_json(&run_pulse(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
-            write_json(&run_tx_preview(args, &password)?)
+            write_json(&run_tx_preview(args, password).await?)
         }
         Command::TxSign(args) => {
             let password = read_password_from_stdin()?;
@@ -1103,7 +1156,11 @@ async fn main() {
 mod tests {
     use std::io::Cursor;
 
-    use pulsedag_core::types::OutPoint;
+    use pulsedag_core::{
+        address_from_public_key,
+        types::{OutPoint, Utxo},
+        ProtocolActivationIdentity,
+    };
 
     use super::*;
 
@@ -1113,6 +1170,44 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[test]
+    fn production_cli_refuses_unbound_v1_plan_and_accepts_bound_v2_plan() {
+        let sender = address_from_public_key(&"11".repeat(32));
+        let recipient = address_from_public_key(&"22".repeat(32));
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-testnet").unwrap();
+        let policy = WalletSpendPolicy::new(100, 1_000, 8).unwrap();
+        let intent = WalletTransactionIntent::new(&sender, &recipient, 400, 10).unwrap();
+        let available = [Utxo {
+            outpoint: OutPoint {
+                txid: "33".repeat(32),
+                index: 0,
+            },
+            address: sender,
+            amount: 1_000,
+            coinbase: false,
+            height: 10,
+        }];
+
+        let legacy = build_deterministic_transaction_plan_with_safety(
+            network,
+            policy,
+            intent,
+            &available,
+            WalletSafetyAcknowledgements::none(),
+        )
+        .unwrap();
+        assert!(validate_cli_signable_plan(&legacy).is_err());
+
+        let bound = legacy
+            .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+                "pulsedag-testnet",
+                "testnet-genesis",
+                "ghostdag-order-v1",
+            ))
+            .unwrap();
+        assert!(validate_cli_signable_plan(&bound).is_ok());
     }
 
     #[test]
@@ -1242,6 +1337,14 @@ mod tests {
     }
 
     #[test]
+    fn protocol_fingerprint_pin_requires_canonical_lowercase_sha256() {
+        assert!(validate_protocol_fingerprint_arg(&"11".repeat(32)).is_ok());
+        assert!(validate_protocol_fingerprint_arg(&"AA".repeat(32)).is_err());
+        assert!(validate_protocol_fingerprint_arg("abc").is_err());
+        assert!(validate_protocol_fingerprint_arg(&"gg".repeat(32)).is_err());
+    }
+
+    #[test]
     fn transaction_commands_parse_explicit_policy_and_signer_path() {
         assert!(matches!(
             parse_command_from(args(&[
@@ -1252,6 +1355,10 @@ mod tests {
                 "pending",
                 "--utxos-file",
                 "utxos.json",
+                "--relay",
+                "https://relay.example",
+                "--protocol-fingerprint",
+                "1111111111111111111111111111111111111111111111111111111111111111",
                 "--network-profile",
                 "public-testnet",
                 "--chain-id",
@@ -1411,6 +1518,10 @@ mod tests {
             "pending",
             "--utxos-file",
             "utxos.json",
+            "--relay",
+            "https://relay.example",
+            "--protocol-fingerprint",
+            "1111111111111111111111111111111111111111111111111111111111111111",
             "--network-profile",
             "public-testnet",
             "--chain-id",
@@ -2005,7 +2116,13 @@ mod tests {
         let plan = pulsedag_wallet::build_deterministic_transaction_plan(
             network, policy, intent, &available,
         )
-        .expect("plan");
+        .expect("plan")
+        .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+            "pulsedag-public-testnet",
+            "cli-import-test-genesis",
+            "ghostdag-order-v1",
+        ))
+        .expect("bind activated-v2 protocol");
         fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(
             read_transaction_plan(&path)

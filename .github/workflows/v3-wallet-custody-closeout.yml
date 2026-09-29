@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: v3-wallet-custody-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   custody:
@@ -69,6 +69,14 @@ jobs:
 
       - name: Wallet CLI tests
         run: cargo test -p pulsedag-wallet --bin pulsedag-wallet --locked
+
+      - name: Activated-v2 signing-domain replay tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="ci-evidence/v3-wallet-custody/v2-chain-domain.log"
+          cargo test -p pulsedag-wallet --test v2_chain_domain --locked -- --nocapture 2>&1 | tee "$log"
+          grep -Fq "test result: ok" "$log"
 
       - name: Wallet clippy
         run: cargo clippy -p pulsedag-wallet --all-targets --locked -- -D warnings
