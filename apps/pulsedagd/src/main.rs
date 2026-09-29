@@ -9341,11 +9341,7 @@ mod tests {
         let progress = session.reconcile_authoritative_outcome(
             "b2",
             &["b2".to_string()],
-            &HashSet::from([
-                "common".to_string(),
-                "b1".to_string(),
-                "b2".to_string(),
-            ]),
+            &HashSet::from(["common".to_string(), "b1".to_string(), "b2".to_string()]),
             Some("b2"),
             2_000,
             MAX_INFLIGHT_BLOCK_REQUESTS,
