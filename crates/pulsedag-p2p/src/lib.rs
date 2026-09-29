@@ -5629,6 +5629,11 @@ fn dispatch_network_message_with_transport_peer(
                             guard.unknown_request_response_total =
                                 guard.unknown_request_response_total.saturating_add(1);
                         }
+                        if !correlated_request {
+                            guard.last_drop_reason =
+                                Some("uncorrelated_block_data_response".into());
+                            return;
+                        }
                     } else if request_hash.as_ref() == Some(&block.hash) {
                         guard.generic_getblock_response_total =
                             guard.generic_getblock_response_total.saturating_add(1);
@@ -10979,6 +10984,119 @@ mod inventory_tests {
         assert_eq!(guard.inbound_duplicates_suppressed, 0);
         assert_eq!(guard.duplicate_blocks_received, 1);
         assert_eq!(guard.inbound_messages, 2);
+    }
+
+    #[test]
+    fn peer_addressed_blockdata_requires_exact_request_peer_and_hash() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "correlated-exact-block".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let request_id = "correlated-exact-request".to_string();
+        inner.lock().unwrap().outstanding_getblock_requests.insert(
+            request_id.clone(),
+            OutstandingGetBlockRequest {
+                request_id: request_id.clone(),
+                target_peer_id: "peer-a".into(),
+                block_hash: block.hash.clone(),
+                completed: false,
+            },
+        );
+
+        let exact_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: Some(block.hash.clone()),
+        })
+        .expect("serialize exact correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &exact_wire,
+            Some("peer-b"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+        {
+            let guard = inner.lock().unwrap();
+            assert_eq!(guard.wrong_peer_response_total, 1);
+            assert_eq!(
+                guard.last_drop_reason.as_deref(),
+                Some("uncorrelated_block_data_response")
+            );
+            assert!(
+                !guard
+                    .outstanding_getblock_requests
+                    .get(&request_id)
+                    .unwrap()
+                    .completed
+            );
+        }
+
+        let wrong_hash_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: Some("other-hash".into()),
+        })
+        .expect("serialize wrong-hash correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &wrong_hash_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+        {
+            let guard = inner.lock().unwrap();
+            assert_eq!(guard.wrong_hash_response_total, 1);
+            assert!(
+                !guard
+                    .outstanding_getblock_requests
+                    .get(&request_id)
+                    .unwrap()
+                    .completed
+            );
+        }
+
+        dispatch_network_message(
+            "testnet",
+            &exact_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.getblock_responses_correlated_total, 1);
+        assert_eq!(guard.peer_addressed_getblock_response_total, 1);
+        assert!(
+            guard
+                .outstanding_getblock_requests
+                .get(&request_id)
+                .unwrap()
+                .completed
+        );
     }
 
     #[test]
