@@ -78,6 +78,20 @@ jobs:
           cargo test -p pulsedag-wallet --test v2_chain_domain --locked -- --nocapture 2>&1 | tee "$log"
           grep -Fq "test result: ok" "$log"
 
+      - name: Backup verification initialization gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="ci-evidence/v3-wallet-custody/backup-verification.log"
+          cargo test -p pulsedag-wallet --lib --locked backup_verification::tests:: -- --nocapture 2>&1 | tee "$log"
+          grep -Fq "test result: ok" "$log"
+          grep -Eq '2 passed|[3-9][0-9]* passed' "$log"
+
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            cargo test -p pulsedag-wallet --bin pulsedag-wallet --locked               backup_verification_receipt_is_required_before_spending_and_tamper_fails_closed               -- --nocapture 2>&1 | tee -a "$log"
+            grep -Fq "backup_verification_receipt_is_required_before_spending_and_tamper_fails_closed ... ok" "$log"
+          fi
+
       - name: Wallet clippy
         run: cargo clippy -p pulsedag-wallet --all-targets --locked -- -D warnings
 

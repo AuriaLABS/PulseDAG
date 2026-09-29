@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod backup_verification;
 mod deterministic;
 mod keystore;
 mod keystore_crypto;
@@ -19,6 +20,15 @@ mod signing;
 mod watch_only;
 use session_v1 as session_core;
 
+pub use backup_verification::{
+    create_wallet_backup_verification_receipt, load_wallet_backup_verification_receipt,
+    persist_wallet_backup_verification_receipt, prove_wallet_recovery_material,
+    verify_wallet_backup_verification_receipt, wallet_backup_verification_receipt_path,
+    WalletBackupVerificationError, WalletBackupVerificationReceipt, WalletRecoveryMaterialProof,
+    WALLET_BACKUP_VERIFICATION_DOMAIN_V1, WALLET_BACKUP_VERIFICATION_FORMAT,
+    WALLET_BACKUP_VERIFICATION_MAX_BYTES, WALLET_BACKUP_VERIFICATION_VERSION,
+    WALLET_RECOVERY_MATERIAL_PROOF_VERSION,
+};
 pub use pulsedag_core::{
     format_pdg_atoms_v3, parse_pdg_decimal_v3, DenominationV3Error, PdgAmountV3, PDG_DECIMALS_V3,
     PDG_SYMBOL_V3,
