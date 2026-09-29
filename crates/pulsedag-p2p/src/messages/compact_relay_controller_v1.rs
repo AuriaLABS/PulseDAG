@@ -111,6 +111,19 @@ impl CompactRelayControllerV1 {
             .retain(|(owner, _), _| owner != peer_id);
     }
 
+    pub fn observe_full_block(
+        &mut self,
+        sessions: &mut CompactRelayRuntimeSessionBookV1,
+        block_hash: &str,
+    ) -> bool {
+        let pending_before = self.pending_announcements.len();
+        self.pending_announcements
+            .retain(|(_, hash), _| hash.as_str() != block_hash);
+        let pending_removed = pending_before != self.pending_announcements.len();
+        let in_flight_removed = sessions.abandon_block(block_hash) > 0;
+        pending_removed || in_flight_removed
+    }
+
     pub fn handle_send_failure(
         &mut self,
         sessions: &mut CompactRelayRuntimeSessionBookV1,
@@ -633,6 +646,60 @@ mod tests {
                 block_hash,
             }] if peer_id == PEER && block_hash == &expected_hash
         ));
+    }
+
+    #[test]
+    fn observed_full_block_clears_same_hash_pending_for_all_peers() {
+        let (mut controller, mut sessions) = configured();
+        let peer_b = "peer-controller-b";
+        for peer in [PEER, peer_b] {
+            controller
+                .handle_wire(
+                    &mut sessions,
+                    peer,
+                    &CompactRelayWireV1::Capabilities(
+                        CompactRelayCapabilitiesV1::canonical(CHAIN_ID),
+                    ),
+                    &HashMap::new(),
+                )
+                .unwrap();
+        }
+
+        let block = block();
+        let announcement = build_compact_block_announcement_v1(&block).unwrap();
+        let known = [("coinbase".to_string(), transaction("coinbase"))]
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        for peer in [PEER, peer_b] {
+            let actions = controller
+                .handle_wire(
+                    &mut sessions,
+                    peer,
+                    &CompactRelayWireV1::Announce(announcement.clone()),
+                    &known,
+                )
+                .unwrap();
+            assert!(matches!(
+                actions.as_slice(),
+                [CompactRelayControllerActionV1::Send {
+                    wire: CompactRelayWireV1::GetTransactions(_),
+                    ..
+                }]
+            ));
+        }
+
+        assert_eq!(controller.pending_count(PEER), 1);
+        assert_eq!(controller.pending_count(peer_b), 1);
+        assert_eq!(sessions.in_flight_count(PEER), 1);
+        assert_eq!(sessions.in_flight_count(peer_b), 1);
+
+        assert!(controller.observe_full_block(&mut sessions, &block.hash));
+        assert_eq!(controller.pending_count(PEER), 0);
+        assert_eq!(controller.pending_count(peer_b), 0);
+        assert_eq!(sessions.in_flight_count(PEER), 0);
+        assert_eq!(sessions.in_flight_count(peer_b), 0);
+        assert_eq!(controller.telemetry().pending_announcements_current, 0);
+        assert!(!controller.observe_full_block(&mut sessions, &block.hash));
     }
 
     #[test]

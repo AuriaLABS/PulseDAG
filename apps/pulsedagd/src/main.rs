@@ -4377,6 +4377,42 @@ async fn main() -> Result<()> {
                                 block_requests.resolve(hash);
                             }
 
+                            let mut compact_retained_hashes = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.staged_hashes.iter())
+                                .chain(summary.duplicate_hashes.iter())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if activated_v2_p2p_runtime.pending_contains(&block.hash)
+                                || activated_v2_p2p_runtime.staging().contains(&block.hash)
+                            {
+                                compact_retained_hashes.push(block.hash.clone());
+                            }
+                            compact_retained_hashes.sort();
+                            compact_retained_hashes.dedup();
+                            if let Some(compact_runtime) =
+                                compact_relay_daemon_runtime.as_mut()
+                            {
+                                let mut compact_reconciled = 0usize;
+                                for hash in &compact_retained_hashes {
+                                    if compact_runtime.observe_full_block(hash) {
+                                        compact_reconciled =
+                                            compact_reconciled.saturating_add(1);
+                                    }
+                                }
+                                if compact_reconciled > 0 {
+                                    let telemetry = compact_runtime.telemetry();
+                                    let mut rt = runtime.write().await;
+                                    rt.compact_relay_controller = (&telemetry).into();
+                                    info!(
+                                        compact_reconciled,
+                                        pending = telemetry.pending_announcements_current,
+                                        "reconciled compact-relay sessions from retained activated-v2 full blocks"
+                                    );
+                                }
+                            }
+
                             let mut missing_parent_requests_issued = 0u64;
                             for parent in &summary.missing_parents {
                                 if !priority_active
@@ -4569,6 +4605,28 @@ async fn main() -> Result<()> {
                                 BlockAcceptanceResult::Rejected(e.to_string())
                             }
                         };
+                        if acceptance.is_accepted()
+                            || matches!(
+                                acceptance,
+                                BlockAcceptanceResult::MissingParent
+                                    | BlockAcceptanceResult::Duplicate
+                            )
+                        {
+                            if let Some(compact_runtime) =
+                                compact_relay_daemon_runtime.as_mut()
+                            {
+                                if compact_runtime.observe_full_block(&block.hash) {
+                                    let telemetry = compact_runtime.telemetry();
+                                    let mut rt = runtime.write().await;
+                                    rt.compact_relay_controller = (&telemetry).into();
+                                    info!(
+                                        block_hash = %block.hash,
+                                        pending = telemetry.pending_announcements_current,
+                                        "reconciled compact-relay session from received full block"
+                                    );
+                                }
+                            }
+                        }
                         if matches!(acceptance, BlockAcceptanceResult::MissingParent) {
                             let mut rt = runtime.write().await;
                             if final_height_reconcile_block {
@@ -6635,7 +6693,26 @@ async fn main() -> Result<()> {
                         };
                         let actions = {
                             let guard = chain.read().await;
-                            compact_runtime.handle_inbound(&peer_id, &wire, &guard)
+                            let retained_block = match &wire {
+                                CompactRelayWireV1::GetTransactions(request) => {
+                                    activated_v2_p2p_runtime
+                                        .staging()
+                                        .get(&request.block_hash)
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime.pending_blocks().find(|block| {
+                                                block.hash.as_str()
+                                                    == request.block_hash.as_str()
+                                            })
+                                        })
+                                }
+                                _ => None,
+                            };
+                            compact_runtime.handle_inbound_with_retained_block(
+                                &peer_id,
+                                &wire,
+                                &guard,
+                                retained_block,
+                            )
                         };
                         let actions = match actions {
                             Ok(actions) => actions,
@@ -6714,7 +6791,21 @@ async fn main() -> Result<()> {
                                                         let block = {
                                                             let guard = chain.read().await;
                                                             guard.dag.blocks.get(&block_hash).cloned()
-                                                        };
+                                                        }
+                                                        .or_else(|| {
+                                                            activated_v2_p2p_runtime
+                                                                .staging()
+                                                                .get(&block_hash)
+                                                                .cloned()
+                                                        })
+                                                        .or_else(|| {
+                                                            activated_v2_p2p_runtime
+                                                                .pending_blocks()
+                                                                .find(|block| {
+                                                                    block.hash.as_str() == block_hash.as_str()
+                                                                })
+                                                                .cloned()
+                                                        });
                                                         if let Err(fallback_error) = p2p_handle
                                                             .send_compact_relay_full_block_fallback_v1(
                                                                 &block_hash,
@@ -6808,7 +6899,21 @@ async fn main() -> Result<()> {
                                         let block = {
                                             let guard = chain.read().await;
                                             guard.dag.blocks.get(&block_hash).cloned()
-                                        };
+                                        }
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .staging()
+                                                .get(&block_hash)
+                                                .cloned()
+                                        })
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .pending_blocks()
+                                                .find(|block| {
+                                                    block.hash.as_str() == block_hash.as_str()
+                                                })
+                                                .cloned()
+                                        });
                                         if let Err(error) = p2p_handle
                                             .send_compact_relay_full_block_fallback_v1(
                                                 &block_hash,
@@ -6914,7 +7019,21 @@ async fn main() -> Result<()> {
                                         let block = {
                                             let guard = chain.read().await;
                                             guard.dag.blocks.get(&block_hash).cloned()
-                                        };
+                                        }
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .staging()
+                                                .get(&block_hash)
+                                                .cloned()
+                                        })
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .pending_blocks()
+                                                .find(|block| {
+                                                    block.hash.as_str() == block_hash.as_str()
+                                                })
+                                                .cloned()
+                                        });
                                         if let Err(fallback_error) = p2p_handle
                                             .send_compact_relay_full_block_fallback_v1(
                                                 &block_hash,
