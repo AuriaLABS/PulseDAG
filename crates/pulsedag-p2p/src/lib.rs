@@ -4753,13 +4753,23 @@ fn dispatch_network_message_with_transport_peer(
     inner: &Arc<Mutex<InnerState>>,
     inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
 ) {
+    // Capability negotiation must never be inherited from a forwarded gossipsub
+    // author. Only a directly authored carrier (signed author == transport peer),
+    // or a non-gossipsub call with no distinct transport identity, may mutate the
+    // protocol capability session. Forwarded carriers are still decoded as their
+    // legacy message and remain subject to both author and transport rate limits.
+    let capability_peer = match (source_peer, transport_peer) {
+        (Some(source), Some(transport)) if source == transport => Some(source),
+        (Some(source), None) => Some(source),
+        _ => None,
+    };
     let parsed =
-        decode_network_message_for_transport(bytes, transport_peer, expected_chain_id, inner);
+        decode_network_message_for_transport(bytes, capability_peer, expected_chain_id, inner);
     // Gossipsub can forward a message authored by one peer through a different
     // directly connected neighbour. Keep author accounting/reputation separate
-    // from the authenticated transport neighbour, while enforcing a rate budget
-    // on both identities so rotating signed authors cannot bypass one connection's
-    // aggregate inbound allowance. Protocol-v2 authorization remains transport-bound.
+    // from the transport neighbour, while enforcing a rate budget on both
+    // identities so rotating signed authors cannot bypass one connection's
+    // aggregate inbound allowance.
     let source_peer = source_peer.or(transport_peer);
     let msg = match parsed {
         Ok(v) => v,
@@ -12954,7 +12964,7 @@ mod task27_live_capability_io_tests {
     }
 
     #[test]
-    fn forwarded_capability_binds_transport_and_enforces_aggregate_transport_budget() {
+    fn forwarded_capability_does_not_authorize_transport_and_enforces_aggregate_budget() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         {
             let mut guard = inner.lock().unwrap();
@@ -13010,15 +13020,17 @@ mod task27_live_capability_io_tests {
                 .protocol_capability_transport
                 .route("peer-transport", ProtocolMessageClassV1::ProtocolV2Sync)
                 .action,
-            ProtocolPeerRouteActionV1::SendProtocolV2
-        );
-        assert_eq!(
-            guard
-                .protocol_capability_transport
-                .route("peer-author-0", ProtocolMessageClassV1::ProtocolV2Sync)
-                .action,
             ProtocolPeerRouteActionV1::HoldForCapabilities
         );
+        for author in ["peer-author-0", "peer-author-1"] {
+            assert_eq!(
+                guard
+                    .protocol_capability_transport
+                    .route(author, ProtocolMessageClassV1::ProtocolV2Sync)
+                    .action,
+                ProtocolPeerRouteActionV1::HoldForCapabilities
+            );
+        }
     }
 
     #[test]
