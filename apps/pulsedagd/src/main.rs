@@ -350,11 +350,15 @@ fn task27_rejoin_peer_for_reconcile(
 
 fn selected_headers_own_broadcast_locator(
     session_active: bool,
-    pending_locator: bool,
+    pending_peer: Option<&str>,
     response_peer: Option<&str>,
     session_correlated: bool,
 ) -> bool {
-    session_correlated || (!session_active && pending_locator && response_peer.is_some())
+    session_correlated
+        || (!session_active
+            && pending_peer.is_some()
+            && response_peer.is_some()
+            && response_peer == pending_peer)
 }
 
 fn commit_candidate_chain_state(
@@ -5852,10 +5856,12 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_locator_pending = pending_selected_locator.is_some();
+                        let pending_selected_peer = pending_selected_locator
+                            .as_ref()
+                            .map(|pending| pending.peer_id.as_str());
                         let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                             selected_segment_session.is_some(),
-                            selected_locator_pending,
+                            pending_selected_peer,
                             peer_id.as_deref(),
                             session_correlated,
                         );
@@ -8575,25 +8581,34 @@ mod tests {
     }
 
     #[test]
-    fn first_valid_peer_can_own_broadcast_selected_locator_response() {
+    fn only_pending_peer_can_own_broadcast_selected_locator_response() {
         assert!(selected_headers_own_broadcast_locator(
             false,
-            true,
+            Some("peer-a"),
+            Some("peer-a"),
+            false,
+        ));
+        assert!(!selected_headers_own_broadcast_locator(
+            false,
+            Some("peer-a"),
             Some("peer-b"),
             false,
         ));
         assert!(!selected_headers_own_broadcast_locator(
-            false, true, None, false,
+            false,
+            Some("peer-a"),
+            None,
+            false,
         ));
         assert!(!selected_headers_own_broadcast_locator(
             true,
-            true,
+            Some("peer-a"),
             Some("peer-b"),
             false,
         ));
         assert!(selected_headers_own_broadcast_locator(
             true,
-            true,
+            Some("peer-a"),
             Some("peer-a"),
             true,
         ));
