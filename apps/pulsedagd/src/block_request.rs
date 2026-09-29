@@ -311,6 +311,59 @@ impl BlockRequestTracker {
         true
     }
 
+    pub fn promote_getblock_to_peer(&mut self, hash: &str, now_unix: u64, peer: &str) -> bool {
+        if self.exhausted_hashes.contains(hash) || self.is_backing_off(hash, now_unix) {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+        if self
+            .not_found_by_hash
+            .get(hash)
+            .is_some_and(|failed| failed.contains(peer))
+            || self
+                .timed_out_by_hash
+                .get(hash)
+                .is_some_and(|failed| failed.contains(peer))
+        {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+
+        let previous = self.pending.remove(hash);
+        let peer_inflight = self
+            .pending
+            .values()
+            .filter(|request| request.peer.as_deref() == Some(peer))
+            .count();
+        if self.pending.len() >= self.max_pending || peer_inflight >= self.max_pending_per_peer {
+            if let Some(previous) = previous {
+                self.pending.insert(hash.to_string(), previous);
+            }
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+
+        self.record_missing_parent_request(hash, Some(peer), now_unix);
+        self.pending.insert(
+            hash.to_string(),
+            PendingBlockRequest {
+                first_requested_at_unix: previous
+                    .as_ref()
+                    .map(|request| request.first_requested_at_unix)
+                    .unwrap_or(now_unix),
+                last_requested_at_unix: now_unix,
+                retry_count: previous
+                    .as_ref()
+                    .map(|request| request.retry_count)
+                    .unwrap_or(0),
+                peer: Some(peer.to_string()),
+            },
+        );
+        self.backoff_by_hash.remove(hash);
+        self.fetch_queued = self.fetch_queued.saturating_add(1);
+        true
+    }
+
     pub fn should_issue_getblock_for_peers<I, S>(
         &mut self,
         hash: &str,
@@ -478,6 +531,55 @@ impl BlockRequestTracker {
         }
         for hash in changed_hashes {
             self.reopen_exhausted_hash(&hash, "peer_inventory_advertised_hash");
+        }
+    }
+
+    pub fn note_selected_header_availability<I, S>(&mut self, peer: impl Into<String>, hashes: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let peer = peer.into();
+        let hashes = hashes.into_iter().map(Into::into).collect::<Vec<String>>();
+        if hashes.is_empty() {
+            return;
+        }
+
+        let hints = self.peer_hints.entry(peer.clone()).or_default();
+        let mut inventory_changed = false;
+        for hash in &hashes {
+            inventory_changed |= hints.inventory.insert(hash.clone());
+        }
+        if inventory_changed {
+            self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
+        }
+
+        for hash in hashes {
+            if self.reopen_exhausted_hash(&hash, "selected_header_peer_availability") {
+                continue;
+            }
+
+            let remove_not_found_entry =
+                self.not_found_by_hash.get_mut(&hash).is_some_and(|failed| {
+                    failed.remove(&peer);
+                    failed.is_empty()
+                });
+            if remove_not_found_entry {
+                self.not_found_by_hash.remove(&hash);
+            }
+
+            let remove_timeout_entry =
+                self.timed_out_by_hash.get_mut(&hash).is_some_and(|failed| {
+                    failed.remove(&peer);
+                    failed.is_empty()
+                });
+            if remove_timeout_entry {
+                self.timed_out_by_hash.remove(&hash);
+            }
+
+            // A fresh, validated selected-header page from this direct peer is
+            // newer availability evidence than a generic retry backoff.
+            self.backoff_by_hash.remove(&hash);
         }
     }
 
@@ -700,6 +802,16 @@ impl BlockRequestTracker {
         );
         self.fetch_dropped = self.fetch_dropped.saturating_add(1);
         self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+    }
+
+    pub fn should_accept_not_found_from_peer(&self, hash: &str, peer: Option<&str>) -> bool {
+        let Some(pending) = self.pending.get(hash) else {
+            return false;
+        };
+        match pending.peer.as_deref() {
+            Some(expected_peer) => peer == Some(expected_peer),
+            None => true,
+        }
     }
 
     pub fn note_not_found<I, S>(
@@ -1223,6 +1335,39 @@ mod tests {
     }
 
     #[test]
+    fn selected_promotion_retargets_existing_generic_pending() {
+        let mut tracker = BlockRequestTracker::with_limits(10, 2, 8, 4);
+        assert!(tracker.should_issue_getblock_for_peers(
+            "selected-hash",
+            100,
+            std::iter::empty::<String>(),
+        ));
+        assert_eq!(
+            tracker
+                .pending
+                .get("selected-hash")
+                .and_then(|request| request.peer.as_deref()),
+            None
+        );
+
+        assert!(tracker.promote_getblock_to_peer("selected-hash", 101, "peer-selected"));
+        assert_eq!(
+            tracker
+                .pending
+                .get("selected-hash")
+                .and_then(|request| request.peer.as_deref()),
+            Some("peer-selected")
+        );
+        assert_eq!(tracker.pending.len(), 1);
+        assert_eq!(
+            tracker
+                .missing_parent_request_state("selected-hash")
+                .requested_from_peers,
+            vec!["peer-selected".to_string()]
+        );
+    }
+
+    #[test]
     fn dedupes_request_within_timeout() {
         let mut tracker = BlockRequestTracker::new(10, 2);
         assert!(tracker.should_issue_getblock("h1", 100));
@@ -1651,6 +1796,36 @@ mod tests {
     }
 
     #[test]
+    fn selected_header_availability_reopens_terminal_hash_for_directed_fetch() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+        assert!(!tracker.promote_getblock_to_peer("parent", 102, "peer-a"));
+
+        tracker.note_selected_header_availability("peer-a", ["parent"]);
+
+        let state = tracker.missing_parent_request_state("parent");
+        assert!(!state.terminal_unavailable_after_all_peers);
+        assert_eq!(state.reopened_total, 1);
+        assert_eq!(
+            state.reopen_reason.as_deref(),
+            Some("selected_header_peer_availability")
+        );
+        assert!(tracker.promote_getblock_to_peer("parent", 103, "peer-a"));
+        assert_eq!(
+            tracker
+                .pending
+                .get("parent")
+                .and_then(|request| request.peer.as_deref()),
+            Some("peer-a")
+        );
+    }
+
+    #[test]
     fn unchanged_peer_inventory_generation_does_not_retry_terminal_parent() {
         let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
         assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
@@ -1706,5 +1881,35 @@ mod tests {
         assert!(!reopened.terminal_unavailable_after_all_peers);
         assert_eq!(reopened.reopened_total, 1);
         assert_eq!(reopened.reopen_reason.as_deref(), Some("peer_set_changed"));
+    }
+}
+
+#[cfg(test)]
+mod pending_not_found_correlation_tests {
+    use super::*;
+
+    #[test]
+    fn not_found_is_accepted_only_for_the_pending_peer() {
+        let mut tracker = BlockRequestTracker::with_limits(2, 2, 8, 4);
+        assert!(!tracker.should_accept_not_found_from_peer("missing", Some("peer-a")));
+
+        assert!(tracker.should_issue_getblock_from_peer("missing", 10, "peer-a"));
+        assert!(tracker.should_accept_not_found_from_peer("missing", Some("peer-a")));
+        assert!(!tracker.should_accept_not_found_from_peer("missing", Some("peer-b")));
+        assert!(!tracker.should_accept_not_found_from_peer("missing", None));
+
+        tracker.resolve("missing");
+        assert!(!tracker.should_accept_not_found_from_peer("missing", Some("peer-a")));
+    }
+
+    #[test]
+    fn unassigned_broadcast_request_accepts_first_real_peer_response() {
+        let mut tracker = BlockRequestTracker::with_limits(2, 2, 8, 4);
+        assert!(tracker.should_issue_getblock_for_peers(
+            "broadcast-missing",
+            10,
+            std::iter::empty::<String>(),
+        ));
+        assert!(tracker.should_accept_not_found_from_peer("broadcast-missing", Some("peer-a")));
     }
 }
