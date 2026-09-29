@@ -10,6 +10,7 @@ on:
       - crates/pulsedag-core/src/monetary_audit_v3.rs
       - crates/pulsedag-core/src/validation_v3.rs
       - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
       - crates/pulsedag-core/src/mining_template_v3.rs
       - crates/pulsedag-core/src/mined_block_v3.rs
       - crates/pulsedag-core/src/network_block_v3.rs
@@ -127,6 +128,7 @@ jobs:
           cargo test --locked -p pulsedag-core monetary_audit_v3::tests -- --nocapture
           cargo test --locked -p pulsedag-core validation_v3::tests -- --nocapture
           cargo test --locked -p pulsedag-core reward_settlement_v3::tests -- --nocapture
+          cargo test --locked -p pulsedag-core state_replay_v3::tests -- --nocapture
 
       - name: Run monetary RPC and legacy-fallback guards
         shell: bash

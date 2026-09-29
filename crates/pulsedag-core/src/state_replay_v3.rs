@@ -6,13 +6,9 @@ use crate::{
     apply::apply_transaction,
     errors::PulseError,
     genesis_v3::init_chain_state_v3,
-    monetary_v3::{
-        economic_maturity_reached, subsidy_atoms_for_score, MonetaryCadenceSegment,
-    },
+    monetary_v3::{economic_maturity_reached, subsidy_atoms_for_score, MonetaryCadenceSegment},
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2},
-    reward_settlement_v3::{
-        settlement_outpoint_v3, validate_reward_claim_transaction_v3,
-    },
+    reward_settlement_v3::{settlement_outpoint_v3, validate_reward_claim_transaction_v3},
     state::{ChainState, UtxoState},
     types::{Hash, Utxo},
 };
@@ -50,10 +46,7 @@ pub struct StateReplayV3 {
 }
 
 fn invalid_replay(message: impl Into<String>) -> PulseError {
-    PulseError::NonDeterministicState(format!(
-        "v3 reward replay: {}",
-        message.into()
-    ))
+    PulseError::NonDeterministicState(format!("v3 reward replay: {}", message.into()))
 }
 
 /// Greatest non-genesis monetary score whose reward has completed the frozen
@@ -77,7 +70,7 @@ pub fn mature_reward_prefix_score_v3(
     let mut low = 1_u64;
     let mut high = current_score;
     while low < high {
-        let mid = low + (high - low + 1) / 2;
+        let mid = low + (high - low).div_ceil(2);
         if economic_maturity_reached(mid, current_score, cadence_segments)
             .map_err(|error| invalid_replay(error.to_string()))?
         {
@@ -178,7 +171,7 @@ fn materialize_reward_at_score(
 /// boundary.
 ///
 /// Ordering of one canonical score is:
-/// 1. validate/apply that score's amountless reward claim and ordinary txs;
+/// 1. validate the amountless reward claim and apply ordinary txs atomically;
 /// 2. materialize all prior rewards mature at the end of that score;
 /// 3. expose those synthetic reward UTXOs to the next score and later.
 ///
@@ -232,8 +225,8 @@ pub fn rebuild_authoritative_state_v3(
         if hash == &state.dag.genesis_hash {
             continue;
         }
-        let current_score = u64::try_from(ordered_pos)
-            .map_err(|_| invalid_replay("ordered score exceeds u64"))?;
+        let current_score =
+            u64::try_from(ordered_pos).map_err(|_| invalid_replay("ordered score exceeds u64"))?;
         let block = state
             .dag
             .blocks
@@ -258,7 +251,8 @@ pub fn rebuild_authoritative_state_v3(
 
         // The amountless claim is an authorization envelope, not a spendable
         // transaction output. Its beneficiary is consumed only when the
-        // synthetic settlement UTXO is materialized after maturity.
+        // block-bound synthetic settlement UTXO is materialized after maturity.
+        // Competing blocks may legitimately reuse the same claim txid.
         validated_reward_claims = validated_reward_claims.saturating_add(1);
 
         for tx in block.transactions.iter().skip(1) {
@@ -266,6 +260,7 @@ pub fn rebuild_authoritative_state_v3(
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
                     rebuilt = candidate;
+                    // Only committed transactions fund this block's settlement.
                     eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
                         .checked_add(tx.fee)
                         .ok_or_else(|| invalid_replay("eligible fee arithmetic overflow"))?;
@@ -324,8 +319,8 @@ mod tests {
     use crate::{
         reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
         state::SelectedParentPolicy,
-        tx::TRANSACTION_VERSION_V2,
-        types::{Block, BlockHeader, Transaction, TxInput, TxOutput},
+        tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
+        types::{compute_merkle_root, Block, BlockHeader, Transaction, TxInput, TxOutput},
     };
 
     const ONE_HOUR_PER_SCORE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -377,6 +372,118 @@ mod tests {
 
     fn claim(chain_id: &str, beneficiary: &str, nonce: u64) -> Transaction {
         build_reward_claim_transaction_v3(beneficiary, nonce, chain_id).unwrap()
+    }
+
+    fn add_sibling_block(
+        state: &mut ChainState,
+        label: &str,
+        sibling_of: &str,
+        merge_anchor: &str,
+        transactions: Vec<Transaction>,
+    ) {
+        let mut block = state.dag.blocks[sibling_of].clone();
+        block.hash = label.into();
+        block.header.nonce += 1;
+        block.header.merkle_root = compute_merkle_root(&transactions);
+        block.transactions = transactions;
+        state.dag.blocks.insert(label.into(), block);
+        state
+            .dag
+            .selected_parents
+            .insert(label.into(), state.dag.selected_parents[sibling_of].clone());
+        state
+            .dag
+            .blue_work
+            .insert(label.into(), state.dag.blue_work[sibling_of]);
+        state
+            .dag
+            .merge_set_blues
+            .get_mut(merge_anchor)
+            .unwrap()
+            .push(label.into());
+        state
+            .dag
+            .blocks
+            .get_mut(merge_anchor)
+            .unwrap()
+            .header
+            .parents
+            .push(label.into());
+    }
+
+    fn assert_insertion_order_independent(state: &ChainState, replay: &StateReplayV3) {
+        let mut reordered = state.clone();
+        reordered.dag.blocks = replay
+            .ordered_dag
+            .blocks
+            .iter()
+            .rev()
+            .map(|hash| (hash.clone(), state.dag.blocks[hash].clone()))
+            .collect();
+        let again = rebuild_authoritative_state_v3(&reordered, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(again.ordered_dag, replay.ordered_dag);
+        assert_eq!(again.diagnostics, replay.diagnostics);
+        assert_eq!(again.utxo.address_index, replay.utxo.address_index);
+    }
+
+    #[test]
+    fn repeated_claim_txid_in_sibling_blocks_settles_once_per_block() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-claims".into(), 1_800_000_030).unwrap();
+        let chain_id = state.chain_id.clone();
+        let repeated_claim = claim(&chain_id, "pulse1miner", 41);
+        append_linear_block(&mut state, "b1", vec![repeated_claim.clone()], 1);
+        append_linear_block(
+            &mut state,
+            "b2",
+            vec![claim(&chain_id, "pulse1merge", 42)],
+            2,
+        );
+        append_linear_block(&mut state, "b3", vec![claim(&chain_id, "pulse1tip", 43)], 3);
+        add_sibling_block(
+            &mut state,
+            "b1-peer",
+            "b1",
+            "b2",
+            vec![repeated_claim.clone()],
+        );
+
+        let immature = rebuild_authoritative_state_v3(&state, &ONE_SECOND).unwrap();
+        assert_eq!(immature.diagnostics.validated_reward_claims, 4);
+        assert_eq!(immature.diagnostics.materialized_rewards, 0);
+        assert!(immature.utxo.utxos.is_empty());
+        assert!(immature.utxo.address_index.is_empty());
+
+        let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(
+            &replay.ordered_dag.blocks[1..],
+            &["b1", "b1-peer", "b2", "b3"]
+        );
+        assert_eq!(replay.diagnostics.validated_reward_claims, 4);
+        assert_eq!(replay.diagnostics.applied_transactions, 0);
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 0);
+        assert_eq!(replay.diagnostics.materialized_rewards, 3);
+        assert_eq!(replay.utxo.utxos.len(), 3);
+
+        let first = settlement_outpoint_v3(&chain_id, "b1", &repeated_claim.txid);
+        let peer = settlement_outpoint_v3(&chain_id, "b1-peer", &repeated_claim.txid);
+        assert_ne!(first, peer);
+        for (outpoint, score) in [(&first, 1), (&peer, 2)] {
+            let reward = &replay.utxo.utxos[outpoint];
+            assert_eq!(
+                reward.amount,
+                subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap()
+            );
+            assert_eq!(reward.address, "pulse1miner");
+            assert!(reward.coinbase);
+        }
+        assert_eq!(replay.utxo.address_index["pulse1miner"], vec![first, peer]);
+        assert!(!replay
+            .utxo
+            .utxos
+            .keys()
+            .any(|outpoint| outpoint.txid == repeated_claim.txid));
+        assert_insertion_order_independent(&state, &replay);
     }
 
     #[test]
@@ -500,10 +607,8 @@ mod tests {
         assert!(replay.utxo.utxos.contains_key(&reward1));
     }
 
-    #[test]
-    fn conflict_skipped_transaction_fee_is_not_paid_to_miner() {
-        let mut state =
-            init_chain_state_v3("reward-replay-v3-fees".into(), 1_800_000_015).unwrap();
+    fn assert_conflicting_sibling_fees_are_not_settled(duplicate_transaction: bool) {
+        let mut state = init_chain_state_v3("reward-replay-v3-fees".into(), 1_800_000_015).unwrap();
         let chain_id = state.chain_id.clone();
 
         append_linear_block(
@@ -518,11 +623,21 @@ mod tests {
             vec![claim(&chain_id, "pulse1miner2", 32)],
             2,
         );
+        append_linear_block(
+            &mut state,
+            "b3",
+            vec![claim(&chain_id, "pulse1miner3", 33)],
+            3,
+        );
 
         let reward1_claim = state.dag.blocks["b1"].transactions[0].clone();
         let reward1 = settlement_outpoint_v3(&chain_id, "b1", &reward1_claim.txid);
-        let first_spend = Transaction {
-            txid: "first-spend".into(),
+        let reward2_claim = state.dag.blocks["b2"].transactions[0].clone();
+        let reward2 = settlement_outpoint_v3(&chain_id, "b2", &reward2_claim.txid);
+        let subsidy1 = subsidy_atoms_for_score(1, &ONE_HOUR_PER_SCORE).unwrap();
+        let subsidy2 = subsidy_atoms_for_score(2, &ONE_HOUR_PER_SCORE).unwrap();
+        let mut first_spend = Transaction {
+            txid: String::new(),
             version: TRANSACTION_VERSION_V2,
             inputs: vec![TxInput {
                 previous_output: reward1.clone(),
@@ -531,56 +646,131 @@ mod tests {
             }],
             outputs: vec![TxOutput {
                 address: "pulse1first".into(),
-                amount: 1,
+                amount: subsidy1 - 5,
             }],
             fee: 5,
-            nonce: 33,
-        };
-        append_linear_block(
-            &mut state,
-            "b3",
-            vec![claim(&chain_id, "pulse1miner3", 33), first_spend],
-            3,
-        );
-
-        let conflicting_spend = Transaction {
-            txid: "conflicting-spend".into(),
-            version: TRANSACTION_VERSION_V2,
-            inputs: vec![TxInput {
-                previous_output: reward1,
-                public_key: "pk".into(),
-                signature: "sig".into(),
-            }],
-            outputs: vec![TxOutput {
-                address: "pulse1conflict".into(),
-                amount: 1,
-            }],
-            fee: 99,
             nonce: 34,
         };
+        first_spend.txid = compute_txid_v2(&first_spend, &chain_id).unwrap();
         append_linear_block(
             &mut state,
             "b4",
-            vec![claim(&chain_id, "pulse1miner4", 34), conflicting_spend],
+            vec![claim(&chain_id, "pulse1winner", 34), first_spend.clone()],
             4,
         );
+
+        let mut conflicting_spend = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            // Both inputs were mature before the sibling fork. The unspent
+            // input comes first to check rollback of a partially applied loser.
+            inputs: vec![
+                TxInput {
+                    previous_output: reward2.clone(),
+                    public_key: "pk".into(),
+                    signature: "sig".into(),
+                },
+                TxInput {
+                    previous_output: reward1.clone(),
+                    public_key: "pk".into(),
+                    signature: "sig".into(),
+                },
+            ],
+            outputs: vec![TxOutput {
+                address: "pulse1conflict".into(),
+                amount: subsidy1 + subsidy2 - 99,
+            }],
+            fee: 99,
+            nonce: 35,
+        };
+        conflicting_spend.txid = compute_txid_v2(&conflicting_spend, &chain_id).unwrap();
+        if duplicate_transaction {
+            conflicting_spend = first_spend.clone();
+        }
         append_linear_block(
             &mut state,
             "b5",
-            vec![claim(&chain_id, "pulse1miner5", 35)],
+            vec![claim(&chain_id, "pulse1merge", 36)],
             5,
+        );
+        add_sibling_block(
+            &mut state,
+            "b4-peer",
+            "b4",
+            "b5",
+            vec![
+                claim(&chain_id, "pulse1loser", 35),
+                conflicting_spend.clone(),
+            ],
         );
 
         let b4_claim = state.dag.blocks["b4"].transactions[0].clone();
         let b4_reward = settlement_outpoint_v3(&chain_id, "b4", &b4_claim.txid);
+        let peer_claim = state.dag.blocks["b4-peer"].transactions[0].clone();
+        let peer_reward = settlement_outpoint_v3(&chain_id, "b4-peer", &peer_claim.txid);
         let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
-        let settled = replay.utxo.utxos.get(&b4_reward).unwrap();
 
-        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
         assert_eq!(
-            settled.amount,
-            subsidy_atoms_for_score(4, &ONE_HOUR_PER_SCORE).unwrap()
+            &replay.ordered_dag.blocks[1..],
+            &["b1", "b2", "b3", "b4", "b4-peer", "b5"]
         );
+        assert_eq!(replay.diagnostics.validated_reward_claims, 6);
+        assert_eq!(replay.diagnostics.applied_transactions, 1);
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
+        assert_eq!(replay.diagnostics.materialized_rewards, 5);
+        assert_eq!(replay.diagnostics.conflict_diagnostics.len(), 1);
+        assert_eq!(
+            replay.diagnostics.conflict_diagnostics[0],
+            format!(
+                "ordered_pos=5 block=b4-peer tx={} skipped_conflict_atomic",
+                conflicting_spend.txid
+            )
+        );
+        // Reward scores, not the equal sibling heights, determine settlement.
+        assert_eq!(
+            replay.utxo.utxos[&b4_reward].amount,
+            subsidy_atoms_for_score(4, &ONE_HOUR_PER_SCORE).unwrap() + first_spend.fee
+        );
+        assert_eq!(
+            replay.utxo.utxos[&peer_reward].amount,
+            subsidy_atoms_for_score(5, &ONE_HOUR_PER_SCORE).unwrap()
+        );
+        assert!(!replay.utxo.utxos.contains_key(&reward1));
+        assert_eq!(replay.utxo.utxos[&reward2].amount, subsidy2);
+        assert_eq!(replay.utxo.address_index["pulse1miner2"], vec![reward2]);
+        assert_eq!(replay.utxo.utxos.len(), 5);
+        if !duplicate_transaction {
+            assert!(!replay
+                .utxo
+                .utxos
+                .keys()
+                .any(|outpoint| outpoint.txid == conflicting_spend.txid));
+            assert!(!replay.utxo.address_index.contains_key("pulse1conflict"));
+        }
+        // The winner's fee is transferred once; no skipped fee creates value.
+        let scheduled: u64 = (1..=5)
+            .map(|score| subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap())
+            .sum();
+        assert_eq!(
+            replay
+                .utxo
+                .utxos
+                .values()
+                .map(|utxo| utxo.amount)
+                .sum::<u64>(),
+            scheduled
+        );
+        assert_insertion_order_independent(&state, &replay);
+    }
+
+    #[test]
+    fn conflict_skipped_transaction_fee_is_not_paid_to_miner() {
+        assert_conflicting_sibling_fees_are_not_settled(false);
+    }
+
+    #[test]
+    fn duplicate_outpoint_transaction_fee_is_not_paid_twice() {
+        assert_conflicting_sibling_fees_are_not_settled(true);
     }
 
     #[test]
