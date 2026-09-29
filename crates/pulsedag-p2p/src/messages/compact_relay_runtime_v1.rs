@@ -298,6 +298,13 @@ impl CompactRelayRuntimeSessionBookV1 {
             .is_some()
     }
 
+    pub fn abandon_block(&mut self, block_hash: &str) -> usize {
+        let before = self.in_flight.len();
+        self.in_flight
+            .retain(|(_, hash), _| hash.as_str() != block_hash);
+        before.saturating_sub(self.in_flight.len())
+    }
+
     pub fn complete_in_flight(
         &mut self,
         peer_id: &str,
