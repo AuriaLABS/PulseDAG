@@ -4450,35 +4450,37 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>();
                             let selected_known_blocks =
                                 guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
-                            let selected_tip_after_drive = pulsedag_core::preferred_tip_hash(&guard);
+                            let selected_tip_after_drive =
+                                pulsedag_core::preferred_tip_hash(&guard);
                             let selected_local_height_after_drive = guard.dag.best_height;
-                            let selected_progress = selected_segment_session.as_mut().map(|session| {
-                                let progress = session.reconcile_authoritative_outcome(
-                                    &block.hash,
-                                    &authoritative_selected_hashes,
-                                    &selected_known_blocks,
-                                    selected_tip_after_drive.as_deref(),
-                                    now_unix(),
-                                    MAX_INFLIGHT_BLOCK_REQUESTS,
-                                );
-                                if !progress.continuation_hashes.is_empty() {
-                                    selected_segment_continuation = Some((
+                            let selected_progress =
+                                selected_segment_session.as_mut().map(|session| {
+                                    let progress = session.reconcile_authoritative_outcome(
+                                        &block.hash,
+                                        &authoritative_selected_hashes,
+                                        &selected_known_blocks,
+                                        selected_tip_after_drive.as_deref(),
+                                        now_unix(),
+                                        MAX_INFLIGHT_BLOCK_REQUESTS,
+                                    );
+                                    if !progress.continuation_hashes.is_empty() {
+                                        selected_segment_continuation = Some((
+                                            session.session_id,
+                                            session.peer_id.clone(),
+                                            progress.continuation_hashes.clone(),
+                                        ));
+                                    }
+                                    selected_segment_completed = progress.session_completed;
+                                    (
+                                        progress,
                                         session.session_id,
-                                        session.peer_id.clone(),
-                                        progress.continuation_hashes.clone(),
-                                    ));
-                                }
-                                selected_segment_completed = progress.session_completed;
-                                (
-                                    progress,
-                                    session.session_id,
-                                    session.received_hashes.len() as u64,
-                                    session.accepted_applied_hashes.len() as u64,
-                                    session
-                                        .remote_selected_height
-                                        .saturating_sub(selected_local_height_after_drive),
-                                )
-                            });
+                                        session.received_hashes.len() as u64,
+                                        session.accepted_applied_hashes.len() as u64,
+                                        session
+                                            .remote_selected_height
+                                            .saturating_sub(selected_local_height_after_drive),
+                                    )
+                                });
                             if let Some((
                                 progress,
                                 session_id,
@@ -4736,8 +4738,8 @@ async fn main() -> Result<()> {
                                             for hash in &issued_hashes {
                                                 session.requested_hashes.insert(hash.clone());
                                             }
-                                            chunk_started =
-                                                session.start_chunk(issued_hashes.clone(), issued_at);
+                                            chunk_started = session
+                                                .start_chunk(issued_hashes.clone(), issued_at);
                                         }
 
                                         if chunk_started {
