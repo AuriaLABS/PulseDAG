@@ -13,8 +13,11 @@ use std::{
 
 use pulsedag_core::types::{OutPoint, Utxo};
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
-    encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
+    build_deterministic_transaction_plan_with_safety, create_wallet_backup_verification_receipt,
+    derive_wallet_key_from_seed, encrypt_wallet_seed, load_wallet_backup_verification_receipt,
+    persist_wallet_backup_verification_receipt, prove_wallet_recovery_material,
+    verify_wallet_backup_verification_receipt, wallet_backup_verification_receipt_path,
+    wallet_seed_from_mnemonic, SecretString, WalletBackupVerificationError, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
     WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
@@ -193,6 +196,7 @@ struct BackupVerifyOutput {
     account: u32,
     entry_count: usize,
     checksum_hex: String,
+    verification_receipt: String,
     initialization_state: WalletInitializationState,
 }
 
@@ -819,14 +823,56 @@ async fn run_pulse(args: NetworkReadOnlyArgs) -> CliResult<PulseObservationOutpu
     Ok(fetch_pulse_observation(&args.relay, &network).await?)
 }
 
+fn require_backup_verified(
+    keystore_path: &Path,
+    identity: &pulsedag_wallet::WalletSessionIdentity,
+) -> CliResult<()> {
+    let receipt = load_wallet_backup_verification_receipt(keystore_path).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification is required before spending: {error}"
+        ))
+    })?;
+    verify_wallet_backup_verification_receipt(&receipt, identity).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification receipt is invalid: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
 fn run_backup_verify(
     args: BackupVerifyArgs,
-    password: &SecretString,
+    secrets: RestoreSecrets,
 ) -> CliResult<BackupVerifyOutput> {
     let manifest = read_manifest(&args.manifest)?;
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
-    session.verify_watch_only_manifest(&manifest)?;
+    let mut session = unlocked_session(&keystore, &secrets.password)?;
+    let identity = session
+        .status()
+        .identity
+        .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+
+    let recovery_proof = prove_wallet_recovery_material(
+        &identity,
+        &secrets.mnemonic,
+        secrets.bip39_passphrase.as_ref(),
+    )?;
+    let receipt = create_wallet_backup_verification_receipt(&session, &manifest, &recovery_proof)?;
+    let receipt_path = match persist_wallet_backup_verification_receipt(&args.keystore, &receipt) {
+        Ok(path) => path,
+        Err(WalletBackupVerificationError::AlreadyExists) => {
+            let existing = load_wallet_backup_verification_receipt(&args.keystore)?;
+            verify_wallet_backup_verification_receipt(&existing, &identity)?;
+            if existing != receipt {
+                return Err(invalid_input(
+                    "wallet is already initialized by a different verified backup receipt",
+                )
+                .into());
+            }
+            wallet_backup_verification_receipt_path(&args.keystore)?
+        }
+        Err(error) => return Err(error.into()),
+    };
     session.lock();
     Ok(BackupVerifyOutput {
         verified: true,
@@ -835,6 +881,7 @@ fn run_backup_verify(
         account: manifest.account(),
         entry_count: manifest.entries().len(),
         checksum_hex: manifest.checksum_hex().to_string(),
+        verification_receipt: receipt_path.to_string_lossy().into_owned(),
         initialization_state: WalletInitializationState::BackupVerified,
     })
 }
@@ -846,7 +893,9 @@ async fn run_tx_preview(args: TxPreviewArgs, password: SecretString) -> CliResul
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     let expected_network = WalletNetworkIdentity::new(&args.network_profile, &args.chain_id)?;
     expected_network.ensure_matches(&keystore_network)?;
     let signer_address =
@@ -944,7 +993,9 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     plan.verify_keystore_identity(&keystore_network)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let mut snapshot = pending_store.load_or_new(&plan.network)?;
@@ -1121,8 +1172,8 @@ async fn run() -> CliResult<()> {
         }
         Command::WatchImport(args) => write_json(&run_watch_import(args)?),
         Command::BackupVerify(args) => {
-            let password = read_password_from_stdin()?;
-            write_json(&run_backup_verify(args, &password)?)
+            let secrets = read_restore_secrets_from_stdin()?;
+            write_json(&run_backup_verify(args, secrets)?)
         }
         Command::Balance(args) => write_json(&run_balance(args).await?),
         Command::Utxos(args) => write_json(&run_utxos(args).await?),
@@ -1170,6 +1221,118 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_verification_receipt_is_required_before_spending_and_tamper_fails_closed() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        const MNEMONIC: &str =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        const PASSWORD: &str = "backup-verification-cli-test";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-backup-gate-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let keystore_path = dir.join("wallet.json");
+        let manifest_path = dir.join("watch.json");
+
+        let restore = run_restore(
+            RestoreArgs {
+                keystore: keystore_path.clone(),
+                network_profile: "testnet".to_string(),
+                chain_id: "pulsedag-testnet".to_string(),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
+        )
+        .expect("restore");
+        assert_eq!(
+            restore.initialization_state,
+            WalletInitializationState::BackupVerificationRequired
+        );
+
+        let identity = {
+            let keystore = WalletKeystoreFile::try_acquire(&keystore_path).unwrap();
+            let mut session =
+                unlocked_session(&keystore, &SecretString::new(PASSWORD)).expect("unlock");
+            let identity = session.status().identity.expect("identity");
+            assert!(require_backup_verified(&keystore_path, &identity).is_err());
+            session.lock();
+            identity
+        };
+
+        let manifest = run_watch_export(
+            WatchExportArgs {
+                keystore: keystore_path.clone(),
+                account: 0,
+                receive_count: 2,
+                change_count: 1,
+            },
+            &SecretString::new(PASSWORD),
+        )
+        .expect("watch export");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
+        )
+        .unwrap();
+
+        let verified = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: manifest_path,
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
+        )
+        .expect("backup verify");
+        assert!(verified.verified);
+        assert_eq!(
+            verified.initialization_state,
+            WalletInitializationState::BackupVerified
+        );
+
+        let wrong_backup = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: dir.join("watch.json"),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(
+                    "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                ),
+                bip39_passphrase: None,
+            },
+        );
+        assert!(wrong_backup.is_err());
+        assert!(require_backup_verified(&keystore_path, &identity).is_ok());
+
+        let receipt_path = wallet_backup_verification_receipt_path(&keystore_path).unwrap();
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        receipt["signature_hex"] = serde_json::Value::String("00".repeat(64));
+        fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        assert!(require_backup_verified(&keystore_path, &identity).is_err());
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1843,6 +2006,7 @@ mod tests {
             account: 0,
             entry_count: 2,
             checksum_hex: "11".repeat(32),
+            verification_receipt: "wallet.json.backup-verified.json".to_string(),
             initialization_state: WalletInitializationState::BackupVerified,
         };
         let verified_json =
@@ -1936,7 +2100,11 @@ mod tests {
                 keystore: keystore.clone(),
                 manifest: manifest_path.clone(),
             },
-            &SecretString::new(password_canary),
+            RestoreSecrets {
+                password: SecretString::new(password_canary),
+                mnemonic: SecretString::new(mnemonic_canary),
+                bip39_passphrase: Some(SecretString::new(passphrase_canary)),
+            },
         )
         .expect("verify backup against restored deterministic seed");
         assert!(verified.verified);

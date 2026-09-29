@@ -4545,6 +4545,7 @@ dependencies = [
  "fs4",
  "hex",
  "hmac",
+ "libc",
  "pulsedag-core",
  "rand 0.8.6",
  "reqwest",
