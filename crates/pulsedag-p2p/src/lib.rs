@@ -5610,9 +5610,7 @@ fn dispatch_network_message_with_transport_peer(
                                 guard.wrong_peer_response_total =
                                     guard.wrong_peer_response_total.saturating_add(1);
                             } else if outstanding.block_hash != block.hash
-                                || request_hash
-                                    .as_ref()
-                                    .is_some_and(|h| h != &outstanding.block_hash)
+                                || request_hash.as_ref() != Some(&outstanding.block_hash)
                             {
                                 guard.wrong_hash_response_total =
                                     guard.wrong_hash_response_total.saturating_add(1);
@@ -11062,9 +11060,25 @@ mod inventory_tests {
             &inbound_tx,
         );
         assert!(inbound_rx.try_recv().is_err());
+
+        let missing_hash_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: None,
+        })
+        .expect("serialize missing-hash correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &missing_hash_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
         {
             let guard = inner.lock().unwrap();
-            assert_eq!(guard.wrong_hash_response_total, 1);
+            assert_eq!(guard.wrong_hash_response_total, 2);
             assert!(
                 !guard
                     .outstanding_getblock_requests
