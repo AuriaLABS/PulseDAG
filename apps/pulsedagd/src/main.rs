@@ -762,6 +762,15 @@ struct SelectedSegmentSession {
     state: SelectedSegmentSessionState,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SelectedSegmentAuthoritativeProgress {
+    received_new: bool,
+    applied_new: u64,
+    chunk_completed: bool,
+    continuation_hashes: Vec<String>,
+    session_completed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 struct LagInjectionEvidenceConfig {
@@ -1012,15 +1021,65 @@ impl SelectedSegmentSession {
             || self.accepted_applied_hashes.contains(hash)
     }
 
+    fn mark_received(&mut self, hash: &str, now: u64) -> bool {
+        if !self.requested_hashes.contains(hash) {
+            return false;
+        }
+        let inserted = self.received_hashes.insert(hash.to_string());
+        if inserted {
+            self.updated_at_unix = now;
+        }
+        inserted
+    }
+
     fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
-        if self.contains_hash(hash) {
-            self.accepted_applied_hashes.insert(hash.to_string());
-            self.received_hashes.insert(hash.to_string());
+        if !self.contains_hash(hash) {
+            return false;
+        }
+        self.received_hashes.insert(hash.to_string());
+        let inserted = self.accepted_applied_hashes.insert(hash.to_string());
+        if inserted {
             self.updated_at_unix = now;
             self.state = SelectedSegmentSessionState::Applying;
-            true
+        }
+        inserted
+    }
+
+    fn reconcile_authoritative_outcome(
+        &mut self,
+        inbound_hash: &str,
+        authoritative_hashes: &[String],
+        known_blocks: &HashSet<String>,
+        selected_tip: Option<&str>,
+        now: u64,
+        continuation_limit: usize,
+    ) -> SelectedSegmentAuthoritativeProgress {
+        let received_new = self.mark_received(inbound_hash, now);
+        let mut applied_new = 0u64;
+        for hash in authoritative_hashes {
+            if known_blocks.contains(hash) && self.mark_applied(hash, now) {
+                applied_new = applied_new.saturating_add(1);
+            }
+        }
+
+        let chunk_completed = self.complete_current_chunk_if_applied();
+        let session_completed = known_blocks.contains(&self.remote_selected_tip)
+            && selected_tip == Some(self.remote_selected_tip.as_str());
+        if session_completed {
+            self.state = SelectedSegmentSessionState::Complete;
+        }
+        let continuation_hashes = if chunk_completed && !session_completed {
+            self.continuation_hashes(continuation_limit)
         } else {
-            false
+            Vec::new()
+        };
+
+        SelectedSegmentAuthoritativeProgress {
+            received_new,
+            applied_new,
+            chunk_completed,
+            continuation_hashes,
+            session_completed,
         }
     }
 }
@@ -4377,6 +4436,108 @@ async fn main() -> Result<()> {
                                 block_requests.resolve(hash);
                             }
 
+                            // Activated-v2/v3 block processing returns before the legacy
+                            // acceptance path below. Reconcile the same selected-segment
+                            // session here so correlated peer-addressed blocks cannot leave
+                            // a permanently active session with zero received/applied work.
+                            let mut selected_segment_continuation = None;
+                            let mut selected_segment_completed = false;
+                            let authoritative_selected_hashes = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.duplicate_hashes.iter())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let selected_known_blocks =
+                                guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+                            let selected_tip_after_drive = pulsedag_core::preferred_tip_hash(&guard);
+                            let selected_local_height_after_drive = guard.dag.best_height;
+                            let selected_progress = selected_segment_session.as_mut().map(|session| {
+                                let progress = session.reconcile_authoritative_outcome(
+                                    &block.hash,
+                                    &authoritative_selected_hashes,
+                                    &selected_known_blocks,
+                                    selected_tip_after_drive.as_deref(),
+                                    now_unix(),
+                                    MAX_INFLIGHT_BLOCK_REQUESTS,
+                                );
+                                if !progress.continuation_hashes.is_empty() {
+                                    selected_segment_continuation = Some((
+                                        session.session_id,
+                                        session.peer_id.clone(),
+                                        progress.continuation_hashes.clone(),
+                                    ));
+                                }
+                                selected_segment_completed = progress.session_completed;
+                                (
+                                    progress,
+                                    session.session_id,
+                                    session.received_hashes.len() as u64,
+                                    session.accepted_applied_hashes.len() as u64,
+                                    session
+                                        .remote_selected_height
+                                        .saturating_sub(selected_local_height_after_drive),
+                                )
+                            });
+                            if let Some((
+                                progress,
+                                session_id,
+                                received_total,
+                                applied_total,
+                                remaining_blocks,
+                            )) = selected_progress
+                            {
+                                if progress.received_new
+                                    || progress.applied_new > 0
+                                    || progress.chunk_completed
+                                    || progress.session_completed
+                                {
+                                    let mut rt = runtime.write().await;
+                                    rt.active_session_received_blocks = received_total;
+                                    rt.active_session_applied_blocks = applied_total;
+                                    rt.active_session_remaining_blocks = remaining_blocks;
+                                    rt.selected_segment_blocks_applied_total = rt
+                                        .selected_segment_blocks_applied_total
+                                        .saturating_add(progress.applied_new);
+                                    if progress.chunk_completed {
+                                        rt.selected_segment_chunks_completed_total = rt
+                                            .selected_segment_chunks_completed_total
+                                            .saturating_add(1);
+                                    }
+                                    if progress.session_completed {
+                                        rt.sync_state = DagSyncStage::SelectedSegmentComplete
+                                            .as_str()
+                                            .to_string();
+                                        rt.active_session_remaining_blocks = 0;
+                                        rt.selected_segment_gap_blocks = 0;
+                                        rt.active_session_id = None;
+                                        rt.active_session_peer = None;
+                                        rt.active_session_remote_tip = None;
+                                        rt.active_session_remote_height = 0;
+                                        rt.active_session_common_ancestor = None;
+                                    } else if progress.applied_new > 0 {
+                                        rt.sync_state = DagSyncStage::ApplyingSelectedSegment
+                                            .as_str()
+                                            .to_string();
+                                        if remaining_blocks > 0 {
+                                            rt.selected_segment_gap_blocks = remaining_blocks;
+                                        }
+                                    }
+                                    info!(
+                                        event = "activated_v2_selected_segment_progress",
+                                        session_id,
+                                        received_new = progress.received_new,
+                                        applied_new = progress.applied_new,
+                                        chunk_completed = progress.chunk_completed,
+                                        session_completed = progress.session_completed,
+                                        received_total,
+                                        applied_total,
+                                        remaining_blocks,
+                                        "reconciled activated-v2 block outcomes into selected-segment session"
+                                    );
+                                }
+                            }
+
                             let mut compact_retained_hashes = summary
                                 .accepted_hashes
                                 .iter()
@@ -4519,9 +4680,132 @@ async fn main() -> Result<()> {
                                     && v2_pending_missing == 0
                                     && v2_staged == 0
                                     && guard.orphan_blocks.is_empty()
+                                    && selected_segment_session.is_none()
                                 {
                                     rt.sync_state = "synced".to_string();
                                     rt.sync_pipeline.complete_cycle(now_unix());
+                                }
+                            }
+
+                            if !selected_segment_completed {
+                                if let Some((session_id, peer_id, candidates)) =
+                                    selected_segment_continuation.take()
+                                {
+                                    let mut issued_hashes = Vec::new();
+                                    for hash in candidates {
+                                        if !block_requests.promote_getblock_to_peer(
+                                            &hash,
+                                            now_unix(),
+                                            &peer_id,
+                                        ) {
+                                            continue;
+                                        }
+                                        let request_succeeded = if let Some(ref p2p_handle) = p2p {
+                                            match p2p_handle.request_block_from(&peer_id, &hash) {
+                                                Ok(_) => true,
+                                                Err(error) => {
+                                                    block_requests.resolve(&hash);
+                                                    warn!(
+                                                        error = %error,
+                                                        block_hash = %hash,
+                                                        session_id,
+                                                        peer = %peer_id,
+                                                        "failed issuing activated-v2 selected-segment continuation GetBlock request"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            block_requests.resolve(&hash);
+                                            false
+                                        };
+                                        if request_succeeded {
+                                            issued_hashes.push(hash);
+                                        }
+                                    }
+
+                                    if !issued_hashes.is_empty() {
+                                        let issued_at = now_unix();
+                                        let mut chunk_started = false;
+                                        if let Some(session) =
+                                            selected_segment_session.as_mut().filter(|session| {
+                                                session.session_id == session_id
+                                                    && session.peer_id == peer_id
+                                            })
+                                        {
+                                            for hash in &issued_hashes {
+                                                session.requested_hashes.insert(hash.clone());
+                                            }
+                                            chunk_started =
+                                                session.start_chunk(issued_hashes.clone(), issued_at);
+                                        }
+
+                                        if chunk_started {
+                                            let issued_count = issued_hashes.len() as u64;
+                                            let mut rt = runtime.write().await;
+                                            rt.getblock_sent =
+                                                rt.getblock_sent.saturating_add(issued_count);
+                                            rt.peer_addressed_getblock_sent_total = rt
+                                                .peer_addressed_getblock_sent_total
+                                                .saturating_add(issued_count);
+                                            rt.selected_segment_block_requests_total = rt
+                                                .selected_segment_block_requests_total
+                                                .saturating_add(issued_count);
+                                            rt.active_session_requested_blocks = rt
+                                                .active_session_requested_blocks
+                                                .saturating_add(issued_count);
+                                            rt.final_quiescence_missing_segment_request_total = rt
+                                                .final_quiescence_missing_segment_request_total
+                                                .saturating_add(issued_count);
+                                            rt.pending_block_requests =
+                                                block_requests.pending.len();
+                                            rt.inflight_block_requests =
+                                                block_requests.pending.len();
+                                            rt.pending_block_request_hashes =
+                                                block_requests.pending_hashes();
+                                            rt.sync_state = DagSyncStage::RequestingSelectedBlocks
+                                                .as_str()
+                                                .to_string();
+                                            info!(
+                                                event = "activated_v2_selected_segment_chunk_continued",
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count,
+                                                "scheduled next activated-v2 peer-addressed selected-segment chunk"
+                                            );
+                                        } else {
+                                            for hash in &issued_hashes {
+                                                block_requests.resolve(hash);
+                                            }
+                                            warn!(
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count = issued_hashes.len(),
+                                                "activated-v2 selected-segment continuation could not start; rolled back request tracking"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            if selected_segment_completed {
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                if let Some(ref p2p_handle) = p2p {
+                                    if let Err(error) = p2p_handle.request_tips() {
+                                        warn!(
+                                            error = %error,
+                                            "failed requesting DAG frontier tips after activated-v2 selected-segment completion"
+                                        );
+                                    } else {
+                                        let mut rt = runtime.write().await;
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        info!(
+                                            event = "activated_v2_selected_segment_frontier_reconcile_requested",
+                                            "activated-v2 selected segment complete; requested fresh tips for lateral DAG reconciliation"
+                                        );
+                                    }
                                 }
                             }
 
@@ -8950,6 +9234,81 @@ mod tests {
         assert_eq!(session.remote_selected_height, 113);
         assert_eq!(session.locator_request_id, 18);
         assert_eq!(session.locator_fingerprint, continuation_locator.join(","));
+    }
+
+    #[test]
+    fn activated_v2_selected_segment_progress_tracks_staged_then_authoritative_blocks() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            10,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            19,
+            1_000,
+        )
+        .expect("session");
+        let requested = vec!["b1".to_string(), "b2".to_string(), "b3".to_string()];
+        session.missing_hashes = requested.clone();
+        session.requested_hashes.extend(requested.iter().cloned());
+        assert!(session.start_chunk(requested, 1_001));
+
+        let staged = session.reconcile_authoritative_outcome(
+            "b2",
+            &[],
+            &HashSet::from(["common".to_string()]),
+            Some("common"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(staged.received_new);
+        assert_eq!(staged.applied_new, 0);
+        assert!(!staged.chunk_completed);
+        assert!(!staged.session_completed);
+        assert!(session.received_hashes.contains("b2"));
+        assert!(session.accepted_applied_hashes.is_empty());
+
+        let first_authoritative = session.reconcile_authoritative_outcome(
+            "b1",
+            &["b1".to_string(), "b2".to_string()],
+            &HashSet::from(["common".to_string(), "b1".to_string(), "b2".to_string()]),
+            Some("b2"),
+            2_001,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(first_authoritative.received_new);
+        assert_eq!(first_authoritative.applied_new, 2);
+        assert!(!first_authoritative.chunk_completed);
+        assert!(!first_authoritative.session_completed);
+
+        let completed = session.reconcile_authoritative_outcome(
+            "b3",
+            &["b3".to_string()],
+            &HashSet::from([
+                "common".to_string(),
+                "b1".to_string(),
+                "b2".to_string(),
+                "b3".to_string(),
+            ]),
+            Some("b3"),
+            2_002,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(completed.received_new);
+        assert_eq!(completed.applied_new, 1);
+        assert!(completed.chunk_completed);
+        assert!(completed.continuation_hashes.is_empty());
+        assert!(completed.session_completed);
+        assert_eq!(session.received_hashes.len(), 3);
+        assert_eq!(session.accepted_applied_hashes.len(), 3);
+        assert_eq!(session.state, SelectedSegmentSessionState::Complete);
     }
 
     #[test]
