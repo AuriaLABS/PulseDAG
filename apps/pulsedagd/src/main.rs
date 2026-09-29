@@ -618,10 +618,7 @@ fn selected_segment_session_should_replan(
     direct_request_peers: &[String],
     inflight_for_peer: usize,
 ) -> bool {
-    inflight_for_peer == 0
-        && !direct_request_peers
-            .iter()
-            .any(|peer| peer == session_peer)
+    inflight_for_peer == 0 && !direct_request_peers.iter().any(|peer| peer == session_peer)
 }
 
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
@@ -3153,19 +3150,20 @@ async fn main() -> Result<()> {
                     }
                 }
                 let direct_request_peers = active_peer_ids(&p2p);
-                let stalled_selected_session = selected_segment_session.as_ref().and_then(|session| {
-                    let inflight_for_peer = block_requests
-                        .inflight_by_peer()
-                        .get(&session.peer_id)
-                        .copied()
-                        .unwrap_or_default();
-                    selected_segment_session_should_replan(
-                        &session.peer_id,
-                        &direct_request_peers,
-                        inflight_for_peer,
-                    )
-                    .then(|| (session.session_id, session.peer_id.clone()))
-                });
+                let stalled_selected_session =
+                    selected_segment_session.as_ref().and_then(|session| {
+                        let inflight_for_peer = block_requests
+                            .inflight_by_peer()
+                            .get(&session.peer_id)
+                            .copied()
+                            .unwrap_or_default();
+                        selected_segment_session_should_replan(
+                            &session.peer_id,
+                            &direct_request_peers,
+                            inflight_for_peer,
+                        )
+                        .then(|| (session.session_id, session.peer_id.clone()))
+                    });
                 if let Some((session_id, peer_id)) = stalled_selected_session {
                     selected_segment_session = None;
                     selected_segment_locator_state.lock().await.pending_locator = None;
