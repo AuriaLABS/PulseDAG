@@ -4391,14 +4391,11 @@ async fn main() -> Result<()> {
                             }
                             compact_retained_hashes.sort();
                             compact_retained_hashes.dedup();
-                            if let Some(compact_runtime) =
-                                compact_relay_daemon_runtime.as_mut()
-                            {
+                            if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
                                 let mut compact_reconciled = 0usize;
                                 for hash in &compact_retained_hashes {
                                     if compact_runtime.observe_full_block(hash) {
-                                        compact_reconciled =
-                                            compact_reconciled.saturating_add(1);
+                                        compact_reconciled = compact_reconciled.saturating_add(1);
                                     }
                                 }
                                 if compact_reconciled > 0 {
@@ -4612,9 +4609,7 @@ async fn main() -> Result<()> {
                                     | BlockAcceptanceResult::Duplicate
                             )
                         {
-                            if let Some(compact_runtime) =
-                                compact_relay_daemon_runtime.as_mut()
-                            {
+                            if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
                                 if compact_runtime.observe_full_block(&block.hash) {
                                     let telemetry = compact_runtime.telemetry();
                                     let mut rt = runtime.write().await;
@@ -6699,10 +6694,12 @@ async fn main() -> Result<()> {
                                         .staging()
                                         .get(&request.block_hash)
                                         .or_else(|| {
-                                            activated_v2_p2p_runtime.pending_blocks().find(|block| {
-                                                block.hash.as_str()
-                                                    == request.block_hash.as_str()
-                                            })
+                                            activated_v2_p2p_runtime.pending_blocks().find(
+                                                |block| {
+                                                    block.hash.as_str()
+                                                        == request.block_hash.as_str()
+                                                },
+                                            )
                                         })
                                 }
                                 _ => None,

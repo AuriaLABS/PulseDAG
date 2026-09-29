@@ -657,9 +657,9 @@ mod tests {
                 .handle_wire(
                     &mut sessions,
                     peer,
-                    &CompactRelayWireV1::Capabilities(
-                        CompactRelayCapabilitiesV1::canonical(CHAIN_ID),
-                    ),
+                    &CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(
+                        CHAIN_ID,
+                    )),
                     &HashMap::new(),
                 )
                 .unwrap();
