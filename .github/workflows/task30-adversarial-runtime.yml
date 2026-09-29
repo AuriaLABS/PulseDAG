@@ -22,9 +22,6 @@ on:
       - apps/pulsedagd/src/**
       - crates/pulsedag-p2p/**
       - crates/pulsedag-rpc/src/handlers/status.rs
-      - apps/pulsedagd/src/**
-      - crates/pulsedag-p2p/**
-      - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
   pull_request:
     branches:
@@ -43,6 +40,9 @@ on:
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
       - scripts/lib/patch_task30_runtime_topology.py
       - scripts/lib/patch_task30_v24_runtime_compat.py
+      - apps/pulsedagd/src/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
 
 permissions:
