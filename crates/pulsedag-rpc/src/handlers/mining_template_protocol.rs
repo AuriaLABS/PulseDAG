@@ -11,7 +11,8 @@ use axum::{extract::State, Json};
 use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
-    finalize_monetary_mining_template_v3, ActivatedV2MiningTemplateSpec, ChainState,
+    finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
+    ActivatedV2MiningTemplateSpec, ChainState,
     PowValidationPath, ProtocolActivationIdentity, ProtocolMonetaryActivationRecordV2, PulseError,
     TRANSACTION_VERSION_V2,
 };
@@ -716,16 +717,16 @@ pub async fn post_mining_template<S: RpcStateLike>(
             let data = {
                 let chain_handle = state.chain();
                 let chain = chain_handle.read().await;
-                let monetary_activation =
-                    match state.storage().protocol_monetary_activation_record() {
-                        Ok(record) => record,
-                        Err(error) => {
-                            return Json(ApiResponse::err(
-                                "MINING_TEMPLATE_ERROR",
-                                format!("cannot read v3 monetary activation sidecar: {error}"),
-                            ));
-                        }
-                    };
+                let storage = state.storage();
+                let monetary_activation = match storage.protocol_monetary_activation_record() {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            format!("cannot read v3 monetary activation sidecar: {error}"),
+                        ));
+                    }
+                };
                 if let Some(record) = monetary_activation.as_ref() {
                     if record.identity != identity {
                         return Json(ApiResponse::err(
@@ -734,8 +735,54 @@ pub async fn post_mining_template<S: RpcStateLike>(
                         ));
                     }
                 }
+
+                let template_chain = match storage
+                    .load_activated_v2_p2p_runtime_snapshot(&identity)
+                {
+                    Ok((durable_chain, runtime))
+                        if durable_chain.chain_state_generation == chain.chain_state_generation
+                            && durable_chain.dag.best_height == chain.dag.best_height
+                            && pulsedag_core::preferred_tip_hash(&durable_chain)
+                                == pulsedag_core::preferred_tip_hash(&chain) =>
+                    {
+                        if runtime.staging().is_empty() {
+                            chain.clone()
+                        } else {
+                            match materialize_activated_v2_mining_overlay(
+                                &chain,
+                                runtime.staging(),
+                                &identity,
+                            ) {
+                                Ok(overlay) => overlay,
+                                Err(error) => {
+                                    return Json(ApiResponse::err(
+                                        "MINING_TEMPLATE_ERROR",
+                                        format!(
+                                            "cannot build activated-v2 staged mining overlay: {error}"
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            "activated-v2 durable runtime snapshot does not match the current in-memory chain state",
+                        ));
+                    }
+                    Err(error) => {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            format!(
+                                "activated-v2 runtime sidecar is unavailable or invalid: {error}"
+                            ),
+                        ));
+                    }
+                };
+
                 match activated_v2_template_data(
-                    &chain,
+                    &template_chain,
                     &identity,
                     monetary_activation.as_ref(),
                     req.miner_address.clone(),
