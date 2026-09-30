@@ -462,7 +462,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             if name == "block_subsidy":
                 continue
             if re.search(rf"\b{re.escape(name)}\s*\(", text):
-                forbidden_hits.append({"path": path, "marker": f"{name}(")
+                forbidden_hits.append({"path": path, "marker": f"{name}("})
     if forbidden_hits:
         errors.append(f"v3 live code references legacy reward authority: {forbidden_hits!r}")
 
