@@ -219,6 +219,49 @@ fn augment_with_staged_parents(
     Ok((working, closure))
 }
 
+/// Build a read-only mining view that includes every fully staged activated-v2
+/// block without mutating the live authoritative chain or transient runtime.
+///
+/// Staged blocks are replayed in bounded topological order through the same
+/// context/GHOSTDAG validation used by P2P promotion. The resulting state is
+/// materialized only in memory so mining parent selection can see validated
+/// parallel tips and produce a merge anchor that can later promote the staged
+/// closure atomically.
+pub fn materialize_activated_v2_mining_overlay(
+    state: &ChainState,
+    staging: &ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ChainState, PulseError> {
+    if staging.is_empty() {
+        return Ok(state.clone());
+    }
+
+    let roots = staging.hashes();
+    let closure = collect_staged_closure(&roots, state, staging)?;
+    if !closure.missing.is_empty() {
+        return Err(invalid_staging(format!(
+            "mining overlay has missing staged parents: {}",
+            closure.missing.join(",")
+        )));
+    }
+
+    let mut working = state.clone();
+    for hash in &closure.ordered {
+        let staged = staging
+            .blocks
+            .get(hash)
+            .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
+        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
+    }
+
+    materialize_authoritative_state_v2(&working).map_err(|error| {
+        invalid_staging(format!(
+            "cannot materialize staged mining overlay: {error}"
+        ))
+    })
+}
+
 pub fn stage_activated_v2_p2p_block(
     block: Block,
     state: &ChainState,
@@ -451,6 +494,7 @@ mod tests {
         ghostdag_v1::classify_merge_set_v1,
         header_v2::{canonicalize_block_parents_v2, compute_block_hash_v2},
         mining::current_ts,
+        mining_protocol::derive_activated_v2_mining_parent_context,
         mining_v2::{
             build_candidate_block_v2, build_coinbase_transaction_v2, CandidateBlockV2Spec,
         },
@@ -572,6 +616,29 @@ mod tests {
         assert_eq!(staging.len(), 1);
         assert_eq!(bincode::serialize(&live).unwrap(), before);
         assert_eq!(expected_identity.chain_id, live.chain_id);
+    }
+
+    #[test]
+    fn mining_overlay_exposes_validated_staged_side_tip_as_parallel_parent() {
+        let (live, expected_identity, staging, main, side) = staged_side_fixture();
+        let live_before = bincode::serialize(&live).unwrap();
+        let staging_before = bincode::serialize(&staging).unwrap();
+
+        let overlay =
+            materialize_activated_v2_mining_overlay(&live, &staging, &expected_identity).unwrap();
+        let context =
+            derive_activated_v2_mining_parent_context(&overlay, &expected_identity).unwrap();
+
+        assert!(overlay.dag.blocks.contains_key(&main.hash));
+        assert!(overlay.dag.blocks.contains_key(&side.hash));
+        assert!(overlay.dag.tips.contains(&main.hash));
+        assert!(overlay.dag.tips.contains(&side.hash));
+        assert!(context.parents.contains(&main.hash));
+        assert!(context.parents.contains(&side.hash));
+        assert!(context.included_parallel_parents.contains(&main.hash)
+            || context.included_parallel_parents.contains(&side.hash));
+        assert_eq!(bincode::serialize(&live).unwrap(), live_before);
+        assert_eq!(bincode::serialize(&staging).unwrap(), staging_before);
     }
 
     #[test]
