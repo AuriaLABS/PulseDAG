@@ -12,9 +12,8 @@ use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
     finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
-    ActivatedV2MiningTemplateSpec, ChainState,
-    PowValidationPath, ProtocolActivationIdentity, ProtocolMonetaryActivationRecordV2, PulseError,
-    TRANSACTION_VERSION_V2,
+    ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
+    ProtocolMonetaryActivationRecordV2, PulseError, TRANSACTION_VERSION_V2,
 };
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 use sha3::{Digest, Keccak256};
@@ -736,8 +735,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
                     }
                 }
 
-                let template_chain = match storage
-                    .load_activated_v2_p2p_runtime_snapshot(&identity)
+                let template_chain = match storage.load_activated_v2_p2p_runtime_snapshot(&identity)
                 {
                     Ok((durable_chain, runtime))
                         if durable_chain.chain_state_generation == chain.chain_state_generation
