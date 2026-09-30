@@ -5947,18 +5947,17 @@ async fn main() -> Result<()> {
                         };
                         let selected_request_hashes =
                             selected_requests.iter().cloned().collect::<HashSet<_>>();
-                        let requests =
-                            if pending_selected_locator.is_some()
-                                || selected_segment_session.is_some()
-                            {
-                                if selected_session_owns_headers {
-                                    selected_requests
-                                } else {
-                                    Vec::new()
-                                }
+                        let requests = if pending_selected_locator.is_some()
+                            || selected_segment_session.is_some()
+                        {
+                            if selected_session_owns_headers {
+                                selected_requests
                             } else {
-                                plan.requests
-                            };
+                                Vec::new()
+                            }
+                        } else {
+                            plan.requests
+                        };
                         let mut issued_selected_request_count = 0u64;
                         let mut issued_selected_hashes = Vec::new();
                         for hash in requests {

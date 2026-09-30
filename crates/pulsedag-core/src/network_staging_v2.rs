@@ -617,9 +617,9 @@ mod tests {
                 assert!(staged_parent_closure.is_empty());
                 assert_eq!(staged_count, 1);
             }
-            other => panic!(
-                "expected staged duplicate to be re-evaluated for promotion, got {other:?}"
-            ),
+            other => {
+                panic!("expected staged duplicate to be re-evaluated for promotion, got {other:?}")
+            }
         }
         assert!(staging.contains(&block.hash));
     }
