@@ -51,10 +51,21 @@ verified_clear = re.search(
 if not verified_clear:
     missing.append("selected gap verified-completion clear")
 
+progress_completion_clear = re.search(
+    r"if\s+progress\.session_completed\s*\{.*?"
+    r"rt\.active_session_remaining_blocks\s*=\s*0;\s*"
+    r"rt\.selected_segment_gap_blocks\s*=\s*0;\s*"
+    r"rt\.active_session_id\s*=\s*None;",
+    node,
+    re.S,
+)
+if not progress_completion_clear:
+    missing.append("selected gap progress-completion clear")
+
 selected_gap_clears = re.findall(r"rt\.selected_segment_gap_blocks\s*=\s*0\s*;", node)
-if len(selected_gap_clears) != 1:
+if len(selected_gap_clears) != 2:
     missing.append(
-        f"selected gap cleared outside verified completion count={len(selected_gap_clears)}"
+        f"selected gap cleared outside verified completion paths count={len(selected_gap_clears)}"
     )
 
 if "!staged.contains(hash)" in node:
