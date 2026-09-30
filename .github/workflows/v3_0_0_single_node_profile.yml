@@ -1,0 +1,81 @@
+name: v3.0 single-node operator profile
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - configs/single-node/**
+      - docs/ROADMAP_V3_0_0.md
+      - scripts/v3_0_0_single_node_preflight.sh
+      - .github/workflows/v3_0_0_single_node_profile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  single-node-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve v3.0 version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
+          grep -Fq '`public_testnet_ready=false`' docs/VERSION_MATRIX.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/VERSION_MATRIX.md
+          grep -Fq '`contracts_enabled=false`' docs/VERSION_MATRIX.md
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/v3_0_0_single_node_preflight.sh
+
+      - name: Run v3 single-node contract
+        shell: bash
+        run: OUT_DIR=ci-evidence/v3.0.0-task14 bash scripts/v3_0_0_single_node_preflight.sh configs/single-node/single-node.env.example
+
+      - name: Build single-node evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3.0.0-task14
+          OUT_DIR=ci-evidence/v3.0.0-task14 \
+            bash scripts/v3_0_0_single_node_preflight.sh \
+              configs/single-node/single-node.env.example
+          sha256sum \
+            ci-evidence/v3.0.0-task14/single-node-preflight.json \
+            > ci-evidence/v3.0.0-task14/SHA256SUMS
+
+      - name: Enforce fail-closed manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "v3.0.0-single-node-operator-preflight" and
+            .operator_mode == "single-node" and
+            .protocol_consensus_mode == "ghostdag_v1" and
+            .auto_prune_enabled == false and
+            .result == "PASS" and
+            .p2p_enabled == false and
+            .connected_peers_expected == false and
+            .isolated_mining_authorized == true and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .contracts_enabled == false
+          ' ci-evidence/v3.0.0-task14/single-node-preflight.json >/dev/null
+
+      - name: Upload Task 14 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_task14_single_node_profile_${{ github.run_id }}
+          path: ci-evidence/v3.0.0-task14
+          if-no-files-found: error
+          retention-days: 90

@@ -35,8 +35,8 @@ cat > "$ENV_FILE" <<EOF
 PULSEDAG_SINGLE_NODE_MODE=true
 PULSEDAG_PRIVATE_TESTNET_ROLE=single
 PULSEDAG_CONFIG_PROFILE=private
-PULSEDAG_NETWORK_PROFILE=private-testnet-v2.4.0
-PULSEDAG_CHAIN_ID=pulsedag-private-v2.4.0
+PULSEDAG_NETWORK_PROFILE=private-testnet-v3.0.0
+PULSEDAG_CHAIN_ID=pulsedag-private-v3.0.0
 PULSEDAG_CONSENSUS_MODE=legacy
 PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1
 PULSEDAG_AUTO_PRUNE_ENABLED=false
@@ -53,7 +53,7 @@ PULSEDAG_PUBLIC_TESTNET_READY=false
 PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false
 EOF
 
-OUT_DIR="$OUT_DIR/preflight" bash "$ROOT_DIR/scripts/v2_4_0_single_node_preflight.sh" "$ENV_FILE"
+OUT_DIR="$OUT_DIR/preflight" bash "$ROOT_DIR/scripts/v3_0_0_single_node_preflight.sh" "$ENV_FILE"
 
 NODE_PID=""
 MINER_PID=""
@@ -86,7 +86,7 @@ status_file() {
 validate_live_status() {
   local path="$1"
   jq -e '
-    .data.chain_id == "pulsedag-private-v2.4.0" and
+    .data.chain_id == "pulsedag-private-v3.0.0" and
     .data.protocol_consensus_mode == "ghostdag_v1" and
     .data.high_cadence_allowed == false and
     .data.contracts_enabled == false and
@@ -220,13 +220,13 @@ jq -n \
   --arg state_root "$after_root" \
   --argjson persisted_block_count "$after_persisted" \
   '{
-    task: "v2.4.0-task31-packaged-recovery",
+    task: "v3.0.0-task31-packaged-recovery",
     candidate_sha: $candidate_sha,
     package_execution: true,
     source_tree_binary_execution: false,
     node_binary: $node_bin,
     miner_binary: $miner_bin,
-    chain_id: "pulsedag-private-v2.4.0",
+    chain_id: "pulsedag-private-v3.0.0",
     protocol_consensus_mode: "ghostdag_v1",
     initial_height: $initial_height,
     recovered_height: $recovered_height,

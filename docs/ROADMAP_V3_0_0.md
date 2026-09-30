@@ -1,25 +1,22 @@
 # ROADMAP v3.0.0 — Pulse Layer Differentiation
 
-Status: **PROPOSED FUTURE PLANNING DOCUMENT**
+Status: **ACTIVE v3.0.0 CANDIDATE ROADMAP**
 
 Date: 2026-09-15 UTC
 
-This document records a product and protocol thesis for `v3.0.0`.
-It does **not** authorize a version bump, tag, GitHub Release, public-testnet launch, default high-cadence activation, PulseVM activation, or `contracts_enabled=true`.
+This document is the active product/protocol roadmap for the `v3.0.0` candidate line.
 
-Predecessor gates remain mandatory:
+The repository/version bump and v3 CI target are authorized for development. They do **not** authorize a tag, GitHub Release, public-testnet launch, mainnet launch, default high-cadence activation, PulseVM activation, or `contracts_enabled=true`.
 
-- `v2.4.0` Task31 exact-candidate evidence and activation decision;
-- `v2.5.0` scale/resilience core program; physical NVIDIA/AMD acceptance is explicitly deferred for v3.0.0 by the launch-control decision in #781/#794 and the closure disposition of #1038;
-- bounded programmability work from `v2.6.0` only where it fits the 3.0 freeze below.
+Earlier v2.x release lines are no longer predecessor release gates. Their artifacts remain useful only as compatibility, regression, migration, and provenance inputs. Scale/resilience and bounded-programmability work previously described under v2.5/v2.6 is folded into the v3 backlog and must be proven by v3 workflows on the exact candidate SHA.
 
-`v2.5.0` and `v2.6.0` remain approved planning sources for scale and full programmability, but #781 is authoritative for v3.0.0 launch eligibility when older planning gates conflict with the coordinated-launch policy. In particular, physical GPU validation is not a v3.0.0 GO prerequisite. This file constrains what may enter a later `v3.0.0` genesis so PulseDAG is not a GHOSTDAG + kHeavyHash clone with a delayed general VM.
+Physical NVIDIA/AMD acceptance is not a v3.0.0 GO prerequisite under #781/#794; production GPU claims remain separately gated.
 
 ## Thesis
 
 PulseDAG 3.0 is the Pulse Layer: high-cadence UTXO money, a DAG-derived clock, bounded covenant templates, and verifiable settlement. L1 does not execute unbounded applications.
 
-Activation intent for a future 3.0 genesis:
+Activation intent for the v3.0 candidate genesis:
 
 - `contracts_enabled=false` remains mandatory;
 - `covenants_enabled` may be true only for the frozen template set defined here;
@@ -38,7 +35,7 @@ Activation intent for a future 3.0 genesis:
 
 ## Work items
 
-These are planning tasks, not authorized implementation on the v2.4.0 Task31 line.
+These are active v3 work items. Each item remains independently gated and must not be inferred active from code presence alone.
 
 Fail-closed matchers now exist on `main` for P1–P8 (PulseClock through measured envelope, plus explorer/wallet pulse views). Default admission stays inactive. That is not a 3.0 genesis, not `covenants_enabled=true`, and not a public-testnet clock start.
 
@@ -120,7 +117,7 @@ A third party can lie about history; the receipt cannot.
 - explorer that renders the DAG (parents, blue/red, selected parent, pulse), not only a linear block list;
 - Desktop as operator plus light wallet, not only a process supervisor.
 
-No official custody wallet is claimed for the current v2.4.0 node/miner candidate.
+No official custody wallet is claimed until the v3 user-surface gate is explicitly satisfied.
 
 ### Task P8 — Measured finality envelope
 
@@ -153,7 +150,7 @@ Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 
 ## Acceptance demo (planning bar, not a release gate)
 
-A future 3.0 candidate is not differentiated until a short demo can show:
+The v3.0 candidate is not differentiated until a short demo can show:
 
 1. two non-conflicting transactions land in parallel blocks and both apply;
 2. a vault covenant moves only after N pulses and is visible in the explorer;
@@ -163,9 +160,9 @@ A future 3.0 candidate is not differentiated until a short demo can show:
 
 ## Authorization
 
-This document is planning only.
+This document governs the active v3.0.0 candidate line.
 
-- Does not change `VERSION` or Cargo versions.
-- Does not start the public-testnet clock.
-- Does not activate covenants, contracts, or high cadence on any live candidate.
-- Does not mix v3 identity into the v2.4.0 Task31 protocol identity.
+- `VERSION` and Cargo workspace identity are `v3.0.0` / `3.0.0`.
+- It does not start the public-testnet clock or authorize public testnet/mainnet launch.
+- It does not activate smart contracts or high cadence merely because the repository now has v3 identity.
+- Every launch-affecting claim must be backed by exact-SHA v3 evidence.

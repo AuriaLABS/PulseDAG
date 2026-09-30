@@ -1,0 +1,446 @@
+name: v3.0 workspace validation gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      test_compile_timeout_minutes:
+        description: Maximum runtime for compiling all workspace tests without running them
+        required: false
+        default: '30'
+        type: string
+      package_test_timeout_minutes:
+        description: Maximum execution runtime for each already-compiled workspace package test suite
+        required: false
+        default: '10'
+        type: string
+      p2p_real_runtime_test_timeout_seconds:
+        description: Maximum execution runtime for the already-compiled isolated real-swarm P2P test
+        required: false
+        default: '120'
+        type: string
+      test_threads:
+        description: Rust test threads per package; use 1 for deterministic diagnosis
+        required: false
+        default: '1'
+        type: string
+      check_timeout_minutes:
+        description: Maximum runtime for cargo check
+        required: false
+        default: '20'
+        type: string
+      clippy_timeout_minutes:
+        description: Maximum runtime for cargo clippy
+        required: false
+        default: '30'
+        type: string
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate
+        required: true
+        type: string
+      test_compile_timeout_minutes:
+        required: false
+        default: '30'
+        type: string
+      package_test_timeout_minutes:
+        required: false
+        default: '10'
+        type: string
+      p2p_real_runtime_test_timeout_seconds:
+        required: false
+        default: '120'
+        type: string
+      test_threads:
+        required: false
+        default: '1'
+        type: string
+      check_timeout_minutes:
+        required: false
+        default: '20'
+        type: string
+      clippy_timeout_minutes:
+        required: false
+        default: '30'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-0-0-workspace-${{ inputs.candidate_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  workspace:
+    name: fmt / check / compile tests / package tests / clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record candidate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/workspace/tests ci-evidence/workspace/diagnostics
+          git rev-parse HEAD | tee ci-evidence/workspace/candidate-sha.txt
+          printf 'VERSION=' | tee ci-evidence/workspace/version.txt
+          cat VERSION | tee -a ci-evidence/workspace/version.txt
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
+          cargo metadata --format-version 1 --no-deps > ci-evidence/workspace/cargo-metadata.json
+          jq -r '.packages[] | select(.source == null) | .name' ci-evidence/workspace/cargo-metadata.json \
+            | sort -u | tee ci-evidence/workspace/workspace-packages.txt
+
+      - name: cargo fmt --all -- --check
+        id: fmt
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s 10m \
+            cargo fmt --all -- --check 2>&1 | tee ci-evidence/workspace/cargo-fmt.log
+
+      - name: cargo check --workspace --locked
+        id: check
+        continue-on-error: true
+        shell: bash
+        env:
+          CHECK_TIMEOUT_MINUTES: ${{ inputs.check_timeout_minutes || '20' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${CHECK_TIMEOUT_MINUTES}m" \
+            cargo check --workspace --locked 2>&1 | tee ci-evidence/workspace/cargo-check.log
+
+      - name: Compile all workspace tests without running them
+        id: test_compile
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_COMPILE_TIMEOUT_MINUTES: ${{ inputs.test_compile_timeout_minutes || '30' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${TEST_COMPILE_TIMEOUT_MINUTES}m" \
+            cargo test --workspace --locked --no-run 2>&1 \
+            | tee ci-evidence/workspace/cargo-test-compile.log
+
+      - name: cargo test per workspace package with execution timeout diagnostics
+        id: test
+        if: steps.test_compile.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          PACKAGE_TEST_TIMEOUT_MINUTES: ${{ inputs.package_test_timeout_minutes || '10' }}
+          P2P_REAL_RUNTIME_TEST_TIMEOUT_SECONDS: ${{ inputs.p2p_real_runtime_test_timeout_seconds || '120' }}
+          TEST_THREADS: ${{ inputs.test_threads || '1' }}
+        run: |
+          set -uo pipefail
+          root="ci-evidence/workspace"
+          results_jsonl="$root/test-results.jsonl"
+          : > "$results_jsonl"
+          overall_rc=0
+
+          mapfile -t packages < "$root/workspace-packages.txt"
+          if (( ${#packages[@]} == 0 )); then
+            echo 'No workspace packages discovered.' >&2
+            exit 2
+          fi
+
+          write_result() {
+            local case_name="$1" package="$2" rc="$3" timed_out="$4" started_utc="$5" ended_utc="$6" duration_seconds="$7" log="$8"
+            python3 - "$results_jsonl" "$case_name" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log" <<'PY'
+          import json, pathlib, sys
+          path, case_name, package, rc, timed_out, started, ended, duration, log = sys.argv[1:]
+          record = {
+              'case': case_name,
+              'package': package,
+              'exit_code': int(rc),
+              'result': 'PASS' if int(rc) == 0 else 'TIMEOUT' if timed_out == 'true' else 'FAIL',
+              'timed_out': timed_out == 'true',
+              'started_utc': started,
+              'ended_utc': ended,
+              'duration_seconds': int(duration),
+              'log': log,
+          }
+          with pathlib.Path(path).open('a') as out:
+              out.write(json.dumps(record, sort_keys=True) + '\n')
+          PY
+          }
+
+          capture_diagnostics() {
+            local slug="$1" case_name="$2" package="$3" rc="$4" timed_out="$5" timeout_value="$6" log="$7"
+            local diagnostic="$root/diagnostics/${slug}.txt"
+            {
+              echo "timestamp_utc=$(date -u +%FT%TZ)"
+              echo "case=$case_name"
+              echo "package=$package"
+              echo "exit_code=$rc"
+              echo "timed_out=$timed_out"
+              echo "execution_timeout=$timeout_value"
+              echo "test_threads=$TEST_THREADS"
+              echo
+              echo '## process table'
+              ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args || true
+              echo
+              echo '## process tree'
+              command -v pstree >/dev/null 2>&1 && pstree -ap || true
+              echo
+              echo '## listening sockets'
+              command -v ss >/dev/null 2>&1 && ss -ltnp || true
+              echo
+              echo '## final test output'
+              tail -n 400 "$log" || true
+            } > "$diagnostic"
+          }
+
+          run_case() {
+            local case_name="$1" package="$2" timeout_value="$3" slug="$4"
+            shift 4
+            local log="$root/tests/${slug}.log"
+            local started_utc started_epoch ended_utc duration_seconds rc timed_out required_test
+            required_test="${REQUIRED_EXECUTED_TEST:-}"
+            started_utc="$(date -u +%FT%TZ)"
+            started_epoch="$(date +%s)"
+
+            echo "::group::${case_name}"
+            echo "package=${package} execution_timeout=${timeout_value} test_threads=${TEST_THREADS}"
+            set +e
+            timeout --signal=TERM --kill-after=30s "$timeout_value" \
+              stdbuf -oL -eL "$@" 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            set -u
+            ended_utc="$(date -u +%FT%TZ)"
+            duration_seconds=$(( $(date +%s) - started_epoch ))
+            timed_out=false
+            if (( rc == 124 || rc == 137 )); then
+              timed_out=true
+            fi
+            if [[ -n "$required_test" && "$timed_out" != true && "$rc" == 0 ]]; then
+              if ! python3 - "$log" "$required_test" <<'PY'
+          import pathlib, re, sys
+          log_path = pathlib.Path(sys.argv[1])
+          required_test = sys.argv[2]
+          text = log_path.read_text(errors='replace')
+          running_counts = [int(match) for match in re.findall(r'^running (\d+) tests?$', text, re.MULTILINE)]
+          escaped = re.escape(required_test)
+          executed = re.search(
+              rf'^test .*{escaped}.* \.\.\. (ok|FAILED)$',
+              text,
+              re.MULTILINE,
+          )
+          ignored = re.search(
+              rf'^test .*{escaped}.* \.\.\. ignored$',
+              text,
+              re.MULTILINE,
+          )
+          if not running_counts or max(running_counts) < 1:
+              print(f"Required test {required_test!r} did not run: no nonzero libtest running count found.", file=sys.stderr)
+              sys.exit(1)
+          if ignored:
+              print(f"Required test {required_test!r} was ignored instead of executed.", file=sys.stderr)
+              sys.exit(1)
+          if not executed:
+              print(f"Required test {required_test!r} did not produce an executed libtest result line.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Required test {required_test!r} executed and was not ignored.")
+          PY
+              then
+                rc=1
+              fi
+            fi
+
+            write_result "$case_name" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log"
+            if (( rc != 0 )); then
+              overall_rc=1
+              capture_diagnostics "$slug" "$case_name" "$package" "$rc" "$timed_out" "$timeout_value" "$log"
+              if [[ "$package" == "pulsedag-p2p" && "$timed_out" == true ]]; then
+                pkill -TERM -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
+                sleep 2
+                pkill -KILL -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
+              fi
+            fi
+            echo "case=${case_name} package=${package} exit_code=${rc} timed_out=${timed_out} duration_seconds=${duration_seconds}"
+            echo '::endgroup::'
+            return 0
+          }
+
+          for package in "${packages[@]}"; do
+            slug="$(printf '%s' "$package" | tr -c 'A-Za-z0-9._-' '_')"
+            if [[ "$package" == "pulsedag-p2p" ]]; then
+              run_case \
+                'pulsedag-p2p package tests excluding isolated real-swarm initialization' \
+                "$package" "${PACKAGE_TEST_TIMEOUT_MINUTES}m" "${slug}_remaining" \
+                cargo test -p "$package" --locked -- \
+                  --nocapture --test-threads="$TEST_THREADS" \
+                  --skip real_runtime_mode_initializes_without_loopback_labeling
+
+              REQUIRED_EXECUTED_TEST=real_runtime_mode_initializes_without_loopback_labeling run_case \
+                'pulsedag-p2p real_runtime_mode_initializes_without_loopback_labeling' \
+                "$package" "${P2P_REAL_RUNTIME_TEST_TIMEOUT_SECONDS}s" "${slug}_real_runtime_init" \
+                cargo test -p "$package" --locked \
+                  real_runtime_mode_initializes_without_loopback_labeling -- \
+                  --nocapture --test-threads=1
+            else
+              run_case \
+                "${package} package tests" "$package" "${PACKAGE_TEST_TIMEOUT_MINUTES}m" "$slug" \
+                cargo test -p "$package" --locked -- \
+                  --nocapture --test-threads="$TEST_THREADS"
+            fi
+          done
+
+          python3 - "$results_jsonl" "$root/test-results.json" <<'PY'
+          import json, pathlib, sys
+          source, destination = map(pathlib.Path, sys.argv[1:])
+          records = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
+          summary = {
+              'cases': records,
+              'case_count': len(records),
+              'package_count': len({item['package'] for item in records}),
+              'passed': sum(item['result'] == 'PASS' for item in records),
+              'failed': sum(item['result'] == 'FAIL' for item in records),
+              'timed_out': sum(item['result'] == 'TIMEOUT' for item in records),
+              'result': 'PASS' if records and all(item['result'] == 'PASS' for item in records) else 'FAIL',
+          }
+          destination.write_text(json.dumps(summary, indent=2) + '\n')
+          PY
+
+          {
+            echo '## Workspace package tests'
+            echo
+            jq -r '.cases[] | "- `\(.case)`: **\(.result)** (\(.duration_seconds)s, exit \(.exit_code))"' "$root/test-results.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$overall_rc"
+
+      - name: Record package tests skipped after compile failure
+        if: always() && steps.test_compile.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ci-evidence/workspace/test-results.json <<'JSON'
+          {
+            "cases": [],
+            "case_count": 0,
+            "package_count": 0,
+            "passed": 0,
+            "failed": 1,
+            "timed_out": 0,
+            "result": "FAIL",
+            "reason": "workspace test compilation failed or timed out"
+          }
+          JSON
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        id: clippy
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIPPY_TIMEOUT_MINUTES: ${{ inputs.clippy_timeout_minutes || '30' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${CLIPPY_TIMEOUT_MINUTES}m" \
+            cargo clippy --workspace --all-targets -- -D warnings 2>&1 \
+            | tee ci-evidence/workspace/cargo-clippy.log
+
+      - name: Build workspace evidence manifest
+        if: always()
+        shell: bash
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_COMPILE_RESULT: ${{ steps.test_compile.outcome }}
+          TEST_RESULT: ${{ steps.test.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('ci-evidence/workspace')
+          commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          checks = {
+              'fmt': os.environ['FMT_RESULT'],
+              'check': os.environ['CHECK_RESULT'],
+              'test_compile': os.environ['TEST_COMPILE_RESULT'],
+              'test': os.environ['TEST_RESULT'],
+              'clippy': os.environ['CLIPPY_RESULT'],
+          }
+          test_results_path = root / 'test-results.json'
+          test_results = json.loads(test_results_path.read_text()) if test_results_path.exists() else {
+              'result':'MISSING','case_count':0,'package_count':0,'passed':0,'failed':0,'timed_out':0,'cases':[]
+          }
+          result = 'PASS' if all(v == 'success' for v in checks.values()) and test_results.get('result') == 'PASS' else 'FAIL'
+          manifest = {
+              'gate': 'v3.0.0-workspace-validation',
+              'candidate_commit': commit,
+              'result': result,
+              'checks': checks,
+              'package_tests': test_results,
+              'version_file': pathlib.Path('VERSION').read_text().strip(),
+              'public_testnet_ready': False,
+          }
+          (root / 'evidence_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+          def digest(path):
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          checksum_path = root / 'SHA256SUMS'
+          with checksum_path.open('w') as out:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file() and path != checksum_path:
+                      out.write(f'{digest(path)}  {path.relative_to(root)}\n')
+          PY
+
+      - name: Upload workspace evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_workspace_validation_${{ github.run_id }}
+          path: ci-evidence/workspace
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce workspace gate
+        if: always()
+        shell: bash
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_COMPILE_RESULT: ${{ steps.test_compile.outcome }}
+          TEST_RESULT: ${{ steps.test.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+        run: |
+          set -euo pipefail
+          printf 'fmt=%s check=%s test_compile=%s test=%s clippy=%s\n' \
+            "$FMT_RESULT" "$CHECK_RESULT" "$TEST_COMPILE_RESULT" "$TEST_RESULT" "$CLIPPY_RESULT"
+          jq -e '.result == "PASS" and .package_tests.result == "PASS" and .package_tests.timed_out == 0' \
+            ci-evidence/workspace/evidence_manifest.json >/dev/null
+          [[ "$FMT_RESULT" == success ]]
+          [[ "$CHECK_RESULT" == success ]]
+          [[ "$TEST_COMPILE_RESULT" == success ]]
+          [[ "$TEST_RESULT" == success ]]
+          [[ "$CLIPPY_RESULT" == success ]]

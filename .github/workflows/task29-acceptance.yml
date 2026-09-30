@@ -1,4 +1,4 @@
-name: v2.4.0 Task 29 acceptance
+name: v3.0 Task 29 acceptance
 
 on:
   pull_request:

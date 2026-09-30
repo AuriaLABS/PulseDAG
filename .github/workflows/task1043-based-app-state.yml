@@ -1,0 +1,94 @@
+name: "v3 launch #1043 Based Apps deterministic state"
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/access_set_v1.rs"
+      - "crates/pulsedag-core/src/based_app_v0.rs"
+      - "crates/pulsedag-core/src/based_app_state_v0.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "crates/pulsedag-rpc/src/handlers/based_apps.rs"
+      - "crates/pulsedag-rpc/src/handlers/mod.rs"
+      - "crates/pulsedag-rpc/src/routes.rs"
+      - "crates/pulsedag-rpc/tests/based_app_rpc.rs"
+      - "docs/BASED_APPS_V0.md"
+      - ".github/workflows/task1043-based-app-state.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/access_set_v1.rs"
+      - "crates/pulsedag-core/src/based_app_v0.rs"
+      - "crates/pulsedag-core/src/based_app_state_v0.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "crates/pulsedag-rpc/src/handlers/based_apps.rs"
+      - "crates/pulsedag-rpc/src/handlers/mod.rs"
+      - "crates/pulsedag-rpc/src/routes.rs"
+      - "crates/pulsedag-rpc/tests/based_app_rpc.rs"
+      - "docs/BASED_APPS_V0.md"
+      - ".github/workflows/task1043-based-app-state.yml"
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  exact-candidate:
+    name: Based Apps v0 exact-candidate evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "candidate_sha=$CANDIDATE_SHA"
+          echo "candidate_tree=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Based Apps core vectors
+        run: cargo test --locked -p pulsedag-core based_app
+
+      - name: Run Based Apps RPC unit vectors
+        run: cargo test --locked -p pulsedag-rpc based_app
+
+      - name: Run fail-closed RPC integration
+        run: cargo test --locked -p pulsedag-rpc --test based_app_rpc
+
+      - name: Strict core and RPC Clippy
+        run: cargo clippy --locked -p pulsedag-core -p pulsedag-rpc --all-targets -- -D warnings
+
+      - name: Record v3 boundary non-claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'BASED_APP_RPC_ADMISSION_V0: BasedAppAdmissionV0 = BasedAppAdmissionV0::INACTIVE' crates/pulsedag-rpc/src/handlers/based_apps.rs
+          grep -q 'contracts_enabled=false' docs/ROADMAP_V3_0_0.md
+          grep -q 'generic ZK' docs/ROADMAP_V3_0_0.md
+          echo 'based_apps_state_query=PASS'
+          echo 'general_contract_activation=NOT_CLAIMED'
+          echo 'generic_zk_activation=NOT_CLAIMED'

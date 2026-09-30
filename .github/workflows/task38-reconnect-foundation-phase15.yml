@@ -1,4 +1,4 @@
-name: v3 launch Task 38 reconnect foundation phase 15
+name: v3.0 launch Task 38 reconnect foundation phase 15
 
 on:
   pull_request:

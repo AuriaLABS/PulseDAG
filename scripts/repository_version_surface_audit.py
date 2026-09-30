@@ -161,6 +161,12 @@ def main() -> int:
             ["v2.4.0", "ghostdag_v1"],
             failures,
         )
+    elif version == "v3.0.0":
+        require_markers(
+            Path("docs/ROADMAP_V3_0_0.md"),
+            ["v3.0.0", "ACTIVE v3.0.0 CANDIDATE ROADMAP", "contracts_enabled=false"],
+            failures,
+        )
 
     # Primary surfaces must not still identify a different release as current.
     for path in PRIMARY_ACTIVE_FILES:

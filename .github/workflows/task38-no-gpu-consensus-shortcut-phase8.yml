@@ -1,4 +1,4 @@
-name: v3 launch Task 38 no GPU consensus shortcut phase 8
+name: v3.0 launch Task 38 no GPU consensus shortcut phase 8
 
 on:
   pull_request:

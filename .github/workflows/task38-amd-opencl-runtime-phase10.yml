@@ -1,4 +1,4 @@
-name: v3 launch Task 38 AMD OpenCL runtime phase 10
+name: v3.0 launch Task 38 AMD OpenCL runtime phase 10
 
 on:
   pull_request:

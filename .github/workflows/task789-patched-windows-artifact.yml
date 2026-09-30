@@ -1,4 +1,4 @@
-name: Task 789 patched Windows artifact
+name: v3.0 Task 789 patched Windows artifact
 
 on:
   pull_request:

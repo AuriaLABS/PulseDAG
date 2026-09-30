@@ -1,12 +1,15 @@
 use std::{error::Error, fmt, net::IpAddr, time::Duration};
 
 use pulsedag_core::{
-    compute_txid,
+    compute_txid, compute_txid_v2,
     mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
-    PULSE_VERSION_V1,
+    ProtocolActivationIdentity, PULSE_VERSION_V1, TRANSACTION_VERSION_V2,
 };
-use pulsedag_wallet::WalletNetworkIdentity;
+use pulsedag_wallet::{
+    protocol_v2::verify_wallet_v2_node_identity, verify_wallet_protocol_authorization_v1,
+    WalletNetworkIdentity, WalletProtocolAuthorizationV1, WalletProtocolBindingV2,
+};
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +22,7 @@ const EXPLORER_CAPABILITY: &str = "explorer_api";
 const MEMPOOL_CAPABILITY: &str = "mempool";
 const MEMPOOL_FEE_ESTIMATE_PATH: &str = "/api/v1/mempool/fee-estimate";
 const PULSE_PATH: &str = "/api/v1/pulse";
+const STATUS_PATH: &str = "/status";
 const PULSE_DOMAIN_V1: &str = "PulseDAG:pulse:v1";
 const ADDRESS_PATH: &str = "/address/:address";
 const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
@@ -119,6 +123,10 @@ impl SignedBroadcastReview {
 pub struct SignedBroadcastInput {
     pub network: WalletNetworkIdentity,
     pub review: SignedBroadcastReview,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     pub final_txid: String,
     pub relay: RelayEnvelope,
 }
@@ -217,6 +225,23 @@ struct ReleaseIdentityData {
     signed_transaction_relay_version: String,
     capabilities: Vec<String>,
     core_endpoints: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeStatusProtocolData {
+    rpc_response_degraded: bool,
+    rpc_response_stale: bool,
+    chain_id: String,
+    protocol_identity: Option<ProtocolActivationIdentity>,
+    protocol_identity_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolIdentityOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub protocol_identity: ProtocolActivationIdentity,
+    pub protocol_identity_fingerprint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +383,51 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
         }
     }
 
-    let canonical_txid = compute_txid(transaction);
+    let canonical_txid = match &input.protocol_binding_v2 {
+        Some(binding) => {
+            if transaction.version != TRANSACTION_VERSION_V2 {
+                return Err(relay_error(
+                    "chain-bound signed envelope must use transaction version 2",
+                ));
+            }
+            if binding.identity.chain_id != input.network.chain_id {
+                return Err(relay_error(
+                    "signed protocol identity chain_id does not match signed network metadata",
+                ));
+            }
+            let expected_fingerprint =
+                verify_wallet_v2_node_identity(&binding.identity, &binding.identity).map_err(
+                    |error| relay_error(format!("signed protocol identity is invalid: {error}")),
+                )?;
+            if binding.fingerprint != expected_fingerprint {
+                return Err(relay_error(
+                    "signed protocol fingerprint does not match signed protocol identity",
+                ));
+            }
+            let authorization = input.protocol_authorization_v1.as_ref().ok_or_else(|| {
+                relay_error("chain-bound signed envelope is missing protocol authorization")
+            })?;
+            verify_wallet_protocol_authorization_v1(binding, transaction, authorization).map_err(
+                |error| relay_error(format!("protocol authorization is invalid: {error}")),
+            )?;
+            compute_txid_v2(transaction, &binding.identity.chain_id).map_err(|error| {
+                relay_error(format!("v2 transaction identity is invalid: {error}"))
+            })?
+        }
+        None => {
+            if input.protocol_authorization_v1.is_some() {
+                return Err(relay_error(
+                    "protocol authorization must not exist without a v2 protocol binding",
+                ));
+            }
+            if transaction.version != 1 {
+                return Err(relay_error(
+                    "unbound signed envelope must use legacy transaction version 1",
+                ));
+            }
+            compute_txid(transaction)
+        }
+    };
     if transaction.txid != canonical_txid {
         return Err(relay_error(
             "signed transaction txid does not match canonical transaction bytes",
@@ -530,6 +599,23 @@ fn validate_explorer_identity(
     Ok(identity)
 }
 
+fn validate_protocol_status_identity(
+    expected_network: &WalletNetworkIdentity,
+    response: ApiResponse<ReleaseIdentityData>,
+) -> Result<RelayIdentity, RelayClientError> {
+    let identity = validate_remote_identity(expected_network, response)?;
+    if !identity
+        .core_endpoints
+        .iter()
+        .any(|value| value == STATUS_PATH)
+    {
+        return Err(relay_error(
+            "relay identity does not advertise canonical /status endpoint",
+        ));
+    }
+    Ok(identity)
+}
+
 fn validate_mempool_identity(
     expected_network: &WalletNetworkIdentity,
     response: ApiResponse<ReleaseIdentityData>,
@@ -594,6 +680,91 @@ async fn fetch_mempool_identity(
     )
 }
 
+fn protocol_identity_output(
+    release_identity: &RelayIdentity,
+    response: ApiResponse<NodeStatusProtocolData>,
+) -> Result<ProtocolIdentityOutput, RelayClientError> {
+    if !response.ok {
+        return Err(relay_error(format!(
+            "protocol identity request failed: {}",
+            api_error_detail(response.error)
+        )));
+    }
+    let data = response
+        .data
+        .ok_or_else(|| relay_error("protocol identity response is missing data"))?;
+    if data.rpc_response_degraded || data.rpc_response_stale {
+        return Err(relay_error("protocol identity status is degraded or stale"));
+    }
+    if data.chain_id != release_identity.network.chain_id {
+        return Err(relay_error(
+            "protocol identity status chain_id does not match release identity",
+        ));
+    }
+
+    let protocol_identity = data
+        .protocol_identity
+        .ok_or_else(|| relay_error("activated-v2 protocol identity is not available"))?;
+    if protocol_identity.chain_id != data.chain_id {
+        return Err(relay_error(
+            "persisted protocol identity chain_id does not match node status",
+        ));
+    }
+
+    let observed_fingerprint = data
+        .protocol_identity_fingerprint
+        .ok_or_else(|| relay_error("protocol identity fingerprint is missing"))?;
+    let expected_fingerprint =
+        verify_wallet_v2_node_identity(&protocol_identity, &protocol_identity)
+            .map_err(|error| relay_error(format!("protocol identity is invalid: {error}")))?;
+    if observed_fingerprint != expected_fingerprint {
+        return Err(relay_error(
+            "protocol identity fingerprint does not match persisted identity",
+        ));
+    }
+
+    Ok(ProtocolIdentityOutput {
+        network_profile: release_identity.network.network_profile.clone(),
+        chain_id: release_identity.network.chain_id.clone(),
+        protocol_identity,
+        protocol_identity_fingerprint: observed_fingerprint,
+    })
+}
+
+pub async fn fetch_protocol_identity(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+) -> Result<ProtocolIdentityOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let release_identity = validate_protocol_status_identity(
+        expected_network,
+        fetch_identity_response(&client, &base).await?,
+    )?;
+
+    let url = base
+        .join(STATUS_PATH.trim_start_matches('/'))
+        .map_err(|_| relay_error("failed to construct protocol identity status URL"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| relay_error(format!("protocol identity transport failed: {error}")))?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "protocol identity request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<NodeStatusProtocolData>>(&body)
+        .map_err(|_| relay_error("protocol identity response JSON is invalid"))?;
+    protocol_identity_output(&release_identity, parsed)
+}
+
 fn rejected_broadcast_output(
     final_txid: &str,
     identity: &RelayIdentity,
@@ -612,6 +783,20 @@ fn rejected_broadcast_output(
     }
 }
 
+fn ensure_protocol_binding_matches_observed(
+    binding: &WalletProtocolBindingV2,
+    observed: &ProtocolIdentityOutput,
+) -> Result<(), RelayClientError> {
+    if observed.protocol_identity != binding.identity
+        || observed.protocol_identity_fingerprint != binding.fingerprint
+    {
+        return Err(relay_error(
+            "relay activated protocol identity does not match signed transaction binding",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn prepare_broadcast(
     relay_url: &str,
     signed: &SignedBroadcastInput,
@@ -620,6 +805,11 @@ pub async fn prepare_broadcast(
     let base = relay_base_url(relay_url)?;
     let client = build_client()?;
     let identity = fetch_identity(&client, &base, &signed.network).await?;
+
+    if let Some(binding) = &signed.protocol_binding_v2 {
+        let observed = fetch_protocol_identity(relay_url, &signed.network).await?;
+        ensure_protocol_binding_matches_observed(binding, &observed)?;
+    }
     let submit_url = base
         .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
         .map_err(|_| relay_error("failed to construct relay submit URL"))?;
@@ -1012,6 +1202,7 @@ pub async fn fetch_pulse_observation(
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
     use pulsedag_core::types::{OutPoint, TxInput, TxOutput};
 
     use super::*;
@@ -1063,6 +1254,8 @@ mod tests {
                 high_fee: Some(true),
                 high_fee_acknowledged: Some(true),
             },
+            protocol_binding_v2: None,
+            protocol_authorization_v1: None,
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
         }
@@ -1115,6 +1308,46 @@ mod tests {
                 signed_transaction_relay_version: RELAY_VERSION.to_string(),
                 capabilities: vec![MEMPOOL_CAPABILITY.to_string()],
                 core_endpoints: vec![MEMPOOL_FEE_ESTIMATE_PATH.to_string()],
+            }),
+            error: None,
+        }
+    }
+
+    fn protocol_identity_release_response(
+        network_profile: &str,
+        chain_id: &str,
+    ) -> ApiResponse<ReleaseIdentityData> {
+        ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: network_profile.to_string(),
+                chain_id: chain_id.to_string(),
+                signed_transaction_relay_version: RELAY_VERSION.to_string(),
+                capabilities: vec![],
+                core_endpoints: vec![STATUS_PATH.to_string()],
+            }),
+            error: None,
+        }
+    }
+
+    fn protocol_status_response(
+        identity: Option<ProtocolActivationIdentity>,
+    ) -> ApiResponse<NodeStatusProtocolData> {
+        let chain_id = identity
+            .as_ref()
+            .map(|identity| identity.chain_id.clone())
+            .unwrap_or_else(|| "pulsedag-testnet".to_string());
+        let protocol_identity_fingerprint = identity
+            .as_ref()
+            .map(|identity| identity.fingerprint().unwrap());
+        ApiResponse {
+            ok: true,
+            data: Some(NodeStatusProtocolData {
+                rpc_response_degraded: false,
+                rpc_response_stale: false,
+                chain_id,
+                protocol_identity: identity,
+                protocol_identity_fingerprint,
             }),
             error: None,
         }
@@ -1222,6 +1455,95 @@ mod tests {
             .unwrap()
             .insert("high_fee".to_string(), serde_json::Value::Null);
         assert!(parse_signed_broadcast(&serde_json::to_vec(&high_null).unwrap()).is_err());
+    }
+
+    #[test]
+    fn chain_bound_envelope_cryptographically_authorizes_full_protocol_identity() {
+        let mut signed = signed_fixture();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+        let binding = WalletProtocolBindingV2::new(identity.clone()).expect("binding");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+
+        signed.network =
+            WalletNetworkIdentity::new("testnet", identity.chain_id.clone()).expect("network");
+        signed.review.network_profile = "testnet".to_string();
+        signed.review.chain_id = identity.chain_id.clone();
+        signed.protocol_binding_v2 = Some(binding.clone());
+        signed.relay.transaction.version = TRANSACTION_VERSION_V2;
+        signed.relay.transaction.inputs[0].public_key =
+            hex::encode(signing_key.verifying_key().to_bytes());
+        signed.relay.transaction.txid =
+            compute_txid_v2(&signed.relay.transaction, &identity.chain_id).expect("v2 txid");
+        signed.final_txid = signed.relay.transaction.txid.clone();
+
+        let authorization_message = pulsedag_wallet::wallet_protocol_authorization_message_v1(
+            &binding,
+            &signed.relay.transaction,
+        )
+        .expect("authorization message");
+        signed.protocol_authorization_v1 = Some(WalletProtocolAuthorizationV1 {
+            domain: pulsedag_wallet::WALLET_PROTOCOL_AUTHORIZATION_DOMAIN_V1.to_string(),
+            protocol_fingerprint: binding.fingerprint.clone(),
+            signature: hex::encode(signing_key.sign(&authorization_message).to_bytes()),
+        });
+
+        validate_signed_broadcast(&signed).expect("valid bound v2 envelope");
+
+        let observed = ProtocolIdentityOutput {
+            network_profile: "testnet".to_string(),
+            chain_id: identity.chain_id.clone(),
+            protocol_identity: identity.clone(),
+            protocol_identity_fingerprint: binding.fingerprint.clone(),
+        };
+        ensure_protocol_binding_matches_observed(&binding, &observed)
+            .expect("matching observed identity");
+
+        let foreign_identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "different-genesis",
+            "ghostdag-order-v1",
+        );
+        let foreign_binding =
+            WalletProtocolBindingV2::new(foreign_identity.clone()).expect("foreign binding");
+        let foreign = ProtocolIdentityOutput {
+            network_profile: "testnet".to_string(),
+            chain_id: foreign_identity.chain_id.clone(),
+            protocol_identity_fingerprint: foreign_binding.fingerprint.clone(),
+            protocol_identity: foreign_identity,
+        };
+
+        let mut substituted = signed.clone();
+        substituted.protocol_binding_v2 = Some(foreign_binding.clone());
+        substituted
+            .protocol_authorization_v1
+            .as_mut()
+            .unwrap()
+            .protocol_fingerprint = foreign_binding.fingerprint.clone();
+        assert!(
+            ensure_protocol_binding_matches_observed(&foreign_binding, &foreign).is_ok(),
+            "metadata-only relay/binding substitution would otherwise look coherent"
+        );
+        assert!(
+            validate_signed_broadcast(&substituted).is_err(),
+            "full-identity authorization signature must reject same-chain-id genesis substitution"
+        );
+
+        let mut tampered = signed.clone();
+        tampered.protocol_binding_v2.as_mut().unwrap().fingerprint = "00".repeat(32);
+        assert!(validate_signed_broadcast(&tampered).is_err());
+
+        let mut missing_authorization = signed.clone();
+        missing_authorization.protocol_authorization_v1 = None;
+        assert!(validate_signed_broadcast(&missing_authorization).is_err());
+
+        let mut unbound_v2 = signed;
+        unbound_v2.protocol_binding_v2 = None;
+        unbound_v2.protocol_authorization_v1 = None;
+        assert!(validate_signed_broadcast(&unbound_v2).is_err());
     }
 
     #[test]
@@ -1374,6 +1696,76 @@ mod tests {
         let mut no_endpoint = mempool_identity_response("testnet", "pulsedag-testnet");
         no_endpoint.data.as_mut().unwrap().core_endpoints.clear();
         assert!(validate_mempool_identity(&network, no_endpoint).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_requires_exact_persisted_v2_fingerprint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let release = validate_protocol_status_identity(
+            &network,
+            protocol_identity_release_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+
+        let output =
+            protocol_identity_output(&release, protocol_status_response(Some(identity.clone())))
+                .unwrap();
+        assert_eq!(output.protocol_identity, identity);
+        assert_eq!(
+            output.protocol_identity_fingerprint,
+            output.protocol_identity.fingerprint().unwrap()
+        );
+
+        let mut wrong_fingerprint =
+            protocol_status_response(Some(output.protocol_identity.clone()));
+        wrong_fingerprint
+            .data
+            .as_mut()
+            .unwrap()
+            .protocol_identity_fingerprint = Some("00".repeat(32));
+        assert!(protocol_identity_output(&release, wrong_fingerprint).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_rejects_stale_foreign_or_inactive_status() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let release = validate_protocol_status_identity(
+            &network,
+            protocol_identity_release_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet",
+            "genesis-testnet",
+            "ghostdag-order-v1",
+        );
+
+        let mut stale = protocol_status_response(Some(identity.clone()));
+        stale.data.as_mut().unwrap().rpc_response_stale = true;
+        assert!(protocol_identity_output(&release, stale).is_err());
+
+        let mut degraded = protocol_status_response(Some(identity.clone()));
+        degraded.data.as_mut().unwrap().rpc_response_degraded = true;
+        assert!(protocol_identity_output(&release, degraded).is_err());
+
+        let mut foreign = protocol_status_response(Some(identity));
+        foreign.data.as_mut().unwrap().chain_id = "pulsedag-mainnet".to_string();
+        assert!(protocol_identity_output(&release, foreign).is_err());
+
+        assert!(protocol_identity_output(&release, protocol_status_response(None)).is_err());
+    }
+
+    #[test]
+    fn protocol_identity_release_requires_status_endpoint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let mut response = protocol_identity_release_response("testnet", "pulsedag-testnet");
+        response.data.as_mut().unwrap().core_endpoints.clear();
+        assert!(validate_protocol_status_identity(&network, response).is_err());
     }
 
     #[test]

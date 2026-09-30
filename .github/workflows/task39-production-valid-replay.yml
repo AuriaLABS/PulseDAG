@@ -1,4 +1,4 @@
-name: v3 Task39 production-valid replay
+name: v3.0 Task39 production-valid replay
 
 on:
   pull_request:

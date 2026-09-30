@@ -1,0 +1,116 @@
+name: v3.0 observability gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ops/observability/v3.0.0/**
+      - docs/dashboard/README.md
+      - docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v3_0_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v3_0_0_observability.sh
+      - .github/workflows/v3_0_0_observability.yml
+      - VERSION
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches:
+      - main
+    paths:
+      - ops/observability/v3.0.0/**
+      - docs/dashboard/README.md
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v3_0_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v3_0_0_observability.sh
+      - .github/workflows/v3_0_0_observability.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observability-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact v3 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Verify v3 candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
+
+      - name: Validate v3 observability syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile             scripts/private_testnet/runtime_metrics_exporter.py             scripts/validate_v3_0_0_observability.py             scripts/validate_observability_package.py
+          bash -n scripts/tests/test_v3_0_0_observability.sh
+
+      - name: Run v3 observability contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3.0.0-observability
+          bash scripts/tests/test_v3_0_0_observability.sh             | tee ci-evidence/v3.0.0-observability/observability-contract.log
+
+      - name: Build v3 observability evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          output = Path("ci-evidence/v3.0.0-observability")
+          manifest = {
+              "gate": "v3.0.0-observability",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "release_line": "v3.0.0",
+              "result": "PASS",
+              "rust_field_grounded": True,
+              "prometheus_exporter": True,
+              "five_node_scrape": True,
+              "grafana_dashboard": True,
+              "alert_rules": True,
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+              "contracts_enabled": False,
+          }
+          (output / "observability-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          sha256sum             ops/observability/v3.0.0/*             scripts/private_testnet/runtime_metrics_exporter.py             scripts/validate_v3_0_0_observability.py             scripts/tests/test_v3_0_0_observability.sh             ci-evidence/v3.0.0-observability/observability-contract.log             ci-evidence/v3.0.0-observability/observability-manifest.json             > ci-evidence/v3.0.0-observability/SHA256SUMS
+
+      - name: Enforce v3 observability manifest
+        shell: bash
+        run: |
+          jq -e '
+            .gate == "v3.0.0-observability" and
+            .candidate_sha == env.CANDIDATE_SHA and
+            .release_line == "v3.0.0" and
+            .result == "PASS" and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .contracts_enabled == false
+          ' ci-evidence/v3.0.0-observability/observability-manifest.json >/dev/null
+
+      - name: Upload v3 observability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_observability_${{ github.run_id }}
+          path: ci-evidence/v3.0.0-observability
+          if-no-files-found: error
+          retention-days: 90
