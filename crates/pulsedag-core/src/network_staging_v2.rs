@@ -225,7 +225,29 @@ pub fn stage_activated_v2_p2p_block(
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
 ) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
-    if state.dag.blocks.contains_key(&block.hash) || staging.blocks.contains_key(&block.hash) {
+    if state.dag.blocks.contains_key(&block.hash) {
+        return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+    }
+    if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
+        if let Ok((augmented, closure)) =
+            augment_with_staged_parents(&staged_block, state, staging, identity)
+        {
+            if closure.missing.is_empty() {
+                if let Ok(validation) =
+                    validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
+                {
+                    if validation.disposition
+                        == ActivatedV2P2pContextDisposition::ImmediatelyFinalizable
+                    {
+                        return Ok(ActivatedV2P2pStageOutcome::ReadyForPromotion {
+                            validation,
+                            staged_parent_closure: closure.ordered,
+                            staged_count: staging.blocks.len(),
+                        });
+                    }
+                }
+            }
+        }
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
     }
 
@@ -570,6 +592,33 @@ mod tests {
             other => panic!("expected staged child, got {other:?}"),
         }
         assert!(staging.contains(&child.hash));
+    }
+
+    #[test]
+    fn staged_duplicate_rechecks_current_context_for_safe_promotion() {
+        let live = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&live);
+        let genesis = live.dag.genesis_hash.clone();
+        let block = finalized_block(&live, &expected_identity, vec![genesis], 24);
+        let mut staging = ActivatedV2P2pStaging::default();
+
+        staging.blocks.insert(block.hash.clone(), block.clone());
+
+        let outcome =
+            stage_activated_v2_p2p_block(block.clone(), &live, &mut staging, &expected_identity)
+                .unwrap();
+        match outcome {
+            ActivatedV2P2pStageOutcome::ReadyForPromotion {
+                staged_parent_closure,
+                staged_count,
+                ..
+            } => {
+                assert!(staged_parent_closure.is_empty());
+                assert_eq!(staged_count, 1);
+            }
+            other => panic!("expected staged duplicate to be re-evaluated for promotion, got {other:?}"),
+        }
+        assert!(staging.contains(&block.hash));
     }
 
     fn stage_merge_anchor(
