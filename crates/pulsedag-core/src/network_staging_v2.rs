@@ -255,11 +255,8 @@ pub fn materialize_activated_v2_mining_overlay(
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
     }
 
-    materialize_authoritative_state_v2(&working).map_err(|error| {
-        invalid_staging(format!(
-            "cannot materialize staged mining overlay: {error}"
-        ))
-    })
+    materialize_authoritative_state_v2(&working)
+        .map_err(|error| invalid_staging(format!("cannot materialize staged mining overlay: {error}")))
 }
 
 pub fn stage_activated_v2_p2p_block(
@@ -635,8 +632,10 @@ mod tests {
         assert!(overlay.dag.tips.contains(&side.hash));
         assert!(context.parents.contains(&main.hash));
         assert!(context.parents.contains(&side.hash));
-        assert!(context.included_parallel_parents.contains(&main.hash)
-            || context.included_parallel_parents.contains(&side.hash));
+        assert!(
+            context.included_parallel_parents.contains(&main.hash)
+                || context.included_parallel_parents.contains(&side.hash)
+        );
         assert_eq!(bincode::serialize(&live).unwrap(), live_before);
         assert_eq!(bincode::serialize(&staging).unwrap(), staging_before);
     }
