@@ -8,10 +8,12 @@ use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_activated_v2_mined_block_atomically, accept_block_atomically,
-    accept_monetary_v3_mined_block_atomically, evaluate_pow_for_protocol, pow_validation_result,
-    preferred_tip_hash, resolve_pow_validation_path, AcceptSource, AtomicBlockAcceptance, Block,
-    BlockAcceptanceResult, ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError,
-    BLOCK_HEADER_VERSION_V1,
+    accept_monetary_v3_mined_block_atomically, drive_activated_v2_p2p_block_with_runtime_persistence,
+    drive_monetary_v3_p2p_block_with_runtime_persistence, evaluate_pow_for_protocol,
+    materialize_activated_v2_mining_overlay, pow_validation_result, preferred_tip_hash,
+    resolve_pow_validation_path, AcceptSource, ActivatedV2P2pRuntimeOutcome,
+    ActivatedV2P2pRuntimePersistence, AtomicBlockAcceptance, Block, BlockAcceptanceResult,
+    ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError, BLOCK_HEADER_VERSION_V1,
 };
 use tokio::time::timeout;
 
@@ -465,7 +467,7 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         }
     }
 
-    let (durable_chain, activated_v2_runtime) =
+    let (durable_chain, mut activated_v2_runtime) =
         match storage.load_activated_v2_p2p_runtime_snapshot(&local_identity) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -510,7 +512,32 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         );
     }
 
-    let pow = match evaluate_mining_submit_pow(&req.block, &chain, Some(&local_identity)) {
+    let staged_parent_context = req
+        .block
+        .header
+        .parents
+        .iter()
+        .any(|parent| activated_v2_runtime.staging().contains(parent));
+    let pow_chain = if staged_parent_context {
+        match materialize_activated_v2_mining_overlay(
+            &chain,
+            activated_v2_runtime.staging(),
+            &local_identity,
+        ) {
+            Ok(overlay) => overlay,
+            Err(error) => {
+                return rejected_response(
+                    &req,
+                    "validation_rejected",
+                    format!("cannot reconstruct staged mining overlay for submit: {error}"),
+                    None,
+                );
+            }
+        }
+    } else {
+        chain.clone()
+    };
+    let pow = match evaluate_mining_submit_pow(&req.block, &pow_chain, Some(&local_identity)) {
         Ok(pow) => pow,
         Err(error) => {
             return rejected_response(&req, "protocol_mismatch", error.to_string(), None);
@@ -532,6 +559,115 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
             ),
             Some(&pow),
         );
+    }
+
+    if staged_parent_context {
+        let drive_result = if let Some(record) = monetary_activation.as_ref() {
+            drive_monetary_v3_p2p_block_with_runtime_persistence(
+                req.block.clone(),
+                &mut chain,
+                &mut activated_v2_runtime,
+                &local_identity,
+                &record.monetary_cadence_segments,
+                |state, durable_runtime| {
+                    storage.persist_activated_v2_p2p_runtime_snapshot(
+                        &local_identity,
+                        state,
+                        durable_runtime,
+                    )
+                },
+                |candidate, committed_chain, durable_runtime| {
+                    storage.persist_activated_v2_p2p_block_and_runtime(
+                        candidate,
+                        &local_identity,
+                        committed_chain,
+                        durable_runtime,
+                    )
+                },
+                |bundle, committed_chain, durable_runtime| {
+                    storage.persist_activated_v2_p2p_blocks_and_runtime(
+                        bundle,
+                        &local_identity,
+                        committed_chain,
+                        durable_runtime,
+                    )
+                },
+                |_block| Ok(()),
+            )
+        } else {
+            drive_activated_v2_p2p_block_with_runtime_persistence(
+                req.block.clone(),
+                &mut chain,
+                &mut activated_v2_runtime,
+                &local_identity,
+                ActivatedV2P2pRuntimePersistence::new(
+                    |state, durable_runtime| {
+                        storage.persist_activated_v2_p2p_runtime_snapshot(
+                            &local_identity,
+                            state,
+                            durable_runtime,
+                        )
+                    },
+                    |candidate, committed_chain, durable_runtime| {
+                        storage.persist_activated_v2_p2p_block_and_runtime(
+                            candidate,
+                            &local_identity,
+                            committed_chain,
+                            durable_runtime,
+                        )
+                    },
+                    |bundle, committed_chain, durable_runtime| {
+                        storage.persist_activated_v2_p2p_blocks_and_runtime(
+                            bundle,
+                            &local_identity,
+                            committed_chain,
+                            durable_runtime,
+                        )
+                    },
+                ),
+                |_block| Ok(()),
+            )
+        };
+
+        let drive = match drive_result {
+            Ok(drive) => drive,
+            Err(error) => {
+                let reason_code = if matches!(&error, PulseError::StorageError(_)) {
+                    "storage_rejected"
+                } else {
+                    "validation_rejected"
+                };
+                return rejected_response(&req, reason_code, error.to_string(), Some(&pow));
+            }
+        };
+        let submitted_committed = chain.dag.blocks.contains_key(&req.block.hash)
+            && matches!(
+                drive.primary,
+                ActivatedV2P2pRuntimeOutcome::Accepted { .. }
+                    | ActivatedV2P2pRuntimeOutcome::Promoted { .. }
+            );
+        if !submitted_committed {
+            return rejected_response(
+                &req,
+                "validation_rejected",
+                "staged-parent mining submit did not commit the submitted merge anchor",
+                Some(&pow),
+            );
+        }
+
+        let selected_tip = preferred_tip_hash(&chain);
+        drop(chain);
+        if let Some(p2p) = state.p2p() {
+            let _ = p2p.broadcast_block(&req.block);
+        }
+        return Json(ApiResponse::ok(response_data(
+            &req,
+            true,
+            "accepted",
+            "accepted".to_string(),
+            Some(&pow),
+            selected_tip,
+        )));
     }
 
     let acceptance_result = if let Some(record) = monetary_activation.as_ref() {
