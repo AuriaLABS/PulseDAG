@@ -229,26 +229,27 @@ pub fn stage_activated_v2_p2p_block(
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
     }
     if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
-        if let Ok((augmented, closure)) =
+        let Ok((augmented, closure)) =
             augment_with_staged_parents(&staged_block, state, staging, identity)
-        {
-            if closure.missing.is_empty() {
-                if let Ok(validation) =
-                    validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
-                {
-                    if validation.disposition
-                        == ActivatedV2P2pContextDisposition::ImmediatelyFinalizable
-                    {
-                        return Ok(ActivatedV2P2pStageOutcome::ReadyForPromotion {
-                            validation,
-                            staged_parent_closure: closure.ordered,
-                            staged_count: staging.blocks.len(),
-                        });
-                    }
-                }
-            }
+        else {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        };
+        if !closure.missing.is_empty() {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         }
-        return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        let Ok(validation) =
+            validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
+        else {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        };
+        if validation.disposition != ActivatedV2P2pContextDisposition::ImmediatelyFinalizable {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        }
+        return Ok(ActivatedV2P2pStageOutcome::ReadyForPromotion {
+            validation,
+            staged_parent_closure: closure.ordered,
+            staged_count: staging.blocks.len(),
+        });
     }
 
     let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity)?;
@@ -616,7 +617,9 @@ mod tests {
                 assert!(staged_parent_closure.is_empty());
                 assert_eq!(staged_count, 1);
             }
-            other => panic!("expected staged duplicate to be re-evaluated for promotion, got {other:?}"),
+            other => panic!(
+                "expected staged duplicate to be re-evaluated for promotion, got {other:?}"
+            ),
         }
         assert!(staging.contains(&block.hash));
     }
