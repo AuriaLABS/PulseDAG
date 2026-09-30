@@ -8,6 +8,7 @@ on:
       - .github/workflows/v3-monetary-policy.yml
       - .github/workflows/v3-monetary-reachability.yml
       - scripts/v3_monetary_reachability.py
+      - scripts/v3_require_cargo_test_log.py
       - apps/pulsedagd/src/activated_v2_runtime.rs
       - crates/pulsedag-core/src/validation.rs
       - crates/pulsedag-core/src/mining_template_v2.rs
@@ -136,10 +137,15 @@ jobs:
             --out ci-evidence/v3-monetary-policy/reachability.json
           jq -e '
             .result == "PASS" and
+            .auditor_version == 2 and
             (.monetary_policy_fingerprint | type) == "string" and
             .claim_boundary.proves_static_live_authority_shape == true and
+            .claim_boundary.strips_all_cfg_test_items == true and
+            .claim_boundary.tracks_legacy_aliases == true and
             .claim_boundary.authorizes_launch == false and
             (.legacy_height_subsidy_authority.unexpected_live_calls | length) == 0 and
+            (.legacy_height_subsidy_authority.live_aliases | length) == 0 and
+            (.legacy_height_subsidy_authority.live_other_references | length) == 0 and
             (.v3_live_forbidden_legacy_authority_hits | length) == 0 and
             (.errors | length) == 0
           ' ci-evidence/v3-monetary-policy/reachability.json >/dev/null
@@ -148,27 +154,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p pulsedag-core monetary_v3::tests -- --nocapture
-          cargo test --locked -p pulsedag-core monetary_audit_v3::tests -- --nocapture
-          cargo test --locked -p pulsedag-core validation_v3::tests -- --nocapture
-          cargo test --locked -p pulsedag-core reward_settlement_v3::tests -- --nocapture
+          mkdir -p ci-evidence/v3-monetary-policy/dynamic-logs
+          run_required() {
+            local pkg="$1"
+            local filter="$2"
+            local slug="$3"
+            local extra_harness=()
+            if [[ "${4:-}" == "exact" ]]; then
+              extra_harness+=(--exact)
+            fi
+            local log="ci-evidence/v3-monetary-policy/dynamic-logs/${slug}.log"
+            cargo test --locked -p "$pkg" "$filter" -- --nocapture "${extra_harness[@]}" | tee "$log"
+            python3 scripts/v3_require_cargo_test_log.py "$log" --filter "$filter"
+          }
+          run_required pulsedag-core monetary_v3::tests monetary_v3_vectors
+          run_required pulsedag-core monetary_audit_v3::tests monetary_audit_v3_vectors
+          run_required pulsedag-core validation_v3::tests validation_v3_vectors
+          run_required pulsedag-core reward_settlement_v3::tests reward_settlement_v3_vectors
 
       - name: Run monetary RPC and legacy-fallback guards
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p pulsedag-core mined_block_v3::tests::legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation -- --nocapture
-          cargo test --locked -p pulsedag-core network_block_v3::tests::legacy_height_subsidy_block_is_rejected_before_p2p_staging -- --nocapture
-          cargo test --locked -p pulsedag-rpc monetary_v3_ -- --nocapture
-          cargo test --locked -p pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface -- --nocapture
-          cargo test --locked -p pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup -- --nocapture
-          cat > ci-evidence/v3-monetary-policy/reachability-dynamic-tests.txt <<'EOF'
-          result=PASS
-          mined_v3_rejects_legacy_height_subsidy=PASS
-          p2p_v3_rejects_legacy_height_subsidy=PASS
-          rpc_legacy_mining_surfaces_disabled=PASS
-          daemon_legacy_startup_fallback_disabled=PASS
-          EOF
+          mkdir -p ci-evidence/v3-monetary-policy/dynamic-logs
+          run_required() {
+            local pkg="$1"
+            local filter="$2"
+            local slug="$3"
+            local extra_harness=()
+            if [[ "${4:-}" == "exact" ]]; then
+              extra_harness+=(--exact)
+            fi
+            local log="ci-evidence/v3-monetary-policy/dynamic-logs/${slug}.log"
+            cargo test --locked -p "$pkg" "$filter" -- --nocapture "${extra_harness[@]}" | tee "$log"
+            python3 scripts/v3_require_cargo_test_log.py "$log" --filter "$filter"
+          }
+          run_required pulsedag-core mined_block_v3::tests::legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation mined_v3_rejects_legacy exact
+          run_required pulsedag-core network_block_v3::tests::legacy_height_subsidy_block_is_rejected_before_p2p_staging p2p_v3_rejects_legacy exact
+          run_required pulsedag-rpc monetary_v3_ rpc_monetary_v3
+          run_required pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface rpc_legacy_mining_surfaces_disabled
+          run_required pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup daemon_legacy_startup_fallback_disabled
+          {
+            echo "result=PASS"
+            echo "mined_v3_rejects_legacy_height_subsidy=PASS"
+            echo "p2p_v3_rejects_legacy_height_subsidy=PASS"
+            echo "rpc_legacy_mining_surfaces_disabled=PASS"
+            echo "daemon_legacy_startup_fallback_disabled=PASS"
+          } > ci-evidence/v3-monetary-policy/reachability-dynamic-tests.txt
 
       - name: Record evidence digests
         shell: bash
@@ -180,7 +212,7 @@ jobs:
             echo "rustc=$(rustc --version)"
             echo "cargo=$(cargo --version)"
           } > ci-evidence/v3-monetary-policy/provenance.txt
-          find ci-evidence/v3-monetary-policy -maxdepth 1 -type f ! -name SHA256SUMS \
+          find ci-evidence/v3-monetary-policy -type f ! -name SHA256SUMS \
             -print0 | sort -z | xargs -0 sha256sum > ci-evidence/v3-monetary-policy/SHA256SUMS
 
       - name: Upload exact-candidate monetary evidence
