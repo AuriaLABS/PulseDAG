@@ -602,14 +602,16 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 &mut activated_v2_runtime,
                 &local_identity,
                 ActivatedV2P2pRuntimePersistence::new(
-                    |state, durable_runtime| {
+                    |state: &ChainState, durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
                         storage.persist_activated_v2_p2p_runtime_snapshot(
                             &local_identity,
                             state,
                             durable_runtime,
                         )
                     },
-                    |candidate, committed_chain, durable_runtime| {
+                    |candidate: &Block,
+                     committed_chain: &ChainState,
+                     durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
                         storage.persist_activated_v2_p2p_block_and_runtime(
                             candidate,
                             &local_identity,
@@ -617,7 +619,9 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                             durable_runtime,
                         )
                     },
-                    |bundle, committed_chain, durable_runtime| {
+                    |bundle: &[Block],
+                     committed_chain: &ChainState,
+                     durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
                         storage.persist_activated_v2_p2p_blocks_and_runtime(
                             bundle,
                             &local_identity,
