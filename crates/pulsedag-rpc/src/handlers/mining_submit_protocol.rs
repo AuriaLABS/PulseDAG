@@ -8,7 +8,8 @@ use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_activated_v2_mined_block_atomically, accept_block_atomically,
-    accept_monetary_v3_mined_block_atomically, drive_activated_v2_p2p_block_with_runtime_persistence,
+    accept_monetary_v3_mined_block_atomically,
+    drive_activated_v2_p2p_block_with_runtime_persistence,
     drive_monetary_v3_p2p_block_with_runtime_persistence, evaluate_pow_for_protocol,
     materialize_activated_v2_mining_overlay, pow_validation_result, preferred_tip_hash,
     resolve_pow_validation_path, AcceptSource, ActivatedV2P2pRuntimeOutcome,
