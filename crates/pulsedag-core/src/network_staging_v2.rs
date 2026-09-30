@@ -255,8 +255,12 @@ pub fn materialize_activated_v2_mining_overlay(
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
     }
 
-    materialize_authoritative_state_v2(&working)
-        .map_err(|error| invalid_staging(format!("cannot materialize staged mining overlay: {error}")))
+    // The mining overlay is intentionally not an authoritative snapshot.
+    // Staged parallel tips are valid parent candidates, but they are not fully
+    // classified into the frozen total order until a merge anchor commits them.
+    // Keep the live canonical UTXO/state-root intact and expose only the
+    // validated DAG metadata needed for deterministic parent selection.
+    Ok(working)
 }
 
 pub fn stage_activated_v2_p2p_block(
