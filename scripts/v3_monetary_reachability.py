@@ -326,10 +326,27 @@ def _skip_matching_braces(text: str, i: int) -> int:
 def _looks_like_generic_start(text: str, i: int) -> bool:
     if i <= 0 or text[i] != "<":
         return False
-    prev = text[i - 1]
-    if prev.isspace() or prev not in "_:)>]" and not prev.isalnum():
+
+    prev_i = i - 1
+    while prev_i >= 0 and text[prev_i].isspace():
+        prev_i -= 1
+    if prev_i < 0:
         return False
+
+    prev = text[prev_i]
+    if prev.isalnum() or prev == "_":
+        start = prev_i
+        while start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+            start -= 1
+        token = text[start : prev_i + 1]
+        if token and token[0].isdigit():
+            return False
+    elif prev not in ":)>]":
+        return False
+
     nxt = i + 1
+    while nxt < len(text) and text[nxt].isspace():
+        nxt += 1
     if nxt >= len(text) or text[nxt] in "=<":
         return False
     return True
@@ -340,6 +357,7 @@ def _item_end_after_keyword(text: str, i: int) -> int:
     paren_depth = 0
     bracket_depth = 0
     angle_depth = 0
+    in_top_level_initializer = False
     while j < len(text):
         ch = text[j]
         if text.startswith("//", j):
@@ -372,7 +390,12 @@ def _item_end_after_keyword(text: str, i: int) -> int:
             bracket_depth = max(0, bracket_depth - 1)
             j += 1
             continue
-        if ch == "<" and _looks_like_generic_start(text, j):
+        at_structural_level = paren_depth == 0 and bracket_depth == 0 and angle_depth == 0
+        if ch == "=" and at_structural_level:
+            in_top_level_initializer = True
+            j += 1
+            continue
+        if ch == "<" and not in_top_level_initializer and _looks_like_generic_start(text, j):
             angle_depth += 1
             j += 1
             continue
@@ -410,9 +433,10 @@ def _cfg_test_item_span(text: str, attr_start: int):
 
 
 def production_source(text: str) -> str:
-    """Blank every #[cfg(test)] item; keep later production code and line numbers."""
+    """Blank every live-code #[cfg(test)] item; preserve later production code."""
     chars = list(text)
-    for match in CFG_TEST_ATTR_RE.finditer(text):
+    lexed = code_source(text)
+    for match in CFG_TEST_ATTR_RE.finditer(lexed):
         span = _cfg_test_item_span(text, match.start())
         if span is None:
             continue
@@ -449,12 +473,54 @@ def code_source(text: str) -> str:
     return "".join(chars)
 
 
+def _skip_matching_delimiter(text: str, i: int) -> int:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closers = set(pairs.values())
+    if i >= len(text) or text[i] not in pairs:
+        return i
+
+    stack = [text[i]]
+    j = i + 1
+    while j < len(text):
+        ch = text[j]
+        if ch in pairs:
+            stack.append(ch)
+        elif ch in closers:
+            if not stack or pairs[stack[-1]] != ch:
+                return len(text)
+            stack.pop()
+            if not stack:
+                return j + 1
+        j += 1
+    return len(text)
+
+
+def executable_source(text: str) -> str:
+    """Blank comments, literals and opaque macro token trees, preserving offsets."""
+    source = code_source(text)
+    chars = list(source)
+    macro_re = re.compile(
+        r"\b(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*"
+        r"[A-Za-z_][A-Za-z0-9_]*!\s*([\(\[\{])"
+    )
+    for match in macro_re.finditer(source):
+        open_i = match.start(1)
+        end = _skip_matching_delimiter(source, open_i)
+        if end <= open_i:
+            continue
+        for k in range(open_i + 1, max(open_i + 1, end - 1)):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
 def live_call_offsets(text: str, name: str) -> list:
-    """Return real call-expression offsets, excluding function definitions."""
+    """Return direct live call-expression offsets outside opaque macro token trees."""
+    source = executable_source(text)
     call_re = re.compile(rf"\b{re.escape(name)}\s*\(")
     offsets = []
-    for match in call_re.finditer(text):
-        if _preceding_keyword(text, match.start()) == "fn":
+    for match in call_re.finditer(source):
+        if _preceding_keyword(source, match.start()) == "fn":
             continue
         offsets.append(match.start())
     return offsets
@@ -686,8 +752,10 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "requires_dynamic_guard_tests": True,
             "strips_all_cfg_test_items": True,
             "handles_cfg_test_comma_items": True,
+            "discovers_cfg_test_attributes_from_code_only": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
+            "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
             "authorizes_launch": False,
@@ -760,6 +828,31 @@ def self_test() -> None:
     hidden_prod = production_source(hidden_after_field)
     assert "block_subsidy(10)" in hidden_prod
 
+    cfg_text_only = (
+        "// #[cfg(test)]\n"
+        "fn after_cfg_comment() { block_subsidy(11); }\n"
+        "const CFG_NOTE: &str = \"#[cfg(test)]\";\n"
+        "fn after_cfg_string() { block_subsidy(12); }\n"
+        "const CFG_RAW: &str = r#\"#[cfg(test)]\"#;\n"
+        "fn after_cfg_raw() { block_subsidy(13); }\n"
+    )
+    cfg_text_prod = production_source(cfg_text_only)
+    assert "block_subsidy(11)" in cfg_text_prod
+    assert "block_subsidy(12)" in cfg_text_prod
+    assert "block_subsidy(13)" in cfg_text_prod
+
+    comparison_variant = (
+        "enum E {\n"
+        "  #[cfg(test)] V = (1<2) as isize,\n"
+        "  Live,\n"
+        "}\n"
+        "fn after_comparison_variant() { block_subsidy(14); }\n"
+    )
+    comparison_prod = production_source(comparison_variant)
+    assert "V = (1<2)" not in comparison_prod
+    assert "Live," in comparison_prod
+    assert "block_subsidy(14)" in comparison_prod
+
     import_only = code_source(
         "use crate::audit_monetary_state_v3;\n"
         "// audit_monetary_state_v3(fake);\n"
@@ -775,6 +868,17 @@ def self_test() -> None:
     assert has_live_call(real_call, "audit_monetary_state_v3")
     definition_only = code_source("fn audit_monetary_state_v3(state: &State) {}\n")
     assert not has_live_call(definition_only, "audit_monetary_state_v3")
+
+    stringify_only = code_source(
+        "fn boundary() { "
+        "let _ = stringify!(audit_monetary_state_v3(prepared, cadence)); "
+        "}\n"
+    )
+    assert not has_live_call(stringify_only, "audit_monetary_state_v3")
+    opaque_macro_only = code_source(
+        "fn boundary() { discard_tokens!{ audit_monetary_state_v3(prepared, cadence) } }\n"
+    )
+    assert not has_live_call(opaque_macro_only, "audit_monetary_state_v3")
 
     print("v3 monetary reachability auditor self-test: PASS")
 
