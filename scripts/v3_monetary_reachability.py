@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 2
+AUDITOR_VERSION = 3
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -106,6 +106,54 @@ REQUIRED_LIVE_MARKERS = {
     ],
 }
 
+REQUIRED_LIVE_CALLS = {
+    "crates/pulsedag-core/src/state_replay_v3.rs": [
+        "validate_reward_claim_transaction_v3",
+        "settlement_outpoint_v3",
+    ],
+    "crates/pulsedag-core/src/mining_template_v3.rs": [
+        "build_reward_claim_transaction_v3",
+        "validate_reward_claim_transaction_v3",
+    ],
+    "crates/pulsedag-core/src/validation_v3.rs": [
+        "validate_reward_claim_transaction_v3",
+        "max_coinbase_claim_atoms",
+    ],
+    "crates/pulsedag-core/src/mined_block_v3.rs": [
+        "validate_ordered_monetary_reward_v3",
+        "audit_monetary_state_v3",
+        "accept_activated_v2_mined_block_atomically",
+    ],
+    "crates/pulsedag-core/src/network_block_v3.rs": [
+        "validate_monetary_v3_p2p_staging_envelope",
+        "validate_ordered_monetary_reward_v3",
+        "audit_monetary_state_v3",
+        "validate_live_reward_settlement_v3",
+    ],
+    "crates/pulsedag-core/src/network_runtime_v3.rs": [
+        "validate_monetary_v3_p2p_staging_envelope",
+        "audit_authoritative_monetary_state",
+        "drive_activated_v2_p2p_block_with_runtime_persistence",
+    ],
+    "crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs": [
+        "protocol_monetary_activation_record",
+    ],
+    "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs": [
+        "protocol_monetary_activation_record",
+        "build_monetary_mining_template_v3",
+        "ensure_legacy_mining_disabled_when_monetary_v3_active",
+    ],
+    "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs": [
+        "protocol_monetary_activation_record",
+        "accept_monetary_v3_mined_block_atomically",
+        "ensure_legacy_mining_disabled_when_monetary_v3_active",
+    ],
+    "apps/pulsedagd/src/activated_v2_runtime.rs": [
+        "protocol_monetary_activation_record",
+        "validate_monetary_v3_p2p_runtime_snapshot",
+    ],
+}
+
 REQUIRED_REGRESSION_MARKERS = {
     "crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs":
         "monetary_sidecar_disables_every_legacy_mining_surface",
@@ -137,8 +185,21 @@ def _skip_line_comment(text: str, i: int) -> int:
 
 
 def _skip_block_comment(text: str, i: int) -> int:
-    end = text.find("*/", i + 2)
-    return len(text) if end < 0 else end + 2
+    depth = 1
+    j = i + 2
+    while j < len(text):
+        if text.startswith("/*", j):
+            depth += 1
+            j += 2
+            continue
+        if text.startswith("*/", j):
+            depth -= 1
+            j += 2
+            if depth == 0:
+                return j
+            continue
+        j += 1
+    return len(text)
 
 
 def _skip_string(text: str, i: int) -> int:
@@ -268,8 +329,23 @@ def _skip_matching_braces(text: str, i: int) -> int:
     return len(text)
 
 
+def _looks_like_generic_start(text: str, i: int) -> bool:
+    if i <= 0 or text[i] != "<":
+        return False
+    prev = text[i - 1]
+    if prev.isspace() or prev not in "_:)>]" and not prev.isalnum():
+        return False
+    nxt = i + 1
+    if nxt >= len(text) or text[nxt] in "=<":
+        return False
+    return True
+
+
 def _item_end_after_keyword(text: str, i: int) -> int:
     j = _skip_ws_and_comments(text, i)
+    paren_depth = 0
+    bracket_depth = 0
+    angle_depth = 0
     while j < len(text):
         ch = text[j]
         if text.startswith("//", j):
@@ -278,9 +354,46 @@ def _item_end_after_keyword(text: str, i: int) -> int:
         if text.startswith("/*", j):
             j = _skip_block_comment(text, j)
             continue
-        if ch == "{":
-            return _skip_matching_braces(text, j)
-        if ch == ";":
+        if _is_raw_string_start(text, j):
+            nxt = _skip_raw_string(text, j)
+            if nxt != j:
+                j = nxt
+                continue
+        if ch == '"':
+            j = _skip_string(text, j)
+            continue
+        if ch == "(":
+            paren_depth += 1
+            j += 1
+            continue
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            j += 1
+            continue
+        if ch == "[":
+            bracket_depth += 1
+            j += 1
+            continue
+        if ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+            j += 1
+            continue
+        if ch == "<" and _looks_like_generic_start(text, j):
+            angle_depth += 1
+            j += 1
+            continue
+        if ch == ">" and angle_depth:
+            angle_depth -= 1
+            j += 1
+            continue
+        at_item_level = paren_depth == 0 and bracket_depth == 0 and angle_depth == 0
+        if ch == "{" and at_item_level:
+            end = _skip_matching_braces(text, j)
+            tail = _skip_ws_and_comments(text, end)
+            return tail + 1 if tail < len(text) and text[tail] == "," else end
+        if ch == ";" and at_item_level:
+            return j + 1
+        if ch == "," and at_item_level:
             return j + 1
         j += 1
     return len(text)
@@ -314,6 +427,47 @@ def production_source(text: str) -> str:
             if chars[k] != "\n":
                 chars[k] = " "
     return "".join(chars)
+
+
+def code_source(text: str) -> str:
+    """Blank comments and string literals while preserving byte offsets/newlines."""
+    chars = list(text)
+    i = 0
+    while i < len(text):
+        if text.startswith("//", i):
+            end = _skip_line_comment(text, i)
+        elif text.startswith("/*", i):
+            end = _skip_block_comment(text, i)
+        elif _is_raw_string_start(text, i):
+            end = _skip_raw_string(text, i)
+            if end == i:
+                i += 1
+                continue
+        elif text[i] == '"':
+            end = _skip_string(text, i)
+        else:
+            i += 1
+            continue
+        for k in range(i, end):
+            if chars[k] != "\n":
+                chars[k] = " "
+        i = end
+    return "".join(chars)
+
+
+def live_call_offsets(text: str, name: str) -> list:
+    """Return real call-expression offsets, excluding function definitions."""
+    call_re = re.compile(rf"\b{re.escape(name)}\s*\(")
+    offsets = []
+    for match in call_re.finditer(text):
+        if _preceding_keyword(text, match.start()) == "fn":
+            continue
+        offsets.append(match.start())
+    return offsets
+
+
+def has_live_call(text: str, name: str) -> bool:
+    return bool(live_call_offsets(text, name))
 
 
 def rust_source_paths(root: Path) -> list:
@@ -481,6 +635,16 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         if missing:
             errors.append(f"required v3 reachability markers missing in {path}: {missing!r}")
 
+    call_checks = []
+    for path, names in REQUIRED_LIVE_CALLS.items():
+        text = code_source(production_source(read_required(root, path)))
+        missing = [name for name in names if not has_live_call(text, name)]
+        call_checks.append({"path": path, "missing": missing})
+        if missing:
+            errors.append(
+                f"required v3 live call expressions missing in {path}: {missing!r}"
+            )
+
     regression_checks = []
     for path, marker in REQUIRED_REGRESSION_MARKERS.items():
         text = read_required(root, path)
@@ -520,13 +684,16 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         },
         "v3_live_forbidden_legacy_authority_hits": forbidden_hits,
         "required_live_guard_checks": marker_checks,
+        "required_live_call_checks": call_checks,
         "required_regression_checks": regression_checks,
         "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
         "claim_boundary": {
             "proves_static_live_authority_shape": True,
             "requires_dynamic_guard_tests": True,
             "strips_all_cfg_test_items": True,
+            "handles_cfg_test_comma_items": True,
             "tracks_legacy_aliases": True,
+            "verifies_live_call_expressions": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
             "authorizes_launch": False,
@@ -573,6 +740,46 @@ def self_test() -> None:
     ptr_sample = "fn live() { let minted = block_subsidy; minted(1); }\n"
     assert classify_block_subsidy_hit(ptr_sample, ptr_sample.index("block_subsidy")) == "other"
     assert file_alias_names(ptr_sample) == {"minted"}
+
+    comma_sample = (
+        "struct S {\n"
+        "  #[cfg(test)] helper: Result<(u8, u8), u16>,\n"
+        "  live: (),\n"
+        "}\n"
+        "enum E {\n"
+        "  #[cfg(test)] Test(u8, u8),\n"
+        "  Live,\n"
+        "}\n"
+        "fn later_live() { block_subsidy(9); }\n"
+    )
+    comma_prod = production_source(comma_sample)
+    assert "helper" not in comma_prod
+    assert "Test(u8, u8)" not in comma_prod
+    assert "live: ()" in comma_prod
+    assert "Live," in comma_prod
+    assert "block_subsidy(9)" in comma_prod
+
+    hidden_after_field = (
+        "struct S { #[cfg(test)] helper: (), }\n"
+        "fn live_after_test_field() { block_subsidy(10); }\n"
+    )
+    hidden_prod = production_source(hidden_after_field)
+    assert "block_subsidy(10)" in hidden_prod
+
+    import_only = code_source(
+        "use crate::audit_monetary_state_v3;\n"
+        "// audit_monetary_state_v3(fake);\n"
+        "const NOTE: &str = \"audit_monetary_state_v3(fake)\";\n"
+    )
+    assert not has_live_call(import_only, "audit_monetary_state_v3")
+    real_call = code_source(
+        "use crate::audit_monetary_state_v3;\n"
+        "fn boundary(prepared: &ChainState) { audit_monetary_state_v3(prepared, cadence); }\n"
+    )
+    assert has_live_call(real_call, "audit_monetary_state_v3")
+    definition_only = code_source("fn audit_monetary_state_v3(state: &State) {}\n")
+    assert not has_live_call(definition_only, "audit_monetary_state_v3")
+
     print("v3 monetary reachability auditor self-test: PASS")
 
 
