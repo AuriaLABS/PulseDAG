@@ -216,6 +216,39 @@ def _skip_string(text: str, i: int) -> int:
     return len(text)
 
 
+def _skip_char_literal(text: str, i: int) -> int:
+    """Return the end of a Rust char/byte-char literal, or i for a lifetime."""
+    start = i
+    if i < len(text) and text[i] == "b":
+        if i + 1 >= len(text) or text[i + 1] != "'":
+            return start
+        i += 1
+    if i >= len(text) or text[i] != "'":
+        return start
+
+    j = i + 1
+    if j >= len(text) or text[j] in "\r\n'":
+        return start
+
+    if text[j] == "\\":
+        j += 1
+        if j >= len(text) or text[j] in "\r\n":
+            return start
+        if text[j] == "u" and j + 1 < len(text) and text[j + 1] == "{":
+            close = text.find("}", j + 2)
+            if close < 0:
+                return start
+            j = close + 1
+        elif text[j] == "x":
+            j += 3
+        else:
+            j += 1
+    else:
+        j += 1
+
+    return j + 1 if j < len(text) and text[j] == "'" else start
+
+
 def _skip_raw_string(text: str, i: int) -> int:
     j = i
     if j < len(text) and text[j] == "b":
@@ -271,9 +304,14 @@ def _skip_attribute(text: str, i: int) -> int:
         if text.startswith("/*", j):
             j = _skip_block_comment(text, j)
             continue
-        if ch in "\"'":
+        if ch == '"':
             j = _skip_string(text, j)
             continue
+        if ch == "'" or (ch == "b" and j + 1 < len(text) and text[j + 1] == "'"):
+            nxt = _skip_char_literal(text, j)
+            if nxt != j:
+                j = nxt
+                continue
         if ch == "[":
             depth += 1
             j += 1
@@ -306,9 +344,14 @@ def _skip_matching_braces(text: str, i: int) -> int:
             if nxt != j:
                 j = nxt
                 continue
-        if ch in "\"'":
+        if ch == '"':
             j = _skip_string(text, j)
             continue
+        if ch == "'" or (ch == "b" and j + 1 < len(text) and text[j + 1] == "'"):
+            nxt = _skip_char_literal(text, j)
+            if nxt != j:
+                j = nxt
+                continue
         if ch == "{":
             depth += 1
             j += 1
@@ -374,6 +417,11 @@ def _item_end_after_keyword(text: str, i: int) -> int:
         if ch == '"':
             j = _skip_string(text, j)
             continue
+        if ch == "'" or (ch == "b" and j + 1 < len(text) and text[j + 1] == "'"):
+            nxt = _skip_char_literal(text, j)
+            if nxt != j:
+                j = nxt
+                continue
         if ch == "(":
             paren_depth += 1
             j += 1
@@ -448,7 +496,7 @@ def production_source(text: str) -> str:
 
 
 def code_source(text: str) -> str:
-    """Blank comments and string literals while preserving byte offsets/newlines."""
+    """Blank comments and Rust string/char literals while preserving offsets."""
     chars = list(text)
     i = 0
     while i < len(text):
@@ -463,6 +511,13 @@ def code_source(text: str) -> str:
                 continue
         elif text[i] == '"':
             end = _skip_string(text, i)
+        elif text[i] == "'" or (
+            text[i] == "b" and i + 1 < len(text) and text[i + 1] == "'"
+        ):
+            end = _skip_char_literal(text, i)
+            if end == i:
+                i += 1
+                continue
         else:
             i += 1
             continue
@@ -753,6 +808,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "strips_all_cfg_test_items": True,
             "handles_cfg_test_comma_items": True,
             "discovers_cfg_test_attributes_from_code_only": True,
+            "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
@@ -853,6 +909,16 @@ def self_test() -> None:
     assert "Live," in comparison_prod
     assert "block_subsidy(14)" in comparison_prod
 
+    char_literal_item = (
+        "#[cfg(test)] const OPEN: char = '{';\n"
+        "#[cfg(test)] const CLOSE: u8 = b'}';\n"
+        "fn after_char_literal() { block_subsidy(15); }\n"
+    )
+    char_literal_prod = production_source(char_literal_item)
+    assert "OPEN" not in char_literal_prod
+    assert "CLOSE" not in char_literal_prod
+    assert "block_subsidy(15)" in char_literal_prod
+
     import_only = code_source(
         "use crate::audit_monetary_state_v3;\n"
         "// audit_monetary_state_v3(fake);\n"
@@ -879,6 +945,18 @@ def self_test() -> None:
         "fn boundary() { discard_tokens!{ audit_monetary_state_v3(prepared, cadence) } }\n"
     )
     assert not has_live_call(opaque_macro_only, "audit_monetary_state_v3")
+    char_in_macro = code_source(
+        "fn boundary() { "
+        "let _ = stringify!(')', audit_monetary_state_v3(prepared, cadence)); "
+        "}\n"
+    )
+    assert not has_live_call(char_in_macro, "audit_monetary_state_v3")
+    byte_char_in_macro = code_source(
+        "fn boundary() { "
+        "let _ = stringify!(b']', audit_monetary_state_v3(prepared, cadence)); "
+        "}\n"
+    )
+    assert not has_live_call(byte_char_in_macro, "audit_monetary_state_v3")
 
     print("v3 monetary reachability auditor self-test: PASS")
 
