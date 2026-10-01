@@ -86,7 +86,8 @@ mod tests {
         block_subsidy, build_activated_v2_mining_template, build_monetary_mining_template_v3,
         compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
         genesis_v3::init_chain_state_v3, mining_template_v2::ActivatedV2MiningTemplateSpec,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol,
+        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+        reward_settlement_v3::build_reward_claim_transaction_v3, validate_pow_for_protocol,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -207,6 +208,66 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("reward"));
+        assert!(!persisted);
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+    }
+
+    #[test]
+    fn accepted_state_audit_rejects_polluted_genesis_before_persist() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
+        let mut state =
+            init_chain_state_v3("monetary-v3-audit-boundary".into(), frozen_ts).unwrap();
+        let identity = identity(&state);
+        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
+        let template = build_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &ONE_SECOND,
+            "pulse1auditboundary",
+            44,
+            timestamp,
+            vec![],
+        )
+        .unwrap();
+        let finalized =
+            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &template)
+                .unwrap();
+        let block = mine(finalized.block, &state, &identity);
+
+        let genesis = state.dag.genesis_hash.clone();
+        let chain_id = state.chain_id.clone();
+        let forbidden =
+            build_reward_claim_transaction_v3("pulse1forbidden-genesis", 999, &chain_id).unwrap();
+        state
+            .dag
+            .blocks
+            .get_mut(&genesis)
+            .unwrap()
+            .transactions
+            .push(forbidden);
+        let before = bincode::serialize(&state).unwrap();
+        let mut persisted = false;
+
+        let error = accept_monetary_v3_mined_block_atomically(
+            block,
+            &mut state,
+            AcceptSource::Rpc,
+            &identity,
+            &ONE_SECOND,
+            |_, _| {
+                persisted = true;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("accepted-state monetary audit failed"));
         assert!(!persisted);
         assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
