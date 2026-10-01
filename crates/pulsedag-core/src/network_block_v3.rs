@@ -173,10 +173,10 @@ mod tests {
     use super::*;
     use crate::{
         block_subsidy, build_activated_v2_mining_template, build_monetary_mining_template_v3,
-        compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
+        compute_block_hash_v2, compute_txid_v2, current_ts, finalize_monetary_mining_template_v3,
         genesis_v3::init_chain_state_v3, mining_template_v2::ActivatedV2MiningTemplateSpec,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
-        reward_settlement_v3::build_reward_claim_transaction_v3, validate_pow_for_protocol,
+        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol, Transaction,
+        TRANSACTION_VERSION_V2,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -204,7 +204,13 @@ mod tests {
     }
 
     fn monetary_block(state: &ChainState, identity: &ProtocolActivationIdentity) -> Block {
-        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+        let parent = state
+            .dag
+            .selected_chain
+            .last()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone());
+        let timestamp = state.dag.blocks[&parent]
             .header
             .timestamp
             .saturating_add(1);
@@ -221,6 +227,19 @@ mod tests {
         let finalized =
             finalize_monetary_mining_template_v3(state, identity, &ONE_SECOND, &template).unwrap();
         mine(finalized.block, state, identity)
+    }
+
+    fn hidden_inputless_noop(chain_id: &str, nonce: u64) -> Transaction {
+        let mut transaction = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce,
+        };
+        transaction.txid = compute_txid_v2(&transaction, chain_id).unwrap();
+        transaction
     }
 
     #[test]
@@ -306,29 +325,41 @@ mod tests {
     }
 
     #[test]
-    fn accepted_state_audit_rejects_polluted_genesis_before_persist() {
+    fn accepted_state_audit_rejects_hidden_historical_issuance_before_persist() {
         let frozen_ts = current_ts().saturating_sub(10).max(1);
         let mut state =
             init_chain_state_v3("monetary-v3-p2p-audit-boundary".into(), frozen_ts).unwrap();
         let identity = identity(&state);
-        let block = monetary_block(&state, &identity);
 
-        let genesis = state.dag.genesis_hash.clone();
-        let chain_id = state.chain_id.clone();
-        let forbidden =
-            build_reward_claim_transaction_v3("pulse1forbidden-genesis", 1001, &chain_id).unwrap();
+        let first_block = monetary_block(&state, &identity);
+        let first_hash = first_block.hash.clone();
+        accept_monetary_v3_p2p_block_atomically(
+            first_block,
+            &mut state,
+            AcceptSource::P2p,
+            &identity,
+            &ONE_SECOND,
+            |_, _| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        let second_block = monetary_block(&state, &identity);
+        let hidden = hidden_inputless_noop(&state.chain_id, 10_001);
         state
             .dag
             .blocks
-            .get_mut(&genesis)
+            .get_mut(&first_hash)
             .unwrap()
             .transactions
-            .push(forbidden);
+            .push(hidden);
+
+        // The historical no-op leaves v2 replay UTXO/state-root output unchanged,
+        // while the v3 whole-history monetary audit must reject the hidden path.
         let before = bincode::serialize(&state).unwrap();
         let mut persisted = false;
-
         let error = accept_monetary_v3_p2p_block_atomically(
-            block,
+            second_block,
             &mut state,
             AcceptSource::P2p,
             &identity,
