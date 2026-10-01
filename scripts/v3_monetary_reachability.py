@@ -491,8 +491,17 @@ class _CfgParser:
         self.i = 0
 
     def _ws(self) -> None:
-        while self.i < len(self.text) and self.text[self.i].isspace():
-            self.i += 1
+        while self.i < len(self.text):
+            if self.text[self.i].isspace():
+                self.i += 1
+                continue
+            if self.text.startswith("//", self.i):
+                self.i = _skip_line_comment(self.text, self.i)
+                continue
+            if self.text.startswith("/*", self.i):
+                self.i = _skip_block_comment(self.text, self.i)
+                continue
+            break
 
     def _ident(self):
         self._ws()
@@ -1163,6 +1172,14 @@ def self_test() -> None:
     assert "definitely_production" in cfg_logic_prod
     assert "maybe_production" in cfg_logic_prod
     assert has_live_call(cfg_logic_prod, "audit_monetary_state_v3")
+
+    cfg_comment_dead = (
+        "#[cfg(any(/* still empty */))]\n"
+        "fn comment_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+    )
+    assert not has_live_call(
+        production_source(cfg_comment_dead), "audit_monetary_state_v3"
+    )
 
     cfg_attr_dead = (
         "#[cfg_attr(not(test), cfg(any()))]\n"
