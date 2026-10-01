@@ -64,11 +64,14 @@ jobs:
             --out ci-evidence/v3-monetary-reachability/static-reachability.json
           jq -e '
             .result == "PASS" and
-            .auditor_version == 3 and
+            .auditor_version == 4 and
             .claim_boundary.proves_static_live_authority_shape == true and
             .claim_boundary.requires_dynamic_guard_tests == true and
             .claim_boundary.strips_all_cfg_test_items == true and
             .claim_boundary.handles_cfg_test_comma_items == true and
+            .claim_boundary.excludes_provably_disabled_cfg_items == true and
+            .claim_boundary.evaluates_cfg_logic_conservatively == true and
+            .claim_boundary.handles_raw_strings_in_chained_attributes == true and
             .claim_boundary.tracks_legacy_aliases == true and
             .claim_boundary.verifies_live_call_expressions == true and
             .claim_boundary.selects_production_cadence == false and
