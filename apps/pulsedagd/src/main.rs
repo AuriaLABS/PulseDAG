@@ -69,8 +69,8 @@ fn should_send_getblock_response(request_id: Option<&str>, block_found: bool) ->
 #[cfg(test)]
 mod compact_relay_fast_sync_handoff_tests {
     use super::{
-        fast_sync_authority_holds_live_events, fast_sync_authority_release_requires_tip_refresh,
-        fast_sync_authority_requires_tip_probe, should_send_getblock_response,
+        fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
+        should_send_getblock_response,
     };
 
     #[test]
@@ -105,13 +105,6 @@ mod compact_relay_fast_sync_handoff_tests {
         assert!(fast_sync_authority_requires_tip_probe(true, Some(95), 100));
     }
 
-    #[test]
-    fn live_p2p_events_keep_flowing_on_clean_authority_without_a_transfer() {
-        assert!(!fast_sync_authority_holds_live_events(true, false, false));
-        assert!(fast_sync_authority_holds_live_events(true, true, false));
-        assert!(fast_sync_authority_holds_live_events(true, false, true));
-        assert!(!fast_sync_authority_holds_live_events(false, true, true));
-    }
 }
 
 #[cfg(test)]
@@ -1966,14 +1959,6 @@ fn fast_sync_authority_requires_tip_probe(
         })
 }
 
-fn fast_sync_authority_holds_live_events(
-    authority_active: bool,
-    transfer_source_selected: bool,
-    pruning_handoff_active: bool,
-) -> bool {
-    authority_active && (transfer_source_selected || pruning_handoff_active)
-}
-
 fn update_orphan_backlog_classification(
     runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
     chain: &pulsedag_core::ChainState,
@@ -2621,11 +2606,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     fast_sync_authority_was_active = fast_sync_authority_active;
-                    if fast_sync_authority_holds_live_events(
-                        fast_sync_authority_active,
-                        fast_sync_runtime.transfer_source_selected(),
-                        fast_sync_runtime.pruning_handoff_active(),
-                    ) {
+                    if fast_sync_runtime.holds_live_p2p_events() {
                         continue;
                     }
                 }
