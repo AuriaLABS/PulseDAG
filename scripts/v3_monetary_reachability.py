@@ -165,7 +165,8 @@ REQUIRED_REGRESSION_MARKERS = {
         "legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation",
 }
 
-CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(")\nCFG_ATTR_ATTR_RE = re.compile(r"#\[\s*cfg_attr\s*\(")
+CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(")
+CFG_ATTR_ATTR_RE = re.compile(r"#\[\s*cfg_attr\s*\(")
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 BLOCK_SUBSIDY_IDENT_RE = re.compile(r"\bblock_subsidy\b")
 ALIAS_RE = re.compile(r"\bblock_subsidy\s+as\s+([A-Za-z_][A-Za-z0-9_]*)")
