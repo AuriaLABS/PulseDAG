@@ -27,6 +27,7 @@ V3_SENSITIVE_PATHS = [
     "crates/pulsedag-core/src/monetary_audit_v3.rs",
     "crates/pulsedag-core/src/validation_v3.rs",
     "crates/pulsedag-core/src/reward_settlement_v3.rs",
+    "crates/pulsedag-core/src/state_replay_v3.rs",
     "crates/pulsedag-core/src/live_reward_settlement_v3.rs",
     "crates/pulsedag-core/src/mining_template_v3.rs",
     "crates/pulsedag-core/src/mined_block_v3.rs",
@@ -42,6 +43,12 @@ FORBIDDEN_V3_LIVE_MARKERS = [
 ]
 
 REQUIRED_LIVE_MARKERS = {
+    "crates/pulsedag-core/src/state_replay_v3.rs": [
+        "rebuild_authoritative_state_v3",
+        "validate_reward_claim_transaction_v3",
+        "eligible_fees_by_score",
+        "settlement_outpoint_v3",
+    ],
     "crates/pulsedag-core/src/mining_template_v3.rs": [
         "build_monetary_mining_template_v3",
         "build_reward_claim_transaction_v3",
