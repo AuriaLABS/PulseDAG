@@ -2562,10 +2562,181 @@ async fn main() -> Result<()> {
                                 let imported_height = imported.chain_state.dag.best_height;
                                 let recovery_confidence =
                                     imported.report.recovery_confidence.clone();
-                                *chain.write().await = imported.chain_state;
-                                activated_v2_p2p_runtime = imported.runtime;
+                                let preserved_transients =
+                                    activated_v2_p2p_runtime.transient_blocks_parent_first();
+                                let preserved_count = preserved_transients.len();
+                                let mut imported_chain_state = imported.chain_state;
+                                let mut imported_runtime = imported.runtime;
+                                let mut replayed_count = 0usize;
+                                let mut replay_rejected_count = 0usize;
+
+                                if !preserved_transients.is_empty() {
+                                    match (
+                                        p2p_protocol_identity.as_ref(),
+                                        storage.protocol_monetary_activation_record(),
+                                    ) {
+                                        (Some(identity), Ok(monetary_activation)) => {
+                                            for candidate in preserved_transients {
+                                                if imported_chain_state
+                                                    .dag
+                                                    .blocks
+                                                    .contains_key(&candidate.hash)
+                                                {
+                                                    block_requests.resolve(&candidate.hash);
+                                                    continue;
+                                                }
+
+                                                let candidate_hash = candidate.hash.clone();
+                                                let drive = if let Some(monetary) =
+                                                    monetary_activation.as_ref()
+                                                {
+                                                    pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
+                                                        candidate,
+                                                        &mut imported_chain_state,
+                                                        &mut imported_runtime,
+                                                        identity,
+                                                        &monetary.monetary_cadence_segments,
+                                                        |state: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                                identity,
+                                                                state,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |candidate: &pulsedag_core::Block,
+                                                         prepared: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_block_and_runtime(
+                                                                candidate,
+                                                                identity,
+                                                                prepared,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |bundle: &[pulsedag_core::Block],
+                                                         prepared: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                                bundle,
+                                                                identity,
+                                                                prepared,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |_| Ok(()),
+                                                    )
+                                                } else {
+                                                    pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
+                                                        candidate,
+                                                        &mut imported_chain_state,
+                                                        &mut imported_runtime,
+                                                        identity,
+                                                        pulsedag_core::ActivatedV2P2pRuntimePersistence::new(
+                                                            |state: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                                    identity,
+                                                                    state,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                            |candidate: &pulsedag_core::Block,
+                                                             prepared: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_block_and_runtime(
+                                                                    candidate,
+                                                                    identity,
+                                                                    prepared,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                            |bundle: &[pulsedag_core::Block],
+                                                             prepared: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                                    bundle,
+                                                                    identity,
+                                                                    prepared,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                        ),
+                                                        |_| Ok(()),
+                                                    )
+                                                };
+
+                                                match drive {
+                                                    Ok(drive) => {
+                                                        let summary =
+                                                            summarize_activated_v2_drive(&drive);
+                                                        if summary.rejected.is_empty() {
+                                                            replayed_count =
+                                                                replayed_count.saturating_add(1);
+                                                        } else {
+                                                            replay_rejected_count =
+                                                                replay_rejected_count
+                                                                    .saturating_add(
+                                                                        summary.rejected.len(),
+                                                                    );
+                                                        }
+                                                        if imported_chain_state
+                                                            .dag
+                                                            .blocks
+                                                            .contains_key(&candidate_hash)
+                                                            || imported_runtime
+                                                                .staging()
+                                                                .contains(&candidate_hash)
+                                                        {
+                                                            block_requests
+                                                                .resolve(&candidate_hash);
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        replay_rejected_count =
+                                                            replay_rejected_count.saturating_add(1);
+                                                        warn!(
+                                                            block_hash = %candidate_hash,
+                                                            error = %error,
+                                                            "failed revalidating live transient block after fast-sync authoritative handoff"
+                                                        );
+                                                        let _ = storage.append_runtime_event(
+                                                            "warn",
+                                                            "fast_sync_transient_replay_failed",
+                                                            &format!(
+                                                                "hash={} error={}",
+                                                                candidate_hash, error
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        (None, _) => {
+                                            replay_rejected_count = preserved_count;
+                                            warn!(
+                                                preserved_count,
+                                                "fast-sync handoff cannot revalidate live transients without activated-v2 identity"
+                                            );
+                                        }
+                                        (Some(_), Err(error)) => {
+                                            replay_rejected_count = preserved_count;
+                                            warn!(
+                                                preserved_count,
+                                                error = %error,
+                                                "fast-sync handoff monetary sidecar failed closed; live transients were not replayed"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                *chain.write().await = imported_chain_state;
+                                activated_v2_p2p_runtime = imported_runtime;
                                 info!(
                                     imported_height,
+                                    preserved_transient_blocks = preserved_count,
+                                    replayed_transient_blocks = replayed_count,
+                                    replay_rejected_transient_blocks = replay_rejected_count,
                                     recovery_confidence = %recovery_confidence,
                                     "clean fast-sync bootstrap imported and activated live state"
                                 );

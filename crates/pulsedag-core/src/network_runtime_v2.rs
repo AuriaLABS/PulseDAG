@@ -52,6 +52,34 @@ impl ActivatedV2P2pRuntime {
         self.pending_missing.values()
     }
 
+    /// Return the complete transient block set in deterministic parent-first
+    /// order for authoritative-state handoffs such as a live FastSync import.
+    ///
+    /// The returned blocks are clones: callers must revalidate them against
+    /// the replacement authoritative state instead of mutating or merging the
+    /// private staging/pending maps directly.
+    pub fn transient_blocks_parent_first(&self) -> Vec<Block> {
+        let mut by_hash = BTreeMap::<Hash, Block>::new();
+        for hash in self.staging.hashes() {
+            if let Some(block) = self.staging.get(&hash) {
+                by_hash.insert(hash, block.clone());
+            }
+        }
+        for block in self.pending_missing.values() {
+            by_hash
+                .entry(block.hash.clone())
+                .or_insert_with(|| block.clone());
+        }
+        let mut blocks = by_hash.into_values().collect::<Vec<_>>();
+        blocks.sort_by(|left, right| {
+            left.header
+                .height
+                .cmp(&right.header.height)
+                .then_with(|| left.hash.cmp(&right.hash))
+        });
+        blocks
+    }
+
     /// Drop transient entries that have become authoritative through another
     /// serialized acceptance surface (for example RPC mining) since this live
     /// runtime copy was last updated.
@@ -826,6 +854,37 @@ mod tests {
         assert!(!live.dag.blocks.contains_key(&child.hash));
         assert!(live.orphan_blocks.is_empty());
         assert!(live.orphan_missing_parents.is_empty());
+
+        let preserved = runtime.transient_blocks_parent_first();
+        assert_eq!(
+            preserved
+                .iter()
+                .map(|block| block.hash.clone())
+                .collect::<Vec<_>>(),
+            vec![side.hash.clone(), child.hash.clone()]
+        );
+
+        // Model a FastSync authoritative-state handoff whose imported runtime
+        // does not contain the local live transients. Replaying the read-only
+        // snapshot through the normal driver must preserve both blocks.
+        let mut imported_state =
+            prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
+        let mut imported_runtime = ActivatedV2P2pRuntime::default();
+        for block in preserved {
+            drive_activated_v2_p2p_block_atomically(
+                block,
+                &mut imported_state,
+                &mut imported_runtime,
+                &expected_identity,
+                |_, _| Ok(()),
+                |_, _| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap();
+        }
+        assert!(imported_runtime.staging().contains(&side.hash));
+        assert!(imported_runtime.staging().contains(&child.hash));
+        assert!(imported_runtime.pending_is_empty());
     }
 
     #[test]
