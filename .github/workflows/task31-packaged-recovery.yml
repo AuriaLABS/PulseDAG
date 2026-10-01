@@ -1,4 +1,4 @@
-name: v2.4.0 Task 31 packaged recovery
+name: v3.0 Task 31 packaged recovery
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ on:
       - 'scripts/private_testnet/task31_packaged_recovery.sh'
       - 'scripts/release/package_release_artifacts.py'
       - 'scripts/release/verify_release_artifacts.py'
-      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'scripts/v3_0_0_single_node_preflight.sh'
       - 'apps/pulsedagd/**'
       - 'apps/pulsedag-miner/**'
       - 'crates/pulsedag-core/**'
@@ -26,7 +26,7 @@ on:
       - 'scripts/private_testnet/task31_packaged_recovery.sh'
       - 'scripts/release/package_release_artifacts.py'
       - 'scripts/release/verify_release_artifacts.py'
-      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'scripts/v3_0_0_single_node_preflight.sh'
       - 'apps/pulsedagd/**'
       - 'apps/pulsedag-miner/**'
       - 'crates/pulsedag-core/**'
@@ -86,7 +86,7 @@ jobs:
           set -euo pipefail
           rm -rf dist extracted .task31-packaged-recovery
           mkdir -p dist extracted .task31-packaged-recovery
-          tag="v2.4.0-task31-candidate"
+          tag="v3.0.0-task31-candidate"
           python scripts/release/package_release_artifacts.py \
             --binary target/release/pulsedagd \
             --output-dir dist \
@@ -135,7 +135,7 @@ jobs:
           echo "node_bin=$(realpath "$node_bin")" >> "$GITHUB_OUTPUT"
           echo "miner_bin=$(realpath "$miner_bin")" >> "$GITHUB_OUTPUT"
 
-      - name: Run packaged activated-v2 recovery drill
+      - name: Run packaged v3.0 recovery drill
         env:
           NODE_BIN: ${{ steps.extract.outputs.node_bin }}
           MINER_BIN: ${{ steps.extract.outputs.miner_bin }}
@@ -155,7 +155,7 @@ jobs:
             .candidate_sha == $sha and
             .package_execution == true and
             .source_tree_binary_execution == false and
-            .chain_id == "pulsedag-private-v2.4.0" and
+            .chain_id == "pulsedag-private-v3.0.0" and
             .protocol_consensus_mode == "ghostdag_v1" and
             .recovered_height > .initial_height and
             .same_storage_restart == true and

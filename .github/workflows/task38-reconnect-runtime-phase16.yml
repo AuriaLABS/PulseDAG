@@ -1,4 +1,4 @@
-name: v3 launch Task 38 reconnect runtime phase 16
+name: v3.0 launch Task 38 reconnect runtime phase 16
 
 on:
   pull_request:

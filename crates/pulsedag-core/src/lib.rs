@@ -2,6 +2,7 @@ pub mod accept;
 pub mod acceptance_v2;
 pub mod access_set_v1;
 pub mod apply;
+pub mod based_app_state_v0;
 pub mod based_app_v0;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
@@ -69,6 +70,7 @@ pub mod selection_v2;
 pub mod snapshot_transfer;
 pub mod state;
 pub mod state_replay_v2;
+pub mod state_replay_v3;
 pub mod sync_pipeline;
 pub mod tx;
 pub mod tx_protocol;
@@ -296,6 +298,15 @@ pub use based_app_v0::{
     BASED_COMMIT_TEMPLATE_V0,
 };
 
+pub use based_app_state_v0::{
+    apply_based_app_canonical_event_v0, based_app_event_page_v0, based_app_write_key_v0,
+    fold_based_app_events_from_state_v0, fold_based_app_events_v0,
+    validate_based_app_access_set_v0, BasedAppCanonicalEventKindV0, BasedAppCanonicalEventV0,
+    BasedAppPendingRoundV0, BasedAppStateV0Error, BasedAppStateViewV0, BASED_APP_EVENT_PAGE_MAX_V0,
+    BASED_APP_EVENT_RETAINED_MAX_V0, BASED_APP_EVENT_SCHEMA_VERSION_V0,
+    BASED_APP_STATE_SCHEMA_VERSION_V0,
+};
+
 pub use verify_receipt_v1::{
     compare_reconstructed_v1, reject_host_time_v1, validate_verify_receipt_v1,
     verify_receipt_canonical_bytes_v1, verify_receipt_digest_v1, VerifyReceiptV1,
@@ -336,6 +347,10 @@ pub use ordering_v2::{
 pub use state_replay_v2::{
     materialize_authoritative_state_v2, rebuild_authoritative_state_v2,
     verify_authoritative_state_snapshot_v2, StateReplayV2, StateReplayV2Diagnostics,
+};
+pub use state_replay_v3::{
+    mature_reward_prefix_score_v3, rebuild_authoritative_state_v3, StateReplayV3,
+    StateReplayV3Diagnostics, REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 pub use apply::{

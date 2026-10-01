@@ -1,26 +1,7 @@
-name: v2.3.0 multi-host private-testnet rehearsal
-
-on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - configs/private-testnet/rehearsal.inventory.example.json
-      - docs/ROADMAP_V2_3_0.md
-      - docs/codex_tasks/v2_3_0_12_multi_host_rehearsal.md
-      - docs/runbooks/INDEX.md
-      - docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md
-      - scripts/private_testnet/README.md
-      - scripts/private_testnet/multi_host_rehearsal.py
-      - scripts/tests/test_v2_3_0_multi_host_rehearsal.py
-      - .github/workflows/v2_3_0_multi_host_rehearsal.yml
+name: Historical v2.3 multi-host rehearsal (manual on:
   workflow_dispatch:
-    inputs:
-      run_live:
-        description: Run the protected live five-node rehearsal
-        required: true
-        type: boolean
-        default: false
+
+false
 
 permissions:
   contents: read

@@ -1,18 +1,7 @@
-name: v2.3.0 observability compatibility
+name: Historical v2.3 observability compon:
+  workflow_dispatch:
 
-on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ops/observability/v2.3.0/**
-      - docs/dashboard/README.md
-      - docs/codex_tasks/v2_3_0_10_observability_baseline.md
-      - scripts/private_testnet/runtime_metrics_exporter.py
-      - scripts/tests/test_v2_3_0_observability.sh
-      - scripts/validate_observability_package.py
-      - scripts/validate_v2_3_0_observability.py
-      - .github/workflows/v2_3_0_observability.yml
+ml
   workflow_dispatch:
 
 permissions:
@@ -35,15 +24,15 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
-          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          test "$(tr -d '\r\n' < VERSION)" = "v3.0.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "3.0.0"
           grep -Fq '"release_line": "v2.3.0"' ops/observability/v2.3.0/metrics-inventory.json
           grep -Fq 'SUPPORTED_RELEASE_LINES' scripts/private_testnet/runtime_metrics_exporter.py
           grep -Fq '"v2.3.0"' scripts/private_testnet/runtime_metrics_exporter.py
           grep -Fq '"v2.4.0"' scripts/private_testnet/runtime_metrics_exporter.py
           grep -Fq '`public_testnet_ready=false`' README.md
           grep -Fq '`thirty_day_public_testnet_clock_started=false`' README.md
-          mkdir -p ci-evidence/v2.3.0-task10
+          mkdir -p ci-evidence/v3.0.0-observability
 
       - name: Validate syntax and English comments
         shell: bash
@@ -65,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/tests/test_v2_3_0_observability.sh \
-            | tee ci-evidence/v2.3.0-task10/observability-contract.log
+            | tee ci-evidence/v3.0.0-observability/observability-contract.log
 
       - name: Run repository hygiene
         shell: bash
@@ -80,11 +69,11 @@ jobs:
           import os
           from pathlib import Path
 
-          output = Path("ci-evidence/v2.3.0-task10")
+          output = Path("ci-evidence/v3.0.0-observability")
           manifest = {
-              "gate": "v2.3.0-observability-compatibility",
+              "gate": "v3.0.0-observability-compatibility",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
-              "current_release_line": "v2.4.0",
+              "current_release_line": "v3.0.0",
               "historical_inventory_line": "v2.3.0",
               "result": "PASS",
               "historical_regression_preserved": True,
@@ -108,18 +97,18 @@ jobs:
             scripts/private_testnet/runtime_metrics_exporter.py \
             scripts/tests/test_v2_3_0_observability.sh \
             scripts/validate_v2_3_0_observability.py \
-            ci-evidence/v2.3.0-task10/observability-contract.log \
-            ci-evidence/v2.3.0-task10/observability-manifest.json \
-            > ci-evidence/v2.3.0-task10/SHA256SUMS
+            ci-evidence/v3.0.0-observability/observability-contract.log \
+            ci-evidence/v3.0.0-observability/observability-manifest.json \
+            > ci-evidence/v3.0.0-observability/SHA256SUMS
 
       - name: Enforce compatibility manifest
         shell: bash
         run: |
           set -euo pipefail
           jq -e '
-            .gate == "v2.3.0-observability-compatibility" and
+            .gate == "v3.0.0-observability-compatibility" and
             .candidate_sha == env.CANDIDATE_SHA and
-            .current_release_line == "v2.4.0" and
+            .current_release_line == "v3.0.0" and
             .historical_inventory_line == "v2.3.0" and
             .result == "PASS" and
             .historical_regression_preserved == true and
@@ -132,13 +121,13 @@ jobs:
             .sensitive_labels_excluded == true and
             .public_testnet_ready == false and
             .thirty_day_public_testnet_clock_started == false
-          ' ci-evidence/v2.3.0-task10/observability-manifest.json >/dev/null
+          ' ci-evidence/v3.0.0-observability/observability-manifest.json >/dev/null
 
       - name: Upload compatibility evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v2_3_0_observability_compatibility_${{ github.run_id }}
-          path: ci-evidence/v2.3.0-task10
+          name: v3_0_0_observability_compatibility_${{ github.run_id }}
+          path: ci-evidence/v3.0.0-observability
           if-no-files-found: error
           retention-days: 90

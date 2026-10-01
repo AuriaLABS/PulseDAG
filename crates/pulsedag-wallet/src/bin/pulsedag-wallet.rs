@@ -13,20 +13,24 @@ use std::{
 
 use pulsedag_core::types::{OutPoint, Utxo};
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
-    encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
+    build_deterministic_transaction_plan_with_safety, create_wallet_backup_verification_receipt,
+    derive_wallet_key_from_seed, encrypt_wallet_seed, load_wallet_backup_verification_receipt,
+    persist_wallet_backup_verification_receipt, prove_wallet_recovery_material,
+    verify_wallet_backup_verification_receipt, wallet_backup_verification_receipt_path,
+    wallet_seed_from_mnemonic, SecretString, WalletBackupVerificationError, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
     WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
-    WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
-    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
-    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletProtocolAuthorizationV1,
+    WalletProtocolBindingV2, WalletReviewSummary, WalletSafetyAcknowledgements, WalletSession,
+    WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy,
+    WalletWatchOnly, WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
+    WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
-    fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast, submit_prepared,
-    AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput,
-    PulseObservationOutput, RelayEnvelope,
+    fetch_protocol_identity, fetch_pulse_observation, parse_signed_broadcast, prepare_broadcast,
+    submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput,
+    MempoolFeeEstimateOutput, PulseObservationOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +96,8 @@ struct TxPreviewArgs {
     keystore: PathBuf,
     pending_journal: PathBuf,
     utxos_file: PathBuf,
+    relay: String,
+    protocol_fingerprint: String,
     network_profile: String,
     chain_id: String,
     to: String,
@@ -190,6 +196,7 @@ struct BackupVerifyOutput {
     account: u32,
     entry_count: usize,
     checksum_hex: String,
+    verification_receipt: String,
     initialization_state: WalletInitializationState,
 }
 
@@ -203,6 +210,10 @@ struct TxPreviewOutput {
 struct TxSignOutput {
     network: WalletNetworkIdentity,
     review: WalletReviewSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_binding_v2: Option<WalletProtocolBindingV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_authorization_v1: Option<WalletProtocolAuthorizationV1>,
     final_txid: String,
     relay: RelayEnvelope,
 }
@@ -408,6 +419,8 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "keystore",
                     "pending-journal",
                     "utxos-file",
+                    "relay",
+                    "protocol-fingerprint",
                     "network-profile",
                     "chain-id",
                     "to",
@@ -430,6 +443,8 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
+                relay: required(&flags, "relay")?,
+                protocol_fingerprint: required(&flags, "protocol-fingerprint")?,
                 network_profile: required(&flags, "network-profile")?,
                 chain_id: required(&flags, "chain-id")?,
                 to: required(&flags, "to")?,
@@ -498,6 +513,20 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
 
 fn parse_command() -> CliResult<Command> {
     parse_command_from(env::args().skip(1))
+}
+
+fn validate_protocol_fingerprint_arg(value: &str) -> CliResult<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_input(
+            "--protocol-fingerprint must be canonical lowercase SHA-256 hex",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn strip_line_ending(mut value: String) -> String {
@@ -592,16 +621,27 @@ fn read_manifest(path: &Path) -> CliResult<WalletWatchOnlyManifest> {
     Ok(manifest)
 }
 
-fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
-    let bytes = read_bounded_json(path, "wallet transaction plan")?;
-    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
-        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+fn validate_cli_signable_plan(plan: &WalletTransactionPlan) -> CliResult<()> {
     plan.validate_structure()?;
     if plan.nonce_policy != WalletNoncePolicy::DeterministicPlanV1 {
         return Err(
             invalid_input("wallet CLI signs deterministic_plan_v1 transaction plans only").into(),
         );
     }
+    if plan.protocol_binding_v2.is_none() {
+        return Err(invalid_input(
+            "wallet CLI requires an activated-v2 protocol binding from tx-preview",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
+    let bytes = read_bounded_json(path, "wallet transaction plan")?;
+    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
+        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+    validate_cli_signable_plan(&plan)?;
     Ok(plan)
 }
 
@@ -783,14 +823,56 @@ async fn run_pulse(args: NetworkReadOnlyArgs) -> CliResult<PulseObservationOutpu
     Ok(fetch_pulse_observation(&args.relay, &network).await?)
 }
 
+fn require_backup_verified(
+    keystore_path: &Path,
+    identity: &pulsedag_wallet::WalletSessionIdentity,
+) -> CliResult<()> {
+    let receipt = load_wallet_backup_verification_receipt(keystore_path).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification is required before spending: {error}"
+        ))
+    })?;
+    verify_wallet_backup_verification_receipt(&receipt, identity).map_err(|error| {
+        invalid_input(format!(
+            "wallet backup verification receipt is invalid: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
 fn run_backup_verify(
     args: BackupVerifyArgs,
-    password: &SecretString,
+    secrets: RestoreSecrets,
 ) -> CliResult<BackupVerifyOutput> {
     let manifest = read_manifest(&args.manifest)?;
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
-    session.verify_watch_only_manifest(&manifest)?;
+    let mut session = unlocked_session(&keystore, &secrets.password)?;
+    let identity = session
+        .status()
+        .identity
+        .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+
+    let recovery_proof = prove_wallet_recovery_material(
+        &identity,
+        &secrets.mnemonic,
+        secrets.bip39_passphrase.as_ref(),
+    )?;
+    let receipt = create_wallet_backup_verification_receipt(&session, &manifest, &recovery_proof)?;
+    let receipt_path = match persist_wallet_backup_verification_receipt(&args.keystore, &receipt) {
+        Ok(path) => path,
+        Err(WalletBackupVerificationError::AlreadyExists) => {
+            let existing = load_wallet_backup_verification_receipt(&args.keystore)?;
+            verify_wallet_backup_verification_receipt(&existing, &identity)?;
+            if existing != receipt {
+                return Err(invalid_input(
+                    "wallet is already initialized by a different verified backup receipt",
+                )
+                .into());
+            }
+            wallet_backup_verification_receipt_path(&args.keystore)?
+        }
+        Err(error) => return Err(error.into()),
+    };
     session.lock();
     Ok(BackupVerifyOutput {
         verified: true,
@@ -799,18 +881,21 @@ fn run_backup_verify(
         account: manifest.account(),
         entry_count: manifest.entries().len(),
         checksum_hex: manifest.checksum_hex().to_string(),
+        verification_receipt: receipt_path.to_string_lossy().into_owned(),
         initialization_state: WalletInitializationState::BackupVerified,
     })
 }
 
-fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxPreviewOutput> {
+async fn run_tx_preview(args: TxPreviewArgs, password: SecretString) -> CliResult<TxPreviewOutput> {
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
-    let mut session = unlocked_session(&keystore, password)?;
+    let mut session = unlocked_session(&keystore, &password)?;
     let identity = session
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     let expected_network = WalletNetworkIdentity::new(&args.network_profile, &args.chain_id)?;
     expected_network.ensure_matches(&keystore_network)?;
     let signer_address =
@@ -818,6 +903,9 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
             derived.address().to_string()
         })?;
     session.lock();
+    drop(session);
+    drop(keystore);
+    drop(password);
 
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
@@ -833,13 +921,22 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
         args.ack_spend_all,
         args.ack_high_fee,
     );
+    validate_protocol_fingerprint_arg(&args.protocol_fingerprint)?;
+    let protocol = fetch_protocol_identity(&args.relay, &expected_network).await?;
+    if protocol.protocol_identity_fingerprint != args.protocol_fingerprint {
+        return Err(invalid_input(
+            "relay protocol identity does not match the expected launch fingerprint",
+        )
+        .into());
+    }
     let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
         intent,
         &available_utxos,
         safety_acknowledgements,
-    )?;
+    )?
+    .bind_activated_v2_protocol(protocol.protocol_identity)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let snapshot = pending_store.load_or_new(&plan.network)?;
     snapshot
@@ -896,7 +993,9 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
         .status()
         .identity
         .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
-    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    require_backup_verified(&args.keystore, &identity)?;
+    let keystore_network =
+        WalletNetworkIdentity::new(identity.network_profile.clone(), identity.chain_id.clone())?;
     plan.verify_keystore_identity(&keystore_network)?;
     let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
     let mut snapshot = pending_store.load_or_new(&plan.network)?;
@@ -927,6 +1026,8 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     Ok(TxSignOutput {
         network: signed.network,
         review: signed.review,
+        protocol_binding_v2: signed.protocol_binding_v2,
+        protocol_authorization_v1: signed.protocol_authorization_v1,
         final_txid,
         relay: RelayEnvelope {
             transaction: signed.transaction,
@@ -966,6 +1067,9 @@ fn ensure_broadcast_reservation_binding(
 async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
     let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
     let signed = parse_signed_broadcast(&bytes)?;
+    if signed.protocol_binding_v2.is_none() {
+        return Err(invalid_input("wallet CLI refuses unbound legacy-v1 signed envelopes").into());
+    }
 
     // Complete all local/remote preflight before crossing the durable submit boundary.
     let prepared = prepare_broadcast(&args.relay, &signed).await?;
@@ -1068,8 +1172,8 @@ async fn run() -> CliResult<()> {
         }
         Command::WatchImport(args) => write_json(&run_watch_import(args)?),
         Command::BackupVerify(args) => {
-            let password = read_password_from_stdin()?;
-            write_json(&run_backup_verify(args, &password)?)
+            let secrets = read_restore_secrets_from_stdin()?;
+            write_json(&run_backup_verify(args, secrets)?)
         }
         Command::Balance(args) => write_json(&run_balance(args).await?),
         Command::Utxos(args) => write_json(&run_utxos(args).await?),
@@ -1077,7 +1181,7 @@ async fn run() -> CliResult<()> {
         Command::Pulse(args) => write_json(&run_pulse(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
-            write_json(&run_tx_preview(args, &password)?)
+            write_json(&run_tx_preview(args, password).await?)
         }
         Command::TxSign(args) => {
             let password = read_password_from_stdin()?;
@@ -1103,7 +1207,11 @@ async fn main() {
 mod tests {
     use std::io::Cursor;
 
-    use pulsedag_core::types::OutPoint;
+    use pulsedag_core::{
+        address_from_public_key,
+        types::{OutPoint, Utxo},
+        ProtocolActivationIdentity,
+    };
 
     use super::*;
 
@@ -1113,6 +1221,156 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_verification_receipt_is_required_before_spending_and_tamper_fails_closed() {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        const MNEMONIC: &str =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        const PASSWORD: &str = "backup-verification-cli-test";
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-backup-gate-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let keystore_path = dir.join("wallet.json");
+        let manifest_path = dir.join("watch.json");
+
+        let restore = run_restore(
+            RestoreArgs {
+                keystore: keystore_path.clone(),
+                network_profile: "testnet".to_string(),
+                chain_id: "pulsedag-testnet".to_string(),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
+        )
+        .expect("restore");
+        assert_eq!(
+            restore.initialization_state,
+            WalletInitializationState::BackupVerificationRequired
+        );
+
+        let identity = {
+            let keystore = WalletKeystoreFile::try_acquire(&keystore_path).unwrap();
+            let mut session =
+                unlocked_session(&keystore, &SecretString::new(PASSWORD)).expect("unlock");
+            let identity = session.status().identity.expect("identity");
+            assert!(require_backup_verified(&keystore_path, &identity).is_err());
+            session.lock();
+            identity
+        };
+
+        let manifest = run_watch_export(
+            WatchExportArgs {
+                keystore: keystore_path.clone(),
+                account: 0,
+                receive_count: 2,
+                change_count: 1,
+            },
+            &SecretString::new(PASSWORD),
+        )
+        .expect("watch export");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
+        )
+        .unwrap();
+
+        let verified = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: manifest_path,
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(MNEMONIC),
+                bip39_passphrase: None,
+            },
+        )
+        .expect("backup verify");
+        assert!(verified.verified);
+        assert_eq!(
+            verified.initialization_state,
+            WalletInitializationState::BackupVerified
+        );
+
+        let wrong_backup = run_backup_verify(
+            BackupVerifyArgs {
+                keystore: keystore_path.clone(),
+                manifest: dir.join("watch.json"),
+            },
+            RestoreSecrets {
+                password: SecretString::new(PASSWORD),
+                mnemonic: SecretString::new(
+                    "legal winner thank year wave sausage worth useful legal winner thank yellow",
+                ),
+                bip39_passphrase: None,
+            },
+        );
+        assert!(wrong_backup.is_err());
+        assert!(require_backup_verified(&keystore_path, &identity).is_ok());
+
+        let receipt_path = wallet_backup_verification_receipt_path(&keystore_path).unwrap();
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        receipt["signature_hex"] = serde_json::Value::String("00".repeat(64));
+        fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        assert!(require_backup_verified(&keystore_path, &identity).is_err());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn production_cli_refuses_unbound_v1_plan_and_accepts_bound_v2_plan() {
+        let sender = address_from_public_key(&"11".repeat(32));
+        let recipient = address_from_public_key(&"22".repeat(32));
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-testnet").unwrap();
+        let policy = WalletSpendPolicy::new(100, 1_000, 8).unwrap();
+        let intent = WalletTransactionIntent::new(&sender, &recipient, 400, 10).unwrap();
+        let available = [Utxo {
+            outpoint: OutPoint {
+                txid: "33".repeat(32),
+                index: 0,
+            },
+            address: sender,
+            amount: 1_000,
+            coinbase: false,
+            height: 10,
+        }];
+
+        let legacy = build_deterministic_transaction_plan_with_safety(
+            network,
+            policy,
+            intent,
+            &available,
+            WalletSafetyAcknowledgements::none(),
+        )
+        .unwrap();
+        assert!(validate_cli_signable_plan(&legacy).is_err());
+
+        let bound = legacy
+            .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+                "pulsedag-testnet",
+                "testnet-genesis",
+                "ghostdag-order-v1",
+            ))
+            .unwrap();
+        assert!(validate_cli_signable_plan(&bound).is_ok());
     }
 
     #[test]
@@ -1242,6 +1500,14 @@ mod tests {
     }
 
     #[test]
+    fn protocol_fingerprint_pin_requires_canonical_lowercase_sha256() {
+        assert!(validate_protocol_fingerprint_arg(&"11".repeat(32)).is_ok());
+        assert!(validate_protocol_fingerprint_arg(&"AA".repeat(32)).is_err());
+        assert!(validate_protocol_fingerprint_arg("abc").is_err());
+        assert!(validate_protocol_fingerprint_arg(&"gg".repeat(32)).is_err());
+    }
+
+    #[test]
     fn transaction_commands_parse_explicit_policy_and_signer_path() {
         assert!(matches!(
             parse_command_from(args(&[
@@ -1252,6 +1518,10 @@ mod tests {
                 "pending",
                 "--utxos-file",
                 "utxos.json",
+                "--relay",
+                "https://relay.example",
+                "--protocol-fingerprint",
+                "1111111111111111111111111111111111111111111111111111111111111111",
                 "--network-profile",
                 "public-testnet",
                 "--chain-id",
@@ -1411,6 +1681,10 @@ mod tests {
             "pending",
             "--utxos-file",
             "utxos.json",
+            "--relay",
+            "https://relay.example",
+            "--protocol-fingerprint",
+            "1111111111111111111111111111111111111111111111111111111111111111",
             "--network-profile",
             "public-testnet",
             "--chain-id",
@@ -1732,6 +2006,7 @@ mod tests {
             account: 0,
             entry_count: 2,
             checksum_hex: "11".repeat(32),
+            verification_receipt: "wallet.json.backup-verified.json".to_string(),
             initialization_state: WalletInitializationState::BackupVerified,
         };
         let verified_json =
@@ -1825,7 +2100,11 @@ mod tests {
                 keystore: keystore.clone(),
                 manifest: manifest_path.clone(),
             },
-            &SecretString::new(password_canary),
+            RestoreSecrets {
+                password: SecretString::new(password_canary),
+                mnemonic: SecretString::new(mnemonic_canary),
+                bip39_passphrase: Some(SecretString::new(passphrase_canary)),
+            },
         )
         .expect("verify backup against restored deterministic seed");
         assert!(verified.verified);
@@ -2005,7 +2284,13 @@ mod tests {
         let plan = pulsedag_wallet::build_deterministic_transaction_plan(
             network, policy, intent, &available,
         )
-        .expect("plan");
+        .expect("plan")
+        .bind_activated_v2_protocol(ProtocolActivationIdentity::activated_v2(
+            "pulsedag-public-testnet",
+            "cli-import-test-genesis",
+            "ghostdag-order-v1",
+        ))
+        .expect("bind activated-v2 protocol");
         fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(
             read_transaction_plan(&path)

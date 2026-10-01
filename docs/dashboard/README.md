@@ -1,12 +1,12 @@
 # PulseDAG operator dashboards
 
-The active v2.4.0 release-candidate/private-rehearsal observability package is versioned under:
+The active v3.0.0 release-candidate/private-rehearsal observability package is versioned under:
 
-- `ops/observability/v2.4.0/README.md`
-- `ops/observability/v2.4.0/metrics-inventory.json`
-- `ops/observability/v2.4.0/prometheus-scrape.example.yml`
-- `ops/observability/v2.4.0/alert-rules.yml`
-- `ops/observability/v2.4.0/grafana-dashboard.json`
+- `ops/observability/v3.0.0/README.md`
+- `ops/observability/v3.0.0/metrics-inventory.json`
+- `ops/observability/v3.0.0/prometheus-scrape.example.yml`
+- `ops/observability/v3.0.0/alert-rules.yml`
+- `ops/observability/v3.0.0/grafana-dashboard.json`
 
 The canonical exporter remains:
 
@@ -15,11 +15,11 @@ The canonical exporter remains:
 Validation commands:
 
 ```bash
-python3 scripts/validate_v2_4_0_observability.py
-bash scripts/tests/test_v2_4_0_observability.sh
+python3 scripts/validate_v3_0_0_observability.py
+bash scripts/tests/test_v3_0_0_observability.sh
 ```
 
-The compatibility command delegates to the active v2.4.0 validator:
+The compatibility command delegates to the active v3.0.0 validator:
 
 ```bash
 python3 scripts/validate_observability_package.py
@@ -27,13 +27,13 @@ python3 scripts/validate_observability_package.py
 
 ## Historical compatibility
 
-`ops/observability/v2.3.0/` and its validator/tests remain retained for historical private-testnet evidence. The exporter continues to accept a v2.3.0 inventory when explicitly selected or through its historical default. New v2.4.0 candidate/rehearsal evidence must use the v2.4.0 package explicitly.
+`ops/observability/v2.3.0/` and its validator/tests remain retained for historical private-testnet evidence. The exporter continues to accept a v2.3.0 inventory only when explicitly selected for historical compatibility; the default inventory is v3.0.0. New v3.0.0 candidate/rehearsal evidence must use the v3.0.0 package explicitly.
 
 The former **Operator Dashboard Package (v2.2)** is historical compatibility material only. Keeping that label documented preserves the release/RPC compatibility contract; it is not the active dashboard source of truth.
 
-## Supported v2.4.0 operator surfaces
+## Supported v3.0.0 operator surfaces
 
-The v2.4.0 package intentionally polls only read-only routes present in the `public_safe` RPC profile:
+The v3.0.0 package intentionally polls only read-only routes present in the `public_safe` RPC profile:
 
 - `GET /metrics` for commit/state-root, snapshot-verification, mining-submit actor, P2P recovery, selected-chain convergence and RPC-liveness counters;
 - `GET /status` for node height, peers, snapshot and degraded/stale status;
