@@ -294,6 +294,9 @@ def _skip_attribute(text: str, i: int) -> int:
         return i
     j = i + 1
     j = _skip_ws_and_comments(text, j)
+    if j < len(text) and text[j] == "!":
+        j += 1
+        j = _skip_ws_and_comments(text, j)
     if j >= len(text) or text[j] != "[":
         return i
     depth = 0
@@ -636,6 +639,29 @@ def _meta_cfg_value(meta: str) -> int:
     return evaluate_cfg_predicate(stripped[open_i + 1 : end - 1])
 
 
+def _meta_disables_item(meta: str) -> bool:
+    stripped = meta.strip()
+    cfg_match = re.match(r"cfg\s*\(", stripped)
+    if cfg_match:
+        lexed = code_source(stripped)
+        open_i = cfg_match.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return False
+        return evaluate_cfg_predicate(stripped[open_i + 1 : end - 1]) == CFG_FALSE
+
+    cfg_attr_match = re.match(r"cfg_attr\s*\(", stripped)
+    if cfg_attr_match:
+        lexed = code_source(stripped)
+        open_i = cfg_attr_match.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return False
+        return _cfg_attr_disables_item(stripped[open_i + 1 : end - 1])
+
+    return False
+
+
 def _cfg_attr_disables_item(attr_payload: str) -> bool:
     args = _split_top_level_args(attr_payload)
     if len(args) < 2:
@@ -645,7 +671,7 @@ def _cfg_attr_disables_item(attr_payload: str) -> bool:
         # Unknown means there is at least one plausible production build where
         # this attribute is inactive, so it cannot prove the item dead.
         return False
-    return any(_meta_cfg_value(meta) == CFG_FALSE for meta in args[1:])
+    return any(_meta_disables_item(meta) for meta in args[1:])
 
 
 def _cfg_item_span(text: str, attr_start: int):
@@ -826,7 +852,7 @@ def read_required(root: Path, path: str) -> str:
 
 def _preceding_keyword(text: str, offset: int):
     i = offset
-    while i > 0 and text[i - 1] in " \t":
+    while i > 0 and text[i - 1].isspace():
         i -= 1
     match = None
     for m in IDENT_RE.finditer(text[:i]):
@@ -1031,6 +1057,9 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "handles_raw_strings_in_chained_attributes": True,
             "ignores_cfg_inside_opaque_macro_tokens": True,
             "excludes_attribute_tokens_from_live_calls": True,
+            "handles_inner_attributes": True,
+            "expands_nested_cfg_attr": True,
+            "rejects_multiline_fn_definitions_as_calls": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1189,6 +1218,27 @@ def self_test() -> None:
     cfg_attr_prod = production_source(cfg_attr_dead)
     assert "cfg_attr_dead" not in cfg_attr_prod
     assert "block_subsidy(17)" in cfg_attr_prod
+
+    nested_cfg_attr_dead = (
+        "#[cfg_attr(all(), cfg_attr(all(), cfg(any())))]\n"
+        "fn nested_cfg_attr_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "fn after_nested_cfg_attr() { block_subsidy(20); }\n"
+    )
+    nested_cfg_attr_prod = production_source(nested_cfg_attr_dead)
+    assert "nested_cfg_attr_dead" not in nested_cfg_attr_prod
+    assert "block_subsidy(20)" in nested_cfg_attr_prod
+
+    inner_attribute_only = (
+        "#![cfg_attr(any(), allow(audit_monetary_state_v3(prepared, cadence)))]\n"
+        "fn boundary_without_inner_audit() {}\n"
+    )
+    assert not has_live_call(inner_attribute_only, "audit_monetary_state_v3")
+
+    multiline_definition = (
+        "fn\n"
+        "audit_monetary_state_v3(prepared: &State, cadence: &Cadence) {}\n"
+    )
+    assert not has_live_call(multiline_definition, "audit_monetary_state_v3")
 
     cfg_inside_macro = (
         "fn live_before() { block_subsidy(18); }\n"
