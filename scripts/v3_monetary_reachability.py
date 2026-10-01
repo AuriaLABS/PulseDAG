@@ -218,12 +218,11 @@ def _skip_string(text: str, i: int) -> int:
 
 def _skip_raw_string(text: str, i: int) -> int:
     j = i
-    if j < len(text) and text[j] in "br":
+    if j < len(text) and text[j] == "b":
         j += 1
-        if j < len(text) and text[j] in "br":
-            j += 1
-    if j >= len(text) or text[j] != "#":
+    if j >= len(text) or text[j] != "r":
         return i
+    j += 1
     hashes = 0
     while j < len(text) and text[j] == "#":
         hashes += 1
@@ -237,12 +236,7 @@ def _skip_raw_string(text: str, i: int) -> int:
 
 
 def _is_raw_string_start(text: str, i: int) -> bool:
-    j = i
-    if j < len(text) and text[j] in "br":
-        j += 1
-        if j < len(text) and text[j] in "br":
-            j += 1
-    return j < len(text) and text[j] == "#" and '"' in text[j:j + 16]
+    return _skip_raw_string(text, i) != i
 
 
 def _skip_ws_and_comments(text: str, i: int) -> int:
@@ -770,6 +764,8 @@ def self_test() -> None:
         "use crate::audit_monetary_state_v3;\n"
         "// audit_monetary_state_v3(fake);\n"
         "const NOTE: &str = \"audit_monetary_state_v3(fake)\";\n"
+        "const RAW: &str = r\"audit_monetary_state_v3(fake)\";\n"
+        "const RAW_HASH: &str = r#\"audit_monetary_state_v3(fake)\"#;\n"
     )
     assert not has_live_call(import_only, "audit_monetary_state_v3")
     real_call = code_source(
