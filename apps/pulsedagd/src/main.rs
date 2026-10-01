@@ -104,7 +104,6 @@ mod compact_relay_fast_sync_handoff_tests {
         assert!(!fast_sync_authority_requires_tip_probe(true, Some(98), 100));
         assert!(fast_sync_authority_requires_tip_probe(true, Some(95), 100));
     }
-
 }
 
 #[cfg(test)]

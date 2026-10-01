@@ -1158,12 +1158,8 @@ mod tests {
         // tip and persists a cleaned copy while the live P2P copy is now stale.
         let mut authority_runtime = live_runtime.clone();
         let mut pre_anchor = live.clone();
-        commit_ghostdag_v1_metadata_for_activated_v2(
-            &side,
-            &mut pre_anchor,
-            &expected_identity,
-        )
-        .unwrap();
+        commit_ghostdag_v1_metadata_for_activated_v2(&side, &mut pre_anchor, &expected_identity)
+            .unwrap();
         let anchor = finalized_block(
             &pre_anchor,
             &expected_identity,
@@ -1191,12 +1187,7 @@ mod tests {
             "parallel live runtime must still model the stale pre-RPC copy"
         );
 
-        let next = finalized_block(
-            &live,
-            &expected_identity,
-            vec![anchor.hash.clone()],
-            54,
-        );
+        let next = finalized_block(&live, &expected_identity, vec![anchor.hash.clone()], 54);
         let stale_hash = side.hash.clone();
         let mut persisted_clean_runtime = false;
         let driven = drive_activated_v2_p2p_block_with_runtime_persistence(
