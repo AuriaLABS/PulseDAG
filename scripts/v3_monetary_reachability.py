@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 3
+AUDITOR_VERSION = 4
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -165,7 +165,7 @@ REQUIRED_REGRESSION_MARKERS = {
         "legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation",
 }
 
-CFG_TEST_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(")\nCFG_ATTR_ATTR_RE = re.compile(r"#\[\s*cfg_attr\s*\(")
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 BLOCK_SUBSIDY_IDENT_RE = re.compile(r"\bblock_subsidy\b")
 ALIAS_RE = re.compile(r"\bblock_subsidy\s+as\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -304,6 +304,11 @@ def _skip_attribute(text: str, i: int) -> int:
         if text.startswith("/*", j):
             j = _skip_block_comment(text, j)
             continue
+        if _is_raw_string_start(text, j):
+            nxt = _skip_raw_string(text, j)
+            if nxt != j:
+                j = nxt
+                continue
         if ch == '"':
             j = _skip_string(text, j)
             continue
@@ -464,7 +469,176 @@ def _item_end_after_keyword(text: str, i: int) -> int:
     return len(text)
 
 
-def _cfg_test_item_span(text: str, attr_start: int):
+CFG_FALSE = -1
+CFG_UNKNOWN = 0
+CFG_TRUE = 1
+
+
+def _cfg_not(value: int) -> int:
+    if value == CFG_TRUE:
+        return CFG_FALSE
+    if value == CFG_FALSE:
+        return CFG_TRUE
+    return CFG_UNKNOWN
+
+
+class _CfgParser:
+    """Conservative Rust cfg evaluator for predicates decidable across production builds."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.i = 0
+
+    def _ws(self) -> None:
+        while self.i < len(self.text) and self.text[self.i].isspace():
+            self.i += 1
+
+    def _ident(self):
+        self._ws()
+        match = IDENT_RE.match(self.text, self.i)
+        if not match:
+            return None
+        self.i = match.end()
+        return match.group(0)
+
+    def _skip_value(self) -> None:
+        self._ws()
+        if self.i >= len(self.text):
+            return
+        if _is_raw_string_start(self.text, self.i):
+            self.i = _skip_raw_string(self.text, self.i)
+            return
+        if self.text[self.i] == '"':
+            self.i = _skip_string(self.text, self.i)
+            return
+        if self.text[self.i] == "'" or (
+            self.text[self.i] == "b"
+            and self.i + 1 < len(self.text)
+            and self.text[self.i + 1] == "'"
+        ):
+            nxt = _skip_char_literal(self.text, self.i)
+            if nxt != self.i:
+                self.i = nxt
+                return
+        while self.i < len(self.text) and self.text[self.i] not in ",)":
+            self.i += 1
+
+    def expr(self) -> int:
+        name = self._ident()
+        if name is None:
+            self._skip_value()
+            return CFG_UNKNOWN
+
+        self._ws()
+        if self.i < len(self.text) and self.text[self.i] == "=":
+            self.i += 1
+            self._skip_value()
+            return CFG_UNKNOWN
+
+        if self.i >= len(self.text) or self.text[self.i] != "(":
+            # `test` is never live in the production scan. Other atoms may be
+            # enabled by a target/feature/custom --cfg, so keep them potential-live.
+            return CFG_FALSE if name == "test" else CFG_UNKNOWN
+
+        self.i += 1
+        values = []
+        while True:
+            self._ws()
+            if self.i >= len(self.text):
+                return CFG_UNKNOWN
+            if self.text[self.i] == ")":
+                self.i += 1
+                break
+            values.append(self.expr())
+            self._ws()
+            if self.i < len(self.text) and self.text[self.i] == ",":
+                self.i += 1
+                continue
+            if self.i < len(self.text) and self.text[self.i] == ")":
+                self.i += 1
+                break
+            return CFG_UNKNOWN
+
+        if name == "not":
+            return _cfg_not(values[0]) if len(values) == 1 else CFG_UNKNOWN
+        if name == "all":
+            if any(value == CFG_FALSE for value in values):
+                return CFG_FALSE
+            if all(value == CFG_TRUE for value in values):
+                return CFG_TRUE
+            return CFG_UNKNOWN
+        if name == "any":
+            if any(value == CFG_TRUE for value in values):
+                return CFG_TRUE
+            if all(value == CFG_FALSE for value in values):
+                return CFG_FALSE
+            return CFG_UNKNOWN
+        return CFG_UNKNOWN
+
+
+def evaluate_cfg_predicate(predicate: str) -> int:
+    parser = _CfgParser(predicate)
+    value = parser.expr()
+    parser._ws()
+    return value if parser.i == len(predicate) else CFG_UNKNOWN
+
+
+def _attribute_call_bounds(lexed: str, match) -> tuple:
+    open_i = match.end() - 1
+    end = _skip_matching_delimiter(lexed, open_i)
+    if end <= open_i or end > len(lexed):
+        return (open_i, open_i)
+    return (open_i + 1, end - 1)
+
+
+def _split_top_level_args(text: str) -> list:
+    lexed = code_source(text)
+    args = []
+    start = 0
+    stack = []
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closers = set(pairs.values())
+    for i, ch in enumerate(lexed):
+        if ch in pairs:
+            stack.append(ch)
+        elif ch in closers:
+            if stack and pairs[stack[-1]] == ch:
+                stack.pop()
+        elif ch == "," and not stack:
+            args.append(text[start:i].strip())
+            start = i + 1
+    args.append(text[start:].strip())
+    return args
+
+
+def _meta_cfg_value(meta: str) -> int:
+    stripped = meta.strip()
+    if not stripped.startswith("cfg"):
+        return CFG_UNKNOWN
+    match = re.match(r"cfg\s*\(", stripped)
+    if not match:
+        return CFG_UNKNOWN
+    lexed = code_source(stripped)
+    open_i = match.end() - 1
+    end = _skip_matching_delimiter(lexed, open_i)
+    if end <= open_i:
+        return CFG_UNKNOWN
+    return evaluate_cfg_predicate(stripped[open_i + 1 : end - 1])
+
+
+def _cfg_attr_disables_item(attr_payload: str) -> bool:
+    args = _split_top_level_args(attr_payload)
+    if len(args) < 2:
+        return False
+    condition = evaluate_cfg_predicate(args[0])
+    if condition != CFG_TRUE:
+        # Unknown means there is at least one plausible production build where
+        # this attribute is inactive, so it cannot prove the item dead.
+        return False
+    return any(_meta_cfg_value(meta) == CFG_FALSE for meta in args[1:])
+
+
+def _cfg_item_span(text: str, attr_start: int):
     j = _skip_attribute(text, attr_start)
     if j == attr_start:
         return None
@@ -481,15 +655,31 @@ def _cfg_test_item_span(text: str, attr_start: int):
 
 
 def production_source(text: str) -> str:
-    """Blank every live-code #[cfg(test)] item; preserve later production code."""
+    """Blank items provably disabled in every production build; preserve potential live code."""
     chars = list(text)
     lexed = code_source(text)
-    for match in CFG_TEST_ATTR_RE.finditer(lexed):
-        span = _cfg_test_item_span(text, match.start())
+    disabled_starts = []
+
+    for match in CFG_ATTR_RE.finditer(lexed):
+        pred_start, pred_end = _attribute_call_bounds(lexed, match)
+        if pred_end <= pred_start:
+            continue
+        if evaluate_cfg_predicate(text[pred_start:pred_end]) == CFG_FALSE:
+            disabled_starts.append(match.start())
+
+    for match in CFG_ATTR_ATTR_RE.finditer(lexed):
+        payload_start, payload_end = _attribute_call_bounds(lexed, match)
+        if payload_end <= payload_start:
+            continue
+        if _cfg_attr_disables_item(text[payload_start:payload_end]):
+            disabled_starts.append(match.start())
+
+    for attr_start in sorted(set(disabled_starts)):
+        span = _cfg_item_span(text, attr_start)
         if span is None:
             continue
-        start, end = span
-        for k in range(start, end):
+        start, item_end = span
+        for k in range(start, item_end):
             if chars[k] != "\n":
                 chars[k] = " "
     return "".join(chars)
@@ -808,6 +998,9 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "strips_all_cfg_test_items": True,
             "handles_cfg_test_comma_items": True,
             "discovers_cfg_test_attributes_from_code_only": True,
+            "excludes_provably_disabled_cfg_items": True,
+            "evaluates_cfg_logic_conservatively": True,
+            "handles_raw_strings_in_chained_attributes": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -918,6 +1111,46 @@ def self_test() -> None:
     assert "OPEN" not in char_literal_prod
     assert "CLOSE" not in char_literal_prod
     assert "block_subsidy(15)" in char_literal_prod
+
+    raw_chained_attribute = (
+        '#[cfg(test)] #[doc = r##"x] y"##] fn helper() { block_subsidy(90); }\n'
+        'fn after_raw_attribute() { block_subsidy(16); }\n'
+    )
+    raw_attr_prod = production_source(raw_chained_attribute)
+    assert "helper" not in raw_attr_prod
+    assert "block_subsidy(16)" in raw_attr_prod
+
+    cfg_any_dead = (
+        "#[cfg(any())]\n"
+        "fn dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "fn unrelated_live() {}\n"
+    )
+    cfg_any_prod = production_source(cfg_any_dead)
+    assert not has_live_call(cfg_any_prod, "audit_monetary_state_v3")
+    assert "unrelated_live" in cfg_any_prod
+
+    cfg_logic = (
+        "#[cfg(all(not(test), any()))]\n"
+        "fn also_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "#[cfg(not(test))]\n"
+        "fn definitely_production() { audit_monetary_state_v3(prepared, cadence); }\n"
+        '#[cfg(any(test, target_os = "linux"))]\n'
+        "fn maybe_production() { audit_monetary_state_v3(prepared, cadence); }\n"
+    )
+    cfg_logic_prod = production_source(cfg_logic)
+    assert "also_dead" not in cfg_logic_prod
+    assert "definitely_production" in cfg_logic_prod
+    assert "maybe_production" in cfg_logic_prod
+    assert has_live_call(cfg_logic_prod, "audit_monetary_state_v3")
+
+    cfg_attr_dead = (
+        "#[cfg_attr(not(test), cfg(any()))]\n"
+        "fn cfg_attr_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "fn after_cfg_attr() { block_subsidy(17); }\n"
+    )
+    cfg_attr_prod = production_source(cfg_attr_dead)
+    assert "cfg_attr_dead" not in cfg_attr_prod
+    assert "block_subsidy(17)" in cfg_attr_prod
 
     import_only = code_source(
         "use crate::audit_monetary_state_v3;\n"
