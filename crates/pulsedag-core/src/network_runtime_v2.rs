@@ -59,18 +59,23 @@ impl ActivatedV2P2pRuntime {
     /// The authoritative chain always wins: once a hash exists in
     /// `state.dag.blocks`, retaining the same hash in staging/pending would
     /// make the next durable runtime snapshot invalid.
-    fn reconcile_authoritative_state(&mut self, state: &ChainState) {
+    fn reconcile_authoritative_state(&mut self, state: &ChainState) -> bool {
         let authoritative_staged = self
             .staging
             .hashes()
             .into_iter()
             .filter(|hash| state.dag.blocks.contains_key(hash))
             .collect::<Vec<_>>();
-        if !authoritative_staged.is_empty() {
+        let staged_changed = !authoritative_staged.is_empty();
+        if staged_changed {
             self.staging = self.staging.snapshot_without_hashes(&authoritative_staged);
         }
+
+        let pending_before = self.pending_missing.len();
         self.pending_missing
             .retain(|hash, _| !state.dag.blocks.contains_key(hash));
+
+        staged_changed || self.pending_missing.len() != pending_before
     }
 
     fn queue_missing(&mut self, block: Block) -> Result<(), PulseError> {
@@ -454,8 +459,18 @@ where
     // RPC mining and the live P2P loop serialize on ChainState but hold
     // separate in-memory runtime copies. Reconcile any transient hashes that a
     // parallel authoritative acceptance already committed before constructing
-    // the next durable runtime snapshot.
-    runtime.reconcile_authoritative_state(state);
+    // the next durable runtime snapshot. Persist this cleanup immediately:
+    // the next inbound block may itself be only a Duplicate and otherwise
+    // produce no runtime write before a restart.
+    let runtime_before_reconcile = runtime.clone();
+    if runtime.reconcile_authoritative_state(state) {
+        persist_runtime_only_or_rollback(
+            state,
+            runtime,
+            runtime_before_reconcile,
+            &mut persistence.persist_runtime,
+        )?;
+    }
 
     let mut primary = process_one_with_runtime_persistence(
         block.clone(),
@@ -1224,6 +1239,95 @@ mod tests {
         ));
         assert!(!live_runtime.staging().contains(&side.hash));
         assert!(live.dag.blocks.contains_key(&next.hash));
+    }
+
+    #[test]
+    fn authoritative_cleanup_is_persisted_even_when_next_block_is_duplicate() {
+        let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let genesis = base.dag.genesis_hash.clone();
+        let main = finalized_block(&base, &expected_identity, vec![genesis.clone()], 61);
+        let side = finalized_block(&base, &expected_identity, vec![genesis], 62);
+        let mut live =
+            prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
+        let mut live_runtime = ActivatedV2P2pRuntime::default();
+
+        let staged = drive_activated_v2_p2p_block_atomically(
+            side.clone(),
+            &mut live,
+            &mut live_runtime,
+            &expected_identity,
+            |_, _| panic!("side tip should remain transient"),
+            |_, _| panic!("side tip should remain transient"),
+            |_| panic!("side tip should not broadcast before promotion"),
+        )
+        .unwrap();
+        assert!(matches!(
+            staged.primary,
+            ActivatedV2P2pRuntimeOutcome::Staged { .. }
+        ));
+        assert!(live_runtime.staging().contains(&side.hash));
+
+        let mut authority_runtime = live_runtime.clone();
+        let mut pre_anchor = live.clone();
+        commit_ghostdag_v1_metadata_for_activated_v2(&side, &mut pre_anchor, &expected_identity)
+            .unwrap();
+        let anchor = finalized_block(
+            &pre_anchor,
+            &expected_identity,
+            vec![main.hash.clone(), side.hash.clone()],
+            63,
+        );
+        let promoted = drive_activated_v2_p2p_block_atomically(
+            anchor,
+            &mut live,
+            &mut authority_runtime,
+            &expected_identity,
+            |_, _| panic!("merge anchor should promote a bundle"),
+            |_, _| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(matches!(
+            promoted.primary,
+            ActivatedV2P2pRuntimeOutcome::Promoted { .. }
+        ));
+        assert!(live.dag.blocks.contains_key(&side.hash));
+        assert!(live_runtime.staging().contains(&side.hash));
+
+        let stale_hash = side.hash.clone();
+        let mut runtime_persist_calls = 0u64;
+        let driven = drive_activated_v2_p2p_block_with_runtime_persistence(
+            side.clone(),
+            &mut live,
+            &mut live_runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |prepared: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
+                    runtime_persist_calls = runtime_persist_calls.saturating_add(1);
+                    assert!(prepared.dag.blocks.contains_key(&stale_hash));
+                    assert!(!durable_runtime.staging().contains(&stale_hash));
+                    assert!(!durable_runtime.pending_contains(&stale_hash));
+                    Ok(())
+                },
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("duplicate must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("duplicate must not persist an accepted bundle")
+                },
+            ),
+            |_| panic!("duplicate must not broadcast"),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            driven.primary,
+            ActivatedV2P2pRuntimeOutcome::Duplicate { ref block_hash }
+                if block_hash == &side.hash
+        ));
+        assert_eq!(runtime_persist_calls, 1);
+        assert!(!live_runtime.staging().contains(&side.hash));
     }
 
     #[test]
