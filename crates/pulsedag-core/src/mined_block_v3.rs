@@ -84,10 +84,10 @@ mod tests {
     use super::*;
     use crate::{
         block_subsidy, build_activated_v2_mining_template, build_monetary_mining_template_v3,
-        compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
+        compute_block_hash_v2, compute_txid_v2, current_ts, finalize_monetary_mining_template_v3,
         genesis_v3::init_chain_state_v3, mining_template_v2::ActivatedV2MiningTemplateSpec,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
-        reward_settlement_v3::build_reward_claim_transaction_v3, validate_pow_for_protocol,
+        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol, Transaction,
+        TRANSACTION_VERSION_V2,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -112,6 +112,19 @@ mod tests {
             }
         }
         panic!("expected monetary-v3 PoW-limit fixture to find a valid nonce");
+    }
+
+    fn hidden_inputless_noop(chain_id: &str, nonce: u64) -> Transaction {
+        let mut transaction = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce,
+        };
+        transaction.txid = compute_txid_v2(&transaction, chain_id).unwrap();
+        transaction
     }
 
     #[test]
@@ -213,46 +226,77 @@ mod tests {
     }
 
     #[test]
-    fn accepted_state_audit_rejects_polluted_genesis_before_persist() {
+    fn accepted_state_audit_rejects_hidden_historical_issuance_before_persist() {
         let frozen_ts = current_ts().saturating_sub(10).max(1);
         let mut state =
             init_chain_state_v3("monetary-v3-audit-boundary".into(), frozen_ts).unwrap();
         let identity = identity(&state);
-        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
+
+        let first_timestamp = state.dag.blocks[&state.dag.genesis_hash]
             .header
             .timestamp
             .saturating_add(1);
-        let template = build_monetary_mining_template_v3(
+        let first_template = build_monetary_mining_template_v3(
             &state,
             &identity,
             &ONE_SECOND,
             "pulse1auditboundary",
             44,
-            timestamp,
+            first_timestamp,
             vec![],
         )
         .unwrap();
-        let finalized =
-            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &template)
+        let first_finalized =
+            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &first_template)
                 .unwrap();
-        let block = mine(finalized.block, &state, &identity);
+        let first_block = mine(first_finalized.block, &state, &identity);
+        let first_hash = first_block.hash.clone();
 
-        let genesis = state.dag.genesis_hash.clone();
-        let chain_id = state.chain_id.clone();
-        let forbidden =
-            build_reward_claim_transaction_v3("pulse1forbidden-genesis", 999, &chain_id).unwrap();
+        accept_monetary_v3_mined_block_atomically(
+            first_block,
+            &mut state,
+            AcceptSource::Rpc,
+            &identity,
+            &ONE_SECOND,
+            |_, _| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        let second_timestamp = state.dag.blocks[&first_hash]
+            .header
+            .timestamp
+            .saturating_add(1);
+        let second_template = build_monetary_mining_template_v3(
+            &state,
+            &identity,
+            &ONE_SECOND,
+            "pulse1auditboundary",
+            45,
+            second_timestamp,
+            vec![],
+        )
+        .unwrap();
+        let second_finalized =
+            finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &second_template)
+                .unwrap();
+        let second_block = mine(second_finalized.block, &state, &identity);
+
+        let hidden = hidden_inputless_noop(&state.chain_id, 9_999);
         state
             .dag
             .blocks
-            .get_mut(&genesis)
+            .get_mut(&first_hash)
             .unwrap()
             .transactions
-            .push(forbidden);
+            .push(hidden);
+
+        // The historical no-op does not change v2 replay UTXO/state-root output,
+        // but it is an additional inputless issuance path that the v3 audit must reject.
         let before = bincode::serialize(&state).unwrap();
         let mut persisted = false;
-
         let error = accept_monetary_v3_mined_block_atomically(
-            block,
+            second_block,
             &mut state,
             AcceptSource::Rpc,
             &identity,
