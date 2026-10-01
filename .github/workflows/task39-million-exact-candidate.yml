@@ -1,0 +1,192 @@
+name: v3.0 Task39 million exact-candidate replay
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/task39-million-exact-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task39-million-exact-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  million-exact-candidate:
+    name: deterministic + production-valid 1M replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BLOCK_COUNT: "1000000"
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 0
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+
+      - name: Format and strict Clippy for both replay engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --locked -p pulsedag-core --example task39_phase2a_replay -- -D warnings
+          cargo clippy --locked -p pulsedag-core --example task39_phase2b_production_valid -- -D warnings
+
+      - name: Run deterministic 1M replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task39-million"
+          cargo run --locked --release -p pulsedag-core --example task39_phase2a_replay -- \
+            --blocks "$BLOCK_COUNT" \
+            --window 32 \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --out "$RUNNER_TEMP/task39-million/phase2a.json"
+
+      - name: Enforce deterministic million-block contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-million/phase2a.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" --argjson blocks "$BLOCK_COUNT" '
+            .schema == "pulsedag.task39.phase2a-replay.v1" and
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .requested_blocks == $blocks and
+            .generated_blocks == $blocks and
+            .million_block_count_observed == true and
+            .topology.includes_parallel_blocks == true and
+            .topology.includes_multi_parent_joins == true and
+            .corpus_contract.metadata_replay_uses_production_ghostdag_classifier == true and
+            .corpus_contract.canonical_rebuild_uses_production_ordered_dag_state_rebuild == true and
+            .exact_equivalence == true and
+            (.runs | length) == 2 and
+            (.runs[0].observation.canonical_bundle_digest == .runs[1].observation.canonical_bundle_digest) and
+            (.runs[0].observation.selection_digest == .runs[1].observation.selection_digest) and
+            (.runs[0].observation.merge_set_digest == .runs[1].observation.merge_set_digest) and
+            (.runs[0].observation.ordered_dag_digest == .runs[1].observation.ordered_dag_digest) and
+            (.runs[0].observation.transaction_outcomes_digest == .runs[1].observation.transaction_outcomes_digest) and
+            (.runs[0].observation.state_digest == .runs[1].observation.state_digest) and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false
+          ' "$E" >/dev/null
+          sha256sum "$E" | tee "$RUNNER_TEMP/task39-million/phase2a.sha256"
+
+      - name: Run production-valid 1M replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --release -p pulsedag-core --example task39_phase2b_production_valid -- \
+            --blocks "$BLOCK_COUNT" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --out "$RUNNER_TEMP/task39-million/phase2b.json"
+
+      - name: Enforce production-valid million-block contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          E="$RUNNER_TEMP/task39-million/phase2b.json"
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" --argjson blocks "$BLOCK_COUNT" '
+            .schema == "pulsedag.task39.phase2b-production-valid.v1" and
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .requested_blocks == $blocks and
+            .production_validated_blocks == $blocks and
+            .million_block_count_observed == true and
+            .production_valid_pow_and_state_root_per_block == true and
+            .pow_failures == 0 and
+            .pow_attempts_total >= .production_validated_blocks and
+            .pow_attempts_max >= 1 and
+            .bounded_validation_context == true and
+            .max_context_blocks <= .retained_context_limit and
+            .max_utxo_entries <= 2 and
+            .retained_context_limit > .retarget_window_size and
+            .runtime_gate_result == "PASS" and
+            .coverage.completion_eligible == false
+          ' "$E" >/dev/null
+          sha256sum "$E" | tee "$RUNNER_TEMP/task39-million/phase2b.sha256"
+
+      - name: Build aggregate exact-candidate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$RUNNER_TEMP/task39-million/phase2a.json"
+          B="$RUNNER_TEMP/task39-million/phase2b.json"
+          A_SHA="$(sha256sum "$A" | awk '{print $1}')"
+          B_SHA="$(sha256sum "$B" | awk '{print $1}')"
+          jq -n \
+            --arg sha "$CANDIDATE_SHA" \
+            --arg tree "$CANDIDATE_TREE" \
+            --arg a_sha "$A_SHA" \
+            --arg b_sha "$B_SHA" \
+            --slurpfile a "$A" \
+            --slurpfile b "$B" \
+            '{
+              schema: "pulsedag.task39.phase2e-million-exact-candidate.v1",
+              candidate_sha: $sha,
+              candidate_tree_sha: $tree,
+              block_count: 1000000,
+              phase2a_evidence_sha256: $a_sha,
+              phase2b_evidence_sha256: $b_sha,
+              deterministic_exact_equivalence: $a[0].exact_equivalence,
+              deterministic_canonical_bundle_digest: $a[0].runs[0].observation.canonical_bundle_digest,
+              deterministic_selection_digest: $a[0].runs[0].observation.selection_digest,
+              deterministic_ordered_dag_digest: $a[0].runs[0].observation.ordered_dag_digest,
+              production_validated_blocks: $b[0].production_validated_blocks,
+              production_final_tip: $b[0].final_tip,
+              production_final_state_root: $b[0].final_state_root,
+              production_valid_pow_and_state_root_per_block: $b[0].production_valid_pow_and_state_root_per_block,
+              million_block_count_observed: (($a[0].million_block_count_observed == true) and ($b[0].million_block_count_observed == true)),
+              runtime_gate_result: (if (($a[0].runtime_gate_result == "PASS") and ($b[0].runtime_gate_result == "PASS")) then "PASS" else "FAIL" end),
+              completion_eligible: false,
+              production_cadence_selected: false
+            }' > "$RUNNER_TEMP/task39-million/aggregate.json"
+
+          jq -e --arg sha "$CANDIDATE_SHA" --arg tree "$CANDIDATE_TREE" '
+            .candidate_sha == $sha and
+            .candidate_tree_sha == $tree and
+            .block_count == 1000000 and
+            .deterministic_exact_equivalence == true and
+            .production_validated_blocks == 1000000 and
+            .production_valid_pow_and_state_root_per_block == true and
+            .million_block_count_observed == true and
+            .runtime_gate_result == "PASS" and
+            .completion_eligible == false and
+            .production_cadence_selected == false
+          ' "$RUNNER_TEMP/task39-million/aggregate.json" >/dev/null
+
+          sha256sum "$RUNNER_TEMP/task39-million/aggregate.json" | tee "$RUNNER_TEMP/task39-million/aggregate.sha256"
+
+      - name: Upload exact-candidate million replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-million-exact-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/task39-million
+          if-no-files-found: warn
+          retention-days: 14
