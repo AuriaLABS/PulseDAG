@@ -146,6 +146,8 @@ jobs:
             .claim_boundary.excludes_provably_disabled_cfg_items == true and
             .claim_boundary.evaluates_cfg_logic_conservatively == true and
             .claim_boundary.handles_raw_strings_in_chained_attributes == true and
+            .claim_boundary.ignores_cfg_inside_opaque_macro_tokens == true and
+            .claim_boundary.excludes_attribute_tokens_from_live_calls == true and
             .claim_boundary.tracks_legacy_aliases == true and
             .claim_boundary.verifies_live_call_expressions == true and
             .claim_boundary.authorizes_launch == false and
