@@ -201,6 +201,8 @@ jobs:
           }
           run_required pulsedag-core mined_block_v3::tests::legacy_height_subsidy_coinbase_is_rejected_under_monetary_activation mined_v3_rejects_legacy exact
           run_required pulsedag-core network_block_v3::tests::legacy_height_subsidy_block_is_rejected_before_p2p_staging p2p_v3_rejects_legacy exact
+          run_required pulsedag-core mined_block_v3::tests::accepted_state_audit_rejects_polluted_genesis_before_persist mined_v3_audit_boundary exact
+          run_required pulsedag-core network_block_v3::tests::accepted_state_audit_rejects_polluted_genesis_before_persist p2p_v3_audit_boundary exact
           run_required pulsedag-rpc monetary_v3_ rpc_monetary_v3
           run_required pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface rpc_legacy_mining_surfaces_disabled
           run_required pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup daemon_legacy_startup_fallback_disabled
@@ -208,6 +210,8 @@ jobs:
             echo "result=PASS"
             echo "mined_v3_rejects_legacy_height_subsidy=PASS"
             echo "p2p_v3_rejects_legacy_height_subsidy=PASS"
+            echo "mined_v3_audit_boundary=PASS"
+            echo "p2p_v3_audit_boundary=PASS"
             echo "rpc_legacy_mining_surfaces_disabled=PASS"
             echo "daemon_legacy_startup_fallback_disabled=PASS"
           } > ci-evidence/v3-monetary-policy/reachability-dynamic-tests.txt
