@@ -16,6 +16,7 @@ on:
       - crates/pulsedag-core/src/monetary_audit_v3.rs
       - crates/pulsedag-core/src/validation_v3.rs
       - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
       - crates/pulsedag-core/src/mining_template_v3.rs
       - crates/pulsedag-core/src/mined_block_v3.rs
       - crates/pulsedag-core/src/network_block_v3.rs
@@ -171,6 +172,7 @@ jobs:
           run_required pulsedag-core monetary_audit_v3::tests monetary_audit_v3_vectors
           run_required pulsedag-core validation_v3::tests validation_v3_vectors
           run_required pulsedag-core reward_settlement_v3::tests reward_settlement_v3_vectors
+          run_required pulsedag-core state_replay_v3::tests state_replay_v3_vectors
 
       - name: Run monetary RPC and legacy-fallback guards
         shell: bash
