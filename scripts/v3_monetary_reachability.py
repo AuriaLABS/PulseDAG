@@ -658,7 +658,7 @@ def _cfg_item_span(text: str, attr_start: int):
 def production_source(text: str) -> str:
     """Blank items provably disabled in every production build; preserve potential live code."""
     chars = list(text)
-    lexed = code_source(text)
+    lexed = macro_opaque_source(text)
     disabled_starts = []
 
     for match in CFG_ATTR_RE.finditer(lexed):
@@ -741,8 +741,8 @@ def _skip_matching_delimiter(text: str, i: int) -> int:
     return len(text)
 
 
-def executable_source(text: str) -> str:
-    """Blank comments, literals and opaque macro token trees, preserving offsets."""
+def macro_opaque_source(text: str) -> str:
+    """Blank comments/literals and opaque macro token-tree interiors."""
     source = code_source(text)
     chars = list(source)
     macro_re = re.compile(
@@ -757,6 +757,24 @@ def executable_source(text: str) -> str:
         for k in range(open_i + 1, max(open_i + 1, end - 1)):
             if chars[k] != "\n":
                 chars[k] = " "
+    return "".join(chars)
+
+
+def executable_source(text: str) -> str:
+    """Blank non-executable comments/literals/macros/attributes, preserving offsets."""
+    source = macro_opaque_source(text)
+    chars = list(source)
+    i = 0
+    while i < len(source):
+        if source[i] == "#":
+            end = _skip_attribute(source, i)
+            if end > i:
+                for k in range(i, end):
+                    if chars[k] != "\n":
+                        chars[k] = " "
+                i = end
+                continue
+        i += 1
     return "".join(chars)
 
 
@@ -1002,6 +1020,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "excludes_provably_disabled_cfg_items": True,
             "evaluates_cfg_logic_conservatively": True,
             "handles_raw_strings_in_chained_attributes": True,
+            "ignores_cfg_inside_opaque_macro_tokens": True,
+            "excludes_attribute_tokens_from_live_calls": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1152,6 +1172,21 @@ def self_test() -> None:
     cfg_attr_prod = production_source(cfg_attr_dead)
     assert "cfg_attr_dead" not in cfg_attr_prod
     assert "block_subsidy(17)" in cfg_attr_prod
+
+    cfg_inside_macro = (
+        "fn live_before() { block_subsidy(18); }\n"
+        "quote!(#[cfg(any())] fn generated() { block_subsidy(999); });\n"
+        "fn live_after_macro() { block_subsidy(19); }\n"
+    )
+    cfg_macro_prod = production_source(cfg_inside_macro)
+    assert "block_subsidy(18)" in cfg_macro_prod
+    assert "block_subsidy(19)" in cfg_macro_prod
+
+    attribute_only_call = (
+        "#[my_attr(audit_monetary_state_v3(prepared, cadence))]\n"
+        "fn boundary_without_audit() {}\n"
+    )
+    assert not has_live_call(attribute_only_call, "audit_monetary_state_v3")
 
     import_only = code_source(
         "use crate::audit_monetary_state_v3;\n"
