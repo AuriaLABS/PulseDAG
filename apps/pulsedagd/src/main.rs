@@ -3074,9 +3074,8 @@ async fn main() -> Result<()> {
                                     session.received_hashes.len() as u64;
                                 rt.active_session_applied_blocks =
                                     session.accepted_applied_hashes.len() as u64;
-                                rt.active_session_remaining_blocks = session
-                                    .remote_selected_height
-                                    .saturating_sub(local_height);
+                                rt.active_session_remaining_blocks =
+                                    session.remote_selected_height.saturating_sub(local_height);
                                 rt.selected_segment_blocks_applied_total = rt
                                     .selected_segment_blocks_applied_total
                                     .saturating_add(progress.applied_new);
@@ -3086,9 +3085,8 @@ async fn main() -> Result<()> {
                                         .saturating_add(1);
                                 }
                                 if progress.session_completed {
-                                    rt.sync_state = DagSyncStage::SelectedSegmentComplete
-                                        .as_str()
-                                        .to_string();
+                                    rt.sync_state =
+                                        DagSyncStage::SelectedSegmentComplete.as_str().to_string();
                                     rt.active_session_remaining_blocks = 0;
                                     rt.selected_segment_gap_blocks = 0;
                                     rt.active_session_id = None;
@@ -3190,9 +3188,8 @@ async fn main() -> Result<()> {
                                     rt.inflight_block_requests = block_requests.pending.len();
                                     rt.pending_block_request_hashes =
                                         block_requests.pending_hashes();
-                                    rt.sync_state = DagSyncStage::RequestingSelectedBlocks
-                                        .as_str()
-                                        .to_string();
+                                    rt.sync_state =
+                                        DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
                                     info!(
                                         event = "selected_segment_chunk_continued_after_orphan_adoption",
                                         session_id,
