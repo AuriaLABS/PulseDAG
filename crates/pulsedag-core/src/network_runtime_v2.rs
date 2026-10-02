@@ -966,10 +966,11 @@ mod tests {
         assert!(!imported.dag.blocks.contains_key(&local_tip.hash));
 
         let preserved = runtime.fast_sync_handoff_blocks_parent_first(&live, &imported);
-        let preserved_hashes = preserved
+        let mut preserved_hashes = preserved
             .iter()
             .map(|block| block.hash.clone())
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
+        preserved_hashes.sort();
         assert_eq!(preserved.len(), 2);
         assert!(preserved.iter().any(|block| block.hash == local_tip.hash));
         assert!(preserved.iter().any(|block| block.hash == staged_tip.hash));
