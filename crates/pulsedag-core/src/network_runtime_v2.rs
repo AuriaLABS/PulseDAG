@@ -80,6 +80,51 @@ impl ActivatedV2P2pRuntime {
         blocks
     }
 
+    /// Preserve every live block that can be lost when FastSync replaces the
+    /// authoritative state: transient staging/pending blocks plus the local
+    /// authoritative DAG frontier that the imported snapshot does not contain.
+    ///
+    /// Walking local tips back only until they intersect the imported DAG keeps
+    /// the handoff scoped to the divergent live frontier instead of replaying
+    /// historical blocks already covered by the snapshot.
+    pub fn fast_sync_handoff_blocks_parent_first(
+        &self,
+        live_state: &ChainState,
+        imported_state: &ChainState,
+    ) -> Vec<Block> {
+        let mut by_hash = self
+            .transient_blocks_parent_first()
+            .into_iter()
+            .filter(|block| !imported_state.dag.blocks.contains_key(&block.hash))
+            .map(|block| (block.hash.clone(), block))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut frontier = live_state.dag.tips.iter().cloned().collect::<Vec<_>>();
+        for block in by_hash.values() {
+            frontier.extend(block.header.parents.iter().cloned());
+        }
+
+        while let Some(hash) = frontier.pop() {
+            if imported_state.dag.blocks.contains_key(&hash) || by_hash.contains_key(&hash) {
+                continue;
+            }
+            let Some(block) = live_state.dag.blocks.get(&hash) else {
+                continue;
+            };
+            frontier.extend(block.header.parents.iter().cloned());
+            by_hash.insert(hash, block.clone());
+        }
+
+        let mut blocks = by_hash.into_values().collect::<Vec<_>>();
+        blocks.sort_by(|left, right| {
+            left.header
+                .height
+                .cmp(&right.header.height)
+                .then_with(|| left.hash.cmp(&right.hash))
+        });
+        blocks
+    }
+
     /// Drop transient entries that have become authoritative through another
     /// serialized acceptance surface (for example RPC mining) since this live
     /// runtime copy was last updated.
@@ -885,6 +930,70 @@ mod tests {
         assert!(imported_runtime.staging().contains(&side.hash));
         assert!(imported_runtime.staging().contains(&child.hash));
         assert!(imported_runtime.pending_is_empty());
+    }
+
+    #[test]
+    fn fast_sync_handoff_preserves_local_authoritative_tip_missing_from_import() {
+        let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let genesis = base.dag.genesis_hash.clone();
+        let local_tip = finalized_block(&base, &expected_identity, vec![genesis.clone()], 24);
+        let imported_tip = finalized_block(&base, &expected_identity, vec![genesis.clone()], 25);
+        let staged_tip = finalized_block(&base, &expected_identity, vec![genesis], 26);
+
+        let mut live =
+            prepare_activated_v2_p2p_block_state(&local_tip, &base, &expected_identity).unwrap();
+        let imported =
+            prepare_activated_v2_p2p_block_state(&imported_tip, &base, &expected_identity).unwrap();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+
+        let staged = drive_activated_v2_p2p_block_atomically(
+            staged_tip.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            |_, _| panic!("parallel tip must remain transient"),
+            |_, _| panic!("parallel tip must remain transient"),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(matches!(
+            staged.primary,
+            ActivatedV2P2pRuntimeOutcome::Staged { .. }
+        ));
+        assert!(live.dag.blocks.contains_key(&local_tip.hash));
+        assert!(runtime.staging().contains(&staged_tip.hash));
+        assert!(!imported.dag.blocks.contains_key(&local_tip.hash));
+
+        let preserved = runtime.fast_sync_handoff_blocks_parent_first(&live, &imported);
+        let preserved_hashes = preserved
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(preserved.len(), 2);
+        assert!(preserved.iter().any(|block| block.hash == local_tip.hash));
+        assert!(preserved.iter().any(|block| block.hash == staged_tip.hash));
+        assert!(!preserved.iter().any(|block| block.hash == imported_tip.hash));
+
+        let mut imported_state = imported;
+        let mut imported_runtime = ActivatedV2P2pRuntime::default();
+        for block in preserved {
+            drive_activated_v2_p2p_block_atomically(
+                block,
+                &mut imported_state,
+                &mut imported_runtime,
+                &expected_identity,
+                |_, _| Ok(()),
+                |_, _| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap();
+        }
+
+        assert!(imported_runtime.staging().contains(&local_tip.hash));
+        assert!(imported_runtime.staging().contains(&staged_tip.hash));
+        assert!(imported_runtime.pending_is_empty());
+        assert_eq!(preserved_hashes.len(), 2);
     }
 
     #[test]
