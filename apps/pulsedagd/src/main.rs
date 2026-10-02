@@ -126,9 +126,7 @@ mod compact_relay_fast_sync_handoff_tests {
                 .map(|block| block.hash.as_str()),
             Some(retained.hash.as_str())
         );
-        assert!(
-            select_live_getblock_response_block("unknown", &chain, Some(&retained)).is_none()
-        );
+        assert!(select_live_getblock_response_block("unknown", &chain, Some(&retained)).is_none());
     }
 
     #[test]
