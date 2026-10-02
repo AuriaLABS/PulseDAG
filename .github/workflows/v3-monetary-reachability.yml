@@ -73,6 +73,7 @@ jobs:
             .claim_boundary.evaluates_cfg_logic_conservatively == true and
             .claim_boundary.detects_contradictory_cfg_predicates == true and
             .claim_boundary.detects_contradictory_chained_cfg_attributes == true and
+            .claim_boundary.detects_cfg_attr_emitted_contradictions == true and
             .claim_boundary.handles_raw_strings_in_chained_attributes == true and
             .claim_boundary.ignores_cfg_inside_opaque_macro_tokens == true and
             .claim_boundary.excludes_attribute_tokens_from_live_calls == true and
@@ -80,6 +81,7 @@ jobs:
             .claim_boundary.expands_nested_cfg_attr == true and
             .claim_boundary.rejects_multiline_fn_definitions_as_calls == true and
             .claim_boundary.rejects_tuple_struct_declarations_as_calls == true and
+            .claim_boundary.rejects_tuple_enum_variant_declarations_as_calls == true and
             .claim_boundary.tracks_legacy_aliases == true and
             .claim_boundary.verifies_live_call_expressions == true and
             .claim_boundary.selects_production_cadence == false and
