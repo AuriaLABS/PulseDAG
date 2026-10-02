@@ -1,5 +1,4 @@
 use crate::{
-    audit_monetary_state_v3,
     errors::PulseError,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v3::validate_monetary_v3_p2p_staging_envelope,
@@ -10,7 +9,7 @@ use crate::{
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
+    validate_ordered_monetary_reward_v3,
     GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
@@ -39,12 +38,12 @@ fn audit_authoritative_monetary_state(
     state: &ChainState,
     cadence_segments: &[MonetaryCadenceSegment],
 ) -> Result<(), PulseError> {
-    audit_monetary_state_v3(state, cadence_segments)
+    crate::audit_monetary_state_v3(state, cadence_segments)
         .map(|_| ())
         .map_err(|error| {
             invalid_monetary_runtime(format!("authoritative monetary audit failed: {error}"))
         })?;
-    validate_live_reward_settlement_v3(
+    crate::validate_live_reward_settlement_v3(
         state,
         cadence_segments,
         GHOSTDAG_V1_FINALITY_POLICY_VERSION,
@@ -243,7 +242,7 @@ mod tests {
             |accepted, prepared, _| {
                 persisted = true;
                 assert_eq!(accepted.hash, expected_hash);
-                audit_monetary_state_v3(prepared, &ONE_SECOND).unwrap();
+                crate::audit_monetary_state_v3(prepared, &ONE_SECOND).unwrap();
                 Ok(())
             },
             |_, _, _| panic!("single finalizable block must not persist a bundle"),
