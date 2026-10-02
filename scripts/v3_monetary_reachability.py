@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 9
+AUDITOR_VERSION = 10
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -1157,6 +1157,33 @@ def has_live_qualified_call(text: str, path: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_]){qualified}\s*\(", source))
 
 
+def has_direct_top_level_qualified_call(text: str, path: str) -> bool:
+    """Require an unconditional qualified call as a direct top-level statement."""
+    source = executable_source(text)
+    parts = path.split("::")
+    if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
+        return False
+    qualified = r"\s*::\s*".join(re.escape(part) for part in parts)
+    call_re = re.compile(rf"(?<![A-Za-z0-9_]){qualified}\s*\(")
+
+    for match in call_re.finditer(source):
+        if _brace_depth_at(source, match.start()) != 0:
+            continue
+        statement_start = 0
+        depth = 0
+        for i, ch in enumerate(source[: match.start()]):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth = max(0, depth - 1)
+            elif ch == ";" and depth == 0:
+                statement_start = i + 1
+        if source[statement_start : match.start()].strip():
+            continue
+        return True
+    return False
+
+
 def rust_source_paths(root: Path) -> list:
     paths = []
     for base in ("crates", "apps"):
@@ -1403,7 +1430,9 @@ def required_local_call_hits(text: str, function_name: str, callees: list) -> di
         "function": function_name,
         "missing_definition": False,
         "missing_calls": [
-            callee for callee in callees if not has_live_qualified_call(body, callee)
+            callee
+            for callee in callees
+            if not has_direct_top_level_qualified_call(body, callee)
         ],
     }
 
@@ -1597,6 +1626,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "verifies_live_call_expressions": True,
             "pins_underlying_calls_to_required_local_authority_helpers": True,
             "pins_required_local_callees_to_crate_paths": True,
+            "requires_direct_top_level_local_authority_calls": True,
+            "requires_runtime_authority_dynamic_regression": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
@@ -2004,6 +2035,48 @@ def self_test() -> None:
         ["crate::audit_monetary_state_v3", "crate::validate_live_reward_settlement_v3"],
     )
     assert shadow_check["missing_calls"] == ["crate::audit_monetary_state_v3"]
+
+    nested_body_bypass = (
+        "fn audit_authoritative_monetary_state(state: &State) -> Result<(), Error> {\n"
+        "  fn unused(state: &State) { crate::audit_monetary_state_v3(state); }\n"
+        "  crate::validate_live_reward_settlement_v3(state)?;\n"
+        "  Ok(())\n"
+        "}\n"
+    )
+    nested_check = required_local_call_hits(
+        nested_body_bypass,
+        "audit_authoritative_monetary_state",
+        ["crate::audit_monetary_state_v3", "crate::validate_live_reward_settlement_v3"],
+    )
+    assert nested_check["missing_calls"] == ["crate::audit_monetary_state_v3"]
+
+    closure_body_bypass = (
+        "fn audit_authoritative_monetary_state(state: &State) -> Result<(), Error> {\n"
+        "  let _unused = || crate::audit_monetary_state_v3(state);\n"
+        "  crate::validate_live_reward_settlement_v3(state)?;\n"
+        "  Ok(())\n"
+        "}\n"
+    )
+    closure_check = required_local_call_hits(
+        closure_body_bypass,
+        "audit_authoritative_monetary_state",
+        ["crate::audit_monetary_state_v3", "crate::validate_live_reward_settlement_v3"],
+    )
+    assert closure_check["missing_calls"] == ["crate::audit_monetary_state_v3"]
+
+    conditional_body_bypass = (
+        "fn audit_authoritative_monetary_state(state: &State) -> Result<(), Error> {\n"
+        "  if false { crate::audit_monetary_state_v3(state); }\n"
+        "  crate::validate_live_reward_settlement_v3(state)?;\n"
+        "  Ok(())\n"
+        "}\n"
+    )
+    conditional_check = required_local_call_hits(
+        conditional_body_bypass,
+        "audit_authoritative_monetary_state",
+        ["crate::audit_monetary_state_v3", "crate::validate_live_reward_settlement_v3"],
+    )
+    assert conditional_check["missing_calls"] == ["crate::audit_monetary_state_v3"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
