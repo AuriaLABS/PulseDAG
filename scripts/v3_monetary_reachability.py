@@ -684,22 +684,68 @@ def _cfg_predicate_contradictory(predicate: str) -> bool:
     return contradiction or bool(positives & negatives)
 
 
-def _cfg_attribute_payload(attr_text: str):
+def _cfg_meta_predicates(meta: str) -> list:
+    """Return cfg predicates guaranteed to be emitted by one metadata item."""
+    stripped = meta.strip()
+    cfg_match = re.match(r"cfg\s*\(", stripped)
+    if cfg_match:
+        lexed = code_source(stripped)
+        open_i = cfg_match.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return []
+        return [stripped[open_i + 1 : end - 1]]
+
+    cfg_attr_match = re.match(r"cfg_attr\s*\(", stripped)
+    if cfg_attr_match:
+        lexed = code_source(stripped)
+        open_i = cfg_attr_match.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return []
+        args = _split_top_level_args(stripped[open_i + 1 : end - 1])
+        if len(args) < 2 or evaluate_cfg_predicate(args[0]) != CFG_TRUE:
+            return []
+        predicates = []
+        for nested in args[1:]:
+            predicates.extend(_cfg_meta_predicates(nested))
+        return predicates
+
+    return []
+
+
+def _cfg_attribute_predicates(attr_text: str) -> list:
+    """Return cfg predicates guaranteed by one Rust cfg/cfg_attr attribute."""
     stripped = attr_text.strip()
-    match = re.match(r"#\s*!?\s*\[\s*cfg\s*\(", stripped)
-    if not match:
-        return None
-    lexed = code_source(stripped)
-    open_i = match.end() - 1
-    end = _skip_matching_delimiter(lexed, open_i)
-    if end <= open_i:
-        return None
-    return stripped[open_i + 1 : end - 1]
+    direct = re.match(r"#\s*!?\s*\[\s*cfg\s*\(", stripped)
+    if direct:
+        lexed = code_source(stripped)
+        open_i = direct.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return []
+        return [stripped[open_i + 1 : end - 1]]
+
+    conditional = re.match(r"#\s*!?\s*\[\s*cfg_attr\s*\(", stripped)
+    if conditional:
+        lexed = code_source(stripped)
+        open_i = conditional.end() - 1
+        end = _skip_matching_delimiter(lexed, open_i)
+        if end <= open_i:
+            return []
+        args = _split_top_level_args(stripped[open_i + 1 : end - 1])
+        if len(args) < 2 or evaluate_cfg_predicate(args[0]) != CFG_TRUE:
+            return []
+        predicates = []
+        for meta in args[1:]:
+            predicates.extend(_cfg_meta_predicates(meta))
+        return predicates
+
+    return []
 
 
 def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
-    positives = set()
-    negatives = set()
+    predicates = []
     j = attr_start
     while True:
         j = _skip_ws_and_comments(text, j)
@@ -708,17 +754,11 @@ def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
         end = _skip_attribute(text, j)
         if end <= j:
             break
-        payload = _cfg_attribute_payload(text[j:end])
-        if payload is not None:
-            pos, neg, contradiction = _cfg_conjunction_literals(payload)
-            if contradiction:
-                return True
-            positives.update(pos)
-            negatives.update(neg)
-            if positives & negatives:
-                return True
+        predicates.extend(_cfg_attribute_predicates(text[j:end]))
         j = end
-    return False
+    if not predicates:
+        return False
+    return evaluate_cfg_predicate("all(" + ",".join(predicates) + ")") == CFG_FALSE
 
 
 def _meta_cfg_value(meta: str) -> int:
@@ -807,7 +847,10 @@ def production_source(text: str) -> str:
         payload_start, payload_end = _attribute_call_bounds(lexed, match)
         if payload_end <= payload_start:
             continue
-        if _cfg_attr_disables_item(text[payload_start:payload_end]):
+        if (
+            _cfg_attr_disables_item(text[payload_start:payload_end])
+            or _chained_cfg_attributes_contradict(text, match.start())
+        ):
             disabled_starts.append(match.start())
 
     for attr_start in sorted(set(disabled_starts)):
@@ -913,6 +956,29 @@ def executable_source(text: str) -> str:
     return "".join(chars)
 
 
+def _enclosing_brace_open(text: str, offset: int):
+    stack = []
+    for i, ch in enumerate(text[:offset]):
+        if ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            stack.pop()
+    return stack[-1] if stack else None
+
+
+def _is_enum_variant_declaration(text: str, offset: int) -> bool:
+    brace = _enclosing_brace_open(text, offset)
+    if brace is None:
+        return False
+    header = text[max(0, brace - 512) : brace]
+    if not re.search(r"\benum\b[^{};]*$", header):
+        return False
+    i = offset
+    while i > brace and text[i - 1].isspace():
+        i -= 1
+    return i == brace + 1 or (i > brace and text[i - 1] == ",")
+
+
 def live_call_offsets(text: str, name: str) -> list:
     """Return direct live call-expression offsets outside opaque macro token trees."""
     source = executable_source(text)
@@ -920,6 +986,8 @@ def live_call_offsets(text: str, name: str) -> list:
     offsets = []
     for match in call_re.finditer(source):
         if _preceding_keyword(source, match.start()) in {"fn", "struct"}:
+            continue
+        if _is_enum_variant_declaration(source, match.start()):
             continue
         offsets.append(match.start())
     return offsets
@@ -1156,6 +1224,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "evaluates_cfg_logic_conservatively": True,
             "detects_contradictory_cfg_predicates": True,
             "detects_contradictory_chained_cfg_attributes": True,
+            "detects_cfg_attr_emitted_contradictions": True,
             "handles_raw_strings_in_chained_attributes": True,
             "ignores_cfg_inside_opaque_macro_tokens": True,
             "excludes_attribute_tokens_from_live_calls": True,
@@ -1163,6 +1232,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "expands_nested_cfg_attr": True,
             "rejects_multiline_fn_definitions_as_calls": True,
             "rejects_tuple_struct_declarations_as_calls": True,
+            "rejects_tuple_enum_variant_declarations_as_calls": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1330,6 +1400,19 @@ def self_test() -> None:
         chained_contradictory_prod, "validate_live_reward_settlement_v3"
     )
 
+    cfg_attr_contradictory_cfg = (
+        "#[cfg(unix)]\n"
+        "#[cfg_attr(all(), cfg(not(unix)))]\n"
+        "fn cfg_attr_chained_dead() { validate_live_reward_settlement_v3(state); }\n"
+        "fn after_cfg_attr_contradiction() { block_subsidy(23); }\n"
+    )
+    cfg_attr_contradictory_prod = production_source(cfg_attr_contradictory_cfg)
+    assert "cfg_attr_chained_dead" not in cfg_attr_contradictory_prod
+    assert "block_subsidy(23)" in cfg_attr_contradictory_prod
+    assert not has_live_call(
+        cfg_attr_contradictory_prod, "validate_live_reward_settlement_v3"
+    )
+
     cfg_comment_dead = (
         "#[cfg(any(/* still empty */))]\n"
         "fn comment_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
@@ -1403,6 +1486,13 @@ def self_test() -> None:
     )
     assert not has_live_call(
         tuple_struct_only, "validate_live_reward_settlement_v3"
+    )
+
+    tuple_enum_variant_only = code_source(
+        "enum Local { validate_live_reward_settlement_v3(), Other }\n"
+    )
+    assert not has_live_call(
+        tuple_enum_variant_only, "validate_live_reward_settlement_v3"
     )
 
     stringify_only = code_source(
