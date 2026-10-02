@@ -9,8 +9,7 @@ use crate::{
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_ordered_monetary_reward_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    validate_ordered_monetary_reward_v3, GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
 fn invalid_monetary_runtime(message: impl Into<String>) -> PulseError {
@@ -176,8 +175,9 @@ where
 mod tests {
     use super::*;
     use crate::{
-        build_monetary_mining_template_v3, compute_block_hash_v2, current_ts,
-        finalize_monetary_mining_template_v3, genesis_v3::init_chain_state_v3,
+        build_monetary_mining_template_v3, build_reward_claim_transaction_v3,
+        compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
+        genesis_v3::init_chain_state_v3,
         ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol,
     };
 
@@ -256,6 +256,38 @@ mod tests {
             driven.primary,
             crate::ActivatedV2P2pRuntimeOutcome::Accepted { .. }
         ));
+    }
+
+    #[test]
+    fn authoritative_runtime_helper_executes_supply_audit() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
+        let mut state =
+            init_chain_state_v3("monetary-v3-runtime-authority-audit".into(), frozen_ts).unwrap();
+        let genesis = state.dag.genesis_hash.clone();
+        let forbidden =
+            build_reward_claim_transaction_v3("pulse1forbiddenruntime", 91, &state.chain_id)
+                .unwrap();
+        state
+            .dag
+            .blocks
+            .get_mut(&genesis)
+            .unwrap()
+            .transactions
+            .push(forbidden);
+
+        // Reward settlement deliberately ignores genesis issuance, so this proves
+        // the rejection below comes from the whole-history monetary supply audit.
+        crate::validate_live_reward_settlement_v3(
+            &state,
+            &ONE_SECOND,
+            GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+        )
+        .unwrap();
+
+        let error = audit_authoritative_monetary_state(&state, &ONE_SECOND).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("authoritative monetary audit failed"));
     }
 
     #[test]
