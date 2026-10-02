@@ -360,23 +360,14 @@ mod tests {
         )
         .unwrap();
 
+        // Build the second block while history is still clean. The deterministic
+        // per-height reward-claim nonce guarantees that the second claim does
+        // not collide with the first claim's v2 compatibility outpoint.
         let second_block = monetary_block(&state, &identity);
         assert_ne!(second_block.transactions[0].txid, first_claim_txid);
-        assert_eq!(
-            preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND),
-            ActivatedV2P2pDisposition::Finalizable
-        );
 
-        // Build the same prepared snapshot that the atomic P2P boundary hands
-        // to its monetary persistence callback, then inject the historical
-        // no-op only into that snapshot. Mutating live parent history before
-        // P2P preparation would correctly fail the activated-v2 envelope as
-        // malformed and would never exercise the monetary audit boundary.
-        let mut prepared =
-            prepare_monetary_v3_p2p_block_state(&second_block, &state, &identity, &ONE_SECOND)
-                .unwrap();
-        let hidden = hidden_inputless_noop(&prepared.chain_id, 10_001);
-        prepared
+        let hidden = hidden_inputless_noop(&state.chain_id, 10_001);
+        state
             .dag
             .blocks
             .get_mut(&first_hash)
@@ -384,22 +375,37 @@ mod tests {
             .transactions
             .push(hidden);
 
+        // The hidden historical no-op leaves the activated-v2 UTXO/state-root
+        // projection unchanged, so the underlying P2P preparation must still
+        // succeed. The v3 whole-history audit is the boundary that rejects it.
+        prepare_activated_v2_p2p_block_state(&second_block, &state, &identity).unwrap();
+        match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
+            ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
+                assert!(reason.contains("accepted-state monetary audit failed"));
+            }
+            other => panic!("expected monetary audit rejection, got {other:?}"),
+        }
+
         let before = bincode::serialize(&state).unwrap();
         let mut persisted = false;
-        let error = validate_and_persist_monetary_v3_p2p_prepared(
-            &second_block,
-            &prepared,
+        let accepted = accept_monetary_v3_p2p_block_atomically(
+            second_block,
+            &mut state,
+            AcceptSource::P2p,
+            &identity,
             &ONE_SECOND,
-            &mut |_, _| {
+            |_, _| {
                 persisted = true;
                 Ok(())
             },
+            |_| Ok(()),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error
-            .to_string()
-            .contains("accepted-state monetary audit failed"));
+        assert_eq!(accepted.result, BlockAcceptanceResult::Malformed);
+        assert!(!accepted.persisted);
+        assert!(!accepted.committed);
+        assert!(!accepted.broadcast);
         assert!(!persisted);
         assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
