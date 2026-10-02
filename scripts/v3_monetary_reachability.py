@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 4
+AUDITOR_VERSION = 5
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -590,6 +590,8 @@ class _CfgParser:
 
 
 def evaluate_cfg_predicate(predicate: str) -> int:
+    if _cfg_predicate_contradictory(predicate):
+        return CFG_FALSE
     parser = _CfgParser(predicate)
     value = parser.expr()
     parser._ws()
@@ -622,6 +624,101 @@ def _split_top_level_args(text: str) -> list:
             start = i + 1
     args.append(text[start:].strip())
     return args
+
+
+def _cfg_call_parts(expr: str):
+    stripped = expr.strip()
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
+    if not match:
+        return None
+    lexed = code_source(stripped)
+    open_i = match.end() - 1
+    end = _skip_matching_delimiter(lexed, open_i)
+    if end <= open_i or stripped[end:].strip():
+        return None
+    return (match.group(1), stripped[open_i + 1 : end - 1])
+
+
+def _cfg_literal_signature(expr: str):
+    parts = _cfg_call_parts(expr)
+    if parts is not None:
+        name, payload = parts
+        if name != "not":
+            return None
+        args = _split_top_level_args(payload)
+        if len(args) != 1:
+            return None
+        inner = _cfg_literal_signature(args[0])
+        if inner is None:
+            return None
+        key, positive = inner
+        return (key, not positive)
+
+    key = re.sub(r"\s+", "", expr.strip())
+    return (key, True) if key else None
+
+
+def _cfg_conjunction_literals(expr: str):
+    parts = _cfg_call_parts(expr)
+    if parts is not None and parts[0] == "all":
+        positives = set()
+        negatives = set()
+        contradiction = False
+        for arg in _split_top_level_args(parts[1]):
+            pos, neg, child_contradiction = _cfg_conjunction_literals(arg)
+            positives.update(pos)
+            negatives.update(neg)
+            contradiction = contradiction or child_contradiction
+        contradiction = contradiction or bool(positives & negatives)
+        return (positives, negatives, contradiction)
+
+    literal = _cfg_literal_signature(expr)
+    if literal is None:
+        return (set(), set(), False)
+    key, positive = literal
+    return ({key}, set(), False) if positive else (set(), {key}, False)
+
+
+def _cfg_predicate_contradictory(predicate: str) -> bool:
+    positives, negatives, contradiction = _cfg_conjunction_literals(predicate)
+    return contradiction or bool(positives & negatives)
+
+
+def _cfg_attribute_payload(attr_text: str):
+    stripped = attr_text.strip()
+    match = re.match(r"#\s*!?\s*\[\s*cfg\s*\(", stripped)
+    if not match:
+        return None
+    lexed = code_source(stripped)
+    open_i = match.end() - 1
+    end = _skip_matching_delimiter(lexed, open_i)
+    if end <= open_i:
+        return None
+    return stripped[open_i + 1 : end - 1]
+
+
+def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
+    positives = set()
+    negatives = set()
+    j = attr_start
+    while True:
+        j = _skip_ws_and_comments(text, j)
+        if j >= len(text) or text[j] != "#":
+            break
+        end = _skip_attribute(text, j)
+        if end <= j:
+            break
+        payload = _cfg_attribute_payload(text[j:end])
+        if payload is not None:
+            pos, neg, contradiction = _cfg_conjunction_literals(payload)
+            if contradiction:
+                return True
+            positives.update(pos)
+            negatives.update(neg)
+            if positives & negatives:
+                return True
+        j = end
+    return False
 
 
 def _meta_cfg_value(meta: str) -> int:
@@ -700,7 +797,10 @@ def production_source(text: str) -> str:
         pred_start, pred_end = _attribute_call_bounds(lexed, match)
         if pred_end <= pred_start:
             continue
-        if evaluate_cfg_predicate(text[pred_start:pred_end]) == CFG_FALSE:
+        if (
+            evaluate_cfg_predicate(text[pred_start:pred_end]) == CFG_FALSE
+            or _chained_cfg_attributes_contradict(text, match.start())
+        ):
             disabled_starts.append(match.start())
 
     for match in CFG_ATTR_ATTR_RE.finditer(lexed):
@@ -819,7 +919,7 @@ def live_call_offsets(text: str, name: str) -> list:
     call_re = re.compile(rf"\b{re.escape(name)}\s*\(")
     offsets = []
     for match in call_re.finditer(source):
-        if _preceding_keyword(source, match.start()) == "fn":
+        if _preceding_keyword(source, match.start()) in {"fn", "struct"}:
             continue
         offsets.append(match.start())
     return offsets
@@ -1054,12 +1154,15 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "discovers_cfg_test_attributes_from_code_only": True,
             "excludes_provably_disabled_cfg_items": True,
             "evaluates_cfg_logic_conservatively": True,
+            "detects_contradictory_cfg_predicates": True,
+            "detects_contradictory_chained_cfg_attributes": True,
             "handles_raw_strings_in_chained_attributes": True,
             "ignores_cfg_inside_opaque_macro_tokens": True,
             "excludes_attribute_tokens_from_live_calls": True,
             "handles_inner_attributes": True,
             "expands_nested_cfg_attr": True,
             "rejects_multiline_fn_definitions_as_calls": True,
+            "rejects_tuple_struct_declarations_as_calls": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1202,6 +1305,31 @@ def self_test() -> None:
     assert "maybe_production" in cfg_logic_prod
     assert has_live_call(cfg_logic_prod, "audit_monetary_state_v3")
 
+    contradictory_cfg = (
+        "#[cfg(all(unix, not(unix)))]\n"
+        "fn contradictory_dead() { validate_live_reward_settlement_v3(state); }\n"
+        "fn after_contradiction() { block_subsidy(21); }\n"
+    )
+    contradictory_prod = production_source(contradictory_cfg)
+    assert "contradictory_dead" not in contradictory_prod
+    assert "block_subsidy(21)" in contradictory_prod
+    assert not has_live_call(
+        contradictory_prod, "validate_live_reward_settlement_v3"
+    )
+
+    chained_contradictory_cfg = (
+        "#[cfg(unix)]\n"
+        "#[cfg(not(unix))]\n"
+        "fn chained_dead() { validate_live_reward_settlement_v3(state); }\n"
+        "fn after_chained_contradiction() { block_subsidy(22); }\n"
+    )
+    chained_contradictory_prod = production_source(chained_contradictory_cfg)
+    assert "chained_dead" not in chained_contradictory_prod
+    assert "block_subsidy(22)" in chained_contradictory_prod
+    assert not has_live_call(
+        chained_contradictory_prod, "validate_live_reward_settlement_v3"
+    )
+
     cfg_comment_dead = (
         "#[cfg(any(/* still empty */))]\n"
         "fn comment_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
@@ -1270,6 +1398,12 @@ def self_test() -> None:
     assert has_live_call(real_call, "audit_monetary_state_v3")
     definition_only = code_source("fn audit_monetary_state_v3(state: &State) {}\n")
     assert not has_live_call(definition_only, "audit_monetary_state_v3")
+    tuple_struct_only = code_source(
+        "fn boundary() { struct validate_live_reward_settlement_v3(); }\n"
+    )
+    assert not has_live_call(
+        tuple_struct_only, "validate_live_reward_settlement_v3"
+    )
 
     stringify_only = code_source(
         "fn boundary() { "
