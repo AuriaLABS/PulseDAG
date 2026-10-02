@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 6
+AUDITOR_VERSION = 7
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -765,33 +765,80 @@ def _cfg_attribute_constraints(attr_text: str):
     return ([], [])
 
 
-def _cfg_constraints_prove_false(predicates: list, rules: list) -> bool:
-    """Conservatively prove an attribute conjunction impossible across production builds."""
-    active = list(dict.fromkeys(predicate for predicate in predicates if predicate.strip()))
+def _cfg_formula_atoms(expr: str) -> set:
+    parts = _cfg_call_parts(expr)
+    if parts is not None:
+        name, payload = parts
+        args = [arg for arg in _split_top_level_args(payload) if arg]
+        if name in {"all", "any"}:
+            atoms = set()
+            for arg in args:
+                atoms.update(_cfg_formula_atoms(arg))
+            return atoms
+        if name == "not" and len(args) == 1:
+            return _cfg_formula_atoms(args[0])
 
-    def combined(extra=None):
-        parts = list(active)
-        if extra:
-            parts.append(extra)
-        return "all(" + ",".join(parts) + ")"
+    key = re.sub(r"\s+", "", expr.strip())
+    if not key or key == "test":
+        return set()
+    return {key}
 
-    if evaluate_cfg_predicate(combined()) == CFG_FALSE:
+
+def _cfg_formula_eval(expr: str, assignment: dict) -> bool:
+    parts = _cfg_call_parts(expr)
+    if parts is not None:
+        name, payload = parts
+        args = [arg for arg in _split_top_level_args(payload) if arg]
+        if name == "all":
+            return all(_cfg_formula_eval(arg, assignment) for arg in args)
+        if name == "any":
+            return any(_cfg_formula_eval(arg, assignment) for arg in args)
+        if name == "not" and len(args) == 1:
+            return not _cfg_formula_eval(args[0], assignment)
+
+    key = re.sub(r"\s+", "", expr.strip())
+    if key == "test":
+        return False
+    return assignment.get(key, False)
+
+
+def _cfg_formula_satisfiable(formulas: list) -> bool:
+    """Return whether the conservative production cfg formula has any assignment."""
+    atoms = sorted(
+        {
+            atom
+            for formula in formulas
+            for atom in _cfg_formula_atoms(formula)
+        }
+    )
+    # Keep the static audit fail-closed against performance abuse: beyond this
+    # small exact domain, retain the item instead of claiming it is unreachable.
+    if len(atoms) > 16:
         return True
 
-    changed = True
-    while changed:
-        changed = False
-        for condition, predicate in rules:
-            # If active constraints plus !condition are impossible, condition is
-            # guaranteed on every build where the item can otherwise survive.
-            if evaluate_cfg_predicate(combined(f"not({condition})")) != CFG_FALSE:
-                continue
-            if predicate not in active:
-                active.append(predicate)
-                changed = True
-                if evaluate_cfg_predicate(combined()) == CFG_FALSE:
-                    return True
-    return evaluate_cfg_predicate(combined()) == CFG_FALSE
+    for mask in range(1 << len(atoms)):
+        assignment = {
+            atom: bool(mask & (1 << index))
+            for index, atom in enumerate(atoms)
+        }
+        if all(_cfg_formula_eval(formula, assignment) for formula in formulas):
+            return True
+    return False
+
+
+def _cfg_constraints_prove_false(predicates: list, rules: list) -> bool:
+    """Prove an item unreachable from direct cfgs plus cfg_attr implications."""
+    formulas = [predicate for predicate in predicates if predicate.strip()]
+    for condition, predicate in rules:
+        # cfg_attr(condition, cfg(predicate)) means the emitted predicate is
+        # required exactly on builds satisfying condition: condition -> predicate.
+        formulas.append(f"any(not({condition}),{predicate})")
+
+    if not formulas:
+        return False
+    if any(evaluate_cfg_predicate(formula) == CFG_FALSE for formula in formulas):
+        return True
+    return not _cfg_formula_satisfiable(formulas)
 
 
 def _cfg_chain_constraints(text: str, attr_start: int):
@@ -881,24 +928,37 @@ def _cfg_item_span(text: str, attr_start: int):
     return (attr_start, _item_end_after_keyword(text, j))
 
 
-def _inner_cfg_disabled_scope(text: str, lexed: str, match, is_cfg_attr: bool):
-    payload_start, payload_end = _attribute_call_bounds(lexed, match)
-    if payload_end <= payload_start:
-        return None
-    if is_cfg_attr:
-        disabled = _cfg_attr_disables_item(text[payload_start:payload_end])
-    else:
-        disabled = evaluate_cfg_predicate(text[payload_start:payload_end]) == CFG_FALSE
-    if not disabled:
-        return None
+def _inner_cfg_disabled_scopes(text: str, lexed: str) -> list:
+    """Combine every inner cfg/cfg_attr applying to the same enclosing scope."""
+    groups = {}
+    seen = set()
+    for regex in (INNER_CFG_ATTR_RE, INNER_CFG_ATTR_ATTR_RE):
+        for match in regex.finditer(lexed):
+            start = match.start()
+            if start in seen:
+                continue
+            seen.add(start)
+            end = _skip_attribute(text, start)
+            if end <= start:
+                continue
+            brace = _enclosing_brace_open(lexed, start)
+            key = -1 if brace is None else brace
+            predicates, rules = groups.setdefault(key, ([], []))
+            direct, conditional = _cfg_attribute_constraints(text[start:end])
+            predicates.extend(direct)
+            rules.extend(conditional)
 
-    brace = _enclosing_brace_open(lexed, match.start())
-    if brace is None:
-        return (0, len(text))
-    end = _skip_matching_braces(lexed, brace)
-    if end <= brace:
-        return None
-    return (brace + 1, max(brace + 1, end - 1))
+    scopes = []
+    for brace, (predicates, rules) in groups.items():
+        if not _cfg_constraints_prove_false(predicates, rules):
+            continue
+        if brace == -1:
+            scopes.append((0, len(text)))
+            continue
+        end = _skip_matching_braces(lexed, brace)
+        if end > brace:
+            scopes.append((brace + 1, max(brace + 1, end - 1)))
+    return scopes
 
 
 def production_source(text: str) -> str:
@@ -907,15 +967,7 @@ def production_source(text: str) -> str:
     lexed = macro_opaque_source(text)
     disabled_starts = []
 
-    disabled_scopes = []
-    for match in INNER_CFG_ATTR_RE.finditer(lexed):
-        scope = _inner_cfg_disabled_scope(text, lexed, match, False)
-        if scope is not None:
-            disabled_scopes.append(scope)
-    for match in INNER_CFG_ATTR_ATTR_RE.finditer(lexed):
-        scope = _inner_cfg_disabled_scope(text, lexed, match, True)
-        if scope is not None:
-            disabled_scopes.append(scope)
+    disabled_scopes = _inner_cfg_disabled_scopes(text, lexed)
 
     for match in CFG_ATTR_RE.finditer(lexed):
         pred_start, pred_end = _attribute_call_bounds(lexed, match)
@@ -1179,8 +1231,13 @@ def _brace_depth_at(text: str, offset: int) -> int:
     return depth
 
 
+def _pattern_binds_name(pattern: str, name: str) -> bool:
+    source = code_source(pattern)
+    return any(match.group(0) == name for match in IDENT_RE.finditer(source))
+
+
 def required_symbol_shadow_hits(text: str, name: str, allow_top_level_definition: bool) -> list:
-    """Reject local declarations/bindings that can redirect a required callee name."""
+    """Reject declarations and Rust bindings that can redirect a required callee name."""
     source = executable_source(text)
     hits = []
 
@@ -1199,24 +1256,80 @@ def required_symbol_shadow_hits(text: str, name: str, allow_top_level_definition
         ):
             allowed_top_level_seen = True
             continue
-        hits.append({"kind": f"{kind}_declaration", "line": line_for_offset(source, match.start())})
+        hits.append(
+            {"kind": f"{kind}_declaration", "line": line_for_offset(source, match.start())}
+        )
 
-    patterns = [
-        ("let_binding", re.compile(rf"\blet\s+(?:mut\s+)?{re.escape(name)}\b")),
-        ("for_binding", re.compile(rf"\bfor\s+{re.escape(name)}\b")),
+    # let / if let / while let patterns, including tuple/struct destructuring.
+    let_pattern_re = re.compile(r"\b(?:if\s+let|while\s+let|let)\b([^=;]+)=")
+    for match in let_pattern_re.finditer(source):
+        if _pattern_binds_name(match.group(1), name):
+            hits.append(
+                {"kind": "let_pattern_binding", "line": line_for_offset(source, match.start())}
+            )
+
+    # for PAT in ITER
+    for_pattern_re = re.compile(r"\bfor\s+([^;{}]+?)\s+in\b")
+    for match in for_pattern_re.finditer(source):
+        if _pattern_binds_name(match.group(1), name):
+            hits.append(
+                {"kind": "for_pattern_binding", "line": line_for_offset(source, match.start())}
+            )
+
+    # Function parameter patterns, including tuple/struct destructuring.
+    fn_re = re.compile(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*\(")
+    for match in fn_re.finditer(source):
+        open_i = source.find("(", match.start(), match.end())
+        end = _skip_matching_delimiter(source, open_i)
+        if end <= open_i:
+            continue
+        for arg in _split_top_level_args(source[open_i + 1 : end - 1]):
+            pattern = arg.split(":", 1)[0]
+            if _pattern_binds_name(pattern, name):
+                hits.append(
+                    {
+                        "kind": "parameter_pattern_binding",
+                        "line": line_for_offset(source, match.start()),
+                    }
+                )
+
+    # Closure parameters. Treat any occurrence in the parameter token list as
+    # a binding because function authority names are not meaningful type paths there.
+    closure_re = re.compile(r"\|([^|\n]*)\|")
+    for match in closure_re.finditer(source):
+        if _pattern_binds_name(match.group(1), name):
+            hits.append(
+                {"kind": "closure_pattern_binding", "line": line_for_offset(source, match.start())}
+            )
+
+    # Match-arm patterns: take the token segment before => and strip a guard.
+    for arrow in re.finditer(r"=>", source):
+        start = max(
+            source.rfind(",", 0, arrow.start()),
+            source.rfind("{", 0, arrow.start()),
+            source.rfind("\n", 0, arrow.start()),
+        )
+        segment = source[start + 1 : arrow.start()]
+        pattern = re.split(r"\s+if\s+", segment, maxsplit=1)[0]
+        if _pattern_binds_name(pattern, name):
+            hits.append(
+                {"kind": "match_pattern_binding", "line": line_for_offset(source, arrow.start())}
+            )
+
+    # Explicit @-patterns and aliases remain useful independent sentinels.
+    for kind, pattern in [
         ("pattern_binding", re.compile(rf"\b{re.escape(name)}\s*@")),
         ("alias_binding", re.compile(rf"\bas\s+{re.escape(name)}\b")),
-        ("parameter_binding", re.compile(rf"(?:\(|,)\s*(?:mut\s+)?{re.escape(name)}\s*:")),
-        ("closure_binding", re.compile(rf"\|[^|\n]*\b{re.escape(name)}\b[^|\n]*\|")),
-    ]
-    for kind, pattern in patterns:
+    ]:
         for match in pattern.finditer(source):
             hits.append({"kind": kind, "line": line_for_offset(source, match.start())})
 
     use_re = re.compile(rf"\buse\b[^;\n]*\b{re.escape(name)}\b[^;\n]*;")
     for match in use_re.finditer(source):
         if _brace_depth_at(source, match.start()) > 0:
-            hits.append({"kind": "local_use_shadow", "line": line_for_offset(source, match.start())})
+            hits.append(
+                {"kind": "local_use_shadow", "line": line_for_offset(source, match.start())}
+            )
 
     return hits
 
@@ -1378,7 +1491,9 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "detects_contradictory_chained_cfg_attributes": True,
             "detects_cfg_attr_emitted_contradictions": True,
             "evaluates_conditional_cfg_attr_under_active_constraints": True,
+            "solves_disjunctive_cfg_attr_constraint_formulas": True,
             "applies_inner_cfg_to_enclosing_scope": True,
+            "combines_inner_cfg_constraints_per_scope": True,
             "handles_raw_strings_in_chained_attributes": True,
             "ignores_cfg_inside_opaque_macro_tokens": True,
             "excludes_attribute_tokens_from_live_calls": True,
@@ -1388,6 +1503,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "rejects_tuple_struct_declarations_as_calls": True,
             "rejects_tuple_enum_variant_declarations_as_calls": True,
             "rejects_required_symbol_shadowing": True,
+            "detects_destructuring_pattern_shadowing": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1578,6 +1694,17 @@ def self_test() -> None:
     assert "conditional_dead" not in conditional_cfg_attr_prod
     assert "block_subsidy(24)" in conditional_cfg_attr_prod
 
+    disjunctive_cfg_attr_dead = (
+        "#[cfg(any(unix, windows))]\n"
+        "#[cfg_attr(unix, cfg(not(unix)))]\n"
+        "#[cfg_attr(windows, cfg(not(windows)))]\n"
+        "fn disjunctive_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "fn after_disjunctive_cfg_attr() { block_subsidy(26); }\n"
+    )
+    disjunctive_cfg_attr_prod = production_source(disjunctive_cfg_attr_dead)
+    assert "disjunctive_dead" not in disjunctive_cfg_attr_prod
+    assert "block_subsidy(26)" in disjunctive_cfg_attr_prod
+
     cfg_comment_dead = (
         "#[cfg(any(/* still empty */))]\n"
         "fn comment_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
@@ -1620,6 +1747,18 @@ def self_test() -> None:
     inner_cfg_prod = production_source(inner_cfg_dead_module)
     assert not has_live_call(inner_cfg_prod, "audit_monetary_state_v3")
     assert "block_subsidy(25)" in inner_cfg_prod
+
+    combined_inner_cfg_dead_module = (
+        "mod dead {\n"
+        "  #![cfg(unix)]\n"
+        "  #![cfg_attr(unix, cfg(not(unix)))]\n"
+        "  fn fake() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "}\n"
+        "fn after_combined_inner_cfg() { block_subsidy(27); }\n"
+    )
+    combined_inner_cfg_prod = production_source(combined_inner_cfg_dead_module)
+    assert not has_live_call(combined_inner_cfg_prod, "audit_monetary_state_v3")
+    assert "block_subsidy(27)" in combined_inner_cfg_prod
 
     multiline_definition = (
         "fn\n"
@@ -1677,6 +1816,35 @@ def self_test() -> None:
     )
     assert required_symbol_shadow_hits(
         shadowed_required_call, "audit_monetary_state_v3", False
+    )
+
+    destructured_shadow = (
+        "fn boundary() {\n"
+        "  let (audit_monetary_state_v3,) = (|_: i32| {},);\n"
+        "  audit_monetary_state_v3(1);\n"
+        "}\n"
+    )
+    assert required_symbol_shadow_hits(
+        destructured_shadow, "audit_monetary_state_v3", False
+    )
+
+    if_let_shadow = (
+        "fn boundary(v: Option<fn(i32)>) {\n"
+        "  if let Some(audit_monetary_state_v3) = v { audit_monetary_state_v3(1); }\n"
+        "}\n"
+    )
+    assert required_symbol_shadow_hits(
+        if_let_shadow, "audit_monetary_state_v3", False
+    )
+
+    match_shadow = (
+        "fn boundary(v: Option<fn(i32)>) { match v {\n"
+        "  Some(audit_monetary_state_v3) => audit_monetary_state_v3(1),\n"
+        "  None => {},\n"
+        "} }\n"
+    )
+    assert required_symbol_shadow_hits(
+        match_shadow, "audit_monetary_state_v3", False
     )
 
     stringify_only = code_source(
