@@ -969,7 +969,9 @@ mod tests {
         assert_eq!(preserved.len(), 2);
         assert!(preserved.iter().any(|block| block.hash == local_tip.hash));
         assert!(preserved.iter().any(|block| block.hash == staged_tip.hash));
-        assert!(!preserved.iter().any(|block| block.hash == imported_tip.hash));
+        assert!(!preserved
+            .iter()
+            .any(|block| block.hash == imported_tip.hash));
 
         let mut imported_state = imported;
         let mut imported_runtime = ActivatedV2P2pRuntime::default();

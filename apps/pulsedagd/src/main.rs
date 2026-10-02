@@ -66,11 +66,23 @@ fn should_send_getblock_response(request_id: Option<&str>, block_found: bool) ->
     block_found || request_id.is_some()
 }
 
+fn select_live_getblock_response_block<'a>(
+    hash: &str,
+    chain: &'a pulsedag_core::state::ChainState,
+    retained_block: Option<&'a pulsedag_core::types::Block>,
+) -> Option<&'a pulsedag_core::types::Block> {
+    chain
+        .dag
+        .blocks
+        .get(hash)
+        .or_else(|| retained_block.filter(|block| block.hash == hash))
+}
+
 #[cfg(test)]
 mod compact_relay_fast_sync_handoff_tests {
     use super::{
         fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
-        should_send_getblock_response,
+        select_live_getblock_response_block, should_send_getblock_response,
     };
 
     #[test]
@@ -95,6 +107,28 @@ mod compact_relay_fast_sync_handoff_tests {
         assert!(should_send_getblock_response(None, true));
         assert!(should_send_getblock_response(Some("request-1"), false));
         assert!(should_send_getblock_response(Some("request-1"), true));
+    }
+
+    #[test]
+    fn getblock_can_serve_activated_v2_retained_block_outside_authoritative_dag() {
+        let chain = pulsedag_core::genesis::init_chain_state("getblock-retained-test".to_string());
+        let mut retained = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .expect("genesis block")
+            .clone();
+        retained.hash = "activated-v2-retained".to_string();
+
+        assert!(!chain.dag.blocks.contains_key(&retained.hash));
+        assert_eq!(
+            select_live_getblock_response_block(&retained.hash, &chain, Some(&retained))
+                .map(|block| block.hash.as_str()),
+            Some(retained.hash.as_str())
+        );
+        assert!(
+            select_live_getblock_response_block("unknown", &chain, Some(&retained)).is_none()
+        );
     }
 
     #[test]
@@ -1165,11 +1199,11 @@ fn validate_selected_header_segment(
         {
             return Err("cycle");
         }
-        if item
+        if !item
             .header
             .parents
             .iter()
-            .any(|parent| !staged.contains(parent))
+            .any(|parent| staged.contains(parent))
         {
             return Err("unknown_or_unstaged_parent");
         }
@@ -6992,7 +7026,12 @@ async fn main() -> Result<()> {
                     InboundEvent::GetBlock { hash, request_id } => {
                         let block = {
                             let guard = chain.read().await;
-                            guard.dag.blocks.get(&hash).cloned()
+                            select_live_getblock_response_block(
+                                &hash,
+                                &guard,
+                                activated_v2_p2p_runtime.staging().get(&hash),
+                            )
+                            .cloned()
                         }
                         .or_else(|| match storage.get_block(&hash) {
                             Ok(block) => block,
@@ -9479,12 +9518,34 @@ mod tests {
     }
 
     #[test]
+    fn selected_segment_validation_allows_unknown_merge_parents_on_parent_first_path() {
+        let known = HashSet::from(["common".to_string()]);
+        let mut first = selected_test_header("b1", "common", 514);
+        first.header.parents.push("unknown-merge-a".to_string());
+        let mut second = selected_test_header("b2", "b1", 515);
+        second.header.parents.push("unknown-merge-b".to_string());
+
+        assert_eq!(
+            validate_selected_header_segment("common", &[first, second], &known),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn selected_segment_validation_rejects_invalid_segment() {
         let known = HashSet::from(["common".to_string()]);
         let bad = vec![selected_test_header("b1", "unknown", 514)];
         assert_eq!(
             validate_selected_header_segment("common", &bad, &known),
             Err("first_header_not_connected_to_common_ancestor")
+        );
+        let disconnected = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "unknown", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &disconnected, &known),
+            Err("unknown_or_unstaged_parent")
         );
         let dup = vec![
             selected_test_header("b1", "common", 514),
