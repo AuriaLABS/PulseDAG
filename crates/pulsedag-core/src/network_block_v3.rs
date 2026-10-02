@@ -226,13 +226,15 @@ mod tests {
             .last()
             .cloned()
             .unwrap_or_else(|| state.dag.genesis_hash.clone());
-        let timestamp = state.dag.blocks[&parent].header.timestamp.saturating_add(1);
+        let parent_block = &state.dag.blocks[&parent];
+        let timestamp = parent_block.header.timestamp.saturating_add(1);
+        let claim_nonce = parent_block.header.height.saturating_add(1);
         let template = build_monetary_mining_template_v3(
             state,
             identity,
             &ONE_SECOND,
             "pulse1p2pminer",
-            1,
+            claim_nonce,
             timestamp,
             vec![],
         )
@@ -346,6 +348,7 @@ mod tests {
 
         let first_block = monetary_block(&state, &identity);
         let first_hash = first_block.hash.clone();
+        let first_claim_txid = first_block.transactions[0].txid.clone();
         accept_monetary_v3_p2p_block_atomically(
             first_block,
             &mut state,
@@ -358,6 +361,7 @@ mod tests {
         .unwrap();
 
         let second_block = monetary_block(&state, &identity);
+        assert_ne!(second_block.transactions[0].txid, first_claim_txid);
         assert_eq!(
             preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND),
             ActivatedV2P2pDisposition::Finalizable
