@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 7
+AUDITOR_VERSION = 8
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -176,6 +176,15 @@ REQUIRED_LOCAL_DEFINITIONS = {
     },
     "crates/pulsedag-core/src/network_runtime_v3.rs": {
         "audit_authoritative_monetary_state",
+    },
+}
+
+REQUIRED_LOCAL_CALLS = {
+    "crates/pulsedag-core/src/network_runtime_v3.rs": {
+        "audit_authoritative_monetary_state": [
+            "audit_monetary_state_v3",
+            "validate_live_reward_settlement_v3",
+        ],
     },
 }
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1334,6 +1343,59 @@ def required_symbol_shadow_hits(text: str, name: str, allow_top_level_definition
     return hits
 
 
+def _local_function_body(text: str, function_name: str):
+    """Return one production function body, or None if the definition is missing/ambiguous."""
+    source = executable_source(text)
+    definition_re = re.compile(rf"\bfn\s+{re.escape(function_name)}\b")
+    matches = list(definition_re.finditer(source))
+    if len(matches) != 1:
+        return None
+
+    match = matches[0]
+    i = match.end()
+    paren_depth = 0
+    bracket_depth = 0
+    angle_depth = 0
+    while i < len(source):
+        ch = source[i]
+        if ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif ch == "[":
+            bracket_depth += 1
+        elif ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif ch == "<" and _looks_like_generic_start(source, i):
+            angle_depth += 1
+        elif ch == ">" and angle_depth:
+            angle_depth -= 1
+        elif ch == "{" and paren_depth == 0 and bracket_depth == 0 and angle_depth == 0:
+            end = _skip_matching_braces(source, i)
+            if end <= i:
+                return None
+            return source[i + 1 : end - 1]
+        elif ch == ";" and paren_depth == 0 and bracket_depth == 0 and angle_depth == 0:
+            return None
+        i += 1
+    return None
+
+
+def required_local_call_hits(text: str, function_name: str, callees: list) -> dict:
+    body = _local_function_body(text, function_name)
+    if body is None:
+        return {
+            "function": function_name,
+            "missing_definition": True,
+            "missing_calls": list(callees),
+        }
+    return {
+        "function": function_name,
+        "missing_definition": False,
+        "missing_calls": [callee for callee in callees if not has_live_call(body, callee)],
+    }
+
+
 def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
     errors = []
     definitions = []
@@ -1436,6 +1498,19 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
                     f"required v3 symbol shadowing in {path} for {name}: {hits!r}"
                 )
 
+    local_call_checks = []
+    for path, functions in REQUIRED_LOCAL_CALLS.items():
+        text = production_source(read_required(root, path))
+        for function_name, callees in functions.items():
+            check = required_local_call_hits(text, function_name, callees)
+            check["path"] = path
+            local_call_checks.append(check)
+            if check["missing_definition"] or check["missing_calls"]:
+                errors.append(
+                    "required local authority calls missing in "
+                    f"{path}::{function_name}: {check!r}"
+                )
+
     regression_checks = []
     for path, marker in REQUIRED_REGRESSION_MARKERS.items():
         text = read_required(root, path)
@@ -1477,6 +1552,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         "required_live_guard_checks": marker_checks,
         "required_live_call_checks": call_checks,
         "required_symbol_shadow_checks": shadow_checks,
+        "required_local_call_checks": local_call_checks,
         "required_regression_checks": regression_checks,
         "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
         "claim_boundary": {
@@ -1507,6 +1583,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
+            "pins_underlying_calls_to_required_local_authority_helpers": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
@@ -1869,6 +1946,36 @@ def self_test() -> None:
         "}\n"
     )
     assert not has_live_call(byte_char_in_macro, "audit_monetary_state_v3")
+
+    local_authority = (
+        "fn audit_authoritative_monetary_state(state: &State) -> Result<(), Error> {\n"
+        "  audit_monetary_state_v3(state)?;\n"
+        "  validate_live_reward_settlement_v3(state)?;\n"
+        "  Ok(())\n"
+        "}\n"
+        "fn unrelated() { audit_monetary_state_v3(other); }\n"
+    )
+    local_check = required_local_call_hits(
+        local_authority,
+        "audit_authoritative_monetary_state",
+        ["audit_monetary_state_v3", "validate_live_reward_settlement_v3"],
+    )
+    assert not local_check["missing_definition"]
+    assert local_check["missing_calls"] == []
+
+    local_authority_bypass = (
+        "fn audit_authoritative_monetary_state(state: &State) -> Result<(), Error> {\n"
+        "  validate_live_reward_settlement_v3(state)?;\n"
+        "  Ok(())\n"
+        "}\n"
+        "fn unrelated() { audit_monetary_state_v3(other); }\n"
+    )
+    bypass_check = required_local_call_hits(
+        local_authority_bypass,
+        "audit_authoritative_monetary_state",
+        ["audit_monetary_state_v3", "validate_live_reward_settlement_v3"],
+    )
+    assert bypass_check["missing_calls"] == ["audit_monetary_state_v3"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
