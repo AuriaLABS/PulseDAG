@@ -138,7 +138,7 @@ jobs:
             --out ci-evidence/v3-monetary-policy/reachability.json
           jq -e '
             .result == "PASS" and
-            .auditor_version == 8 and
+            .auditor_version == 9 and
             (.monetary_policy_fingerprint | type) == "string" and
             .claim_boundary.proves_static_live_authority_shape == true and
             .claim_boundary.strips_all_cfg_test_items == true and
@@ -165,6 +165,7 @@ jobs:
             .claim_boundary.tracks_legacy_aliases == true and
             .claim_boundary.verifies_live_call_expressions == true and
             .claim_boundary.pins_underlying_calls_to_required_local_authority_helpers == true and
+            .claim_boundary.pins_required_local_callees_to_crate_paths == true and
             .claim_boundary.authorizes_launch == false and
             (.legacy_height_subsidy_authority.unexpected_live_calls | length) == 0 and
             (.legacy_height_subsidy_authority.live_aliases | length) == 0 and
