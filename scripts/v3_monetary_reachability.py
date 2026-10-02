@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 5
+AUDITOR_VERSION = 6
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -167,6 +167,17 @@ REQUIRED_REGRESSION_MARKERS = {
 
 CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(")
 CFG_ATTR_ATTR_RE = re.compile(r"#\[\s*cfg_attr\s*\(")
+INNER_CFG_ATTR_RE = re.compile(r"#!\[\s*cfg\s*\(")
+INNER_CFG_ATTR_ATTR_RE = re.compile(r"#!\[\s*cfg_attr\s*\(")
+
+REQUIRED_LOCAL_DEFINITIONS = {
+    "crates/pulsedag-core/src/network_block_v3.rs": {
+        "validate_monetary_v3_p2p_staging_envelope",
+    },
+    "crates/pulsedag-core/src/network_runtime_v3.rs": {
+        "audit_authoritative_monetary_state",
+    },
+}
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 BLOCK_SUBSIDY_IDENT_RE = re.compile(r"\bblock_subsidy\b")
 ALIAS_RE = re.compile(r"\bblock_subsidy\s+as\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -684,8 +695,16 @@ def _cfg_predicate_contradictory(predicate: str) -> bool:
     return contradiction or bool(positives & negatives)
 
 
-def _cfg_meta_predicates(meta: str) -> list:
-    """Return cfg predicates guaranteed to be emitted by one metadata item."""
+def _cfg_combine_conditions(left: str, right: str) -> str:
+    if evaluate_cfg_predicate(left) == CFG_TRUE:
+        return right
+    if evaluate_cfg_predicate(right) == CFG_TRUE:
+        return left
+    return f"all({left},{right})"
+
+
+def _cfg_meta_rules(meta: str, parent_condition: str = "all()") -> list:
+    """Return (condition, predicate) rules for cfgs emitted by metadata."""
     stripped = meta.strip()
     cfg_match = re.match(r"cfg\s*\(", stripped)
     if cfg_match:
@@ -694,7 +713,8 @@ def _cfg_meta_predicates(meta: str) -> list:
         end = _skip_matching_delimiter(lexed, open_i)
         if end <= open_i:
             return []
-        return [stripped[open_i + 1 : end - 1]]
+        predicate = stripped[open_i + 1 : end - 1]
+        return [(parent_condition, predicate)]
 
     cfg_attr_match = re.match(r"cfg_attr\s*\(", stripped)
     if cfg_attr_match:
@@ -704,18 +724,19 @@ def _cfg_meta_predicates(meta: str) -> list:
         if end <= open_i:
             return []
         args = _split_top_level_args(stripped[open_i + 1 : end - 1])
-        if len(args) < 2 or evaluate_cfg_predicate(args[0]) != CFG_TRUE:
+        if len(args) < 2:
             return []
-        predicates = []
+        condition = _cfg_combine_conditions(parent_condition, args[0])
+        rules = []
         for nested in args[1:]:
-            predicates.extend(_cfg_meta_predicates(nested))
-        return predicates
+            rules.extend(_cfg_meta_rules(nested, condition))
+        return rules
 
     return []
 
 
-def _cfg_attribute_predicates(attr_text: str) -> list:
-    """Return cfg predicates guaranteed by one Rust cfg/cfg_attr attribute."""
+def _cfg_attribute_constraints(attr_text: str):
+    """Return (direct predicates, conditional emitted-cfg rules) for one attribute."""
     stripped = attr_text.strip()
     direct = re.match(r"#\s*!?\s*\[\s*cfg\s*\(", stripped)
     if direct:
@@ -723,8 +744,8 @@ def _cfg_attribute_predicates(attr_text: str) -> list:
         open_i = direct.end() - 1
         end = _skip_matching_delimiter(lexed, open_i)
         if end <= open_i:
-            return []
-        return [stripped[open_i + 1 : end - 1]]
+            return ([], [])
+        return ([stripped[open_i + 1 : end - 1]], [])
 
     conditional = re.match(r"#\s*!?\s*\[\s*cfg_attr\s*\(", stripped)
     if conditional:
@@ -732,20 +753,50 @@ def _cfg_attribute_predicates(attr_text: str) -> list:
         open_i = conditional.end() - 1
         end = _skip_matching_delimiter(lexed, open_i)
         if end <= open_i:
-            return []
+            return ([], [])
         args = _split_top_level_args(stripped[open_i + 1 : end - 1])
-        if len(args) < 2 or evaluate_cfg_predicate(args[0]) != CFG_TRUE:
-            return []
-        predicates = []
+        if len(args) < 2:
+            return ([], [])
+        rules = []
         for meta in args[1:]:
-            predicates.extend(_cfg_meta_predicates(meta))
-        return predicates
+            rules.extend(_cfg_meta_rules(meta, args[0]))
+        return ([], rules)
 
-    return []
+    return ([], [])
 
 
-def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
+def _cfg_constraints_prove_false(predicates: list, rules: list) -> bool:
+    """Conservatively prove an attribute conjunction impossible across production builds."""
+    active = list(dict.fromkeys(predicate for predicate in predicates if predicate.strip()))
+
+    def combined(extra=None):
+        parts = list(active)
+        if extra:
+            parts.append(extra)
+        return "all(" + ",".join(parts) + ")"
+
+    if evaluate_cfg_predicate(combined()) == CFG_FALSE:
+        return True
+
+    changed = True
+    while changed:
+        changed = False
+        for condition, predicate in rules:
+            # If active constraints plus !condition are impossible, condition is
+            # guaranteed on every build where the item can otherwise survive.
+            if evaluate_cfg_predicate(combined(f"not({condition})")) != CFG_FALSE:
+                continue
+            if predicate not in active:
+                active.append(predicate)
+                changed = True
+                if evaluate_cfg_predicate(combined()) == CFG_FALSE:
+                    return True
+    return evaluate_cfg_predicate(combined()) == CFG_FALSE
+
+
+def _cfg_chain_constraints(text: str, attr_start: int):
     predicates = []
+    rules = []
     j = attr_start
     while True:
         j = _skip_ws_and_comments(text, j)
@@ -754,11 +805,16 @@ def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
         end = _skip_attribute(text, j)
         if end <= j:
             break
-        predicates.extend(_cfg_attribute_predicates(text[j:end]))
+        direct, conditional = _cfg_attribute_constraints(text[j:end])
+        predicates.extend(direct)
+        rules.extend(conditional)
         j = end
-    if not predicates:
-        return False
-    return evaluate_cfg_predicate("all(" + ",".join(predicates) + ")") == CFG_FALSE
+    return (predicates, rules)
+
+
+def _chained_cfg_attributes_contradict(text: str, attr_start: int) -> bool:
+    predicates, rules = _cfg_chain_constraints(text, attr_start)
+    return _cfg_constraints_prove_false(predicates, rules)
 
 
 def _meta_cfg_value(meta: str) -> int:
@@ -803,12 +859,10 @@ def _cfg_attr_disables_item(attr_payload: str) -> bool:
     args = _split_top_level_args(attr_payload)
     if len(args) < 2:
         return False
-    condition = evaluate_cfg_predicate(args[0])
-    if condition != CFG_TRUE:
-        # Unknown means there is at least one plausible production build where
-        # this attribute is inactive, so it cannot prove the item dead.
-        return False
-    return any(_meta_disables_item(meta) for meta in args[1:])
+    rules = []
+    for meta in args[1:]:
+        rules.extend(_cfg_meta_rules(meta, args[0]))
+    return _cfg_constraints_prove_false([], rules)
 
 
 def _cfg_item_span(text: str, attr_start: int):
@@ -827,11 +881,41 @@ def _cfg_item_span(text: str, attr_start: int):
     return (attr_start, _item_end_after_keyword(text, j))
 
 
+def _inner_cfg_disabled_scope(text: str, lexed: str, match, is_cfg_attr: bool):
+    payload_start, payload_end = _attribute_call_bounds(lexed, match)
+    if payload_end <= payload_start:
+        return None
+    if is_cfg_attr:
+        disabled = _cfg_attr_disables_item(text[payload_start:payload_end])
+    else:
+        disabled = evaluate_cfg_predicate(text[payload_start:payload_end]) == CFG_FALSE
+    if not disabled:
+        return None
+
+    brace = _enclosing_brace_open(lexed, match.start())
+    if brace is None:
+        return (0, len(text))
+    end = _skip_matching_braces(lexed, brace)
+    if end <= brace:
+        return None
+    return (brace + 1, max(brace + 1, end - 1))
+
+
 def production_source(text: str) -> str:
     """Blank items provably disabled in every production build; preserve potential live code."""
     chars = list(text)
     lexed = macro_opaque_source(text)
     disabled_starts = []
+
+    disabled_scopes = []
+    for match in INNER_CFG_ATTR_RE.finditer(lexed):
+        scope = _inner_cfg_disabled_scope(text, lexed, match, False)
+        if scope is not None:
+            disabled_scopes.append(scope)
+    for match in INNER_CFG_ATTR_ATTR_RE.finditer(lexed):
+        scope = _inner_cfg_disabled_scope(text, lexed, match, True)
+        if scope is not None:
+            disabled_scopes.append(scope)
 
     for match in CFG_ATTR_RE.finditer(lexed):
         pred_start, pred_end = _attribute_call_bounds(lexed, match)
@@ -859,6 +943,11 @@ def production_source(text: str) -> str:
             continue
         start, item_end = span
         for k in range(start, item_end):
+            if chars[k] != "\n":
+                chars[k] = " "
+
+    for start, end in disabled_scopes:
+        for k in range(start, end):
             if chars[k] != "\n":
                 chars[k] = " "
     return "".join(chars)
@@ -1080,6 +1169,58 @@ def alias_call_hits(text: str, names):
     return hits
 
 
+def _brace_depth_at(text: str, offset: int) -> int:
+    depth = 0
+    for ch in text[:offset]:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+    return depth
+
+
+def required_symbol_shadow_hits(text: str, name: str, allow_top_level_definition: bool) -> list:
+    """Reject local declarations/bindings that can redirect a required callee name."""
+    source = executable_source(text)
+    hits = []
+
+    declaration_re = re.compile(
+        rf"\b(fn|struct|enum|union|type|const|static|mod)\s+{re.escape(name)}\b"
+    )
+    allowed_top_level_seen = False
+    for match in declaration_re.finditer(source):
+        kind = match.group(1)
+        depth = _brace_depth_at(source, match.start())
+        if (
+            allow_top_level_definition
+            and kind == "fn"
+            and depth == 0
+            and not allowed_top_level_seen
+        ):
+            allowed_top_level_seen = True
+            continue
+        hits.append({"kind": f"{kind}_declaration", "line": line_for_offset(source, match.start())})
+
+    patterns = [
+        ("let_binding", re.compile(rf"\blet\s+(?:mut\s+)?{re.escape(name)}\b")),
+        ("for_binding", re.compile(rf"\bfor\s+{re.escape(name)}\b")),
+        ("pattern_binding", re.compile(rf"\b{re.escape(name)}\s*@")),
+        ("alias_binding", re.compile(rf"\bas\s+{re.escape(name)}\b")),
+        ("parameter_binding", re.compile(rf"(?:\(|,)\s*(?:mut\s+)?{re.escape(name)}\s*:")),
+        ("closure_binding", re.compile(rf"\|[^|\n]*\b{re.escape(name)}\b[^|\n]*\|")),
+    ]
+    for kind, pattern in patterns:
+        for match in pattern.finditer(source):
+            hits.append({"kind": kind, "line": line_for_offset(source, match.start())})
+
+    use_re = re.compile(rf"\buse\b[^;\n]*\b{re.escape(name)}\b[^;\n]*;")
+    for match in use_re.finditer(source):
+        if _brace_depth_at(source, match.start()) > 0:
+            hits.append({"kind": "local_use_shadow", "line": line_for_offset(source, match.start())})
+
+    return hits
+
+
 def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
     errors = []
     definitions = []
@@ -1163,14 +1304,24 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             errors.append(f"required v3 reachability markers missing in {path}: {missing!r}")
 
     call_checks = []
+    shadow_checks = []
     for path, names in REQUIRED_LIVE_CALLS.items():
-        text = code_source(production_source(read_required(root, path)))
+        text = production_source(read_required(root, path))
         missing = [name for name in names if not has_live_call(text, name)]
         call_checks.append({"path": path, "missing": missing})
         if missing:
             errors.append(
                 f"required v3 live call expressions missing in {path}: {missing!r}"
             )
+
+        local_defs = REQUIRED_LOCAL_DEFINITIONS.get(path, set())
+        for name in names:
+            hits = required_symbol_shadow_hits(text, name, name in local_defs)
+            shadow_checks.append({"path": path, "name": name, "hits": hits})
+            if hits:
+                errors.append(
+                    f"required v3 symbol shadowing in {path} for {name}: {hits!r}"
+                )
 
     regression_checks = []
     for path, marker in REQUIRED_REGRESSION_MARKERS.items():
@@ -1212,6 +1363,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         "v3_live_forbidden_legacy_authority_hits": forbidden_hits,
         "required_live_guard_checks": marker_checks,
         "required_live_call_checks": call_checks,
+        "required_symbol_shadow_checks": shadow_checks,
         "required_regression_checks": regression_checks,
         "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
         "claim_boundary": {
@@ -1225,6 +1377,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "detects_contradictory_cfg_predicates": True,
             "detects_contradictory_chained_cfg_attributes": True,
             "detects_cfg_attr_emitted_contradictions": True,
+            "evaluates_conditional_cfg_attr_under_active_constraints": True,
+            "applies_inner_cfg_to_enclosing_scope": True,
             "handles_raw_strings_in_chained_attributes": True,
             "ignores_cfg_inside_opaque_macro_tokens": True,
             "excludes_attribute_tokens_from_live_calls": True,
@@ -1233,6 +1387,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "rejects_multiline_fn_definitions_as_calls": True,
             "rejects_tuple_struct_declarations_as_calls": True,
             "rejects_tuple_enum_variant_declarations_as_calls": True,
+            "rejects_required_symbol_shadowing": True,
             "lexes_char_and_byte_char_literals": True,
             "tracks_legacy_aliases": True,
             "verifies_live_call_expressions": True,
@@ -1413,6 +1568,16 @@ def self_test() -> None:
         cfg_attr_contradictory_prod, "validate_live_reward_settlement_v3"
     )
 
+    conditional_cfg_attr_dead = (
+        "#[cfg(unix)]\n"
+        "#[cfg_attr(unix, cfg(not(unix)))]\n"
+        "fn conditional_dead() { validate_live_reward_settlement_v3(state); }\n"
+        "fn after_conditional_cfg_attr() { block_subsidy(24); }\n"
+    )
+    conditional_cfg_attr_prod = production_source(conditional_cfg_attr_dead)
+    assert "conditional_dead" not in conditional_cfg_attr_prod
+    assert "block_subsidy(24)" in conditional_cfg_attr_prod
+
     cfg_comment_dead = (
         "#[cfg(any(/* still empty */))]\n"
         "fn comment_dead() { audit_monetary_state_v3(prepared, cadence); }\n"
@@ -1444,6 +1609,17 @@ def self_test() -> None:
         "fn boundary_without_inner_audit() {}\n"
     )
     assert not has_live_call(inner_attribute_only, "audit_monetary_state_v3")
+
+    inner_cfg_dead_module = (
+        "mod dead {\n"
+        "  #![cfg(any())]\n"
+        "  fn fake() { audit_monetary_state_v3(prepared, cadence); }\n"
+        "}\n"
+        "fn after_inner_cfg() { block_subsidy(25); }\n"
+    )
+    inner_cfg_prod = production_source(inner_cfg_dead_module)
+    assert not has_live_call(inner_cfg_prod, "audit_monetary_state_v3")
+    assert "block_subsidy(25)" in inner_cfg_prod
 
     multiline_definition = (
         "fn\n"
@@ -1493,6 +1669,14 @@ def self_test() -> None:
     )
     assert not has_live_call(
         tuple_enum_variant_only, "validate_live_reward_settlement_v3"
+    )
+
+    shadowed_required_call = (
+        "fn audit_monetary_state_v3(_: i32) {}\n"
+        "fn boundary() { audit_monetary_state_v3(1); }\n"
+    )
+    assert required_symbol_shadow_hits(
+        shadowed_required_call, "audit_monetary_state_v3", False
     )
 
     stringify_only = code_source(
