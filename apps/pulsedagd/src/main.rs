@@ -1175,6 +1175,9 @@ fn validate_selected_header_segment(
     let Some(first) = headers.first() else {
         return Err("empty_segment");
     };
+    if !known_blocks.contains(common_ancestor) {
+        return Err("unknown_common_ancestor");
+    }
     if !first
         .header
         .parents
@@ -1183,7 +1186,7 @@ fn validate_selected_header_segment(
     {
         return Err("first_header_not_connected_to_common_ancestor");
     }
-    let mut staged = known_blocks.clone();
+    let mut selected_path = HashSet::from([common_ancestor.to_string()]);
     let mut seen = HashSet::new();
     for item in headers {
         if !seen.insert(item.hash.clone()) {
@@ -1201,11 +1204,11 @@ fn validate_selected_header_segment(
             .header
             .parents
             .iter()
-            .any(|parent| staged.contains(parent))
+            .any(|parent| selected_path.contains(parent))
         {
             return Err("unknown_or_unstaged_parent");
         }
-        staged.insert(item.hash.clone());
+        selected_path.insert(item.hash.clone());
     }
     Ok(())
 }
@@ -9544,6 +9547,23 @@ mod tests {
         assert_eq!(
             validate_selected_header_segment("common", &disconnected, &known),
             Err("unknown_or_unstaged_parent")
+        );
+        let known_off_path = HashSet::from(["common".to_string(), "side".to_string()]);
+        let side_connected = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "side", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &side_connected, &known_off_path),
+            Err("unknown_or_unstaged_parent")
+        );
+        assert_eq!(
+            validate_selected_header_segment(
+                "unknown-common",
+                &[selected_test_header("b1", "unknown-common", 514)],
+                &known,
+            ),
+            Err("unknown_common_ancestor")
         );
         let dup = vec![
             selected_test_header("b1", "common", 514),
