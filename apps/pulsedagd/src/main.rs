@@ -2562,21 +2562,25 @@ async fn main() -> Result<()> {
                                 let imported_height = imported.chain_state.dag.best_height;
                                 let recovery_confidence =
                                     imported.report.recovery_confidence.clone();
-                                let preserved_transients =
-                                    activated_v2_p2p_runtime.transient_blocks_parent_first();
-                                let preserved_count = preserved_transients.len();
+                                let live_chain_state = chain.read().await.clone();
+                                let preserved_handoff_blocks = activated_v2_p2p_runtime
+                                    .fast_sync_handoff_blocks_parent_first(
+                                        &live_chain_state,
+                                        &imported.chain_state,
+                                    );
+                                let preserved_count = preserved_handoff_blocks.len();
                                 let mut imported_chain_state = imported.chain_state;
                                 let mut imported_runtime = imported.runtime;
                                 let mut replayed_count = 0usize;
                                 let mut replay_rejected_count = 0usize;
 
-                                if !preserved_transients.is_empty() {
+                                if !preserved_handoff_blocks.is_empty() {
                                     match (
                                         p2p_protocol_identity.as_ref(),
                                         storage.protocol_monetary_activation_record(),
                                     ) {
                                         (Some(identity), Ok(monetary_activation)) => {
-                                            for candidate in preserved_transients {
+                                            for candidate in preserved_handoff_blocks {
                                                 if imported_chain_state
                                                     .dag
                                                     .blocks
@@ -2688,8 +2692,7 @@ async fn main() -> Result<()> {
                                                                 .staging()
                                                                 .contains(&candidate_hash)
                                                         {
-                                                            block_requests
-                                                                .resolve(&candidate_hash);
+                                                            block_requests.resolve(&candidate_hash);
                                                         }
                                                     }
                                                     Err(error) => {
