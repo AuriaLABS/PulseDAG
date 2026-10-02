@@ -210,10 +210,7 @@ mod tests {
             .last()
             .cloned()
             .unwrap_or_else(|| state.dag.genesis_hash.clone());
-        let timestamp = state.dag.blocks[&parent]
-            .header
-            .timestamp
-            .saturating_add(1);
+        let timestamp = state.dag.blocks[&parent].header.timestamp.saturating_add(1);
         let template = build_monetary_mining_template_v3(
             state,
             identity,
@@ -356,9 +353,16 @@ mod tests {
 
         // The historical no-op leaves v2 replay UTXO/state-root output unchanged,
         // while the v3 whole-history monetary audit must reject the hidden path.
+        match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
+            ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
+                assert!(reason.contains("accepted-state monetary audit failed"));
+            }
+            other => panic!("expected monetary audit rejection, got {other:?}"),
+        }
+
         let before = bincode::serialize(&state).unwrap();
         let mut persisted = false;
-        let error = accept_monetary_v3_p2p_block_atomically(
+        let accepted = accept_monetary_v3_p2p_block_atomically(
             second_block,
             &mut state,
             AcceptSource::P2p,
@@ -370,11 +374,12 @@ mod tests {
             },
             |_| Ok(()),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error
-            .to_string()
-            .contains("accepted-state monetary audit failed"));
+        assert_eq!(accepted.result, BlockAcceptanceResult::Malformed);
+        assert!(!accepted.persisted);
+        assert!(!accepted.committed);
+        assert!(!accepted.broadcast);
         assert!(!persisted);
         assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
