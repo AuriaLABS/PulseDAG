@@ -1228,6 +1228,30 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
         .collect()
 }
 
+fn selected_segment_prerequisite_parent_hashes(
+    headers: &[HeaderInventory],
+    known: &HashSet<String>,
+    retained: &HashSet<String>,
+) -> Vec<String> {
+    let header_hashes = headers
+        .iter()
+        .map(|item| item.hash.clone())
+        .collect::<HashSet<_>>();
+    let mut prerequisites = headers
+        .iter()
+        .flat_map(|item| item.header.parents.iter())
+        .filter(|parent| {
+            !known.contains(*parent)
+                && !retained.contains(*parent)
+                && !header_hashes.contains(*parent)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    prerequisites.sort();
+    prerequisites.dedup();
+    prerequisites
+}
+
 fn selected_segment_missing_hashes(
     headers: &[HeaderInventory],
     limits: SelectedSegmentLimits,
@@ -6283,6 +6307,12 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
+                        let activated_v2_retained_hashes = activated_v2_p2p_runtime
+                            .staging()
+                            .hashes()
+                            .into_iter()
+                            .chain(activated_v2_p2p_runtime.pending_hashes())
+                            .collect::<HashSet<_>>();
                         let pending_selected_peer = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.peer_id.as_str());
@@ -6292,6 +6322,7 @@ async fn main() -> Result<()> {
                             peer_id.as_deref(),
                             session_correlated,
                         );
+                        let mut selected_prerequisite_requests = Vec::new();
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -6320,15 +6351,25 @@ async fn main() -> Result<()> {
                                     if let Some(pending) = pending_selected_locator.as_ref() {
                                         session.accept_header_page(pending, &headers, now_unix());
                                     }
-                                    // A validated selected-header response is fresh proof that
-                                    // this direct peer can serve these hashes. Reopen any stale
-                                    // generic exhaustion/not-found state before directed promotion.
+                                    let prerequisite_parents =
+                                        selected_segment_prerequisite_parent_hashes(
+                                            &headers,
+                                            &known,
+                                            &activated_v2_retained_hashes,
+                                        );
+                                    // A validated selected-header response is fresh proof for both
+                                    // the selected hashes and the explicit parent hashes carried by
+                                    // those headers. Reopen only that bounded, peer-sourced context.
                                     if let Some(selected_peer) = peer_id.as_deref() {
                                         block_requests.note_selected_header_availability(
                                             selected_peer,
-                                            headers.iter().map(|item| item.hash.clone()),
+                                            headers
+                                                .iter()
+                                                .map(|item| item.hash.clone())
+                                                .chain(prerequisite_parents.iter().cloned()),
                                         );
                                     }
+                                    selected_prerequisite_requests = prerequisite_parents.clone();
                                     // Selected-segment recovery owns these hashes. Existing
                                     // generic pending requests are promoted below to the selected
                                     // peer instead of filtering the hashes out of the session.
@@ -6349,19 +6390,12 @@ async fn main() -> Result<()> {
                                     {
                                         let mut guard = chain.write().await;
                                         let now_ms = now_unix().saturating_mul(1_000);
-                                        for item in headers
-                                            .iter()
-                                            .filter(|item| candidates.contains(&item.hash))
-                                        {
-                                            for parent in &item.header.parents {
-                                                if !known.contains(parent) {
-                                                    pulsedag_core::mark_selected_segment_required_parent(
-                                                        &mut guard,
-                                                        parent,
-                                                        now_ms,
-                                                    );
-                                                }
-                                            }
+                                        for parent in &prerequisite_parents {
+                                            pulsedag_core::mark_selected_segment_required_parent(
+                                                &mut guard,
+                                                parent,
+                                                now_ms,
+                                            );
                                         }
                                     }
                                     candidates
@@ -6374,6 +6408,70 @@ async fn main() -> Result<()> {
                         };
                         let selected_request_hashes =
                             selected_requests.iter().cloned().collect::<HashSet<_>>();
+                        if let Some(selected_peer) = selected_segment_session
+                            .as_ref()
+                            .map(|session| session.peer_id.clone())
+                        {
+                            let mut issued_prerequisites = 0u64;
+                            for hash in selected_prerequisite_requests {
+                                if !block_requests.promote_getblock_to_peer(
+                                    &hash,
+                                    now_unix(),
+                                    &selected_peer,
+                                ) {
+                                    continue;
+                                }
+                                let request_succeeded = if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_block_from(&selected_peer, &hash) {
+                                        Ok(_) => true,
+                                        Err(error) => {
+                                            block_requests.resolve(&hash);
+                                            warn!(
+                                                error = %error,
+                                                block_hash = %hash,
+                                                peer = %selected_peer,
+                                                "failed issuing selected-segment prerequisite parent GetBlock request"
+                                            );
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    block_requests.resolve(&hash);
+                                    false
+                                };
+                                if request_succeeded {
+                                    issued_prerequisites =
+                                        issued_prerequisites.saturating_add(1);
+                                }
+                            }
+                            if issued_prerequisites > 0 {
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent =
+                                    rt.getblock_sent.saturating_add(issued_prerequisites);
+                                rt.peer_addressed_getblock_sent_total = rt
+                                    .peer_addressed_getblock_sent_total
+                                    .saturating_add(issued_prerequisites);
+                                rt.missing_parent_requests_sent = rt
+                                    .missing_parent_requests_sent
+                                    .saturating_add(issued_prerequisites);
+                                rt.missing_parent_request_started_total = rt
+                                    .missing_parent_request_started_total
+                                    .saturating_add(issued_prerequisites);
+                                rt.final_quiescence_missing_segment_request_total = rt
+                                    .final_quiescence_missing_segment_request_total
+                                    .saturating_add(issued_prerequisites);
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes =
+                                    block_requests.pending_hashes();
+                                info!(
+                                    event = "selected_segment_prerequisite_parent_requests",
+                                    peer = %selected_peer,
+                                    issued = issued_prerequisites,
+                                    "requested explicit missing parent context before selected blocks"
+                                );
+                            }
+                        }
                         let requests = if pending_selected_locator.is_some()
                             || selected_segment_session.is_some()
                         {
@@ -7027,12 +7125,16 @@ async fn main() -> Result<()> {
                     InboundEvent::GetBlock { hash, request_id } => {
                         let block = {
                             let guard = chain.read().await;
-                            select_live_getblock_response_block(
-                                &hash,
-                                &guard,
-                                activated_v2_p2p_runtime.staging().get(&hash),
-                            )
-                            .cloned()
+                            let retained_block = activated_v2_p2p_runtime
+                                .staging()
+                                .get(&hash)
+                                .or_else(|| {
+                                    activated_v2_p2p_runtime
+                                        .pending_blocks()
+                                        .find(|block| block.hash == hash)
+                                });
+                            select_live_getblock_response_block(&hash, &guard, retained_block)
+                                .cloned()
                         }
                         .or_else(|| match storage.get_block(&hash) {
                             Ok(block) => block,
@@ -9529,6 +9631,21 @@ mod tests {
         assert_eq!(
             validate_selected_header_segment("common", &[first, second], &known),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn selected_segment_prerequisites_include_only_unknown_external_parents() {
+        let known = HashSet::from(["common".to_string()]);
+        let retained = HashSet::from(["unknown-merge-b".to_string()]);
+        let mut first = selected_test_header("b1", "common", 514);
+        first.header.parents.push("unknown-merge-a".to_string());
+        let mut second = selected_test_header("b2", "b1", 515);
+        second.header.parents.push("unknown-merge-b".to_string());
+
+        assert_eq!(
+            selected_segment_prerequisite_parent_hashes(&[first, second], &known, &retained),
+            vec!["unknown-merge-a".to_string()]
         );
     }
 
