@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 13
+AUDITOR_VERSION = 14
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -1556,6 +1556,8 @@ def required_runtime_persistence_callback_hits(
                     "index": index,
                     "persist_callee": persist_callee,
                     "missing_callback": True,
+                    "audit_reference_count": 0,
+                    "persist_reference_count": 0,
                     "missing_audit": True,
                     "audit_result_propagated": False,
                     "missing_persist": True,
@@ -1564,6 +1566,13 @@ def required_runtime_persistence_callback_hits(
             )
             continue
         closure_body = bodies[index]
+        closure_code = code_source(closure_body)
+        audit_reference_count = len(
+            re.findall(rf"\b{re.escape(audit_callee)}\b", closure_code)
+        )
+        persist_reference_count = len(
+            re.findall(rf"\b{re.escape(persist_callee)}\b", closure_code)
+        )
         audit_offsets = direct_top_level_call_offsets(closure_body, audit_callee)
         propagating_audit_offsets = direct_top_level_propagating_call_offsets(
             closure_body, audit_callee
@@ -1574,6 +1583,8 @@ def required_runtime_persistence_callback_hits(
                 "index": index,
                 "persist_callee": persist_callee,
                 "missing_callback": False,
+                "audit_reference_count": audit_reference_count,
+                "persist_reference_count": persist_reference_count,
                 "missing_audit": not audit_offsets,
                 "audit_result_propagated": bool(propagating_audit_offsets),
                 "missing_persist": not persist_offsets,
@@ -1718,6 +1729,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             item
             for item in check["callbacks"]
             if item["missing_callback"]
+            or item["audit_reference_count"] != 1
+            or item["persist_reference_count"] != 1
             or item["missing_audit"]
             or not item["audit_result_propagated"]
             or item["missing_persist"]
@@ -1815,6 +1828,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "pins_every_runtime_persistence_callback_to_authority_audit": True,
             "requires_authority_audit_before_runtime_persist": True,
             "requires_runtime_persistence_audit_result_propagation": True,
+            "rejects_alternate_runtime_persistence_references": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
@@ -2299,7 +2313,9 @@ def self_test() -> None:
     assert callback_contract["constructor_count"] == 1
     assert callback_contract["callback_count"] == 3
     assert all(
-        not item["missing_audit"]
+        item["audit_reference_count"] == 1
+        and item["persist_reference_count"] == 1
+        and not item["missing_audit"]
         and item["audit_result_propagated"]
         and not item["missing_persist"]
         and item["audit_before_persist"]
@@ -2356,6 +2372,24 @@ def self_test() -> None:
     assert not ignored_result_check["callbacks"][0]["missing_audit"]
     assert not ignored_result_check["callbacks"][0]["audit_result_propagated"]
     assert not ignored_result_check["callbacks"][0]["audit_before_persist"]
+
+    alternate_persist_path = (
+        "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+        "  let _p = ActivatedV2P2pRuntimePersistence::new(\n"
+        "    |prepared: &State, runtime: &Runtime| { if bypass { return persist_runtime(prepared, runtime); } audit_authoritative_monetary_state(prepared, cadence)?; persist_runtime(prepared, runtime) },\n"
+        "    |prepared: &State, runtime: &Runtime| { audit_authoritative_monetary_state(prepared, cadence)?; persist_one(prepared, runtime) },\n"
+        "    |prepared: &State, runtime: &Runtime| { audit_authoritative_monetary_state(prepared, cadence)?; persist_bundle(prepared, runtime) }\n"
+        "  );\n"
+        "}\n"
+    )
+    alternate_persist_check = required_runtime_persistence_callback_hits(
+        alternate_persist_path,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "ActivatedV2P2pRuntimePersistence::new",
+        "audit_authoritative_monetary_state",
+        ["persist_runtime", "persist_one", "persist_bundle"],
+    )
+    assert alternate_persist_check["callbacks"][0]["persist_reference_count"] == 2
 
     print("v3 monetary reachability auditor self-test: PASS")
 
