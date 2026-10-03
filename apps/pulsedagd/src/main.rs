@@ -5329,11 +5329,13 @@ async fn main() -> Result<()> {
                                     .remove(&block.hash);
                                 if inbound_was_prerequisite {
                                     // The body hash is already rooted in a validated selected
-                                    // header. Its own missing parents are therefore authenticated
-                                    // transitive prerequisite context, not arbitrary relay input.
+                                    // header. Only parents committed by this exact body extend the
+                                    // trusted prerequisite closure. Do not use the aggregate drive
+                                    // summary here because it also contains outcomes from unrelated
+                                    // pending-v2 retries.
                                     session
                                         .prerequisite_parent_hashes
-                                        .extend(summary.missing_parents.iter().cloned());
+                                        .extend(block.header.parents.iter().cloned());
                                 }
                             }
                             let selected_session_peer = selected_segment_session
