@@ -5150,7 +5150,9 @@ async fn main() -> Result<()> {
                                 let request_result = if let Some(ref p2p_handle) = p2p {
                                     match &missing_parent_route {
                                         ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =>
-                                            p2p_handle.request_block_from(peer_id, parent).map(|_| ()),
+                                            p2p_handle
+                                                .request_block_from(peer_id, parent)
+                                                .map(|_| ()),
                                         ActivatedV2MissingParentFetchRoute::Generic =>
                                             p2p_handle.request_block(parent),
                                         ActivatedV2MissingParentFetchRoute::Suppressed => continue,
