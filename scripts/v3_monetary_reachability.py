@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 11
+AUDITOR_VERSION = 12
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -185,6 +185,15 @@ REQUIRED_LOCAL_CALLS = {
             "crate::audit_monetary_state_v3",
             "crate::validate_live_reward_settlement_v3",
         ],
+    },
+}
+
+REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS = {
+    "crates/pulsedag-core/src/network_runtime_v3.rs": {
+        "function": "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "constructor": "ActivatedV2P2pRuntimePersistence::new",
+        "audit": "audit_authoritative_monetary_state",
+        "persist": ["persist_runtime", "persist_one", "persist_bundle"],
     },
 }
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1157,14 +1166,15 @@ def has_live_qualified_call(text: str, path: str) -> bool:
     return bool(re.search(rf"(?<![A-Za-z0-9_]){qualified}\s*\(", source))
 
 
-def has_direct_top_level_qualified_call(text: str, path: str) -> bool:
-    """Require an unconditional qualified call as a direct top-level statement."""
+def direct_top_level_call_offsets(text: str, path: str) -> list:
+    """Return direct top-level statement calls to an exact Rust path."""
     source = executable_source(text)
     parts = path.split("::")
     if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
-        return False
+        return []
     qualified = r"\s*::\s*".join(re.escape(part) for part in parts)
     call_re = re.compile(rf"(?<![A-Za-z0-9_]){qualified}\s*\(")
+    offsets = []
 
     for match in call_re.finditer(source):
         if _brace_depth_at(source, match.start()) != 0:
@@ -1182,8 +1192,13 @@ def has_direct_top_level_qualified_call(text: str, path: str) -> bool:
                 statement_start = i + 1
         if source[statement_start : match.start()].strip():
             continue
-        return True
-    return False
+        offsets.append(match.start())
+    return offsets
+
+
+def has_direct_top_level_qualified_call(text: str, path: str) -> bool:
+    """Require an unconditional exact-path call as a direct top-level statement."""
+    return bool(direct_top_level_call_offsets(text, path))
 
 
 def rust_source_paths(root: Path) -> list:
@@ -1439,6 +1454,109 @@ def required_local_call_hits(text: str, function_name: str, callees: list) -> di
     }
 
 
+def _braced_closure_bodies(payload: str):
+    """Parse a comma-separated list of braced closure expressions, or return None."""
+    source = executable_source(payload)
+    bodies = []
+    i = 0
+    while True:
+        i = _skip_ws_and_comments(source, i)
+        if i >= len(source):
+            return bodies
+        if source[i] != "|":
+            return None
+        close_pipe = source.find("|", i + 1)
+        if close_pipe < 0:
+            return None
+        body_open = _skip_ws_and_comments(source, close_pipe + 1)
+        if body_open >= len(source) or source[body_open] != "{":
+            return None
+        body_end = _skip_matching_delimiter(source, body_open)
+        if body_end <= body_open:
+            return None
+        bodies.append(source[body_open + 1 : body_end - 1])
+        i = _skip_ws_and_comments(source, body_end)
+        if i >= len(source):
+            return bodies
+        if source[i] != ",":
+            return None
+        i += 1
+
+
+def required_runtime_persistence_callback_hits(
+    text: str,
+    function_name: str,
+    constructor: str,
+    audit_callee: str,
+    persist_callees: list,
+) -> dict:
+    body = _local_function_body(text, function_name)
+    base = {
+        "function": function_name,
+        "constructor": constructor,
+        "missing_definition": body is None,
+        "constructor_count": 0,
+        "callback_count": 0,
+        "callbacks": [],
+    }
+    if body is None:
+        return base
+
+    source = executable_source(body)
+    parts = constructor.split("::")
+    if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
+        return base
+    constructor_re = re.compile(
+        rf"(?<![A-Za-z0-9_]){r'\s*::\s*'.join(re.escape(part) for part in parts)}\s*\("
+    )
+    matches = list(constructor_re.finditer(source))
+    base["constructor_count"] = len(matches)
+    if len(matches) != 1:
+        return base
+
+    match = matches[0]
+    open_i = source.find("(", match.start(), match.end())
+    end = _skip_matching_delimiter(source, open_i)
+    if end <= open_i:
+        return base
+    bodies = _braced_closure_bodies(source[open_i + 1 : end - 1])
+    if bodies is None:
+        return base
+    base["callback_count"] = len(bodies)
+
+    for index, persist_callee in enumerate(persist_callees):
+        if index >= len(bodies):
+            base["callbacks"].append(
+                {
+                    "index": index,
+                    "persist_callee": persist_callee,
+                    "missing_callback": True,
+                    "missing_audit": True,
+                    "missing_persist": True,
+                    "audit_before_persist": False,
+                }
+            )
+            continue
+        closure_body = bodies[index]
+        audit_offsets = direct_top_level_call_offsets(closure_body, audit_callee)
+        persist_offsets = direct_top_level_call_offsets(closure_body, persist_callee)
+        base["callbacks"].append(
+            {
+                "index": index,
+                "persist_callee": persist_callee,
+                "missing_callback": False,
+                "missing_audit": not audit_offsets,
+                "missing_persist": not persist_offsets,
+                "audit_before_persist": bool(
+                    audit_offsets
+                    and persist_offsets
+                    and min(audit_offsets) < min(persist_offsets)
+                ),
+            }
+        )
+    return base
+
+
 def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
     errors = []
     definitions = []
@@ -1554,6 +1672,37 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
                     f"{path}::{function_name}: {check!r}"
                 )
 
+    runtime_persistence_callback_checks = []
+    for path, contract in REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS.items():
+        text = production_source(read_required(root, path))
+        check = required_runtime_persistence_callback_hits(
+            text,
+            contract["function"],
+            contract["constructor"],
+            contract["audit"],
+            contract["persist"],
+        )
+        check["path"] = path
+        runtime_persistence_callback_checks.append(check)
+        callback_failures = [
+            item
+            for item in check["callbacks"]
+            if item["missing_callback"]
+            or item["missing_audit"]
+            or item["missing_persist"]
+            or not item["audit_before_persist"]
+        ]
+        if (
+            check["missing_definition"]
+            or check["constructor_count"] != 1
+            or check["callback_count"] != len(contract["persist"])
+            or callback_failures
+        ):
+            errors.append(
+                "runtime persistence callbacks are not fully audit-pinned in "
+                f"{path}::{contract['function']}: {check!r}"
+            )
+
     regression_checks = []
     for path, marker in REQUIRED_REGRESSION_MARKERS.items():
         text = read_required(root, path)
@@ -1596,6 +1745,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         "required_live_call_checks": call_checks,
         "required_symbol_shadow_checks": shadow_checks,
         "required_local_call_checks": local_call_checks,
+        "required_runtime_persistence_callback_checks": runtime_persistence_callback_checks,
         "required_regression_checks": regression_checks,
         "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
         "claim_boundary": {
@@ -1631,6 +1781,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "requires_direct_top_level_local_authority_calls": True,
             "resets_direct_statement_boundary_after_top_level_braces": True,
             "requires_runtime_authority_dynamic_regression": True,
+            "pins_every_runtime_persistence_callback_to_authority_audit": True,
+            "requires_authority_audit_before_runtime_persist": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
@@ -2080,6 +2232,76 @@ def self_test() -> None:
         ["crate::audit_monetary_state_v3", "crate::validate_live_reward_settlement_v3"],
     )
     assert conditional_check["missing_calls"] == ["crate::audit_monetary_state_v3"]
+
+    def runtime_callback_fixture(audit_runtime=True, audit_one=True, audit_bundle=True):
+        def callback(audit_enabled, persist_name):
+            audit_line = (
+                "audit_authoritative_monetary_state(prepared, cadence)?; "
+                if audit_enabled
+                else ""
+            )
+            return (
+                "|prepared: &State, runtime: &Runtime| { "
+                + audit_line
+                + f"{persist_name}(prepared, runtime) "
+                + "}"
+            )
+
+        return (
+            "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+            "  let _p = ActivatedV2P2pRuntimePersistence::new(\n"
+            f"    {callback(audit_runtime, 'persist_runtime')},\n"
+            f"    {callback(audit_one, 'persist_one')},\n"
+            f"    {callback(audit_bundle, 'persist_bundle')}\n"
+            "  );\n"
+            "}\n"
+        )
+
+    callback_contract = required_runtime_persistence_callback_hits(
+        runtime_callback_fixture(),
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "ActivatedV2P2pRuntimePersistence::new",
+        "audit_authoritative_monetary_state",
+        ["persist_runtime", "persist_one", "persist_bundle"],
+    )
+    assert callback_contract["constructor_count"] == 1
+    assert callback_contract["callback_count"] == 3
+    assert all(
+        not item["missing_audit"]
+        and not item["missing_persist"]
+        and item["audit_before_persist"]
+        for item in callback_contract["callbacks"]
+    )
+
+    for omitted_index, flags in enumerate(
+        [(False, True, True), (True, False, True), (True, True, False)]
+    ):
+        omitted = required_runtime_persistence_callback_hits(
+            runtime_callback_fixture(*flags),
+            "drive_monetary_v3_p2p_block_with_runtime_persistence",
+            "ActivatedV2P2pRuntimePersistence::new",
+            "audit_authoritative_monetary_state",
+            ["persist_runtime", "persist_one", "persist_bundle"],
+        )
+        assert omitted["callbacks"][omitted_index]["missing_audit"]
+
+    audit_after_persist = (
+        "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+        "  let _p = ActivatedV2P2pRuntimePersistence::new(\n"
+        "    |prepared: &State, runtime: &Runtime| { persist_runtime(prepared, runtime); audit_authoritative_monetary_state(prepared, cadence) },\n"
+        "    |prepared: &State, runtime: &Runtime| { audit_authoritative_monetary_state(prepared, cadence)?; persist_one(prepared, runtime) },\n"
+        "    |prepared: &State, runtime: &Runtime| { audit_authoritative_monetary_state(prepared, cadence)?; persist_bundle(prepared, runtime) }\n"
+        "  );\n"
+        "}\n"
+    )
+    after_check = required_runtime_persistence_callback_hits(
+        audit_after_persist,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "ActivatedV2P2pRuntimePersistence::new",
+        "audit_authoritative_monetary_state",
+        ["persist_runtime", "persist_one", "persist_bundle"],
+    )
+    assert not after_check["callbacks"][0]["audit_before_persist"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
