@@ -5100,14 +5100,13 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>();
                             let mut missing_parent_requests_issued = 0u64;
                             for parent in &missing_parent_candidates {
-                                let missing_parent_route =
-                                    activated_v2_missing_parent_fetch_route(
-                                        priority_active,
-                                        retained_in_activated_v2,
-                                        selected_session_peer,
-                                        selected_parent_references
-                                            .is_some_and(|parents| parents.contains(parent)),
-                                    );
+                                let missing_parent_route = activated_v2_missing_parent_fetch_route(
+                                    priority_active,
+                                    retained_in_activated_v2,
+                                    selected_session_peer,
+                                    selected_parent_references
+                                        .is_some_and(|parents| parents.contains(parent)),
+                                );
                                 let admitted = match &missing_parent_route {
                                     ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
                                         block_requests.promote_getblock_to_peer(
@@ -5116,13 +5115,12 @@ async fn main() -> Result<()> {
                                             peer_id,
                                         )
                                     }
-                                    ActivatedV2MissingParentFetchRoute::Generic => {
-                                        block_requests.should_issue_getblock_for_peers(
+                                    ActivatedV2MissingParentFetchRoute::Generic => block_requests
+                                        .should_issue_getblock_for_peers(
                                             parent,
                                             now_unix(),
                                             active_peer_ids(&p2p),
-                                        )
-                                    }
+                                        ),
                                     ActivatedV2MissingParentFetchRoute::Suppressed => false,
                                 };
                                 if !admitted {
@@ -5131,12 +5129,14 @@ async fn main() -> Result<()> {
 
                                 let request_result = if let Some(ref p2p_handle) = p2p {
                                     match &missing_parent_route {
-                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =>
-                                            p2p_handle
-                                                .request_block_from(peer_id, parent)
-                                                .map(|_| ()),
-                                        ActivatedV2MissingParentFetchRoute::Generic =>
-                                            p2p_handle.request_block(parent),
+                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(
+                                            peer_id,
+                                        ) => p2p_handle
+                                            .request_block_from(peer_id, parent)
+                                            .map(|_| ()),
+                                        ActivatedV2MissingParentFetchRoute::Generic => {
+                                            p2p_handle.request_block(parent)
+                                        }
                                         ActivatedV2MissingParentFetchRoute::Suppressed => continue,
                                     }
                                 } else {
@@ -6492,9 +6492,7 @@ async fn main() -> Result<()> {
                                         let now_ms = now_unix().saturating_mul(1_000);
                                         for parent in &prerequisite_parents {
                                             pulsedag_core::mark_selected_segment_required_parent(
-                                                &mut guard,
-                                                parent,
-                                                now_ms,
+                                                &mut guard, parent, now_ms,
                                             );
                                         }
                                     }
