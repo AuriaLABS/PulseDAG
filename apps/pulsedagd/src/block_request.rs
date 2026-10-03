@@ -311,10 +311,6 @@ impl BlockRequestTracker {
         true
     }
 
-    pub fn pending_peer(&self, hash: &str) -> Option<&str> {
-        self.pending.get(hash).and_then(|request| request.peer.as_deref())
-    }
-
     pub fn promote_getblock_to_peer(&mut self, hash: &str, now_unix: u64, peer: &str) -> bool {
         if self.exhausted_hashes.contains(hash) || self.is_backing_off(hash, now_unix) {
             self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
@@ -1885,7 +1881,13 @@ mod tests {
             Some("selected_block_parent_reference")
         );
         assert!(tracker.promote_getblock_to_peer("parent", 103, "peer-a"));
-        assert_eq!(tracker.pending_peer("parent"), Some("peer-a"));
+        assert_eq!(
+            tracker
+                .pending
+                .get("parent")
+                .and_then(|request| request.peer.as_deref()),
+            Some("peer-a")
+        );
     }
 
     #[test]
