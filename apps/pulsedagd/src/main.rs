@@ -215,6 +215,32 @@ mod task27_rejoin_runtime_tests {
     }
 
     #[test]
+    fn activated_v2_selected_segment_routes_missing_parents_to_session_peer() {
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(
+                true,
+                true,
+                Some("peer-selected"),
+                Some("peer-selected"),
+            ),
+            ActivatedV2MissingParentFetchRoute::SelectedPeer("peer-selected".to_string())
+        );
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(
+                true,
+                true,
+                Some("peer-selected"),
+                Some("peer-other"),
+            ),
+            ActivatedV2MissingParentFetchRoute::Suppressed
+        );
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(false, true, None, Some("peer-other")),
+            ActivatedV2MissingParentFetchRoute::Generic
+        );
+    }
+
+    #[test]
     fn selected_segment_replans_only_when_peer_is_not_direct_and_idle() {
         let direct = vec!["peer-direct".to_string()];
         assert!(selected_segment_session_should_replan(
@@ -655,6 +681,35 @@ fn selected_segment_session_should_replan(
     inflight_for_peer: usize,
 ) -> bool {
     inflight_for_peer == 0 && !direct_request_peers.iter().any(|peer| peer == session_peer)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActivatedV2MissingParentFetchRoute {
+    SelectedPeer(String),
+    Generic,
+    Suppressed,
+}
+
+fn activated_v2_missing_parent_fetch_route(
+    priority_active: bool,
+    retained_block: bool,
+    selected_session_peer: Option<&str>,
+    fulfilled_request_peer: Option<&str>,
+) -> ActivatedV2MissingParentFetchRoute {
+    if retained_block {
+        if let (Some(session_peer), Some(request_peer)) =
+            (selected_session_peer, fulfilled_request_peer)
+        {
+            if session_peer == request_peer {
+                return ActivatedV2MissingParentFetchRoute::SelectedPeer(session_peer.to_string());
+            }
+        }
+    }
+    if priority_active {
+        ActivatedV2MissingParentFetchRoute::Suppressed
+    } else {
+        ActivatedV2MissingParentFetchRoute::Generic
+    }
 }
 
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
@@ -4479,6 +4534,8 @@ async fn main() -> Result<()> {
                             final_quiescence_same_height_tip_requests.contains(&block.hash);
                         let fulfilled_missing_parent_request =
                             block_requests.pending.contains_key(&block.hash);
+                        let fulfilled_request_peer =
+                            block_requests.pending_peer(&block.hash).map(str::to_string);
                         {
                             let mut rt = runtime.write().await;
                             let now = now_unix();
@@ -5031,34 +5088,94 @@ async fn main() -> Result<()> {
                                 }
                             }
 
+                            let retained_in_activated_v2 = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.staged_hashes.iter())
+                                .chain(summary.duplicate_hashes.iter())
+                                .any(|hash| hash == &block.hash)
+                                || activated_v2_p2p_runtime.pending_contains(&block.hash)
+                                || activated_v2_p2p_runtime.staging().contains(&block.hash);
+                            let selected_session_peer = selected_segment_session
+                                .as_ref()
+                                .map(|session| session.peer_id.as_str());
+                            let missing_parent_route = activated_v2_missing_parent_fetch_route(
+                                priority_active,
+                                retained_in_activated_v2,
+                                selected_session_peer,
+                                fulfilled_request_peer.as_deref(),
+                            );
+                            let missing_parent_candidates = summary
+                                .missing_parents
+                                .iter()
+                                .filter(|parent| {
+                                    !guard.dag.blocks.contains_key(*parent)
+                                        && !activated_v2_p2p_runtime
+                                            .pending_contains(parent.as_str())
+                                        && !activated_v2_p2p_runtime
+                                            .staging()
+                                            .contains(parent.as_str())
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
+                                &missing_parent_route
+                            {
+                                block_requests.note_selected_parent_references(
+                                    peer_id,
+                                    missing_parent_candidates.iter().cloned(),
+                                );
+                            }
+
                             let mut missing_parent_requests_issued = 0u64;
-                            for parent in &summary.missing_parents {
-                                if !priority_active
-                                    && block_requests.should_issue_getblock_for_peers(
-                                        parent,
-                                        now_unix(),
-                                        active_peer_ids(&p2p),
-                                    )
-                                {
-                                    let request_sent = if let Some(ref p2p_handle) = p2p {
-                                        match p2p_handle.request_block(parent) {
-                                            Ok(()) => true,
-                                            Err(error) => {
-                                                warn!(
-                                                    error = %error,
-                                                    missing_parent = %parent,
-                                                    child = %block.hash,
-                                                    "failed issuing activated-v2 missing-parent GetBlock request"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    } else {
-                                        false
-                                    };
-                                    if request_sent {
+                            for parent in &missing_parent_candidates {
+                                let admitted = match &missing_parent_route {
+                                    ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
+                                        block_requests.promote_getblock_to_peer(
+                                            parent,
+                                            now_unix(),
+                                            peer_id,
+                                        )
+                                    }
+                                    ActivatedV2MissingParentFetchRoute::Generic => {
+                                        block_requests.should_issue_getblock_for_peers(
+                                            parent,
+                                            now_unix(),
+                                            active_peer_ids(&p2p),
+                                        )
+                                    }
+                                    ActivatedV2MissingParentFetchRoute::Suppressed => false,
+                                };
+                                if !admitted {
+                                    continue;
+                                }
+
+                                let request_result = if let Some(ref p2p_handle) = p2p {
+                                    match &missing_parent_route {
+                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =>
+                                            p2p_handle.request_block_from(peer_id, parent),
+                                        ActivatedV2MissingParentFetchRoute::Generic =>
+                                            p2p_handle.request_block(parent),
+                                        ActivatedV2MissingParentFetchRoute::Suppressed => continue,
+                                    }
+                                } else {
+                                    block_requests.resolve(parent);
+                                    continue;
+                                };
+                                match request_result {
+                                    Ok(()) => {
                                         missing_parent_requests_issued =
                                             missing_parent_requests_issued.saturating_add(1);
+                                    }
+                                    Err(error) => {
+                                        block_requests.resolve(parent);
+                                        warn!(
+                                            error = %error,
+                                            missing_parent = %parent,
+                                            child = %block.hash,
+                                            route = ?missing_parent_route,
+                                            "failed issuing activated-v2 missing-parent GetBlock request"
+                                        );
                                     }
                                 }
                             }
@@ -6322,7 +6439,6 @@ async fn main() -> Result<()> {
                             peer_id.as_deref(),
                             session_correlated,
                         );
-                        let mut selected_prerequisite_requests = Vec::new();
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -6369,7 +6485,6 @@ async fn main() -> Result<()> {
                                                 .chain(prerequisite_parents.iter().cloned()),
                                         );
                                     }
-                                    selected_prerequisite_requests = prerequisite_parents.clone();
                                     // Selected-segment recovery owns these hashes. Existing
                                     // generic pending requests are promoted below to the selected
                                     // peer instead of filtering the hashes out of the session.
@@ -6408,70 +6523,6 @@ async fn main() -> Result<()> {
                         };
                         let selected_request_hashes =
                             selected_requests.iter().cloned().collect::<HashSet<_>>();
-                        if let Some(selected_peer) = selected_segment_session
-                            .as_ref()
-                            .map(|session| session.peer_id.clone())
-                        {
-                            let mut issued_prerequisites = 0u64;
-                            for hash in selected_prerequisite_requests {
-                                if !block_requests.promote_getblock_to_peer(
-                                    &hash,
-                                    now_unix(),
-                                    &selected_peer,
-                                ) {
-                                    continue;
-                                }
-                                let request_succeeded = if let Some(ref p2p_handle) = p2p {
-                                    match p2p_handle.request_block_from(&selected_peer, &hash) {
-                                        Ok(_) => true,
-                                        Err(error) => {
-                                            block_requests.resolve(&hash);
-                                            warn!(
-                                                error = %error,
-                                                block_hash = %hash,
-                                                peer = %selected_peer,
-                                                "failed issuing selected-segment prerequisite parent GetBlock request"
-                                            );
-                                            false
-                                        }
-                                    }
-                                } else {
-                                    block_requests.resolve(&hash);
-                                    false
-                                };
-                                if request_succeeded {
-                                    issued_prerequisites =
-                                        issued_prerequisites.saturating_add(1);
-                                }
-                            }
-                            if issued_prerequisites > 0 {
-                                let mut rt = runtime.write().await;
-                                rt.getblock_sent =
-                                    rt.getblock_sent.saturating_add(issued_prerequisites);
-                                rt.peer_addressed_getblock_sent_total = rt
-                                    .peer_addressed_getblock_sent_total
-                                    .saturating_add(issued_prerequisites);
-                                rt.missing_parent_requests_sent = rt
-                                    .missing_parent_requests_sent
-                                    .saturating_add(issued_prerequisites);
-                                rt.missing_parent_request_started_total = rt
-                                    .missing_parent_request_started_total
-                                    .saturating_add(issued_prerequisites);
-                                rt.final_quiescence_missing_segment_request_total = rt
-                                    .final_quiescence_missing_segment_request_total
-                                    .saturating_add(issued_prerequisites);
-                                rt.pending_block_requests = block_requests.pending.len();
-                                rt.inflight_block_requests = block_requests.pending.len();
-                                rt.pending_block_request_hashes =
-                                    block_requests.pending_hashes();
-                                info!(
-                                    event = "selected_segment_prerequisite_parent_requests",
-                                    peer = %selected_peer,
-                                    issued = issued_prerequisites,
-                                    "requested explicit missing parent context before selected blocks"
-                                );
-                            }
-                        }
                         let requests = if pending_selected_locator.is_some()
                             || selected_segment_session.is_some()
                         {
