@@ -3940,17 +3940,27 @@ async fn main() -> Result<()> {
                             .unresolved_prerequisite_parent_hashes
                             .iter()
                             .any(|hash| block_requests.is_all_peers_exhausted(hash));
-                        (direct_peer_unavailable || exhausted_prerequisite).then(|| {
-                            (
-                                session.session_id,
-                                session.peer_id.clone(),
-                                if exhausted_prerequisite {
-                                    "selected_prerequisite_all_peers_exhausted"
-                                } else {
-                                    "selected_peer_not_direct_request_capable"
-                                },
-                            )
-                        })
+                        let exhausted_selected_block = session
+                            .current_chunk
+                            .iter()
+                            .filter(|hash| !session.accepted_applied_hashes.contains(*hash))
+                            .any(|hash| block_requests.is_all_peers_exhausted(hash));
+                        (direct_peer_unavailable
+                            || exhausted_prerequisite
+                            || exhausted_selected_block)
+                            .then(|| {
+                                (
+                                    session.session_id,
+                                    session.peer_id.clone(),
+                                    if exhausted_prerequisite {
+                                        "selected_prerequisite_all_peers_exhausted"
+                                    } else if exhausted_selected_block {
+                                        "selected_chunk_block_all_peers_exhausted"
+                                    } else {
+                                        "selected_peer_not_direct_request_capable"
+                                    },
+                                )
+                            })
                     });
                 if let Some((session_id, peer_id, reason)) = selected_session_replan {
                     selected_segment_session = None;
