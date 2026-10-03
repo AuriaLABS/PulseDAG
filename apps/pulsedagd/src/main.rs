@@ -5150,7 +5150,7 @@ async fn main() -> Result<()> {
                                 let request_result = if let Some(ref p2p_handle) = p2p {
                                     match &missing_parent_route {
                                         ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =>
-                                            p2p_handle.request_block_from(peer_id, parent),
+                                            p2p_handle.request_block_from(peer_id, parent).map(|_| ()),
                                         ActivatedV2MissingParentFetchRoute::Generic =>
                                             p2p_handle.request_block(parent),
                                         ActivatedV2MissingParentFetchRoute::Suppressed => continue,
@@ -6476,10 +6476,11 @@ async fn main() -> Result<()> {
                                     if let Some(selected_peer) = peer_id.as_deref() {
                                         block_requests.note_selected_header_availability(
                                             selected_peer,
-                                            headers
-                                                .iter()
-                                                .map(|item| item.hash.clone())
-                                                .chain(prerequisite_parents.iter().cloned()),
+                                            headers.iter().map(|item| item.hash.clone()),
+                                        );
+                                        block_requests.note_selected_parent_references(
+                                            selected_peer,
+                                            prerequisite_parents.iter().cloned(),
                                         );
                                     }
                                     // Selected-segment recovery owns these hashes. Existing
