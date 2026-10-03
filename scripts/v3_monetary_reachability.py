@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 10
+AUDITOR_VERSION = 11
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -1176,6 +1176,8 @@ def has_direct_top_level_qualified_call(text: str, path: str) -> bool:
                 depth += 1
             elif ch == "}":
                 depth = max(0, depth - 1)
+                if depth == 0:
+                    statement_start = i + 1
             elif ch == ";" and depth == 0:
                 statement_start = i + 1
         if source[statement_start : match.start()].strip():
@@ -1627,6 +1629,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "pins_underlying_calls_to_required_local_authority_helpers": True,
             "pins_required_local_callees_to_crate_paths": True,
             "requires_direct_top_level_local_authority_calls": True,
+            "resets_direct_statement_boundary_after_top_level_braces": True,
             "requires_runtime_authority_dynamic_regression": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
