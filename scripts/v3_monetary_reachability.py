@@ -1506,8 +1506,9 @@ def required_runtime_persistence_callback_hits(
     parts = constructor.split("::")
     if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
         return base
+    qualified_constructor = r"\s*::\s*".join(re.escape(part) for part in parts)
     constructor_re = re.compile(
-        rf"(?<![A-Za-z0-9_]){r'\s*::\s*'.join(re.escape(part) for part in parts)}\s*\("
+        rf"(?<![A-Za-z0-9_]){qualified_constructor}\s*\("
     )
     matches = list(constructor_re.finditer(source))
     base["constructor_count"] = len(matches)
