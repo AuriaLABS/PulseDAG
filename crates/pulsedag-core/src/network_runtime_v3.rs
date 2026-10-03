@@ -177,8 +177,8 @@ mod tests {
     use crate::{
         build_monetary_mining_template_v3, build_reward_claim_transaction_v3,
         compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
-        genesis_v3::init_chain_state_v3,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol,
+        genesis_v3::init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+        validate_pow_for_protocol,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
