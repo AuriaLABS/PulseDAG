@@ -50,6 +50,38 @@ fn audit_authoritative_monetary_state(
     Ok(())
 }
 
+fn validate_runtime_accepted_block_reward(
+    state: &ChainState,
+    accepted_block: &Block,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<(), PulseError> {
+    validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments).map_err(
+        |error| {
+            invalid_monetary_runtime(format!(
+                "accepted block reward validation failed: {error}"
+            ))
+        },
+    )
+}
+
+fn validate_runtime_promoted_bundle_rewards(
+    state: &ChainState,
+    bundle: &[Block],
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<(), PulseError> {
+    for accepted_block in bundle {
+        validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments).map_err(
+            |error| {
+                invalid_monetary_runtime(format!(
+                    "promoted block {} reward validation failed: {error}",
+                    accepted_block.hash
+                ))
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// Verify a restored/live activated-v2 runtime snapshot before it is allowed to
 /// operate under a persisted v3 monetary activation.
 pub fn validate_monetary_v3_p2p_runtime_snapshot(
@@ -129,16 +161,11 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                validate_ordered_monetary_reward_v3(
+                validate_runtime_accepted_block_reward(
                     prepared_state,
-                    &accepted_block.hash,
+                    accepted_block,
                     cadence_segments,
-                )
-                .map_err(|error| {
-                    invalid_monetary_runtime(format!(
-                        "accepted block reward validation failed: {error}"
-                    ))
-                })?;
+                )?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_one(accepted_block, prepared_state, prepared_runtime)
             },
@@ -150,19 +177,11 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                for accepted_block in bundle {
-                    validate_ordered_monetary_reward_v3(
-                        prepared_state,
-                        &accepted_block.hash,
-                        cadence_segments,
-                    )
-                    .map_err(|error| {
-                        invalid_monetary_runtime(format!(
-                            "promoted block {} reward validation failed: {error}",
-                            accepted_block.hash
-                        ))
-                    })?;
-                }
+                validate_runtime_promoted_bundle_rewards(
+                    prepared_state,
+                    bundle,
+                    cadence_segments,
+                )?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
