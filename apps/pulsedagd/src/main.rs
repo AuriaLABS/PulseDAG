@@ -829,6 +829,7 @@ struct SelectedSegmentSession {
     locator_request_id: u64,
     expected_header_hashes: Vec<String>,
     prerequisite_parent_hashes: HashSet<String>,
+    unresolved_prerequisite_parent_hashes: BTreeSet<String>,
     missing_hashes: Vec<String>,
     requested_hashes: HashSet<String>,
     received_hashes: HashSet<String>,
@@ -982,6 +983,7 @@ impl SelectedSegmentSession {
             locator_request_id,
             expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
             prerequisite_parent_hashes: HashSet::new(),
+            unresolved_prerequisite_parent_hashes: BTreeSet::new(),
             missing_hashes: Vec::new(),
             requested_hashes: HashSet::new(),
             received_hashes: HashSet::new(),
@@ -1293,6 +1295,31 @@ fn selected_segment_prerequisite_parent_hashes(
     prerequisites.sort();
     prerequisites.dedup();
     prerequisites
+}
+
+fn selected_segment_prerequisite_retry_plan(
+    unresolved: &BTreeSet<String>,
+    known: &HashSet<String>,
+    retained: &HashSet<String>,
+    pending_requests: &HashSet<String>,
+    limit: usize,
+) -> (Vec<String>, Vec<String>) {
+    let resolved = unresolved
+        .iter()
+        .filter(|hash| known.contains(hash.as_str()) || retained.contains(hash.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let retry = unresolved
+        .iter()
+        .filter(|hash| {
+            !known.contains(hash.as_str())
+                && !retained.contains(hash.as_str())
+                && !pending_requests.contains(hash.as_str())
+        })
+        .take(limit.max(1))
+        .cloned()
+        .collect::<Vec<_>>();
+    (resolved, retry)
 }
 
 fn selected_segment_missing_hashes(
@@ -3709,6 +3736,197 @@ async fn main() -> Result<()> {
                         .to_string();
                     }
                 }
+
+                // Selected-segment recovery must not depend on a single inbound event as its
+                // retry trigger. A full per-peer window can defer an external merge parent, and
+                // an all-at-once send failure can leave a session with no current chunk. Retry
+                // both classes deterministically on the recovery heartbeat.
+                if recovery_tick.is_multiple_of(5) {
+                    let prerequisite_retry_state = selected_segment_session
+                        .as_ref()
+                        .filter(|session| {
+                            !session.unresolved_prerequisite_parent_hashes.is_empty()
+                        })
+                        .map(|session| {
+                            (
+                                session.session_id,
+                                session.peer_id.clone(),
+                                session.unresolved_prerequisite_parent_hashes.clone(),
+                            )
+                        });
+                    if let Some((session_id, peer_id, unresolved)) = prerequisite_retry_state {
+                        let known = {
+                            let guard = chain.read().await;
+                            known_hashes_for_scheduler(&guard)
+                        };
+                        let retained = activated_v2_p2p_runtime
+                            .staging()
+                            .hashes()
+                            .into_iter()
+                            .chain(activated_v2_p2p_runtime.pending_hashes())
+                            .collect::<HashSet<_>>();
+                        let pending_requests =
+                            block_requests.pending_hashes().into_iter().collect::<HashSet<_>>();
+                        let (resolved, retry) = selected_segment_prerequisite_retry_plan(
+                            &unresolved,
+                            &known,
+                            &retained,
+                            &pending_requests,
+                            MAX_INFLIGHT_BLOCK_REQUESTS,
+                        );
+                        if let Some(session) = selected_segment_session.as_mut().filter(|session| {
+                            session.session_id == session_id && session.peer_id == peer_id
+                        }) {
+                            for hash in resolved {
+                                session.unresolved_prerequisite_parent_hashes.remove(&hash);
+                            }
+                        }
+
+                        let mut sent = 0u64;
+                        for parent in retry {
+                            block_requests.note_selected_parent_references(
+                                &peer_id,
+                                [parent.clone()],
+                            );
+                            if !block_requests.promote_getblock_to_peer(
+                                &parent,
+                                now_unix(),
+                                &peer_id,
+                            ) {
+                                continue;
+                            }
+                            if let Some(ref p2p_handle) = p2p {
+                                match p2p_handle.request_block_from(&peer_id, &parent) {
+                                    Ok(_) => sent = sent.saturating_add(1),
+                                    Err(error) => {
+                                        // Keep the admitted tracker entry. Its timeout path will
+                                        // rotate to another direct peer, while the unresolved set
+                                        // keeps the prerequisite live until its body is retained.
+                                        warn!(
+                                            error = %error,
+                                            missing_parent = %parent,
+                                            session_id,
+                                            peer = %peer_id,
+                                            "selected prerequisite retry send failed; preserving tracker and heartbeat state"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if sent > 0 {
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(sent);
+                            rt.peer_addressed_getblock_sent_total =
+                                rt.peer_addressed_getblock_sent_total.saturating_add(sent);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(sent);
+                            rt.missing_parent_request_started_total =
+                                rt.missing_parent_request_started_total.saturating_add(sent);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        }
+                    }
+
+                    let selected_retry_state = selected_segment_session
+                        .as_ref()
+                        .filter(|session| session.can_start_chunk())
+                        .map(|session| {
+                            (
+                                session.session_id,
+                                session.peer_id.clone(),
+                                session.continuation_hashes(
+                                    selected_limits.max_inflight_blocks_per_peer,
+                                ),
+                            )
+                        });
+                    if let Some((session_id, peer_id, candidates)) = selected_retry_state {
+                        if !candidates.is_empty() {
+                            let mut tracked_hashes = Vec::new();
+                            let mut sent = 0u64;
+                            for hash in candidates {
+                                if !block_requests.promote_getblock_to_peer(
+                                    &hash,
+                                    now_unix(),
+                                    &peer_id,
+                                ) {
+                                    continue;
+                                }
+                                let mut sent_now = false;
+                                if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_block_from(&peer_id, &hash) {
+                                        Ok(_) => sent_now = true,
+                                        Err(error) => {
+                                            block_requests.resolve(&hash);
+                                            warn!(
+                                                error = %error,
+                                                block_hash = %hash,
+                                                session_id,
+                                                peer = %peer_id,
+                                                "selected-segment heartbeat GetBlock send failed; retry remains eligible"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    block_requests.resolve(&hash);
+                                }
+                                if sent_now {
+                                    tracked_hashes.push(hash);
+                                    sent = sent.saturating_add(1);
+                                }
+                            }
+
+                            if !tracked_hashes.is_empty() {
+                                let mut chunk_started = false;
+                                if let Some(session) =
+                                    selected_segment_session.as_mut().filter(|session| {
+                                        session.session_id == session_id
+                                            && session.peer_id == peer_id
+                                    })
+                                {
+                                    for hash in &tracked_hashes {
+                                        session.requested_hashes.insert(hash.clone());
+                                    }
+                                    chunk_started =
+                                        session.start_chunk(tracked_hashes.clone(), now_unix());
+                                }
+                                if chunk_started {
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(sent);
+                                    rt.peer_addressed_getblock_sent_total =
+                                        rt.peer_addressed_getblock_sent_total.saturating_add(sent);
+                                    rt.selected_segment_block_requests_total = rt
+                                        .selected_segment_block_requests_total
+                                        .saturating_add(sent);
+                                    rt.active_session_requested_blocks =
+                                        rt.active_session_requested_blocks.saturating_add(sent);
+                                    rt.final_quiescence_missing_segment_request_total = rt
+                                        .final_quiescence_missing_segment_request_total
+                                        .saturating_add(sent);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
+                                    rt.sync_state = DagSyncStage::RequestingSelectedBlocks
+                                        .as_str()
+                                        .to_string();
+                                    info!(
+                                        event = "activated_v2_selected_segment_heartbeat_retry",
+                                        session_id,
+                                        peer = %peer_id,
+                                        issued_count = sent,
+                                        "restarted an idle selected-segment chunk from heartbeat"
+                                    );
+                                } else {
+                                    for hash in &tracked_hashes {
+                                        block_requests.resolve(hash);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let direct_request_peers = active_peer_ids(&p2p);
                 let stalled_selected_session =
                     selected_segment_session.as_ref().and_then(|session| {
@@ -5082,12 +5300,24 @@ async fn main() -> Result<()> {
                                 .any(|hash| hash == &block.hash)
                                 || activated_v2_p2p_runtime.pending_contains(&block.hash)
                                 || activated_v2_p2p_runtime.staging().contains(&block.hash);
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let inbound_was_prerequisite =
+                                    session.prerequisite_parent_hashes.contains(&block.hash);
+                                session
+                                    .unresolved_prerequisite_parent_hashes
+                                    .remove(&block.hash);
+                                if inbound_was_prerequisite {
+                                    // The body hash is already rooted in a validated selected
+                                    // header. Its own missing parents are therefore authenticated
+                                    // transitive prerequisite context, not arbitrary relay input.
+                                    session
+                                        .prerequisite_parent_hashes
+                                        .extend(summary.missing_parents.iter().cloned());
+                                }
+                            }
                             let selected_session_peer = selected_segment_session
                                 .as_ref()
-                                .map(|session| session.peer_id.as_str());
-                            let selected_parent_references = selected_segment_session
-                                .as_ref()
-                                .map(|session| &session.prerequisite_parent_hashes);
+                                .map(|session| session.peer_id.clone());
                             let missing_parent_candidates = summary
                                 .missing_parents
                                 .iter()
@@ -5100,13 +5330,32 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>();
                             let mut missing_parent_requests_issued = 0u64;
                             for parent in &missing_parent_candidates {
+                                let selected_parent_reference = selected_segment_session
+                                    .as_ref()
+                                    .is_some_and(|session| {
+                                        session.prerequisite_parent_hashes.contains(parent)
+                                    });
                                 let missing_parent_route = activated_v2_missing_parent_fetch_route(
                                     priority_active,
                                     retained_in_activated_v2,
-                                    selected_session_peer,
-                                    selected_parent_references
-                                        .is_some_and(|parents| parents.contains(parent)),
+                                    selected_session_peer.as_deref(),
+                                    selected_parent_reference,
                                 );
+                                if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
+                                    &missing_parent_route
+                                {
+                                    if let Some(session) = selected_segment_session.as_mut() {
+                                        session
+                                            .unresolved_prerequisite_parent_hashes
+                                            .insert(parent.clone());
+                                    }
+                                    // The concrete missing-parent result is newer evidence than
+                                    // any earlier not-found/timeout for this validated prerequisite.
+                                    block_requests.note_selected_parent_references(
+                                        peer_id,
+                                        [parent.clone()],
+                                    );
+                                }
                                 let admitted = match &missing_parent_route {
                                     ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
                                         block_requests.promote_getblock_to_peer(
@@ -9684,6 +9933,32 @@ mod tests {
             selected_segment_prerequisite_parent_hashes(&[first, second], &known, &retained),
             vec!["unknown-merge-a".to_string()]
         );
+    }
+
+    #[test]
+    fn selected_segment_prerequisite_retry_plan_preserves_backpressured_work() {
+        let unresolved = BTreeSet::from([
+            "parent-a".to_string(),
+            "parent-b".to_string(),
+            "parent-c".to_string(),
+            "parent-d".to_string(),
+        ]);
+        let known = HashSet::from(["parent-a".to_string()]);
+        let retained = HashSet::from(["parent-b".to_string()]);
+        let pending_requests = HashSet::from(["parent-c".to_string()]);
+
+        let (resolved, retry) = selected_segment_prerequisite_retry_plan(
+            &unresolved,
+            &known,
+            &retained,
+            &pending_requests,
+            16,
+        );
+        assert_eq!(
+            resolved,
+            vec!["parent-a".to_string(), "parent-b".to_string()]
+        );
+        assert_eq!(retry, vec!["parent-d".to_string()]);
     }
 
     #[test]
