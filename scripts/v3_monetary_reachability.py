@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 14
+AUDITOR_VERSION = 15
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -194,6 +194,45 @@ REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS = {
         "constructor": "ActivatedV2P2pRuntimePersistence::new",
         "audit": "audit_authoritative_monetary_state",
         "persist": ["persist_runtime", "persist_one", "persist_bundle"],
+        "expected_bodies": [
+            """
+            validate_runtime_transient_monetary_envelopes(
+                prepared_state,
+                prepared_runtime,
+                identity,
+            )?;
+            audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
+            persist_runtime(prepared_state, prepared_runtime)
+            """,
+            """
+            validate_runtime_transient_monetary_envelopes(
+                prepared_state,
+                prepared_runtime,
+                identity,
+            )?;
+            validate_runtime_accepted_block_reward(
+                prepared_state,
+                accepted_block,
+                cadence_segments,
+            )?;
+            audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
+            persist_one(accepted_block, prepared_state, prepared_runtime)
+            """,
+            """
+            validate_runtime_transient_monetary_envelopes(
+                prepared_state,
+                prepared_runtime,
+                identity,
+            )?;
+            validate_runtime_promoted_bundle_rewards(
+                prepared_state,
+                bundle,
+                cadence_segments,
+            )?;
+            audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
+            persist_bundle(bundle, prepared_state, prepared_runtime)
+            """,
+        ],
     },
 }
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1507,12 +1546,27 @@ def _braced_closure_bodies(payload: str):
         i += 1
 
 
+def _runtime_callback_macro_invocations(text: str) -> list:
+    source = code_source(text)
+    macro_re = re.compile(
+        r"\b(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*"
+        r"([A-Za-z_][A-Za-z0-9_]*)!\s*[\(\[\{]"
+    )
+    return [match.group(1) for match in macro_re.finditer(source)]
+
+
+def _normalize_runtime_callback_execution_shape(text: str) -> str:
+    """Canonical callback code shape with comments/literals/macros made explicit."""
+    return re.sub(r"\s+", "", executable_source(text))
+
+
 def required_runtime_persistence_callback_hits(
     text: str,
     function_name: str,
     constructor: str,
     audit_callee: str,
     persist_callees: list,
+    expected_bodies=None,
 ) -> dict:
     body = _local_function_body(text, function_name)
     base = {
@@ -1558,6 +1612,9 @@ def required_runtime_persistence_callback_hits(
                     "missing_callback": True,
                     "audit_reference_count": 0,
                     "persist_reference_count": 0,
+                    "macro_invocation_count": 0,
+                    "macro_invocations": [],
+                    "execution_shape_matches": False,
                     "missing_audit": True,
                     "audit_result_propagated": False,
                     "missing_persist": True,
@@ -1567,6 +1624,16 @@ def required_runtime_persistence_callback_hits(
             continue
         closure_body = bodies[index]
         closure_code = code_source(closure_body)
+        macro_invocations = _runtime_callback_macro_invocations(closure_body)
+        observed_shape = _normalize_runtime_callback_execution_shape(closure_body)
+        expected_shape = (
+            _normalize_runtime_callback_execution_shape(expected_bodies[index])
+            if expected_bodies is not None and index < len(expected_bodies)
+            else None
+        )
+        execution_shape_matches = (
+            expected_shape is None or observed_shape == expected_shape
+        )
         audit_reference_count = len(
             re.findall(rf"\b{re.escape(audit_callee)}\b", closure_code)
         )
@@ -1585,6 +1652,9 @@ def required_runtime_persistence_callback_hits(
                 "missing_callback": False,
                 "audit_reference_count": audit_reference_count,
                 "persist_reference_count": persist_reference_count,
+                "macro_invocation_count": len(macro_invocations),
+                "macro_invocations": macro_invocations,
+                "execution_shape_matches": execution_shape_matches,
                 "missing_audit": not audit_offsets,
                 "audit_result_propagated": bool(propagating_audit_offsets),
                 "missing_persist": not persist_offsets,
@@ -1722,6 +1792,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             contract["constructor"],
             contract["audit"],
             contract["persist"],
+            contract.get("expected_bodies"),
         )
         check["path"] = path
         runtime_persistence_callback_checks.append(check)
@@ -1731,6 +1802,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             if item["missing_callback"]
             or item["audit_reference_count"] != 1
             or item["persist_reference_count"] != 1
+            or item["macro_invocation_count"] != 0
+            or not item["execution_shape_matches"]
             or item["missing_audit"]
             or not item["audit_result_propagated"]
             or item["missing_persist"]
@@ -1829,6 +1902,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "requires_authority_audit_before_runtime_persist": True,
             "requires_runtime_persistence_audit_result_propagation": True,
             "rejects_alternate_runtime_persistence_references": True,
+            "rejects_runtime_persistence_callback_macros": True,
+            "freezes_runtime_persistence_callback_execution_shape": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
             "freezes_network_identity": False,
@@ -2390,6 +2465,84 @@ def self_test() -> None:
         ["persist_runtime", "persist_one", "persist_bundle"],
     )
     assert alternate_persist_check["callbacks"][0]["persist_reference_count"] == 2
+
+    runtime_contract = REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS[
+        "crates/pulsedag-core/src/network_runtime_v3.rs"
+    ]
+    frozen_shape_fixture = (
+        "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+        "  let _p = ActivatedV2P2pRuntimePersistence::new(\n"
+        "    |prepared_state: &State, prepared_runtime: &Runtime| {\n"
+        "      validate_runtime_transient_monetary_envelopes(prepared_state, prepared_runtime, identity)?;\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_runtime(prepared_state, prepared_runtime)\n"
+        "    },\n"
+        "    |accepted_block: &Block, prepared_state: &State, prepared_runtime: &Runtime| {\n"
+        "      validate_runtime_transient_monetary_envelopes(prepared_state, prepared_runtime, identity)?;\n"
+        "      validate_runtime_accepted_block_reward(prepared_state, accepted_block, cadence_segments)?;\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_one(accepted_block, prepared_state, prepared_runtime)\n"
+        "    },\n"
+        "    |bundle: &[Block], prepared_state: &State, prepared_runtime: &Runtime| {\n"
+        "      validate_runtime_transient_monetary_envelopes(prepared_state, prepared_runtime, identity)?;\n"
+        "      validate_runtime_promoted_bundle_rewards(prepared_state, bundle, cadence_segments)?;\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_bundle(bundle, prepared_state, prepared_runtime)\n"
+        "    }\n"
+        "  );\n"
+        "}\n"
+    )
+    frozen_shape_check = required_runtime_persistence_callback_hits(
+        frozen_shape_fixture,
+        runtime_contract["function"],
+        runtime_contract["constructor"],
+        runtime_contract["audit"],
+        runtime_contract["persist"],
+        runtime_contract["expected_bodies"],
+    )
+    assert frozen_shape_check["callback_count"] == 3
+    assert all(
+        item["macro_invocation_count"] == 0 and item["execution_shape_matches"]
+        for item in frozen_shape_check["callbacks"]
+    )
+
+    macro_bypass_fixture = frozen_shape_fixture.replace(
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_runtime(prepared_state, prepared_runtime)\n",
+        "      persist_early!(prepared_state, prepared_runtime);\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_runtime(prepared_state, prepared_runtime)\n",
+        1,
+    )
+    macro_bypass_check = required_runtime_persistence_callback_hits(
+        macro_bypass_fixture,
+        runtime_contract["function"],
+        runtime_contract["constructor"],
+        runtime_contract["audit"],
+        runtime_contract["persist"],
+        runtime_contract["expected_bodies"],
+    )
+    assert macro_bypass_check["callbacks"][0]["macro_invocation_count"] == 1
+    assert not macro_bypass_check["callbacks"][0]["execution_shape_matches"]
+
+    helper_bypass_fixture = frozen_shape_fixture.replace(
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_runtime(prepared_state, prepared_runtime)\n",
+        "      persist_early(prepared_state, prepared_runtime)?;\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
+        "      persist_runtime(prepared_state, prepared_runtime)\n",
+        1,
+    )
+    helper_bypass_check = required_runtime_persistence_callback_hits(
+        helper_bypass_fixture,
+        runtime_contract["function"],
+        runtime_contract["constructor"],
+        runtime_contract["audit"],
+        runtime_contract["persist"],
+        runtime_contract["expected_bodies"],
+    )
+    assert helper_bypass_check["callbacks"][0]["macro_invocation_count"] == 0
+    assert not helper_bypass_check["callbacks"][0]["execution_shape_matches"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
