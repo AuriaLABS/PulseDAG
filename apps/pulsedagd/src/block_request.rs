@@ -311,6 +311,10 @@ impl BlockRequestTracker {
         true
     }
 
+    pub fn pending_peer(&self, hash: &str) -> Option<&str> {
+        self.pending.get(hash).and_then(|request| request.peer.as_deref())
+    }
+
     pub fn promote_getblock_to_peer(&mut self, hash: &str, now_unix: u64, peer: &str) -> bool {
         if self.exhausted_hashes.contains(hash) || self.is_backing_off(hash, now_unix) {
             self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
@@ -579,6 +583,41 @@ impl BlockRequestTracker {
 
             // A fresh, validated selected-header page from this direct peer is
             // newer availability evidence than a generic retry backoff.
+            self.backoff_by_hash.remove(&hash);
+        }
+    }
+
+    pub fn note_selected_parent_references<I, S>(&mut self, peer: impl Into<String>, hashes: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let peer = peer.into();
+        for hash in hashes.into_iter().map(Into::into) {
+            if self.reopen_exhausted_hash(&hash, "selected_block_parent_reference") {
+                continue;
+            }
+
+            let remove_not_found_entry =
+                self.not_found_by_hash.get_mut(&hash).is_some_and(|failed| {
+                    failed.remove(&peer);
+                    failed.is_empty()
+                });
+            if remove_not_found_entry {
+                self.not_found_by_hash.remove(&hash);
+            }
+
+            let remove_timeout_entry =
+                self.timed_out_by_hash.get_mut(&hash).is_some_and(|failed| {
+                    failed.remove(&peer);
+                    failed.is_empty()
+                });
+            if remove_timeout_entry {
+                self.timed_out_by_hash.remove(&hash);
+            }
+
+            // A fresh validated child fetched from this peer is newer ancestry
+            // evidence than stale failure/backoff state for its referenced parent.
             self.backoff_by_hash.remove(&hash);
         }
     }
@@ -1823,6 +1862,30 @@ mod tests {
                 .and_then(|request| request.peer.as_deref()),
             Some("peer-a")
         );
+    }
+
+    #[test]
+    fn selected_parent_reference_reopens_terminal_parent_for_same_peer() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_from_peer("parent", 100, "peer-a"));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+        assert!(!tracker.promote_getblock_to_peer("parent", 102, "peer-a"));
+
+        tracker.note_selected_parent_references("peer-a", ["parent"]);
+
+        let state = tracker.missing_parent_request_state("parent");
+        assert!(!state.terminal_unavailable_after_all_peers);
+        assert_eq!(state.reopened_total, 1);
+        assert_eq!(
+            state.reopen_reason.as_deref(),
+            Some("selected_block_parent_reference")
+        );
+        assert!(tracker.promote_getblock_to_peer("parent", 103, "peer-a"));
+        assert_eq!(tracker.pending_peer("parent"), Some("peer-a"));
     }
 
     #[test]
