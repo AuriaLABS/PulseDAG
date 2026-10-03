@@ -3949,6 +3949,12 @@ async fn main() -> Result<()> {
                             || exhausted_prerequisite
                             || exhausted_selected_block)
                             .then(|| {
+                                let owned_requests = session
+                                    .current_chunk
+                                    .iter()
+                                    .chain(session.unresolved_prerequisite_parent_hashes.iter())
+                                    .cloned()
+                                    .collect::<BTreeSet<_>>();
                                 (
                                     session.session_id,
                                     session.peer_id.clone(),
@@ -3959,10 +3965,21 @@ async fn main() -> Result<()> {
                                     } else {
                                         "selected_peer_not_direct_request_capable"
                                     },
+                                    owned_requests,
                                 )
                             })
                     });
-                if let Some((session_id, peer_id, reason)) = selected_session_replan {
+                if let Some((session_id, peer_id, reason, owned_requests)) =
+                    selected_session_replan
+                {
+                    for hash in owned_requests {
+                        // Clear only live tracker entries owned by the abandoned session. Keep
+                        // terminal exhaustion evidence intact until genuinely fresh peer evidence
+                        // reopens that hash.
+                        if block_requests.pending.contains_key(&hash) {
+                            block_requests.resolve(&hash);
+                        }
+                    }
                     selected_segment_session = None;
                     selected_segment_locator_state.lock().await.pending_locator = None;
                     let mut rt = runtime.write().await;
