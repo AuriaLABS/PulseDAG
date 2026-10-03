@@ -3784,10 +3784,6 @@ async fn main() -> Result<()> {
 
                         let mut sent = 0u64;
                         for parent in retry {
-                            block_requests.note_selected_parent_references(
-                                &peer_id,
-                                [parent.clone()],
-                            );
                             if !block_requests.promote_getblock_to_peer(
                                 &parent,
                                 now_unix(),
@@ -3928,21 +3924,35 @@ async fn main() -> Result<()> {
                 }
 
                 let direct_request_peers = active_peer_ids(&p2p);
-                let stalled_selected_session =
+                let selected_session_replan =
                     selected_segment_session.as_ref().and_then(|session| {
                         let inflight_for_peer = block_requests
                             .inflight_by_peer()
                             .get(&session.peer_id)
                             .copied()
                             .unwrap_or_default();
-                        selected_segment_session_should_replan(
+                        let direct_peer_unavailable = selected_segment_session_should_replan(
                             &session.peer_id,
                             &direct_request_peers,
                             inflight_for_peer,
-                        )
-                        .then(|| (session.session_id, session.peer_id.clone()))
+                        );
+                        let exhausted_prerequisite = session
+                            .unresolved_prerequisite_parent_hashes
+                            .iter()
+                            .any(|hash| block_requests.is_all_peers_exhausted(hash));
+                        (direct_peer_unavailable || exhausted_prerequisite).then(|| {
+                            (
+                                session.session_id,
+                                session.peer_id.clone(),
+                                if exhausted_prerequisite {
+                                    "selected_prerequisite_all_peers_exhausted"
+                                } else {
+                                    "selected_peer_not_direct_request_capable"
+                                },
+                            )
+                        })
                     });
-                if let Some((session_id, peer_id)) = stalled_selected_session {
+                if let Some((session_id, peer_id, reason)) = selected_session_replan {
                     selected_segment_session = None;
                     selected_segment_locator_state.lock().await.pending_locator = None;
                     let mut rt = runtime.write().await;
@@ -3956,7 +3966,8 @@ async fn main() -> Result<()> {
                     warn!(
                         session_id,
                         peer = %peer_id,
-                        "abandoned selected-segment session without a direct request-capable peer; replanning through Task 27"
+                        reason,
+                        "abandoned selected-segment session; replanning through Task 27"
                     );
                 }
                 let selected_segment_priority = {
