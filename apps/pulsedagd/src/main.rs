@@ -5149,13 +5149,16 @@ async fn main() -> Result<()> {
                                             missing_parent_requests_issued.saturating_add(1);
                                     }
                                     Err(error) => {
-                                        block_requests.resolve(parent);
+                                        // Keep the admitted request pending so the normal timeout
+                                        // path can rotate it to another direct peer. Resolving here
+                                        // would erase the only retry trigger while selected-segment
+                                        // priority suppresses generic missing-parent recovery.
                                         warn!(
                                             error = %error,
                                             missing_parent = %parent,
                                             child = %block.hash,
                                             route = ?missing_parent_route,
-                                            "failed issuing activated-v2 missing-parent GetBlock request"
+                                            "failed issuing activated-v2 missing-parent GetBlock request; preserving request for peer failover"
                                         );
                                     }
                                 }
