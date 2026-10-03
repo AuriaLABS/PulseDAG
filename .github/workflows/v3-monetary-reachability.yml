@@ -64,7 +64,7 @@ jobs:
             --out ci-evidence/v3-monetary-reachability/static-reachability.json
           jq -e '
             .result == "PASS" and
-            .auditor_version == 10 and
+            .auditor_version == 11 and
             .claim_boundary.proves_static_live_authority_shape == true and
             .claim_boundary.requires_dynamic_guard_tests == true and
             .claim_boundary.strips_all_cfg_test_items == true and
@@ -93,6 +93,7 @@ jobs:
             .claim_boundary.pins_underlying_calls_to_required_local_authority_helpers == true and
             .claim_boundary.pins_required_local_callees_to_crate_paths == true and
             .claim_boundary.requires_direct_top_level_local_authority_calls == true and
+            .claim_boundary.resets_direct_statement_boundary_after_top_level_braces == true and
             .claim_boundary.requires_runtime_authority_dynamic_regression == true and
             .claim_boundary.selects_production_cadence == false and
             .claim_boundary.freezes_network_identity == false and
