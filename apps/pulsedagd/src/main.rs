@@ -217,25 +217,15 @@ mod task27_rejoin_runtime_tests {
     #[test]
     fn activated_v2_selected_segment_routes_missing_parents_to_session_peer() {
         assert_eq!(
-            activated_v2_missing_parent_fetch_route(
-                true,
-                true,
-                Some("peer-selected"),
-                Some("peer-selected"),
-            ),
+            activated_v2_missing_parent_fetch_route(true, true, Some("peer-selected"), true),
             ActivatedV2MissingParentFetchRoute::SelectedPeer("peer-selected".to_string())
         );
         assert_eq!(
-            activated_v2_missing_parent_fetch_route(
-                true,
-                true,
-                Some("peer-selected"),
-                Some("peer-other"),
-            ),
+            activated_v2_missing_parent_fetch_route(true, true, Some("peer-selected"), false),
             ActivatedV2MissingParentFetchRoute::Suppressed
         );
         assert_eq!(
-            activated_v2_missing_parent_fetch_route(false, true, None, Some("peer-other")),
+            activated_v2_missing_parent_fetch_route(false, true, None, false),
             ActivatedV2MissingParentFetchRoute::Generic
         );
     }
@@ -694,15 +684,11 @@ fn activated_v2_missing_parent_fetch_route(
     priority_active: bool,
     retained_block: bool,
     selected_session_peer: Option<&str>,
-    fulfilled_request_peer: Option<&str>,
+    selected_parent_reference: bool,
 ) -> ActivatedV2MissingParentFetchRoute {
-    if retained_block {
-        if let (Some(session_peer), Some(request_peer)) =
-            (selected_session_peer, fulfilled_request_peer)
-        {
-            if session_peer == request_peer {
-                return ActivatedV2MissingParentFetchRoute::SelectedPeer(session_peer.to_string());
-            }
+    if retained_block && selected_parent_reference {
+        if let Some(session_peer) = selected_session_peer {
+            return ActivatedV2MissingParentFetchRoute::SelectedPeer(session_peer.to_string());
         }
     }
     if priority_active {
@@ -842,6 +828,7 @@ struct SelectedSegmentSession {
     remote_selected_height: u64,
     locator_request_id: u64,
     expected_header_hashes: Vec<String>,
+    prerequisite_parent_hashes: HashSet<String>,
     missing_hashes: Vec<String>,
     requested_hashes: HashSet<String>,
     received_hashes: HashSet<String>,
@@ -994,6 +981,7 @@ impl SelectedSegmentSession {
             remote_selected_height: remote.header.height,
             locator_request_id,
             expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
+            prerequisite_parent_hashes: HashSet::new(),
             missing_hashes: Vec::new(),
             requested_hashes: HashSet::new(),
             received_hashes: HashSet::new(),
@@ -4534,8 +4522,6 @@ async fn main() -> Result<()> {
                             final_quiescence_same_height_tip_requests.contains(&block.hash);
                         let fulfilled_missing_parent_request =
                             block_requests.pending.contains_key(&block.hash);
-                        let fulfilled_request_peer =
-                            block_requests.pending_peer(&block.hash).map(str::to_string);
                         {
                             let mut rt = runtime.write().await;
                             let now = now_unix();
@@ -5099,12 +5085,9 @@ async fn main() -> Result<()> {
                             let selected_session_peer = selected_segment_session
                                 .as_ref()
                                 .map(|session| session.peer_id.as_str());
-                            let missing_parent_route = activated_v2_missing_parent_fetch_route(
-                                priority_active,
-                                retained_in_activated_v2,
-                                selected_session_peer,
-                                fulfilled_request_peer.as_deref(),
-                            );
+                            let selected_parent_references = selected_segment_session
+                                .as_ref()
+                                .map(|session| &session.prerequisite_parent_hashes);
                             let missing_parent_candidates = summary
                                 .missing_parents
                                 .iter()
@@ -5115,17 +5098,16 @@ async fn main() -> Result<()> {
                                 })
                                 .cloned()
                                 .collect::<Vec<_>>();
-                            if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
-                                &missing_parent_route
-                            {
-                                block_requests.note_selected_parent_references(
-                                    peer_id,
-                                    missing_parent_candidates.iter().cloned(),
-                                );
-                            }
-
                             let mut missing_parent_requests_issued = 0u64;
                             for parent in &missing_parent_candidates {
+                                let missing_parent_route =
+                                    activated_v2_missing_parent_fetch_route(
+                                        priority_active,
+                                        retained_in_activated_v2,
+                                        selected_session_peer,
+                                        selected_parent_references
+                                            .is_some_and(|parents| parents.contains(parent)),
+                                    );
                                 let admitted = match &missing_parent_route {
                                     ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
                                         block_requests.promote_getblock_to_peer(
@@ -6472,6 +6454,9 @@ async fn main() -> Result<()> {
                                             &known,
                                             &activated_v2_retained_hashes,
                                         );
+                                    session
+                                        .prerequisite_parent_hashes
+                                        .extend(prerequisite_parents.iter().cloned());
                                     // A validated selected-header response is fresh proof for both
                                     // the selected hashes and the explicit parent hashes carried by
                                     // those headers. Reopen only that bounded, peer-sourced context.
