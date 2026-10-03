@@ -2502,7 +2502,14 @@ def self_test() -> None:
     )
     assert frozen_shape_check["callback_count"] == 3
     assert all(
-        item["macro_invocation_count"] == 0 and item["execution_shape_matches"]
+        item["macro_invocation_count"] == 0
+        for item in frozen_shape_check["callbacks"]
+    )
+    assert all(
+        not item["missing_audit"]
+        and item["audit_result_propagated"]
+        and not item["missing_persist"]
+        and item["audit_before_persist"]
         for item in frozen_shape_check["callbacks"]
     )
 
