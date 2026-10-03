@@ -5323,8 +5323,8 @@ async fn main() -> Result<()> {
                                 .iter()
                                 .filter(|parent| {
                                     !guard.dag.blocks.contains_key(*parent)
-                                        && !activated_v2_p2p_runtime.pending_contains(*parent)
-                                        && !activated_v2_p2p_runtime.staging().contains(*parent)
+                                        && !activated_v2_p2p_runtime.pending_contains(parent)
+                                        && !activated_v2_p2p_runtime.staging().contains(parent)
                                 })
                                 .cloned()
                                 .collect::<Vec<_>>();
