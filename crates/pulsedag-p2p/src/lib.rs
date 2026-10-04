@@ -5229,6 +5229,8 @@ fn dispatch_network_message_with_transport_peer(
             locator,
             stop_hash,
             limit,
+            request_id,
+            requested_peer_id,
         } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -5247,6 +5249,17 @@ fn dispatch_network_message_with_transport_peer(
                 }
                 return;
             }
+            if requested_peer_id.is_some() && request_id.is_none() {
+                return;
+            }
+            if requested_peer_id.as_ref().is_some_and(|requested| {
+                inner
+                    .lock()
+                    .map(|guard| requested != &guard.peer_id)
+                    .unwrap_or(true)
+            }) {
+                return;
+            }
             if let Ok(mut guard) = inner.lock() {
                 guard.inbound_messages += 1;
                 guard.header_requests_received = guard.header_requests_received.saturating_add(1);
@@ -5261,12 +5274,19 @@ fn dispatch_network_message_with_transport_peer(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::GetHeaders {
+                peer_id: source_peer.map(ToOwned::to_owned),
+                request_id,
                 locator,
                 stop_hash,
                 limit,
             });
         }
-        NetworkMessage::Headers { chain_id, headers } => {
+        NetworkMessage::Headers {
+            chain_id,
+            headers,
+            request_id,
+            requested_peer_id,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -5282,6 +5302,17 @@ fn dispatch_network_message_with_transport_peer(
                         persist_peer_state_if_configured(&guard);
                     }
                 }
+                return;
+            }
+            if requested_peer_id.is_some() && request_id.is_none() {
+                return;
+            }
+            if requested_peer_id.as_ref().is_some_and(|requested| {
+                inner
+                    .lock()
+                    .map(|guard| requested != &guard.peer_id)
+                    .unwrap_or(true)
+            }) {
                 return;
             }
             let mut accepted_headers = Vec::new();
@@ -5328,6 +5359,7 @@ fn dispatch_network_message_with_transport_peer(
             if !accepted_headers.is_empty() {
                 let _ = inbound_tx.send(InboundEvent::Headers {
                     peer_id: source_peer.map(ToOwned::to_owned),
+                    request_id,
                     headers: accepted_headers,
                 });
             }
