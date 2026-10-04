@@ -1276,25 +1276,40 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
 fn selected_segment_prerequisite_parent_hashes(
     headers: &[HeaderInventory],
     known: &HashSet<String>,
-    retained: &HashSet<String>,
+    retained_parent_graph: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
     let header_hashes = headers
         .iter()
         .map(|item| item.hash.clone())
         .collect::<HashSet<_>>();
-    let mut prerequisites = headers
+    let mut frontier = headers
         .iter()
         .flat_map(|item| item.header.parents.iter())
-        .filter(|parent| {
-            !known.contains(*parent)
-                && !retained.contains(*parent)
-                && !header_hashes.contains(*parent)
-        })
+        .filter(|parent| !known.contains(*parent) && !header_hashes.contains(*parent))
         .cloned()
         .collect::<Vec<_>>();
-    prerequisites.sort();
-    prerequisites.dedup();
-    prerequisites
+    let mut prerequisites = BTreeSet::new();
+
+    while let Some(parent) = frontier.pop() {
+        if known.contains(&parent)
+            || header_hashes.contains(&parent)
+            || !prerequisites.insert(parent.clone())
+        {
+            continue;
+        }
+        if let Some(retained_parents) = retained_parent_graph.get(&parent) {
+            frontier.extend(
+                retained_parents
+                    .iter()
+                    .filter(|ancestor| {
+                        !known.contains(*ancestor) && !header_hashes.contains(*ancestor)
+                    })
+                    .cloned(),
+            );
+        }
+    }
+
+    prerequisites.into_iter().collect()
 }
 
 fn selected_segment_prerequisite_retry_plan(
@@ -6701,11 +6716,23 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let activated_v2_retained_hashes = activated_v2_p2p_runtime
+                        let activated_v2_retained_parent_graph = activated_v2_p2p_runtime
                             .staging()
                             .hashes()
                             .into_iter()
-                            .chain(activated_v2_p2p_runtime.pending_hashes())
+                            .filter_map(|hash| {
+                                activated_v2_p2p_runtime
+                                    .staging()
+                                    .get(&hash)
+                                    .map(|block| (hash, block.header.parents.clone()))
+                            })
+                            .chain(activated_v2_p2p_runtime.pending_blocks().map(|block| {
+                                (block.hash.clone(), block.header.parents.clone())
+                            }))
+                            .collect::<BTreeMap<_, _>>();
+                        let activated_v2_retained_hashes = activated_v2_retained_parent_graph
+                            .keys()
+                            .cloned()
                             .collect::<HashSet<_>>();
                         let pending_selected_peer = pending_selected_locator
                             .as_ref()
@@ -6748,7 +6775,7 @@ async fn main() -> Result<()> {
                                         selected_segment_prerequisite_parent_hashes(
                                             &headers,
                                             &known,
-                                            &activated_v2_retained_hashes,
+                                            &activated_v2_retained_parent_graph,
                                         );
                                     session
                                         .prerequisite_parent_hashes
@@ -9965,17 +9992,28 @@ mod tests {
     }
 
     #[test]
-    fn selected_segment_prerequisites_include_only_unknown_external_parents() {
+    fn selected_segment_prerequisites_include_retained_external_dependency_closure() {
         let known = HashSet::from(["common".to_string()]);
-        let retained = HashSet::from(["unknown-merge-b".to_string()]);
+        let retained_parent_graph = BTreeMap::from([(
+            "unknown-merge-b".to_string(),
+            vec!["retained-grandparent".to_string()],
+        )]);
         let mut first = selected_test_header("b1", "common", 514);
         first.header.parents.push("unknown-merge-a".to_string());
         let mut second = selected_test_header("b2", "b1", 515);
         second.header.parents.push("unknown-merge-b".to_string());
 
         assert_eq!(
-            selected_segment_prerequisite_parent_hashes(&[first, second], &known, &retained),
-            vec!["unknown-merge-a".to_string()]
+            selected_segment_prerequisite_parent_hashes(
+                &[first, second],
+                &known,
+                &retained_parent_graph,
+            ),
+            vec![
+                "retained-grandparent".to_string(),
+                "unknown-merge-a".to_string(),
+                "unknown-merge-b".to_string(),
+            ]
         );
     }
 
