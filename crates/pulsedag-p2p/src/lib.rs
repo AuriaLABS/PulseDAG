@@ -10316,7 +10316,10 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
+            Ok(InboundEvent::Block {
+                peer_id: Some(peer),
+                block: received,
+            }) if peer == "peer-a" && received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
