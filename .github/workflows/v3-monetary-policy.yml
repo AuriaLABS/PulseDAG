@@ -138,7 +138,7 @@ jobs:
             --out ci-evidence/v3-monetary-policy/reachability.json
           jq -e '
             .result == "PASS" and
-            .auditor_version == 15 and
+            .auditor_version == 16 and
             (.monetary_policy_fingerprint | type) == "string" and
             .claim_boundary.proves_static_live_authority_shape == true and
             .claim_boundary.strips_all_cfg_test_items == true and
