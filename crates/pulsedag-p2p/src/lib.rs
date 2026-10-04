@@ -1717,6 +1717,30 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not connected for peer-addressed GetHeaders"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        inner.last_message_kind = Some("get-headers-from".into());
+        Ok(())
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -1726,6 +1750,28 @@ impl P2pHandle for MemoryP2pHandle {
         inner.broadcasted_messages += 1;
         inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         inner.last_message_kind = Some("headers".into());
+        Ok(())
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not connected for peer-addressed Headers"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        inner.last_message_kind = Some("headers-to".into());
         Ok(())
     }
 
@@ -3366,8 +3412,34 @@ fn enqueue_outbound_message(
                 limit,
             });
         }
+        OutboundMessage::GetHeadersFrom {
+            peer_id,
+            request_id,
+            locator,
+            stop_hash,
+            limit,
+        } => {
+            queue.blocks.push_back(OutboundMessage::GetHeadersFrom {
+                peer_id,
+                request_id,
+                locator,
+                stop_hash,
+                limit,
+            });
+        }
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
+        }
+        OutboundMessage::HeadersTo {
+            peer_id,
+            request_id,
+            headers,
+        } => {
+            queue.blocks.push_back(OutboundMessage::HeadersTo {
+                peer_id,
+                request_id,
+                headers,
+            });
         }
         OutboundMessage::GetBlockHeaders(hashes) => {
             queue
@@ -3492,7 +3564,9 @@ fn pop_outbound_message(
             | OutboundMessage::CompactRelayReconstructedBlock { .. }
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
+            | OutboundMessage::GetHeadersFrom { .. }
             | OutboundMessage::Headers(_)
+            | OutboundMessage::HeadersTo { .. }
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
@@ -7120,7 +7194,9 @@ impl Libp2pHandle {
             OutboundMessage::InvBlock(_)
                 | OutboundMessage::CompactRelayReconstructedBlock { .. }
                 | OutboundMessage::GetHeaders { .. }
+                | OutboundMessage::GetHeadersFrom { .. }
                 | OutboundMessage::Headers(_)
+                | OutboundMessage::HeadersTo { .. }
                 | OutboundMessage::GetBlockHeaders(_)
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
