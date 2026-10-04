@@ -276,6 +276,14 @@ impl CompactRelayControllerV1 {
                     .telemetry
                     .announcements_received_total
                     .saturating_add(1);
+                if self.was_recently_timed_out_request(peer_id, &announcement.block_hash) {
+                    self.telemetry.full_block_requests_total =
+                        self.telemetry.full_block_requests_total.saturating_add(1);
+                    return Ok(vec![CompactRelayControllerActionV1::RequestFullBlock {
+                        peer_id: peer_id.to_string(),
+                        block_hash: announcement.block_hash.clone(),
+                    }]);
+                }
                 let chain_id = sessions
                     .local_capabilities()
                     .ok_or(CompactRelayRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
@@ -1010,6 +1018,25 @@ mod tests {
             controller.telemetry().full_block_requests_total,
             full_block_before.saturating_add(1)
         );
+
+        let repeated_announcement = build_compact_block_announcement_v1(&block).unwrap();
+        let repeated_actions = controller
+            .handle_wire(
+                &mut sessions,
+                PEER,
+                &CompactRelayWireV1::Announce(repeated_announcement),
+                &known,
+            )
+            .unwrap();
+        assert!(matches!(
+            repeated_actions.as_slice(),
+            [CompactRelayControllerActionV1::RequestFullBlock {
+                peer_id,
+                block_hash,
+            }] if peer_id == PEER && block_hash == &block.hash
+        ));
+        assert_eq!(controller.pending_count(PEER), 0);
+        assert_eq!(sessions.in_flight_count(PEER), 0);
 
         let transactions = request
             .txids
