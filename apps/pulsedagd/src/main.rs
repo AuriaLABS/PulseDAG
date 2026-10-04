@@ -3744,9 +3744,7 @@ async fn main() -> Result<()> {
                 if recovery_tick.is_multiple_of(5) {
                     let prerequisite_retry_state = selected_segment_session
                         .as_ref()
-                        .filter(|session| {
-                            !session.unresolved_prerequisite_parent_hashes.is_empty()
-                        })
+                        .filter(|session| !session.unresolved_prerequisite_parent_hashes.is_empty())
                         .map(|session| {
                             (
                                 session.session_id,
@@ -3765,8 +3763,10 @@ async fn main() -> Result<()> {
                             .into_iter()
                             .chain(activated_v2_p2p_runtime.pending_hashes())
                             .collect::<HashSet<_>>();
-                        let pending_requests =
-                            block_requests.pending_hashes().into_iter().collect::<HashSet<_>>();
+                        let pending_requests = block_requests
+                            .pending_hashes()
+                            .into_iter()
+                            .collect::<HashSet<_>>();
                         let (resolved, retry) = selected_segment_prerequisite_retry_plan(
                             &unresolved,
                             &known,
@@ -3824,6 +3824,7 @@ async fn main() -> Result<()> {
                         }
                     }
 
+                    let selected_limits = SelectedSegmentLimits::default();
                     let selected_retry_state = selected_segment_session
                         .as_ref()
                         .filter(|session| session.can_start_chunk())
@@ -3903,9 +3904,8 @@ async fn main() -> Result<()> {
                                     rt.inflight_block_requests = block_requests.pending.len();
                                     rt.pending_block_request_hashes =
                                         block_requests.pending_hashes();
-                                    rt.sync_state = DagSyncStage::RequestingSelectedBlocks
-                                        .as_str()
-                                        .to_string();
+                                    rt.sync_state =
+                                        DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
                                     info!(
                                         event = "activated_v2_selected_segment_heartbeat_retry",
                                         session_id,
@@ -3969,8 +3969,7 @@ async fn main() -> Result<()> {
                                 )
                             })
                     });
-                if let Some((session_id, peer_id, reason, owned_requests)) =
-                    selected_session_replan
+                if let Some((session_id, peer_id, reason, owned_requests)) = selected_session_replan
                 {
                     for hash in owned_requests {
                         // Clear only live tracker entries owned by the abandoned session. Keep
@@ -5370,9 +5369,8 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>();
                             let mut missing_parent_requests_issued = 0u64;
                             for parent in &missing_parent_candidates {
-                                let selected_parent_reference = selected_segment_session
-                                    .as_ref()
-                                    .is_some_and(|session| {
+                                let selected_parent_reference =
+                                    selected_segment_session.as_ref().is_some_and(|session| {
                                         session.prerequisite_parent_hashes.contains(parent)
                                     });
                                 let missing_parent_route = activated_v2_missing_parent_fetch_route(
@@ -5391,10 +5389,8 @@ async fn main() -> Result<()> {
                                     }
                                     // The concrete missing-parent result is newer evidence than
                                     // any earlier not-found/timeout for this validated prerequisite.
-                                    block_requests.note_selected_parent_references(
-                                        peer_id,
-                                        [parent.clone()],
-                                    );
+                                    block_requests
+                                        .note_selected_parent_references(peer_id, [parent.clone()]);
                                 }
                                 let admitted = match &missing_parent_route {
                                     ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
