@@ -1518,8 +1518,8 @@ def required_local_call_hits(text: str, function_name: str, callees: list) -> di
 
 
 def _braced_closure_bodies(payload: str):
-    """Parse a comma-separated list of braced closure expressions, or return None."""
-    source = executable_source(payload)
+    """Parse braced closure expressions while retaining attributes for auditing."""
+    source = macro_opaque_source(payload)
     bodies = []
     i = 0
     while True:
