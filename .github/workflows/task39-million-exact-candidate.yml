@@ -225,8 +225,14 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/task39-million"
-          sha256sum -c phase2a.sha256
-          sha256sum -c phase2b.sha256
+          expected_a="$(awk '{print $1}' phase2a.sha256)"
+          expected_b="$(awk '{print $1}' phase2b.sha256)"
+          actual_a="$(sha256sum phase2a.json | awk '{print $1}')"
+          actual_b="$(sha256sum phase2b.json | awk '{print $1}')"
+          test -n "$expected_a"
+          test -n "$expected_b"
+          test "$expected_a" = "$actual_a"
+          test "$expected_b" = "$actual_b"
 
       - name: Build aggregate exact-candidate manifest
         shell: bash
