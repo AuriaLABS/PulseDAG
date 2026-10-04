@@ -5382,9 +5382,8 @@ async fn main() -> Result<()> {
                                 if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
                                     &missing_parent_route
                                 {
-                                    let newly_unresolved = selected_segment_session
-                                        .as_mut()
-                                        .is_some_and(|session| {
+                                    let newly_unresolved =
+                                        selected_segment_session.as_mut().is_some_and(|session| {
                                             session
                                                 .unresolved_prerequisite_parent_hashes
                                                 .insert(parent.clone())
