@@ -306,7 +306,7 @@ fn accept_metadata(
                 block.hash
             ));
         }
-        *production_reference_checks = production_reference_checks.saturating_add(1);
+        *production_reference_checks = (*production_reference_checks).saturating_add(1);
     }
     commit_corpus_metadata(state, block, classification);
     Ok(())
