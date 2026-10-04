@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 15
+AUDITOR_VERSION = 16
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -1562,6 +1562,12 @@ def _normalize_runtime_callback_execution_shape(text: str) -> str:
     return re.sub(r"\s+", "", source)
 
 
+def _runtime_callback_attribute_count(text: str) -> int:
+    """Count real Rust attributes in a callback after comments/literals are blanked."""
+    source = code_source(text)
+    return len(re.findall(r"#\s*!?\s*\[", source))
+
+
 def required_runtime_persistence_callback_hits(
     text: str,
     function_name: str,
@@ -1616,6 +1622,7 @@ def required_runtime_persistence_callback_hits(
                     "persist_reference_count": 0,
                     "macro_invocation_count": 0,
                     "macro_invocations": [],
+                    "attribute_count": 0,
                     "execution_shape_matches": False,
                     "missing_audit": True,
                     "audit_result_propagated": False,
@@ -1627,6 +1634,7 @@ def required_runtime_persistence_callback_hits(
         closure_body = bodies[index]
         closure_code = code_source(closure_body)
         macro_invocations = _runtime_callback_macro_invocations(closure_body)
+        attribute_count = _runtime_callback_attribute_count(closure_body)
         observed_shape = _normalize_runtime_callback_execution_shape(closure_body)
         expected_shape = (
             _normalize_runtime_callback_execution_shape(expected_bodies[index])
@@ -1656,6 +1664,7 @@ def required_runtime_persistence_callback_hits(
                 "persist_reference_count": persist_reference_count,
                 "macro_invocation_count": len(macro_invocations),
                 "macro_invocations": macro_invocations,
+                "attribute_count": attribute_count,
                 "execution_shape_matches": execution_shape_matches,
                 "missing_audit": not audit_offsets,
                 "audit_result_propagated": bool(propagating_audit_offsets),
@@ -1805,6 +1814,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             or item["audit_reference_count"] != 1
             or item["persist_reference_count"] != 1
             or item["macro_invocation_count"] != 0
+            or item["attribute_count"] != 0
             or not item["execution_shape_matches"]
             or item["missing_audit"]
             or not item["audit_result_propagated"]
@@ -1905,6 +1915,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "requires_runtime_persistence_audit_result_propagation": True,
             "rejects_alternate_runtime_persistence_references": True,
             "rejects_runtime_persistence_callback_macros": True,
+            "rejects_runtime_persistence_callback_attributes": True,
             "freezes_runtime_persistence_callback_execution_shape": True,
             "excludes_opaque_macro_token_trees_from_live_calls": True,
             "selects_production_cadence": False,
@@ -2515,6 +2526,23 @@ def self_test() -> None:
         and item["audit_before_persist"]
         for item in frozen_shape_check["callbacks"]
     )
+
+    conditional_attribute_fixture = frozen_shape_fixture.replace(
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n",
+        "      #[cfg(feature = \"never\")]\n"
+        "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n",
+        1,
+    )
+    conditional_attribute_check = required_runtime_persistence_callback_hits(
+        conditional_attribute_fixture,
+        runtime_contract["function"],
+        runtime_contract["constructor"],
+        runtime_contract["audit"],
+        runtime_contract["persist"],
+        runtime_contract["expected_bodies"],
+    )
+    assert conditional_attribute_check["callbacks"][0]["attribute_count"] == 1
+    assert conditional_attribute_check["callbacks"][0]["execution_shape_matches"]
 
     macro_bypass_fixture = frozen_shape_fixture.replace(
         "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
