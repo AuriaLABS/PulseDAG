@@ -174,11 +174,7 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                validate_runtime_promoted_bundle_rewards(
-                    prepared_state,
-                    bundle,
-                    cadence_segments,
-                )?;
+                validate_runtime_promoted_bundle_rewards(prepared_state, bundle, cadence_segments)?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
