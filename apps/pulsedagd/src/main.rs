@@ -5382,15 +5382,24 @@ async fn main() -> Result<()> {
                                 if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
                                     &missing_parent_route
                                 {
-                                    if let Some(session) = selected_segment_session.as_mut() {
-                                        session
-                                            .unresolved_prerequisite_parent_hashes
-                                            .insert(parent.clone());
+                                    let newly_unresolved = selected_segment_session
+                                        .as_mut()
+                                        .is_some_and(|session| {
+                                            session
+                                                .unresolved_prerequisite_parent_hashes
+                                                .insert(parent.clone())
+                                        });
+                                    if newly_unresolved {
+                                        // Reopen stale failure state only on the first transition
+                                        // into unresolved for this session. Replaying an aggregate
+                                        // missing-parent summary must not erase later timeout or
+                                        // not-found evidence, otherwise exhaustion can never become
+                                        // stable enough to trigger deterministic session replanning.
+                                        block_requests.note_selected_parent_references(
+                                            peer_id,
+                                            [parent.clone()],
+                                        );
                                     }
-                                    // The concrete missing-parent result is newer evidence than
-                                    // any earlier not-found/timeout for this validated prerequisite.
-                                    block_requests
-                                        .note_selected_parent_references(peer_id, [parent.clone()]);
                                 }
                                 let admitted = match &missing_parent_route {
                                     ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
