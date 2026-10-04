@@ -880,30 +880,8 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
-    fn request_headers_from(
-        &self,
-        _peer_id: &str,
-        _request_id: &str,
-        _locator: &[PulseHash],
-        _stop_hash: Option<&PulseHash>,
-        _limit: usize,
-    ) -> Result<(), PulseError> {
-        Err(PulseError::Internal(
-            "peer-addressed GetHeaders is not supported by this p2p handle".into(),
-        ))
-    }
     fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
         Ok(())
-    }
-    fn send_headers_to(
-        &self,
-        _peer_id: &str,
-        _request_id: &str,
-        _headers: &[HeaderInventory],
-    ) -> Result<(), PulseError> {
-        Err(PulseError::Internal(
-            "peer-addressed Headers is not supported by this p2p handle".into(),
-        ))
     }
     fn send_block_data(
         &self,
@@ -966,15 +944,12 @@ pub enum InboundEvent {
         tips: Vec<PulseHash>,
     },
     GetHeaders {
-        peer_id: Option<String>,
-        request_id: Option<String>,
         locator: Vec<PulseHash>,
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
     Headers {
         peer_id: Option<String>,
-        request_id: Option<String>,
         headers: Vec<HeaderInventory>,
     },
     GetBlockHeaders {
@@ -1034,19 +1009,7 @@ enum OutboundMessage {
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
-    GetHeadersFrom {
-        peer_id: String,
-        request_id: String,
-        locator: Vec<PulseHash>,
-        stop_hash: Option<PulseHash>,
-        limit: usize,
-    },
     Headers(Vec<HeaderInventory>),
-    HeadersTo {
-        peer_id: String,
-        request_id: String,
-        headers: Vec<HeaderInventory>,
-    },
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
@@ -1714,30 +1677,6 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
-    fn request_headers_from(
-        &self,
-        peer_id: &str,
-        _request_id: &str,
-        _locator: &[PulseHash],
-        _stop_hash: Option<&PulseHash>,
-        _limit: usize,
-    ) -> Result<(), PulseError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
-            return Err(PulseError::Internal(format!(
-                "peer {peer_id} is not a direct request-capable session"
-            )));
-        }
-        inner.publish_attempts += 1;
-        inner.broadcasted_messages += 1;
-        inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
-        inner.last_message_kind = Some("get-headers-from".into());
-        Ok(())
-    }
-
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -1747,28 +1686,6 @@ impl P2pHandle for MemoryP2pHandle {
         inner.broadcasted_messages += 1;
         inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         inner.last_message_kind = Some("headers".into());
-        Ok(())
-    }
-
-    fn send_headers_to(
-        &self,
-        peer_id: &str,
-        _request_id: &str,
-        headers: &[HeaderInventory],
-    ) -> Result<(), PulseError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
-            return Err(PulseError::Internal(format!(
-                "peer {peer_id} is not a direct request-capable session"
-            )));
-        }
-        inner.publish_attempts += 1;
-        inner.broadcasted_messages += 1;
-        inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
-        inner.last_message_kind = Some("headers-to".into());
         Ok(())
     }
 
@@ -3409,34 +3326,8 @@ fn enqueue_outbound_message(
                 limit,
             });
         }
-        OutboundMessage::GetHeadersFrom {
-            peer_id,
-            request_id,
-            locator,
-            stop_hash,
-            limit,
-        } => {
-            queue.blocks.push_back(OutboundMessage::GetHeadersFrom {
-                peer_id,
-                request_id,
-                locator,
-                stop_hash,
-                limit,
-            });
-        }
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
-        }
-        OutboundMessage::HeadersTo {
-            peer_id,
-            request_id,
-            headers,
-        } => {
-            queue.blocks.push_back(OutboundMessage::HeadersTo {
-                peer_id,
-                request_id,
-                headers,
-            });
         }
         OutboundMessage::GetBlockHeaders(hashes) => {
             queue
@@ -3561,9 +3452,7 @@ fn pop_outbound_message(
             | OutboundMessage::CompactRelayReconstructedBlock { .. }
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
-            | OutboundMessage::GetHeadersFrom { .. }
             | OutboundMessage::Headers(_)
-            | OutboundMessage::HeadersTo { .. }
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
@@ -5223,8 +5112,6 @@ fn dispatch_network_message_with_transport_peer(
             locator,
             stop_hash,
             limit,
-            request_id,
-            requested_peer_id,
         } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -5243,14 +5130,6 @@ fn dispatch_network_message_with_transport_peer(
                 }
                 return;
             }
-            if requested_peer_id.as_ref().is_some_and(|requested| {
-                inner
-                    .lock()
-                    .map(|guard| requested != &guard.peer_id)
-                    .unwrap_or(true)
-            }) {
-                return;
-            }
             if let Ok(mut guard) = inner.lock() {
                 guard.inbound_messages += 1;
                 guard.header_requests_received = guard.header_requests_received.saturating_add(1);
@@ -5265,19 +5144,12 @@ fn dispatch_network_message_with_transport_peer(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::GetHeaders {
-                peer_id: source_peer.map(ToOwned::to_owned),
-                request_id,
                 locator,
                 stop_hash,
                 limit,
             });
         }
-        NetworkMessage::Headers {
-            chain_id,
-            headers,
-            request_id,
-            requested_peer_id,
-        } => {
+        NetworkMessage::Headers { chain_id, headers } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -5293,14 +5165,6 @@ fn dispatch_network_message_with_transport_peer(
                         persist_peer_state_if_configured(&guard);
                     }
                 }
-                return;
-            }
-            if requested_peer_id.as_ref().is_some_and(|requested| {
-                inner
-                    .lock()
-                    .map(|guard| requested != &guard.peer_id)
-                    .unwrap_or(true)
-            }) {
                 return;
             }
             let mut accepted_headers = Vec::new();
@@ -5347,7 +5211,6 @@ fn dispatch_network_message_with_transport_peer(
             if !accepted_headers.is_empty() {
                 let _ = inbound_tx.send(InboundEvent::Headers {
                     peer_id: source_peer.map(ToOwned::to_owned),
-                    request_id,
                     headers: accepted_headers,
                 });
             }
@@ -6061,51 +5924,15 @@ async fn run_libp2p_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
-                            chain_id: cfg.chain_id.clone(),
-                            locator,
-                            stop_hash,
-                            limit,
-                            request_id: None,
-                            requested_peer_id: None,
-                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
                         (wire, topic_name, "get-headers", message_id)
-                    }
-                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
-                        let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = format!("sync:get-headers:{request_id}");
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
-                            chain_id: cfg.chain_id.clone(),
-                            locator,
-                            stop_hash,
-                            limit,
-                            request_id: Some(request_id),
-                            requested_peer_id: Some(peer_id),
-                        });
-                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
-                            chain_id: cfg.chain_id.clone(),
-                            headers,
-                            request_id: None,
-                            requested_peer_id: None,
-                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
                         (wire, topic_name, "headers", message_id)
-                    }
-                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
-                        let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = format!("sync:headers:{request_id}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
-                            chain_id: cfg.chain_id.clone(),
-                            headers,
-                            request_id: Some(request_id),
-                            requested_peer_id: Some(peer_id),
-                        });
-                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6881,51 +6708,15 @@ async fn run_libp2p_real_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
-                            chain_id: cfg.chain_id.clone(),
-                            locator,
-                            stop_hash,
-                            limit,
-                            request_id: None,
-                            requested_peer_id: None,
-                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
                         (wire, topic_name, "get-headers", message_id)
-                    }
-                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
-                        let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = format!("sync:get-headers:{request_id}");
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
-                            chain_id: cfg.chain_id.clone(),
-                            locator,
-                            stop_hash,
-                            limit,
-                            request_id: Some(request_id),
-                            requested_peer_id: Some(peer_id),
-                        });
-                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
-                            chain_id: cfg.chain_id.clone(),
-                            headers,
-                            request_id: None,
-                            requested_peer_id: None,
-                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
                         (wire, topic_name, "headers", message_id)
-                    }
-                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
-                        let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = format!("sync:headers:{request_id}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
-                            chain_id: cfg.chain_id.clone(),
-                            headers,
-                            request_id: Some(request_id),
-                            requested_peer_id: Some(peer_id),
-                        });
-                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -7283,9 +7074,7 @@ impl Libp2pHandle {
             OutboundMessage::InvBlock(_)
                 | OutboundMessage::CompactRelayReconstructedBlock { .. }
                 | OutboundMessage::GetHeaders { .. }
-                | OutboundMessage::GetHeadersFrom { .. }
                 | OutboundMessage::Headers(_)
-                | OutboundMessage::HeadersTo { .. }
                 | OutboundMessage::GetBlockHeaders(_)
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
@@ -7782,38 +7571,6 @@ impl P2pHandle for Libp2pHandle {
         )
     }
 
-    fn request_headers_from(
-        &self,
-        peer_id: &str,
-        request_id: &str,
-        locator: &[PulseHash],
-        stop_hash: Option<&PulseHash>,
-        limit: usize,
-    ) -> Result<(), PulseError> {
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
-                return Err(PulseError::Internal(format!(
-                    "peer {peer_id} is not a direct request-capable session"
-                )));
-            }
-            inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
-        }
-        self.queue_sync_message_required(
-            OutboundMessage::GetHeadersFrom {
-                peer_id: peer_id.to_string(),
-                request_id: request_id.to_string(),
-                locator: locator.to_vec(),
-                stop_hash: stop_hash.cloned(),
-                limit,
-            },
-            "get-headers-from",
-        )
-    }
-
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         {
             let mut inner = self
@@ -7823,34 +7580,6 @@ impl P2pHandle for Libp2pHandle {
             inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         }
         self.queue_sync_message(OutboundMessage::Headers(headers.to_vec()), "headers")
-    }
-
-    fn send_headers_to(
-        &self,
-        peer_id: &str,
-        request_id: &str,
-        headers: &[HeaderInventory],
-    ) -> Result<(), PulseError> {
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
-                return Err(PulseError::Internal(format!(
-                    "peer {peer_id} is not a direct request-capable session"
-                )));
-            }
-            inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
-        }
-        self.queue_sync_message_required(
-            OutboundMessage::HeadersTo {
-                peer_id: peer_id.to_string(),
-                request_id: request_id.to_string(),
-                headers: headers.to_vec(),
-            },
-            "headers-to",
-        )
     }
 
     fn send_block_data(
@@ -12932,14 +12661,10 @@ mod deterministic_p2p_sync_coverage_tests {
             locator: Vec::new(),
             stop_hash: None,
             limit: 128,
-            request_id: None,
-            requested_peer_id: None,
         };
         let headers = NetworkMessage::Headers {
             chain_id: "testnet".into(),
             headers: Vec::new(),
-            request_id: None,
-            requested_peer_id: None,
         };
         assert_eq!(
             classify_network_message(&get_headers),
