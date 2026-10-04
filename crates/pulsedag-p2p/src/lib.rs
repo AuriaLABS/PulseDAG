@@ -880,8 +880,30 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
+    fn request_headers_from(
+        &self,
+        _peer_id: &str,
+        _request_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed GetHeaders is not supported by this p2p handle".into(),
+        ))
+    }
     fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
         Ok(())
+    }
+    fn send_headers_to(
+        &self,
+        _peer_id: &str,
+        _request_id: &str,
+        _headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed Headers is not supported by this p2p handle".into(),
+        ))
     }
     fn send_block_data(
         &self,
@@ -944,12 +966,15 @@ pub enum InboundEvent {
         tips: Vec<PulseHash>,
     },
     GetHeaders {
+        peer_id: Option<String>,
+        request_id: Option<String>,
         locator: Vec<PulseHash>,
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
     Headers {
         peer_id: Option<String>,
+        request_id: Option<String>,
         headers: Vec<HeaderInventory>,
     },
     GetBlockHeaders {
@@ -1009,7 +1034,19 @@ enum OutboundMessage {
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
+    GetHeadersFrom {
+        peer_id: String,
+        request_id: String,
+        locator: Vec<PulseHash>,
+        stop_hash: Option<PulseHash>,
+        limit: usize,
+    },
     Headers(Vec<HeaderInventory>),
+    HeadersTo {
+        peer_id: String,
+        request_id: String,
+        headers: Vec<HeaderInventory>,
+    },
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
