@@ -424,6 +424,18 @@ fn selected_headers_own_broadcast_locator(
             && response_peer == pending_peer)
 }
 
+fn selected_segment_wire_request_id(request_id: u64) -> String {
+    format!("selected-segment-{request_id}")
+}
+
+fn selected_segment_request_id_matches(
+    pending: &PendingSelectedLocator,
+    observed_request_id: Option<&str>,
+) -> bool {
+    let expected = selected_segment_wire_request_id(pending.request_id);
+    observed_request_id == Some(expected.as_str())
+}
+
 fn commit_candidate_chain_state(
     storage: &Storage,
     current: &mut pulsedag_core::ChainState,
@@ -4818,8 +4830,12 @@ async fn main() -> Result<()> {
                                     let guard = selected_segment_locator_state.lock().await;
                                     guard.next_request_id
                                 };
+                                let wire_request_id =
+                                    selected_segment_wire_request_id(selected_locator_request_id);
                                 if p2p_handle
-                                    .request_headers(
+                                    .request_headers_from(
+                                        &source_peer,
+                                        &wire_request_id,
                                         &selected_locator,
                                         None,
                                         selected_limits.headers_per_chunk,
@@ -7207,8 +7223,12 @@ async fn main() -> Result<()> {
                                     ) && !task27_recovery_active.load(Ordering::SeqCst);
                                 if priority_still_inactive {
                                     let selected_locator_request_id = locator_guard.next_request_id;
+                                    let wire_request_id =
+                                        selected_segment_wire_request_id(selected_locator_request_id);
                                     if p2p_handle
-                                        .request_headers(
+                                        .request_headers_from(
+                                            &peer_id,
+                                            &wire_request_id,
                                             &selected_locator,
                                             None,
                                             selected_limits.headers_per_chunk,
@@ -8692,16 +8712,20 @@ async fn main() -> Result<()> {
                             now,
                         ) && !task27_recovery_active
                             .load(Ordering::SeqCst);
+                        let selected_locator_request_id = locator_guard.next_request_id;
+                        let wire_request_id =
+                            selected_segment_wire_request_id(selected_locator_request_id);
                         let selected_locator_requested = priority_still_inactive
                             && p2p_handle
-                                .request_headers(
+                                .request_headers_from(
+                                    &peer_id,
+                                    &wire_request_id,
                                     &selected_locator,
                                     None,
                                     selected_limits.headers_per_chunk,
                                 )
                                 .is_ok();
                         if selected_locator_requested {
-                            let selected_locator_request_id = locator_guard.next_request_id;
                             locator_guard.next_request_id =
                                 locator_guard.next_request_id.saturating_add(1);
                             locator_guard.pending_locator = Some(PendingSelectedLocator {
@@ -8778,19 +8802,25 @@ async fn main() -> Result<()> {
                                     let selected_locator_needed = selected_locator_peer.is_some();
                                     let mut locator_guard =
                                         selected_segment_locator_state.lock().await;
+                                    let selected_locator_request_id =
+                                        locator_guard.next_request_id;
+                                    let wire_request_id =
+                                        selected_segment_wire_request_id(selected_locator_request_id);
                                     let selected_locator_requested = selected_locator_peer
-                                        .is_some()
-                                        && !task27_recovery_active.load(Ordering::SeqCst)
-                                        && p2p
-                                            .request_headers(
-                                                &selected_locator,
-                                                None,
-                                                selected_limits.headers_per_chunk,
-                                            )
-                                            .is_ok();
+                                        .as_deref()
+                                        .is_some_and(|peer_id| {
+                                            !task27_recovery_active.load(Ordering::SeqCst)
+                                                && p2p
+                                                    .request_headers_from(
+                                                        peer_id,
+                                                        &wire_request_id,
+                                                        &selected_locator,
+                                                        None,
+                                                        selected_limits.headers_per_chunk,
+                                                    )
+                                                    .is_ok()
+                                        });
                                     if selected_locator_requested {
-                                        let selected_locator_request_id =
-                                            locator_guard.next_request_id;
                                         locator_guard.next_request_id =
                                             locator_guard.next_request_id.saturating_add(1);
                                         locator_guard.pending_locator = selected_locator_peer
