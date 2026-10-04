@@ -932,7 +932,10 @@ pub enum P2pMode {
 #[derive(Debug, Clone)]
 pub enum InboundEvent {
     Transaction(Transaction),
-    Block(Block),
+    Block {
+        peer_id: Option<String>,
+        block: Block,
+    },
     BlockAnnouncement {
         hash: String,
     },
@@ -4970,7 +4973,10 @@ fn dispatch_network_message_with_transport_peer(
                     );
                 }
             }
-            let _ = inbound_tx.send(InboundEvent::Block(block));
+            let _ = inbound_tx.send(InboundEvent::Block {
+                peer_id: source_peer.map(str::to_string),
+                block,
+            });
         }
         NetworkMessage::BlockAnnounce { chain_id, hash }
         | NetworkMessage::NewBlockHash { chain_id, hash } => {
@@ -5682,7 +5688,10 @@ fn dispatch_network_message_with_transport_peer(
                         );
                     }
                 }
-                let _ = inbound_tx.send(InboundEvent::Block(block));
+                let _ = inbound_tx.send(InboundEvent::Block {
+                peer_id: source_peer.map(str::to_string),
+                block,
+            });
             } else {
                 let mut deliver_missing = request_id.is_none();
                 if let Some(request_id_ref) = request_id.as_ref() {
@@ -10307,7 +10316,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -10776,7 +10785,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
     }
 
@@ -10903,7 +10912,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -10951,7 +10960,7 @@ mod inventory_tests {
         );
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
 
         let request_id = "selected-recovery-request".to_string();
@@ -10981,7 +10990,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
 
@@ -11095,7 +11104,7 @@ mod inventory_tests {
         dispatch_network_message("testnet", &exact_wire, Some("peer-a"), &inner, &inbound_tx);
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
 
