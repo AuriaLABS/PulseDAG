@@ -6035,15 +6035,51 @@ async fn run_libp2p_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "get-headers", message_id)
+                    }
+                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "headers", message_id)
+                    }
+                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6819,15 +6855,51 @@ async fn run_libp2p_real_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "get-headers", message_id)
+                    }
+                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "headers", message_id)
+                    }
+                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
