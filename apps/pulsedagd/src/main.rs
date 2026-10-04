@@ -411,7 +411,7 @@ fn task27_rejoin_peer_for_reconcile(
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
 }
 
-fn selected_headers_own_broadcast_locator(
+fn selected_headers_own_pending_locator(
     session_active: bool,
     pending_peer: Option<&str>,
     response_peer: Option<&str>,
@@ -6852,7 +6852,7 @@ async fn main() -> Result<()> {
                                 )
                             });
                         let selected_session_owns_headers =
-                            selected_headers_own_broadcast_locator(
+                            selected_headers_own_pending_locator(
                                 selected_segment_session.is_some(),
                                 pending_selected_peer,
                                 peer_id.as_deref(),
@@ -9661,36 +9661,56 @@ mod tests {
     }
 
     #[test]
-    fn only_pending_peer_can_own_broadcast_selected_locator_response() {
-        assert!(selected_headers_own_broadcast_locator(
+    fn pending_selected_locator_requires_peer_and_wire_request_id() {
+        assert!(selected_headers_own_pending_locator(
             false,
             Some("peer-a"),
             Some("peer-a"),
             false,
         ));
-        assert!(!selected_headers_own_broadcast_locator(
+        assert!(!selected_headers_own_pending_locator(
             false,
             Some("peer-a"),
             Some("peer-b"),
             false,
         ));
-        assert!(!selected_headers_own_broadcast_locator(
+        assert!(!selected_headers_own_pending_locator(
             false,
             Some("peer-a"),
             None,
             false,
         ));
-        assert!(!selected_headers_own_broadcast_locator(
+        assert!(!selected_headers_own_pending_locator(
             true,
             Some("peer-a"),
             Some("peer-b"),
             false,
         ));
-        assert!(selected_headers_own_broadcast_locator(
+        assert!(selected_headers_own_pending_locator(
             true,
             Some("peer-a"),
             Some("peer-a"),
             true,
+        ));
+    }
+
+    #[test]
+    fn selected_locator_wire_request_id_is_exact_and_fail_closed() {
+        let pending = PendingSelectedLocator {
+            request_id: 42,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["common".to_string()],
+            requested_at_unix: 1_000,
+        };
+        assert_eq!(selected_segment_wire_request_id(42), "selected-segment-42");
+        assert!(selected_segment_request_id_matches(
+            &pending,
+            Some("selected-segment-42")
+        ));
+        assert!(!selected_segment_request_id_matches(&pending, None));
+        assert!(!selected_segment_request_id_matches(
+            &pending,
+            Some("selected-segment-41")
         ));
     }
 
