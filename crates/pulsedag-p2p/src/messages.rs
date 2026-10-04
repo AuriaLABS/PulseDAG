@@ -186,18 +186,10 @@ pub enum NetworkMessage {
         locator: Vec<Hash>,
         stop_hash: Option<Hash>,
         limit: usize,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        request_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        requested_peer_id: Option<String>,
     },
     Headers {
         chain_id: String,
         headers: Vec<HeaderInventory>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        request_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        requested_peer_id: Option<String>,
     },
     GetTips {
         chain_id: String,
@@ -415,8 +407,6 @@ mod tests {
                 locator: vec!["parent".into()],
                 stop_hash: Some(block.hash.clone()),
                 limit: 64,
-                request_id: None,
-                requested_peer_id: None,
             },
             NetworkMessage::Headers {
                 chain_id: "testnet".into(),
@@ -424,8 +414,6 @@ mod tests {
                     hash: block.hash.clone(),
                     header: block.header.clone(),
                 }],
-                request_id: None,
-                requested_peer_id: None,
             },
             NetworkMessage::GetTips {
                 chain_id: "testnet".into(),
@@ -530,8 +518,6 @@ mod tests {
             locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
             stop_hash: None,
             limit: 1,
-            request_id: None,
-            requested_peer_id: None,
         };
         let encoded = serde_json::to_vec(&locator_at_limit).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
@@ -541,8 +527,6 @@ mod tests {
             locator: vec!["hash".into()],
             stop_hash: None,
             limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-            request_id: None,
-            requested_peer_id: None,
         };
         let encoded = serde_json::to_vec(&limit_at_max).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
@@ -566,8 +550,6 @@ mod tests {
             locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES + 1],
             stop_hash: None,
             limit: 1,
-            request_id: None,
-            requested_peer_id: None,
         };
         let encoded = serde_json::to_vec(&oversized_locator).unwrap();
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
@@ -578,8 +560,6 @@ mod tests {
             locator: vec!["hash".into()],
             stop_hash: None,
             limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1,
-            request_id: None,
-            requested_peer_id: None,
         };
         let encoded = serde_json::to_vec(&oversized_limit).unwrap();
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
