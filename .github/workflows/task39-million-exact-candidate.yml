@@ -81,10 +81,14 @@ jobs:
             .million_block_count_observed == true and
             .topology.includes_parallel_blocks == true and
             .topology.includes_multi_parent_joins == true and
-            .corpus_contract.metadata_replay_uses_production_ghostdag_classifier == true and
+            .corpus_contract.metadata_replay_uses_production_ghostdag_classifier == false and
+            .corpus_contract.metadata_replay_uses_equivalence_checked_fast_path == true and
+            .corpus_contract.production_classifier_reference_check_limit == 4096 and
+            .generation_production_classifier_reference_checks == 4096 and
             .corpus_contract.canonical_rebuild_uses_production_ordered_dag_state_rebuild == true and
             .exact_equivalence == true and
             (.runs | length) == 2 and
+            (all(.runs[]; .production_classifier_reference_checks == 4096)) and
             (.runs[0].observation.canonical_bundle_digest == .runs[1].observation.canonical_bundle_digest) and
             (.runs[0].observation.selection_digest == .runs[1].observation.selection_digest) and
             (.runs[0].observation.merge_set_digest == .runs[1].observation.merge_set_digest) and
