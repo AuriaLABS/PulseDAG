@@ -64,7 +64,7 @@ jobs:
             --out ci-evidence/v3-monetary-reachability/static-reachability.json
           jq -e '
             .result == "PASS" and
-            .auditor_version == 15 and
+            .auditor_version == 16 and
             .claim_boundary.proves_static_live_authority_shape == true and
             .claim_boundary.requires_dynamic_guard_tests == true and
             .claim_boundary.strips_all_cfg_test_items == true and
