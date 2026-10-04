@@ -4748,6 +4748,17 @@ async fn main() -> Result<()> {
                         // A raw Block event has no authenticated direct-peer owner. Do not create
                         // PendingSelectedLocator here: strict selected-segment recovery is activated
                         // only from fresh remote tip inventory tied to a connected direct peer.
+                        let priority_active = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            selected_segment_recovery_has_priority(
+                                selected_segment_session.is_some(),
+                                guard
+                                    .pending_locator
+                                    .as_ref()
+                                    .map(|pending| pending.requested_at_unix),
+                                now_unix(),
+                            )
+                        };
                         let final_height_reconcile_block =
                             final_quiescence_higher_tip_requests.contains(&block.hash);
                         let final_same_height_reconcile_block =
