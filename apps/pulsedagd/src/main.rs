@@ -6717,6 +6717,8 @@ async fn main() -> Result<()> {
                         rt.sync_state = "requesting_blocks".to_string();
                     }
                     InboundEvent::GetHeaders {
+                        peer_id,
+                        request_id,
                         locator,
                         stop_hash,
                         limit,
@@ -6726,15 +6728,33 @@ async fn main() -> Result<()> {
                             headers_for_request(&guard, &locator, stop_hash.as_ref(), limit)
                         };
                         if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.send_headers(&headers) {
-                                warn!(error = %e, "failed sending Headers response");
+                            let result = match (peer_id.as_deref(), request_id.as_deref()) {
+                                (Some(peer), Some(request_id)) => {
+                                    p2p.send_headers_to(peer, request_id, &headers)
+                                }
+                                (_, None) => p2p.send_headers(&headers),
+                                (None, Some(_)) => Err(pulsedag_core::errors::PulseError::Internal(
+                                    "addressed GetHeaders arrived without source peer".to_string(),
+                                )),
+                            };
+                            if let Err(e) = result {
+                                warn!(
+                                    error = %e,
+                                    source_peer = ?peer_id,
+                                    request_id = ?request_id,
+                                    "failed sending Headers response"
+                                );
                             }
                         }
                         let mut rt = runtime.write().await;
                         rt.header_requests_received = rt.header_requests_received.saturating_add(1);
                         rt.headers_sent = rt.headers_sent.saturating_add(headers.len() as u64);
                     }
-                    InboundEvent::Headers { peer_id, headers } => {
+                    InboundEvent::Headers {
+                        peer_id,
+                        request_id,
+                        headers,
+                    } => {
                         let selected_limits = SelectedSegmentLimits::default();
                         let (known_blocks_for_segment, common_ancestor, common_ancestor_height) = {
                             let guard = chain.read().await;
@@ -6823,12 +6843,21 @@ async fn main() -> Result<()> {
                         let pending_selected_peer = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.peer_id.as_str());
-                        let selected_session_owns_headers = selected_headers_own_broadcast_locator(
-                            selected_segment_session.is_some(),
-                            pending_selected_peer,
-                            peer_id.as_deref(),
-                            session_correlated,
-                        );
+                        let selected_request_correlated = pending_selected_locator
+                            .as_ref()
+                            .is_some_and(|pending| {
+                                selected_segment_request_id_matches(
+                                    pending,
+                                    request_id.as_deref(),
+                                )
+                            });
+                        let selected_session_owns_headers =
+                            selected_headers_own_broadcast_locator(
+                                selected_segment_session.is_some(),
+                                pending_selected_peer,
+                                peer_id.as_deref(),
+                                session_correlated,
+                            ) && selected_request_correlated;
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
