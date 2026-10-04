@@ -1557,7 +1557,9 @@ def _runtime_callback_macro_invocations(text: str) -> list:
 
 def _normalize_runtime_callback_execution_shape(text: str) -> str:
     """Canonical callback code shape with comments/literals/macros made explicit."""
-    return re.sub(r"\s+", "", executable_source(text))
+    source = executable_source(text)
+    source = re.sub(r",\s*([)\]])", r"\1", source)
+    return re.sub(r"\s+", "", source)
 
 
 def required_runtime_persistence_callback_hits(
@@ -2506,7 +2508,8 @@ def self_test() -> None:
         for item in frozen_shape_check["callbacks"]
     )
     assert all(
-        not item["missing_audit"]
+        item["execution_shape_matches"]
+        and not item["missing_audit"]
         and item["audit_result_propagated"]
         and not item["missing_persist"]
         and item["audit_before_persist"]
