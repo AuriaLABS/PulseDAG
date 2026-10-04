@@ -1588,7 +1588,7 @@ def required_runtime_persistence_callback_hits(
     if body is None:
         return base
 
-    source = executable_source(body)
+    source = macro_opaque_source(body)
     parts = constructor.split("::")
     if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
         return base
@@ -2543,6 +2543,8 @@ def self_test() -> None:
     )
     assert conditional_attribute_check["callbacks"][0]["attribute_count"] == 1
     assert conditional_attribute_check["callbacks"][0]["execution_shape_matches"]
+    assert conditional_attribute_check["callbacks"][0]["audit_result_propagated"]
+    assert not conditional_attribute_check["callbacks"][0]["missing_persist"]
 
     macro_bypass_fixture = frozen_shape_fixture.replace(
         "      audit_authoritative_monetary_state(prepared_state, cadence_segments)?;\n"
