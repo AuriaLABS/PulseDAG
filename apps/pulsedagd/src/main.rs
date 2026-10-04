@@ -333,6 +333,30 @@ fn selected_locator_peer_for_priority_gap(
         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
 }
 
+fn observed_block_selected_locator_peer(
+    status: &P2pStatus,
+    source_peer: Option<&str>,
+    local_height: u64,
+    observed_height: u64,
+    minimum_gap: u64,
+    priority_active: bool,
+) -> Option<String> {
+    if priority_active || observed_height.saturating_sub(local_height) < minimum_gap {
+        return None;
+    }
+    let peer = source_peer?;
+    let connected = status.connected_peers.iter().any(|candidate| candidate == peer);
+    let direct_request_capable = status
+        .direct_request_capable_peers
+        .iter()
+        .any(|candidate| candidate == peer);
+    let direct_session = status
+        .connected_request_capable_session_peers
+        .iter()
+        .any(|candidate| candidate == peer);
+    (connected && direct_request_capable && direct_session).then(|| peer.to_string())
+}
+
 fn remote_same_height_divergence(
     remote: &pulsedag_p2p::RemoteSelectedTipStatus,
     local: &TipInventoryStatus,
@@ -4744,10 +4768,12 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    InboundEvent::Block(block) => {
-                        // A raw Block event has no authenticated direct-peer owner. Do not create
-                        // PendingSelectedLocator here: strict selected-segment recovery is activated
-                        // only from fresh remote tip inventory tied to a connected direct peer.
+                    InboundEvent::Block { peer_id, block } => {
+                        let local_height = {
+                            let guard = chain.read().await;
+                            guard.dag.best_height
+                        };
+                        let now = now_unix();
                         let priority_active = {
                             let guard = selected_segment_locator_state.lock().await;
                             selected_segment_recovery_has_priority(
@@ -4756,9 +4782,83 @@ async fn main() -> Result<()> {
                                     .pending_locator
                                     .as_ref()
                                     .map(|pending| pending.requested_at_unix),
-                                now_unix(),
+                                now,
                             )
                         };
+                        let selected_locator_source_peer = p2p
+                            .as_ref()
+                            .and_then(|handle| handle.status().ok())
+                            .and_then(|status| {
+                                observed_block_selected_locator_peer(
+                                    &status,
+                                    peer_id.as_deref(),
+                                    local_height,
+                                    block.header.height,
+                                    SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                                    priority_active,
+                                )
+                            });
+                        if let (Some(source_peer), Some(p2p_handle)) =
+                            (selected_locator_source_peer, p2p.as_ref())
+                        {
+                            if !task27_recovery_active.load(Ordering::SeqCst) {
+                                let selected_locator = {
+                                    let guard = chain.read().await;
+                                    guard
+                                        .dag
+                                        .selected_chain
+                                        .iter()
+                                        .rev()
+                                        .take(32)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                };
+                                let selected_limits = SelectedSegmentLimits::default();
+                                let selected_locator_request_id = {
+                                    let guard = selected_segment_locator_state.lock().await;
+                                    guard.next_request_id
+                                };
+                                if p2p_handle
+                                    .request_headers(
+                                        &selected_locator,
+                                        None,
+                                        selected_limits.headers_per_chunk,
+                                    )
+                                    .is_ok()
+                                {
+                                    let mut locator_guard =
+                                        selected_segment_locator_state.lock().await;
+                                    locator_guard.next_request_id =
+                                        locator_guard.next_request_id.saturating_add(1);
+                                    locator_guard.pending_locator = Some(PendingSelectedLocator {
+                                        request_id: selected_locator_request_id,
+                                        peer_id: source_peer.clone(),
+                                        locator: selected_locator,
+                                        requested_at_unix: now,
+                                    });
+                                    drop(locator_guard);
+                                    let observed_gap =
+                                        block.header.height.saturating_sub(local_height);
+                                    let mut rt = runtime.write().await;
+                                    rt.selected_segment_gap_blocks =
+                                        rt.selected_segment_gap_blocks.max(observed_gap);
+                                    rt.dag_sync_selected_chain_locator_total =
+                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                                    rt.selected_segment_header_requests_total =
+                                        rt.selected_segment_header_requests_total.saturating_add(1);
+                                    rt.header_requests_sent =
+                                        rt.header_requests_sent.saturating_add(1);
+                                    rt.sync_state = "locating_common_ancestor".to_string();
+                                    info!(
+                                        peer = %source_peer,
+                                        local_height,
+                                        observed_height = block.header.height,
+                                        observed_gap,
+                                        "direct peer block gap activated selected-segment priority before missing-parent recovery"
+                                    );
+                                }
+                            }
+                        }
                         let final_height_reconcile_block =
                             final_quiescence_higher_tip_requests.contains(&block.hash);
                         let final_same_height_reconcile_block =
@@ -9391,6 +9491,51 @@ mod tests {
 
         assert_eq!(scheduler.queue_inventory(hashes), expected);
         assert_eq!(scheduler.queue_depth(), expected);
+    }
+
+    #[test]
+    fn observed_block_locator_requires_same_connected_direct_session_peer() {
+        let mut status = P2pStatus {
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            connected_request_capable_session_peers: vec!["peer-a".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 90, 64, false),
+            Some("peer-a".to_string())
+        );
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, None, 10, 90, 64, false),
+            None
+        );
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 70, 64, false),
+            None
+        );
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 90, 64, true),
+            None
+        );
+
+        status.connected_request_capable_session_peers.clear();
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 90, 64, false),
+            None
+        );
+        status.connected_request_capable_session_peers = vec!["peer-a".to_string()];
+        status.direct_request_capable_peers.clear();
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 90, 64, false),
+            None
+        );
+        status.direct_request_capable_peers = vec!["peer-a".to_string()];
+        status.connected_peers.clear();
+        assert_eq!(
+            observed_block_selected_locator_peer(&status, Some("peer-a"), 10, 90, 64, false),
+            None
+        );
     }
 
     #[test]
