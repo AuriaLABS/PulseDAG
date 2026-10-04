@@ -1460,9 +1460,14 @@ def required_symbol_shadow_hits(text: str, name: str, allow_top_level_definition
     return hits
 
 
-def _local_function_body(text: str, function_name: str):
-    """Return one production function body, or None if the definition is missing/ambiguous."""
-    source = executable_source(text)
+def _local_function_body(
+    text: str,
+    function_name: str,
+    *,
+    preserve_attributes: bool = False,
+):
+    """Return one production function body, optionally retaining Rust attributes."""
+    source = macro_opaque_source(text) if preserve_attributes else executable_source(text)
     definition_re = re.compile(rf"\bfn\s+{re.escape(function_name)}\b")
     matches = list(definition_re.finditer(source))
     if len(matches) != 1:
@@ -1576,7 +1581,11 @@ def required_runtime_persistence_callback_hits(
     persist_callees: list,
     expected_bodies=None,
 ) -> dict:
-    body = _local_function_body(text, function_name)
+    body = _local_function_body(
+        text,
+        function_name,
+        preserve_attributes=True,
+    )
     base = {
         "function": function_name,
         "constructor": constructor,
