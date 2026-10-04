@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use activated_v2_runtime::restore_activated_v2_p2p_runtime_for_startup;
@@ -6763,24 +6763,21 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let activated_v2_retained_parent_graph = activated_v2_p2p_runtime
-                            .staging()
-                            .hashes()
-                            .into_iter()
-                            .filter_map(|hash| {
-                                activated_v2_p2p_runtime
-                                    .staging()
-                                    .get(&hash)
-                                    .map(|block| (hash, block.header.parents.clone()))
-                            })
-                            .chain(activated_v2_p2p_runtime.pending_blocks().map(|block| {
-                                (block.hash.clone(), block.header.parents.clone())
-                            }))
-                            .collect::<BTreeMap<_, _>>();
-                        let activated_v2_retained_hashes = activated_v2_retained_parent_graph
-                            .keys()
-                            .cloned()
-                            .collect::<HashSet<_>>();
+                        let activated_v2_retained_parent_graph =
+                            activated_v2_p2p_runtime
+                                .staging()
+                                .hashes()
+                                .into_iter()
+                                .filter_map(|hash| {
+                                    activated_v2_p2p_runtime
+                                        .staging()
+                                        .get(&hash)
+                                        .map(|block| (hash, block.header.parents.clone()))
+                                })
+                                .chain(activated_v2_p2p_runtime.pending_blocks().map(|block| {
+                                    (block.hash.clone(), block.header.parents.clone())
+                                }))
+                                .collect::<BTreeMap<_, _>>();
                         let pending_selected_peer = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.peer_id.as_str());
