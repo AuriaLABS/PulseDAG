@@ -1714,6 +1714,30 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not a direct request-capable session"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        inner.last_message_kind = Some("get-headers-from".into());
+        Ok(())
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -1723,6 +1747,28 @@ impl P2pHandle for MemoryP2pHandle {
         inner.broadcasted_messages += 1;
         inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         inner.last_message_kind = Some("headers".into());
+        Ok(())
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not a direct request-capable session"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        inner.last_message_kind = Some("headers-to".into());
         Ok(())
     }
 
@@ -3363,8 +3409,34 @@ fn enqueue_outbound_message(
                 limit,
             });
         }
+        OutboundMessage::GetHeadersFrom {
+            peer_id,
+            request_id,
+            locator,
+            stop_hash,
+            limit,
+        } => {
+            queue.blocks.push_back(OutboundMessage::GetHeadersFrom {
+                peer_id,
+                request_id,
+                locator,
+                stop_hash,
+                limit,
+            });
+        }
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
+        }
+        OutboundMessage::HeadersTo {
+            peer_id,
+            request_id,
+            headers,
+        } => {
+            queue.blocks.push_back(OutboundMessage::HeadersTo {
+                peer_id,
+                request_id,
+                headers,
+            });
         }
         OutboundMessage::GetBlockHeaders(hashes) => {
             queue
@@ -3489,7 +3561,9 @@ fn pop_outbound_message(
             | OutboundMessage::CompactRelayReconstructedBlock { .. }
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
+            | OutboundMessage::GetHeadersFrom { .. }
             | OutboundMessage::Headers(_)
+            | OutboundMessage::HeadersTo { .. }
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
@@ -7111,7 +7185,9 @@ impl Libp2pHandle {
             OutboundMessage::InvBlock(_)
                 | OutboundMessage::CompactRelayReconstructedBlock { .. }
                 | OutboundMessage::GetHeaders { .. }
+                | OutboundMessage::GetHeadersFrom { .. }
                 | OutboundMessage::Headers(_)
+                | OutboundMessage::HeadersTo { .. }
                 | OutboundMessage::GetBlockHeaders(_)
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
@@ -7608,6 +7684,38 @@ impl P2pHandle for Libp2pHandle {
         )
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        locator: &[PulseHash],
+        stop_hash: Option<&PulseHash>,
+        limit: usize,
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::GetHeadersFrom {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                locator: locator.to_vec(),
+                stop_hash: stop_hash.cloned(),
+                limit,
+            },
+            "get-headers-from",
+        )
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         {
             let mut inner = self
@@ -7617,6 +7725,34 @@ impl P2pHandle for Libp2pHandle {
             inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         }
         self.queue_sync_message(OutboundMessage::Headers(headers.to_vec()), "headers")
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::HeadersTo {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                headers: headers.to_vec(),
+            },
+            "headers-to",
+        )
     }
 
     fn send_block_data(
