@@ -7765,6 +7765,38 @@ impl P2pHandle for Libp2pHandle {
         )
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        locator: &[PulseHash],
+        stop_hash: Option<&PulseHash>,
+        limit: usize,
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::GetHeadersFrom {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                locator: locator.to_vec(),
+                stop_hash: stop_hash.cloned(),
+                limit,
+            },
+            "get-headers-from",
+        )
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         {
             let mut inner = self
@@ -7774,6 +7806,34 @@ impl P2pHandle for Libp2pHandle {
             inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         }
         self.queue_sync_message(OutboundMessage::Headers(headers.to_vec()), "headers")
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::HeadersTo {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                headers: headers.to_vec(),
+            },
+            "headers-to",
+        )
     }
 
     fn send_block_data(
@@ -12858,10 +12918,14 @@ mod deterministic_p2p_sync_coverage_tests {
             locator: Vec::new(),
             stop_hash: None,
             limit: 128,
+            request_id: None,
+            requested_peer_id: None,
         };
         let headers = NetworkMessage::Headers {
             chain_id: "testnet".into(),
             headers: Vec::new(),
+            request_id: None,
+            requested_peer_id: None,
         };
         assert_eq!(
             classify_network_message(&get_headers),
