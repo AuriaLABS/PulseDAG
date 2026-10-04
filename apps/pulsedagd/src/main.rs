@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use activated_v2_runtime::restore_activated_v2_p2p_runtime_for_startup;
@@ -61,6 +61,82 @@ use pulsedag_rpc::routes::{
 };
 use pulsedag_storage::Storage;
 use startup_protocol::select_startup_protocol;
+
+fn should_send_getblock_response(request_id: Option<&str>, block_found: bool) -> bool {
+    block_found || request_id.is_some()
+}
+
+fn select_live_getblock_response_block<'a>(
+    hash: &str,
+    chain: &'a pulsedag_core::state::ChainState,
+    retained_block: Option<&'a pulsedag_core::types::Block>,
+) -> Option<&'a pulsedag_core::types::Block> {
+    chain
+        .dag
+        .blocks
+        .get(hash)
+        .or_else(|| retained_block.filter(|block| block.hash == hash))
+}
+
+#[cfg(test)]
+mod compact_relay_fast_sync_handoff_tests {
+    use super::{
+        fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
+        select_live_getblock_response_block, should_send_getblock_response,
+    };
+
+    #[test]
+    fn tip_refresh_is_requested_only_when_fast_sync_releases_authority() {
+        assert!(fast_sync_authority_release_requires_tip_refresh(
+            true, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            true, true
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, false
+        ));
+        assert!(!fast_sync_authority_release_requires_tip_refresh(
+            false, true
+        ));
+    }
+
+    #[test]
+    fn broadcast_getblock_miss_is_silent_but_correlated_miss_is_answered() {
+        assert!(!should_send_getblock_response(None, false));
+        assert!(should_send_getblock_response(None, true));
+        assert!(should_send_getblock_response(Some("request-1"), false));
+        assert!(should_send_getblock_response(Some("request-1"), true));
+    }
+
+    #[test]
+    fn getblock_can_serve_activated_v2_retained_block_outside_authoritative_dag() {
+        let chain = pulsedag_core::genesis::init_chain_state("getblock-retained-test".to_string());
+        let mut retained = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .expect("genesis block")
+            .clone();
+        retained.hash = "activated-v2-retained".to_string();
+
+        assert!(!chain.dag.blocks.contains_key(&retained.hash));
+        assert_eq!(
+            select_live_getblock_response_block(&retained.hash, &chain, Some(&retained))
+                .map(|block| block.hash.as_str()),
+            Some(retained.hash.as_str())
+        );
+        assert!(select_live_getblock_response_block("unknown", &chain, Some(&retained)).is_none());
+    }
+
+    #[test]
+    fn capability_tip_probe_runs_only_while_authority_is_active_and_due() {
+        assert!(fast_sync_authority_requires_tip_probe(true, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(false, None, 100));
+        assert!(!fast_sync_authority_requires_tip_probe(true, Some(98), 100));
+        assert!(fast_sync_authority_requires_tip_probe(true, Some(95), 100));
+    }
+}
 
 #[cfg(test)]
 mod task27_rejoin_runtime_tests {
@@ -113,6 +189,65 @@ mod task27_rejoin_runtime_tests {
             task27_rejoin_peer_for_reconcile(&status, &eligible, &local_inventory(220)),
             None
         );
+    }
+
+    #[test]
+    fn task27_idle_detection_ignores_generic_fetch_backlog() {
+        let task27_pending = task27_owned_pending_work(0, 0, false, false, false);
+        let mut tracker = RecoveryProgressTrackerV1::new(30);
+        let decision = tracker.observe(RecoveryProgressObservationV1 {
+            local_selected_height: 14,
+            network_selected_height: Some(17),
+            same_height_divergence: false,
+            compatible_peer_available: true,
+            pending_requests: task27_pending,
+            inflight_requests: 0,
+            pending_missing_parents: 0,
+            orphan_count: 0,
+            missing_parent_responses: 0,
+            orphan_reprocess_attempts: 0,
+            orphan_reprocess_successes: 0,
+        });
+        assert!(matches!(
+            decision,
+            RecoveryProgressDecisionV1::ScheduleRecovery { gap: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn activated_v2_selected_segment_routes_missing_parents_to_session_peer() {
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(true, true, Some("peer-selected"), true),
+            ActivatedV2MissingParentFetchRoute::SelectedPeer("peer-selected".to_string())
+        );
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(true, true, Some("peer-selected"), false),
+            ActivatedV2MissingParentFetchRoute::Suppressed
+        );
+        assert_eq!(
+            activated_v2_missing_parent_fetch_route(false, true, None, false),
+            ActivatedV2MissingParentFetchRoute::Generic
+        );
+    }
+
+    #[test]
+    fn selected_segment_replans_only_when_peer_is_not_direct_and_idle() {
+        let direct = vec!["peer-direct".to_string()];
+        assert!(selected_segment_session_should_replan(
+            "peer-forwarded",
+            &direct,
+            0
+        ));
+        assert!(!selected_segment_session_should_replan(
+            "peer-forwarded",
+            &direct,
+            1
+        ));
+        assert!(!selected_segment_session_should_replan(
+            "peer-direct",
+            &direct,
+            0
+        ));
     }
 
     #[test]
@@ -263,11 +398,15 @@ fn task27_rejoin_peer_for_reconcile(
 
 fn selected_headers_own_broadcast_locator(
     session_active: bool,
-    pending_locator: bool,
+    pending_peer: Option<&str>,
     response_peer: Option<&str>,
     session_correlated: bool,
 ) -> bool {
-    session_correlated || (!session_active && pending_locator && response_peer.is_some())
+    session_correlated
+        || (!session_active
+            && pending_peer.is_some()
+            && response_peer.is_some()
+            && response_peer == pending_peer)
 }
 
 fn commit_candidate_chain_state(
@@ -512,6 +651,53 @@ fn selected_segment_recovery_has_priority(
         })
 }
 
+fn task27_owned_pending_work(
+    block_request_pending: usize,
+    frontier_queue_depth: usize,
+    pending_dag_frontier: bool,
+    pending_task27_locator: bool,
+    selected_segment_session: bool,
+) -> usize {
+    block_request_pending
+        .saturating_add(frontier_queue_depth)
+        .saturating_add(usize::from(pending_dag_frontier))
+        .saturating_add(usize::from(pending_task27_locator))
+        .saturating_add(usize::from(selected_segment_session))
+}
+
+fn selected_segment_session_should_replan(
+    session_peer: &str,
+    direct_request_peers: &[String],
+    inflight_for_peer: usize,
+) -> bool {
+    inflight_for_peer == 0 && !direct_request_peers.iter().any(|peer| peer == session_peer)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActivatedV2MissingParentFetchRoute {
+    SelectedPeer(String),
+    Generic,
+    Suppressed,
+}
+
+fn activated_v2_missing_parent_fetch_route(
+    priority_active: bool,
+    retained_block: bool,
+    selected_session_peer: Option<&str>,
+    selected_parent_reference: bool,
+) -> ActivatedV2MissingParentFetchRoute {
+    if retained_block && selected_parent_reference {
+        if let Some(session_peer) = selected_session_peer {
+            return ActivatedV2MissingParentFetchRoute::SelectedPeer(session_peer.to_string());
+        }
+    }
+    if priority_active {
+        ActivatedV2MissingParentFetchRoute::Suppressed
+    } else {
+        ActivatedV2MissingParentFetchRoute::Generic
+    }
+}
+
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
     match acceptance {
         BlockAcceptanceResult::MissingParent => "parent_missing_after_fetch",
@@ -642,6 +828,8 @@ struct SelectedSegmentSession {
     remote_selected_height: u64,
     locator_request_id: u64,
     expected_header_hashes: Vec<String>,
+    prerequisite_parent_hashes: HashSet<String>,
+    unresolved_prerequisite_parent_hashes: BTreeSet<String>,
     missing_hashes: Vec<String>,
     requested_hashes: HashSet<String>,
     received_hashes: HashSet<String>,
@@ -651,6 +839,15 @@ struct SelectedSegmentSession {
     _started_at_unix: u64,
     updated_at_unix: u64,
     state: SelectedSegmentSessionState,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SelectedSegmentAuthoritativeProgress {
+    received_new: bool,
+    applied_new: u64,
+    chunk_completed: bool,
+    continuation_hashes: Vec<String>,
+    session_completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -785,6 +982,8 @@ impl SelectedSegmentSession {
             remote_selected_height: remote.header.height,
             locator_request_id,
             expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
+            prerequisite_parent_hashes: HashSet::new(),
+            unresolved_prerequisite_parent_hashes: BTreeSet::new(),
             missing_hashes: Vec::new(),
             requested_hashes: HashSet::new(),
             received_hashes: HashSet::new(),
@@ -903,16 +1102,89 @@ impl SelectedSegmentSession {
             || self.accepted_applied_hashes.contains(hash)
     }
 
+    fn mark_received(&mut self, hash: &str, now: u64) -> bool {
+        if !self.requested_hashes.contains(hash) {
+            return false;
+        }
+        let inserted = self.received_hashes.insert(hash.to_string());
+        if inserted {
+            self.updated_at_unix = now;
+        }
+        inserted
+    }
+
     fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
-        if self.contains_hash(hash) {
-            self.accepted_applied_hashes.insert(hash.to_string());
-            self.received_hashes.insert(hash.to_string());
+        if !self.contains_hash(hash) {
+            return false;
+        }
+        self.received_hashes.insert(hash.to_string());
+        let inserted = self.accepted_applied_hashes.insert(hash.to_string());
+        if inserted {
             self.updated_at_unix = now;
             self.state = SelectedSegmentSessionState::Applying;
-            true
-        } else {
-            false
         }
+        inserted
+    }
+
+    fn reconcile_authoritative_hashes(
+        &mut self,
+        authoritative_hashes: &[String],
+        known_blocks: &HashSet<String>,
+        selected_tip: Option<&str>,
+        now: u64,
+        continuation_limit: usize,
+    ) -> SelectedSegmentAuthoritativeProgress {
+        let mut received_new = false;
+        let mut applied_new = 0u64;
+        for hash in authoritative_hashes {
+            if self.requested_hashes.contains(hash) && known_blocks.contains(hash) {
+                received_new |= self.mark_received(hash, now);
+                if self.mark_applied(hash, now) {
+                    applied_new = applied_new.saturating_add(1);
+                }
+            }
+        }
+
+        let chunk_completed = self.complete_current_chunk_if_applied();
+        let session_completed = known_blocks.contains(&self.remote_selected_tip)
+            && selected_tip == Some(self.remote_selected_tip.as_str());
+        if session_completed {
+            self.state = SelectedSegmentSessionState::Complete;
+        }
+        let continuation_hashes = if chunk_completed && !session_completed {
+            self.continuation_hashes(continuation_limit)
+        } else {
+            Vec::new()
+        };
+
+        SelectedSegmentAuthoritativeProgress {
+            received_new,
+            applied_new,
+            chunk_completed,
+            continuation_hashes,
+            session_completed,
+        }
+    }
+
+    fn reconcile_authoritative_outcome(
+        &mut self,
+        inbound_hash: &str,
+        authoritative_hashes: &[String],
+        known_blocks: &HashSet<String>,
+        selected_tip: Option<&str>,
+        now: u64,
+        continuation_limit: usize,
+    ) -> SelectedSegmentAuthoritativeProgress {
+        let inbound_received_new = self.mark_received(inbound_hash, now);
+        let mut progress = self.reconcile_authoritative_hashes(
+            authoritative_hashes,
+            known_blocks,
+            selected_tip,
+            now,
+            continuation_limit,
+        );
+        progress.received_new |= inbound_received_new;
+        progress
     }
 }
 
@@ -948,6 +1220,9 @@ fn validate_selected_header_segment(
     let Some(first) = headers.first() else {
         return Err("empty_segment");
     };
+    if !known_blocks.contains(common_ancestor) {
+        return Err("unknown_common_ancestor");
+    }
     if !first
         .header
         .parents
@@ -956,7 +1231,7 @@ fn validate_selected_header_segment(
     {
         return Err("first_header_not_connected_to_common_ancestor");
     }
-    let mut staged = known_blocks.clone();
+    let mut selected_path = HashSet::from([common_ancestor.to_string()]);
     let mut seen = HashSet::new();
     for item in headers {
         if !seen.insert(item.hash.clone()) {
@@ -970,15 +1245,15 @@ fn validate_selected_header_segment(
         {
             return Err("cycle");
         }
-        if item
+        if !item
             .header
             .parents
             .iter()
-            .any(|parent| !staged.contains(parent))
+            .any(|parent| selected_path.contains(parent))
         {
             return Err("unknown_or_unstaged_parent");
         }
-        staged.insert(item.hash.clone());
+        selected_path.insert(item.hash.clone());
     }
     Ok(())
 }
@@ -998,7 +1273,71 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
         .collect()
 }
 
-fn selected_segment_request_candidates(
+fn selected_segment_prerequisite_parent_hashes(
+    headers: &[HeaderInventory],
+    known: &HashSet<String>,
+    retained_parent_graph: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let header_hashes = headers
+        .iter()
+        .map(|item| item.hash.clone())
+        .collect::<HashSet<_>>();
+    let mut frontier = headers
+        .iter()
+        .flat_map(|item| item.header.parents.iter())
+        .filter(|parent| !known.contains(*parent) && !header_hashes.contains(*parent))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut prerequisites = BTreeSet::new();
+
+    while let Some(parent) = frontier.pop() {
+        if known.contains(&parent)
+            || header_hashes.contains(&parent)
+            || !prerequisites.insert(parent.clone())
+        {
+            continue;
+        }
+        if let Some(retained_parents) = retained_parent_graph.get(&parent) {
+            frontier.extend(
+                retained_parents
+                    .iter()
+                    .filter(|ancestor| {
+                        !known.contains(*ancestor) && !header_hashes.contains(*ancestor)
+                    })
+                    .cloned(),
+            );
+        }
+    }
+
+    prerequisites.into_iter().collect()
+}
+
+fn selected_segment_prerequisite_retry_plan(
+    unresolved: &BTreeSet<String>,
+    known: &HashSet<String>,
+    retained: &HashSet<String>,
+    pending_requests: &HashSet<String>,
+    limit: usize,
+) -> (Vec<String>, Vec<String>) {
+    let resolved = unresolved
+        .iter()
+        .filter(|hash| known.contains(hash.as_str()) || retained.contains(hash.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let retry = unresolved
+        .iter()
+        .filter(|hash| {
+            !known.contains(hash.as_str())
+                && !retained.contains(hash.as_str())
+                && !pending_requests.contains(hash.as_str())
+        })
+        .take(limit.max(1))
+        .cloned()
+        .collect::<Vec<_>>();
+    (resolved, retry)
+}
+
+fn selected_segment_missing_hashes(
     headers: &[HeaderInventory],
     limits: SelectedSegmentLimits,
     accepted: &HashSet<String>,
@@ -1007,6 +1346,18 @@ fn selected_segment_request_candidates(
     selected_segment_request_order(headers, limits.headers_per_chunk)
         .into_iter()
         .filter(|hash| !accepted.contains(hash) && !pending.contains(hash))
+        .collect()
+}
+
+#[cfg(test)]
+fn selected_segment_request_candidates(
+    headers: &[HeaderInventory],
+    limits: SelectedSegmentLimits,
+    accepted: &HashSet<String>,
+    pending: &HashSet<String>,
+) -> Vec<String> {
+    selected_segment_missing_hashes(headers, limits, accepted, pending)
+        .into_iter()
         .take(limits.max_inflight_blocks_per_peer)
         .collect()
 }
@@ -1217,6 +1568,7 @@ struct OrphanRecoveryTickResult {
     ages: (u64, u64),
     orphan_backlog: pulsedag_core::OrphanBacklogClassification,
     adopted: usize,
+    adopted_hashes: Vec<String>,
     retried: usize,
     persist_failed: bool,
     failure_reasons: std::collections::BTreeMap<String, usize>,
@@ -1754,6 +2106,23 @@ fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+const FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS: u64 = 5;
+
+fn fast_sync_authority_release_requires_tip_refresh(was_active: bool, is_active: bool) -> bool {
+    was_active && !is_active
+}
+
+fn fast_sync_authority_requires_tip_probe(
+    authority_active: bool,
+    last_probe_unix: Option<u64>,
+    now_unix: u64,
+) -> bool {
+    authority_active
+        && last_probe_unix.is_none_or(|last_probe_unix| {
+            now_unix.saturating_sub(last_probe_unix) >= FAST_SYNC_PROTOCOL_PROBE_INTERVAL_SECS
+        })
+}
+
 fn update_orphan_backlog_classification(
     runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
     chain: &pulsedag_core::ChainState,
@@ -2281,6 +2650,10 @@ async fn main() -> Result<()> {
         let p2p_protocol_identity = startup_activated_v2_identity.clone();
         tokio::spawn(async move {
             let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
+            let mut fast_sync_authority_was_active = fast_sync_daemon_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.authority_active());
+            let mut fast_sync_authority_last_tip_probe_unix: Option<u64> = None;
             let mut compact_relay_daemon_runtime = compact_relay_daemon_runtime;
             let mut compact_relay_probe_schedule = CompactRelayProbeScheduleV1::default();
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
@@ -2333,10 +2706,184 @@ async fn main() -> Result<()> {
                                 let imported_height = imported.chain_state.dag.best_height;
                                 let recovery_confidence =
                                     imported.report.recovery_confidence.clone();
-                                *chain.write().await = imported.chain_state;
-                                activated_v2_p2p_runtime = imported.runtime;
+                                let live_chain_state = chain.read().await.clone();
+                                let preserved_handoff_blocks = activated_v2_p2p_runtime
+                                    .fast_sync_handoff_blocks_parent_first(
+                                        &live_chain_state,
+                                        &imported.chain_state,
+                                    );
+                                let preserved_count = preserved_handoff_blocks.len();
+                                let mut imported_chain_state = imported.chain_state;
+                                let mut imported_runtime = imported.runtime;
+                                let mut replayed_count = 0usize;
+                                let mut replay_rejected_count = 0usize;
+
+                                if !preserved_handoff_blocks.is_empty() {
+                                    match (
+                                        p2p_protocol_identity.as_ref(),
+                                        storage.protocol_monetary_activation_record(),
+                                    ) {
+                                        (Some(identity), Ok(monetary_activation)) => {
+                                            for candidate in preserved_handoff_blocks {
+                                                if imported_chain_state
+                                                    .dag
+                                                    .blocks
+                                                    .contains_key(&candidate.hash)
+                                                {
+                                                    block_requests.resolve(&candidate.hash);
+                                                    continue;
+                                                }
+
+                                                let candidate_hash = candidate.hash.clone();
+                                                let drive = if let Some(monetary) =
+                                                    monetary_activation.as_ref()
+                                                {
+                                                    pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
+                                                        candidate,
+                                                        &mut imported_chain_state,
+                                                        &mut imported_runtime,
+                                                        identity,
+                                                        &monetary.monetary_cadence_segments,
+                                                        |state: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                                identity,
+                                                                state,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |candidate: &pulsedag_core::Block,
+                                                         prepared: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_block_and_runtime(
+                                                                candidate,
+                                                                identity,
+                                                                prepared,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |bundle: &[pulsedag_core::Block],
+                                                         prepared: &pulsedag_core::ChainState,
+                                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                            storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                                bundle,
+                                                                identity,
+                                                                prepared,
+                                                                durable_runtime,
+                                                            )
+                                                        },
+                                                        |_| Ok(()),
+                                                    )
+                                                } else {
+                                                    pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
+                                                        candidate,
+                                                        &mut imported_chain_state,
+                                                        &mut imported_runtime,
+                                                        identity,
+                                                        pulsedag_core::ActivatedV2P2pRuntimePersistence::new(
+                                                            |state: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                                    identity,
+                                                                    state,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                            |candidate: &pulsedag_core::Block,
+                                                             prepared: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_block_and_runtime(
+                                                                    candidate,
+                                                                    identity,
+                                                                    prepared,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                            |bundle: &[pulsedag_core::Block],
+                                                             prepared: &pulsedag_core::ChainState,
+                                                             durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                                                storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                                    bundle,
+                                                                    identity,
+                                                                    prepared,
+                                                                    durable_runtime,
+                                                                )
+                                                            },
+                                                        ),
+                                                        |_| Ok(()),
+                                                    )
+                                                };
+
+                                                match drive {
+                                                    Ok(drive) => {
+                                                        let summary =
+                                                            summarize_activated_v2_drive(&drive);
+                                                        if summary.rejected.is_empty() {
+                                                            replayed_count =
+                                                                replayed_count.saturating_add(1);
+                                                        } else {
+                                                            replay_rejected_count =
+                                                                replay_rejected_count
+                                                                    .saturating_add(
+                                                                        summary.rejected.len(),
+                                                                    );
+                                                        }
+                                                        if imported_chain_state
+                                                            .dag
+                                                            .blocks
+                                                            .contains_key(&candidate_hash)
+                                                            || imported_runtime
+                                                                .staging()
+                                                                .contains(&candidate_hash)
+                                                        {
+                                                            block_requests.resolve(&candidate_hash);
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        replay_rejected_count =
+                                                            replay_rejected_count.saturating_add(1);
+                                                        warn!(
+                                                            block_hash = %candidate_hash,
+                                                            error = %error,
+                                                            "failed revalidating live transient block after fast-sync authoritative handoff"
+                                                        );
+                                                        let _ = storage.append_runtime_event(
+                                                            "warn",
+                                                            "fast_sync_transient_replay_failed",
+                                                            &format!(
+                                                                "hash={} error={}",
+                                                                candidate_hash, error
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        (None, _) => {
+                                            replay_rejected_count = preserved_count;
+                                            warn!(
+                                                preserved_count,
+                                                "fast-sync handoff cannot revalidate live transients without activated-v2 identity"
+                                            );
+                                        }
+                                        (Some(_), Err(error)) => {
+                                            replay_rejected_count = preserved_count;
+                                            warn!(
+                                                preserved_count,
+                                                error = %error,
+                                                "fast-sync handoff monetary sidecar failed closed; live transients were not replayed"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                *chain.write().await = imported_chain_state;
+                                activated_v2_p2p_runtime = imported_runtime;
                                 info!(
                                     imported_height,
+                                    preserved_transient_blocks = preserved_count,
+                                    replayed_transient_blocks = replayed_count,
+                                    replay_rejected_transient_blocks = replay_rejected_count,
                                     recovery_confidence = %recovery_confidence,
                                     "clean fast-sync bootstrap imported and activated live state"
                                 );
@@ -2349,7 +2896,55 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    if fast_sync_runtime.authority_active() {
+                    let fast_sync_authority_active = fast_sync_runtime.authority_active();
+                    if fast_sync_authority_requires_tip_probe(
+                        fast_sync_authority_active,
+                        fast_sync_authority_last_tip_probe_unix,
+                        now,
+                    ) {
+                        fast_sync_authority_last_tip_probe_unix = Some(now);
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority active; requested capability-bearing tips probe"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority active but capability-bearing tips probe failed"
+                                );
+                            }
+                        }
+                    }
+                    if fast_sync_authority_release_requires_tip_refresh(
+                        fast_sync_authority_was_active,
+                        fast_sync_authority_active,
+                    ) {
+                        match p2p_handle.request_tips() {
+                            Ok(()) => {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                rt.sync_state = "requesting_tips".to_string();
+                                drop(rt);
+                                info!(
+                                    "fast-sync authority released; requested fresh tips for protocol/compact-relay negotiation"
+                                );
+                            }
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "fast-sync authority released but fresh tip request failed"
+                                );
+                            }
+                        }
+                    }
+                    fast_sync_authority_was_active = fast_sync_authority_active;
+                    if fast_sync_runtime.holds_live_p2p_events() {
                         continue;
                     }
                 }
@@ -2546,6 +3141,53 @@ async fn main() -> Result<()> {
                 }
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
+                    if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
+                        let expired = compact_runtime.expire_stale_pending(Duration::from_secs(15));
+                        if !expired.is_empty() {
+                            let expired_count = expired.len();
+                            if let Some(ref p2p_handle) = p2p {
+                                for action in expired {
+                                    let CompactRelayControllerActionV1::RequestFullBlock {
+                                        peer_id,
+                                        block_hash,
+                                    } = action
+                                    else {
+                                        continue;
+                                    };
+                                    if let Err(error) =
+                                        p2p_handle.request_block_from(&peer_id, &block_hash)
+                                    {
+                                        warn!(
+                                            peer = %peer_id,
+                                            block_hash = %block_hash,
+                                            error = %error,
+                                            "expired compact reconstruction could not enqueue peer-addressed full-block fallback; using broadcast GetBlock"
+                                        );
+                                        if let Err(fallback_error) =
+                                            p2p_handle.request_block(&block_hash)
+                                        {
+                                            warn!(
+                                                block_hash = %block_hash,
+                                                error = %fallback_error,
+                                                "expired compact reconstruction full-block fallback failed"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            let telemetry = compact_runtime.telemetry();
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.compact_relay_controller = (&telemetry).into();
+                            }
+                            info!(
+                                expired_count,
+                                pending = telemetry.pending_announcements_current,
+                                full_block_requests = telemetry.full_block_requests_total,
+                                "expired stale compact-relay reconstruction sessions"
+                            );
+                        }
+                    }
                     let tick_started = Instant::now();
                     let active_peers = active_peer_ids(&p2p);
                     let has_p2p = p2p.is_some();
@@ -2590,7 +3232,7 @@ async fn main() -> Result<()> {
                             let mut adopted = adoption.accepted;
                             let mut retried = adoption.retried;
                             let failure_reasons = adoption.failure_reasons;
-                            let adopted_hashes = adoption.accepted_hashes;
+                            let mut adopted_hashes = adoption.accepted_hashes;
                             let mut persist_failed = if retried > 0 {
                                 match commit_candidate_chain_state(
                                     &storage,
@@ -2608,6 +3250,7 @@ async fn main() -> Result<()> {
                                     Err(e) => {
                                         warn!(error = %e, retried, adopted, "failed atomically persisting recovery-adopted blocks and chain state");
                                         adopted = 0;
+                                        adopted_hashes.clear();
                                         retried = 0;
                                         true
                                     }
@@ -2752,12 +3395,208 @@ async fn main() -> Result<()> {
                                 ages,
                                 orphan_backlog: pulsedag_core::classify_orphan_backlog(&guard),
                                 adopted,
+                                adopted_hashes,
                                 retried,
                                 persist_failed,
                                 failure_reasons,
                             }
                         }
                     };
+                    let mut recovery_selected_segment_continuation = None;
+                    let mut recovery_selected_segment_completed = false;
+                    if !tick.adopted_hashes.is_empty() {
+                        let (known_blocks, selected_tip, local_height) = {
+                            let guard = chain.read().await;
+                            (
+                                guard.dag.blocks.keys().cloned().collect::<HashSet<_>>(),
+                                pulsedag_core::preferred_tip_hash(&guard),
+                                guard.dag.best_height,
+                            )
+                        };
+                        if let Some(session) = selected_segment_session.as_mut() {
+                            let progress = session.reconcile_authoritative_hashes(
+                                &tick.adopted_hashes,
+                                &known_blocks,
+                                selected_tip.as_deref(),
+                                now_unix(),
+                                MAX_INFLIGHT_BLOCK_REQUESTS,
+                            );
+                            if !progress.continuation_hashes.is_empty() {
+                                recovery_selected_segment_continuation = Some((
+                                    session.session_id,
+                                    session.peer_id.clone(),
+                                    progress.continuation_hashes.clone(),
+                                ));
+                            }
+                            recovery_selected_segment_completed = progress.session_completed;
+                            if progress.received_new
+                                || progress.applied_new > 0
+                                || progress.chunk_completed
+                                || progress.session_completed
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.active_session_received_blocks =
+                                    session.received_hashes.len() as u64;
+                                rt.active_session_applied_blocks =
+                                    session.accepted_applied_hashes.len() as u64;
+                                rt.active_session_remaining_blocks =
+                                    session.remote_selected_height.saturating_sub(local_height);
+                                rt.selected_segment_blocks_applied_total = rt
+                                    .selected_segment_blocks_applied_total
+                                    .saturating_add(progress.applied_new);
+                                if progress.chunk_completed {
+                                    rt.selected_segment_chunks_completed_total = rt
+                                        .selected_segment_chunks_completed_total
+                                        .saturating_add(1);
+                                }
+                                if progress.session_completed {
+                                    rt.sync_state =
+                                        DagSyncStage::SelectedSegmentComplete.as_str().to_string();
+                                    rt.active_session_remaining_blocks = 0;
+                                    rt.selected_segment_gap_blocks = 0;
+                                    rt.active_session_id = None;
+                                    rt.active_session_peer = None;
+                                    rt.active_session_remote_tip = None;
+                                    rt.active_session_remote_height = 0;
+                                    rt.active_session_common_ancestor = None;
+                                } else if progress.applied_new > 0 {
+                                    rt.sync_state =
+                                        DagSyncStage::ApplyingSelectedSegment.as_str().to_string();
+                                    if rt.active_session_remaining_blocks > 0 {
+                                        rt.selected_segment_gap_blocks =
+                                            rt.active_session_remaining_blocks;
+                                    }
+                                }
+                                info!(
+                                    event = "selected_segment_recovery_tick_progress",
+                                    session_id = session.session_id,
+                                    adopted = tick.adopted_hashes.len(),
+                                    applied_new = progress.applied_new,
+                                    chunk_completed = progress.chunk_completed,
+                                    session_completed = progress.session_completed,
+                                    "reconciled periodically adopted orphan blocks into selected-segment session"
+                                );
+                            }
+                        }
+                    }
+
+                    if !recovery_selected_segment_completed {
+                        if let Some((session_id, peer_id, candidates)) =
+                            recovery_selected_segment_continuation.take()
+                        {
+                            let mut issued_hashes = Vec::new();
+                            for hash in candidates {
+                                if !block_requests.promote_getblock_to_peer(
+                                    &hash,
+                                    now_unix(),
+                                    &peer_id,
+                                ) {
+                                    continue;
+                                }
+                                let request_succeeded = if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_block_from(&peer_id, &hash) {
+                                        Ok(_) => true,
+                                        Err(e) => {
+                                            block_requests.resolve(&hash);
+                                            warn!(
+                                                error = %e,
+                                                block_hash = %hash,
+                                                session_id,
+                                                peer = %peer_id,
+                                                "failed issuing recovery-tick selected-segment continuation GetBlock request"
+                                            );
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    block_requests.resolve(&hash);
+                                    false
+                                };
+                                if request_succeeded {
+                                    issued_hashes.push(hash);
+                                }
+                            }
+
+                            if !issued_hashes.is_empty() {
+                                let issued_at = now_unix();
+                                let mut chunk_started = false;
+                                if let Some(session) =
+                                    selected_segment_session.as_mut().filter(|session| {
+                                        session.session_id == session_id
+                                            && session.peer_id == peer_id
+                                    })
+                                {
+                                    for hash in &issued_hashes {
+                                        session.requested_hashes.insert(hash.clone());
+                                    }
+                                    chunk_started =
+                                        session.start_chunk(issued_hashes.clone(), issued_at);
+                                }
+                                if chunk_started {
+                                    let issued_count = issued_hashes.len() as u64;
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent =
+                                        rt.getblock_sent.saturating_add(issued_count);
+                                    rt.peer_addressed_getblock_sent_total = rt
+                                        .peer_addressed_getblock_sent_total
+                                        .saturating_add(issued_count);
+                                    rt.selected_segment_block_requests_total = rt
+                                        .selected_segment_block_requests_total
+                                        .saturating_add(issued_count);
+                                    rt.active_session_requested_blocks = rt
+                                        .active_session_requested_blocks
+                                        .saturating_add(issued_count);
+                                    rt.final_quiescence_missing_segment_request_total = rt
+                                        .final_quiescence_missing_segment_request_total
+                                        .saturating_add(issued_count);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
+                                    rt.sync_state =
+                                        DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
+                                    info!(
+                                        event = "selected_segment_chunk_continued_after_orphan_adoption",
+                                        session_id,
+                                        peer = %peer_id,
+                                        issued_count,
+                                        "scheduled next selected-segment chunk after periodic orphan adoption"
+                                    );
+                                } else {
+                                    for hash in &issued_hashes {
+                                        block_requests.resolve(hash);
+                                    }
+                                    warn!(
+                                        session_id,
+                                        peer = %peer_id,
+                                        issued_count = issued_hashes.len(),
+                                        "recovery-tick selected-segment continuation could not start; rolled back request tracking"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if recovery_selected_segment_completed {
+                        selected_segment_session = None;
+                        selected_segment_locator_state.lock().await.pending_locator = None;
+                        if let Some(ref p2p_handle) = p2p {
+                            if let Err(error) = p2p_handle.request_tips() {
+                                warn!(
+                                    error = %error,
+                                    "failed requesting DAG frontier tips after recovery-tick selected-segment completion"
+                                );
+                            } else {
+                                let mut rt = runtime.write().await;
+                                rt.sync_state = DagSyncStage::DagFrontierTips.as_str().to_string();
+                                info!(
+                                    event = "selected_segment_frontier_reconcile_requested_after_orphan_adoption",
+                                    "selected segment completed through periodic orphan adoption; requested fresh tips"
+                                );
+                            }
+                        }
+                    }
+
                     let roots = {
                         let guard = chain.read().await;
                         orphan_recovery_roots(&guard)
@@ -2959,6 +3798,266 @@ async fn main() -> Result<()> {
                         .to_string();
                     }
                 }
+
+                // Selected-segment recovery must not depend on a single inbound event as its
+                // retry trigger. A full per-peer window can defer an external merge parent, and
+                // an all-at-once send failure can leave a session with no current chunk. Retry
+                // both classes deterministically on the recovery heartbeat.
+                if recovery_tick.is_multiple_of(5) {
+                    let prerequisite_retry_state = selected_segment_session
+                        .as_ref()
+                        .filter(|session| !session.unresolved_prerequisite_parent_hashes.is_empty())
+                        .map(|session| {
+                            (
+                                session.session_id,
+                                session.peer_id.clone(),
+                                session.unresolved_prerequisite_parent_hashes.clone(),
+                            )
+                        });
+                    if let Some((session_id, peer_id, unresolved)) = prerequisite_retry_state {
+                        let known = {
+                            let guard = chain.read().await;
+                            known_hashes_for_scheduler(&guard)
+                        };
+                        let retained = activated_v2_p2p_runtime
+                            .staging()
+                            .hashes()
+                            .into_iter()
+                            .chain(activated_v2_p2p_runtime.pending_hashes())
+                            .collect::<HashSet<_>>();
+                        let pending_requests = block_requests
+                            .pending_hashes()
+                            .into_iter()
+                            .collect::<HashSet<_>>();
+                        let (resolved, retry) = selected_segment_prerequisite_retry_plan(
+                            &unresolved,
+                            &known,
+                            &retained,
+                            &pending_requests,
+                            MAX_INFLIGHT_BLOCK_REQUESTS,
+                        );
+                        if let Some(session) = selected_segment_session.as_mut().filter(|session| {
+                            session.session_id == session_id && session.peer_id == peer_id
+                        }) {
+                            for hash in resolved {
+                                session.unresolved_prerequisite_parent_hashes.remove(&hash);
+                            }
+                        }
+
+                        let mut sent = 0u64;
+                        for parent in retry {
+                            if !block_requests.promote_getblock_to_peer(
+                                &parent,
+                                now_unix(),
+                                &peer_id,
+                            ) {
+                                continue;
+                            }
+                            if let Some(ref p2p_handle) = p2p {
+                                match p2p_handle.request_block_from(&peer_id, &parent) {
+                                    Ok(_) => sent = sent.saturating_add(1),
+                                    Err(error) => {
+                                        // Keep the admitted tracker entry. Its timeout path will
+                                        // rotate to another direct peer, while the unresolved set
+                                        // keeps the prerequisite live until its body is retained.
+                                        warn!(
+                                            error = %error,
+                                            missing_parent = %parent,
+                                            session_id,
+                                            peer = %peer_id,
+                                            "selected prerequisite retry send failed; preserving tracker and heartbeat state"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if sent > 0 {
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(sent);
+                            rt.peer_addressed_getblock_sent_total =
+                                rt.peer_addressed_getblock_sent_total.saturating_add(sent);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(sent);
+                            rt.missing_parent_request_started_total =
+                                rt.missing_parent_request_started_total.saturating_add(sent);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        }
+                    }
+
+                    let selected_limits = SelectedSegmentLimits::default();
+                    let selected_retry_state = selected_segment_session
+                        .as_ref()
+                        .filter(|session| session.can_start_chunk())
+                        .map(|session| {
+                            (
+                                session.session_id,
+                                session.peer_id.clone(),
+                                session.continuation_hashes(
+                                    selected_limits.max_inflight_blocks_per_peer,
+                                ),
+                            )
+                        });
+                    if let Some((session_id, peer_id, candidates)) = selected_retry_state {
+                        if !candidates.is_empty() {
+                            let mut tracked_hashes = Vec::new();
+                            let mut sent = 0u64;
+                            for hash in candidates {
+                                if !block_requests.promote_getblock_to_peer(
+                                    &hash,
+                                    now_unix(),
+                                    &peer_id,
+                                ) {
+                                    continue;
+                                }
+                                let mut sent_now = false;
+                                if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_block_from(&peer_id, &hash) {
+                                        Ok(_) => sent_now = true,
+                                        Err(error) => {
+                                            block_requests.resolve(&hash);
+                                            warn!(
+                                                error = %error,
+                                                block_hash = %hash,
+                                                session_id,
+                                                peer = %peer_id,
+                                                "selected-segment heartbeat GetBlock send failed; retry remains eligible"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    block_requests.resolve(&hash);
+                                }
+                                if sent_now {
+                                    tracked_hashes.push(hash);
+                                    sent = sent.saturating_add(1);
+                                }
+                            }
+
+                            if !tracked_hashes.is_empty() {
+                                let mut chunk_started = false;
+                                if let Some(session) =
+                                    selected_segment_session.as_mut().filter(|session| {
+                                        session.session_id == session_id
+                                            && session.peer_id == peer_id
+                                    })
+                                {
+                                    for hash in &tracked_hashes {
+                                        session.requested_hashes.insert(hash.clone());
+                                    }
+                                    chunk_started =
+                                        session.start_chunk(tracked_hashes.clone(), now_unix());
+                                }
+                                if chunk_started {
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(sent);
+                                    rt.peer_addressed_getblock_sent_total =
+                                        rt.peer_addressed_getblock_sent_total.saturating_add(sent);
+                                    rt.selected_segment_block_requests_total = rt
+                                        .selected_segment_block_requests_total
+                                        .saturating_add(sent);
+                                    rt.active_session_requested_blocks =
+                                        rt.active_session_requested_blocks.saturating_add(sent);
+                                    rt.final_quiescence_missing_segment_request_total = rt
+                                        .final_quiescence_missing_segment_request_total
+                                        .saturating_add(sent);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
+                                    rt.sync_state =
+                                        DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
+                                    info!(
+                                        event = "activated_v2_selected_segment_heartbeat_retry",
+                                        session_id,
+                                        peer = %peer_id,
+                                        issued_count = sent,
+                                        "restarted an idle selected-segment chunk from heartbeat"
+                                    );
+                                } else {
+                                    for hash in &tracked_hashes {
+                                        block_requests.resolve(hash);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let direct_request_peers = active_peer_ids(&p2p);
+                let selected_session_replan =
+                    selected_segment_session.as_ref().and_then(|session| {
+                        let inflight_for_peer = block_requests
+                            .inflight_by_peer()
+                            .get(&session.peer_id)
+                            .copied()
+                            .unwrap_or_default();
+                        let direct_peer_unavailable = selected_segment_session_should_replan(
+                            &session.peer_id,
+                            &direct_request_peers,
+                            inflight_for_peer,
+                        );
+                        let exhausted_prerequisite = session
+                            .unresolved_prerequisite_parent_hashes
+                            .iter()
+                            .any(|hash| block_requests.is_all_peers_exhausted(hash));
+                        let exhausted_selected_block = session
+                            .current_chunk
+                            .iter()
+                            .filter(|hash| !session.accepted_applied_hashes.contains(*hash))
+                            .any(|hash| block_requests.is_all_peers_exhausted(hash));
+                        (direct_peer_unavailable
+                            || exhausted_prerequisite
+                            || exhausted_selected_block)
+                            .then(|| {
+                                let owned_requests = session
+                                    .current_chunk
+                                    .iter()
+                                    .chain(session.unresolved_prerequisite_parent_hashes.iter())
+                                    .cloned()
+                                    .collect::<BTreeSet<_>>();
+                                (
+                                    session.session_id,
+                                    session.peer_id.clone(),
+                                    if exhausted_prerequisite {
+                                        "selected_prerequisite_all_peers_exhausted"
+                                    } else if exhausted_selected_block {
+                                        "selected_chunk_block_all_peers_exhausted"
+                                    } else {
+                                        "selected_peer_not_direct_request_capable"
+                                    },
+                                    owned_requests,
+                                )
+                            })
+                    });
+                if let Some((session_id, peer_id, reason, owned_requests)) = selected_session_replan
+                {
+                    for hash in owned_requests {
+                        // Clear only live tracker entries owned by the abandoned session. Keep
+                        // terminal exhaustion evidence intact until genuinely fresh peer evidence
+                        // reopens that hash.
+                        if block_requests.pending.contains_key(&hash) {
+                            block_requests.resolve(&hash);
+                        }
+                    }
+                    selected_segment_session = None;
+                    selected_segment_locator_state.lock().await.pending_locator = None;
+                    let mut rt = runtime.write().await;
+                    rt.active_session_id = None;
+                    rt.active_session_peer = None;
+                    rt.active_session_remote_tip = None;
+                    rt.active_session_remote_height = 0;
+                    rt.active_session_common_ancestor = None;
+                    rt.active_session_remaining_blocks = 0;
+                    rt.sync_state = "catching_up".to_string();
+                    warn!(
+                        session_id,
+                        peer = %peer_id,
+                        reason,
+                        "abandoned selected-segment session; replanning through Task 27"
+                    );
+                }
                 let selected_segment_priority = {
                     let guard = selected_segment_locator_state.lock().await;
                     selected_segment_recovery_has_priority(
@@ -3032,14 +4131,16 @@ async fn main() -> Result<()> {
                         rt.orphan_reprocess_success,
                     )
                 };
-                let task27_pending_work = block_requests
-                    .pending
-                    .len()
-                    .saturating_add(fetch_scheduler.queue_depth())
-                    .saturating_add(frontier_fetch_scheduler.queue_depth())
-                    .saturating_add(usize::from(pending_dag_frontier_peer.is_some()))
-                    .saturating_add(usize::from(pending_task27_locator.is_some()))
-                    .saturating_add(usize::from(selected_segment_session.is_some()));
+                // The generic fetch scheduler is intentionally excluded here. Its queued
+                // inventory is not Task 27 work and must not suppress a direct Protocol-v2
+                // reconcile when the selected chain is still behind or divergent.
+                let task27_pending_work = task27_owned_pending_work(
+                    block_requests.pending.len(),
+                    frontier_fetch_scheduler.queue_depth(),
+                    pending_dag_frontier_peer.is_some(),
+                    pending_task27_locator.is_some(),
+                    selected_segment_session.is_some(),
+                );
                 let task27_recovery_decision =
                     task27_recovery_tracker.observe(RecoveryProgressObservationV1 {
                         local_selected_height,
@@ -4112,6 +5213,37 @@ async fn main() -> Result<()> {
                             let duplicate_count = summary.duplicate_hashes.len() as u64;
                             let rejected_count = summary.rejected.len() as u64;
 
+                            if !summary.staged_hashes.is_empty() {
+                                let staged_relay_blocks = summary
+                                    .staged_hashes
+                                    .iter()
+                                    .filter_map(|hash| {
+                                        activated_v2_p2p_runtime.staging().get(hash).cloned()
+                                    })
+                                    .collect::<Vec<_>>();
+                                if let Some(ref p2p_handle) = p2p {
+                                    for staged_block in staged_relay_blocks {
+                                        match p2p_handle.broadcast_block(&staged_block) {
+                                            Ok(()) => {
+                                                info!(
+                                                    event = "peer_block_v2_staged_relay",
+                                                    block_hash = %staged_block.hash,
+                                                    "relayed validated activated-v2 staged block without authoritative commit"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                warn!(
+                                                    event = "peer_block_v2_staged_relay_failed",
+                                                    block_hash = %staged_block.hash,
+                                                    error = %error,
+                                                    "failed relaying validated activated-v2 staged block; transient staging remains intact"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             block_requests.resolve(&block.hash);
                             for hash in summary
                                 .accepted_hashes
@@ -4122,34 +5254,267 @@ async fn main() -> Result<()> {
                                 block_requests.resolve(hash);
                             }
 
-                            let mut missing_parent_requests_issued = 0u64;
-                            for parent in &summary.missing_parents {
-                                if !priority_active
-                                    && block_requests.should_issue_getblock_for_peers(
-                                        parent,
+                            // Activated-v2/v3 block processing returns before the legacy
+                            // acceptance path below. Reconcile the same selected-segment
+                            // session here so correlated peer-addressed blocks cannot leave
+                            // a permanently active session with zero received/applied work.
+                            let mut selected_segment_continuation = None;
+                            let mut selected_segment_completed = false;
+                            let authoritative_selected_hashes = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.duplicate_hashes.iter())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let selected_known_blocks =
+                                guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+                            let selected_tip_after_drive =
+                                pulsedag_core::preferred_tip_hash(&guard);
+                            let selected_local_height_after_drive = guard.dag.best_height;
+                            let selected_progress =
+                                selected_segment_session.as_mut().map(|session| {
+                                    let progress = session.reconcile_authoritative_outcome(
+                                        &block.hash,
+                                        &authoritative_selected_hashes,
+                                        &selected_known_blocks,
+                                        selected_tip_after_drive.as_deref(),
                                         now_unix(),
-                                        active_peer_ids(&p2p),
+                                        MAX_INFLIGHT_BLOCK_REQUESTS,
+                                    );
+                                    if !progress.continuation_hashes.is_empty() {
+                                        selected_segment_continuation = Some((
+                                            session.session_id,
+                                            session.peer_id.clone(),
+                                            progress.continuation_hashes.clone(),
+                                        ));
+                                    }
+                                    selected_segment_completed = progress.session_completed;
+                                    (
+                                        progress,
+                                        session.session_id,
+                                        session.received_hashes.len() as u64,
+                                        session.accepted_applied_hashes.len() as u64,
+                                        session
+                                            .remote_selected_height
+                                            .saturating_sub(selected_local_height_after_drive),
                                     )
+                                });
+                            if let Some((
+                                progress,
+                                session_id,
+                                received_total,
+                                applied_total,
+                                remaining_blocks,
+                            )) = selected_progress
+                            {
+                                if progress.received_new
+                                    || progress.applied_new > 0
+                                    || progress.chunk_completed
+                                    || progress.session_completed
                                 {
-                                    let request_sent = if let Some(ref p2p_handle) = p2p {
-                                        match p2p_handle.request_block(parent) {
-                                            Ok(()) => true,
-                                            Err(error) => {
-                                                warn!(
-                                                    error = %error,
-                                                    missing_parent = %parent,
-                                                    child = %block.hash,
-                                                    "failed issuing activated-v2 missing-parent GetBlock request"
-                                                );
-                                                false
-                                            }
+                                    let mut rt = runtime.write().await;
+                                    rt.active_session_received_blocks = received_total;
+                                    rt.active_session_applied_blocks = applied_total;
+                                    rt.active_session_remaining_blocks = remaining_blocks;
+                                    rt.selected_segment_blocks_applied_total = rt
+                                        .selected_segment_blocks_applied_total
+                                        .saturating_add(progress.applied_new);
+                                    if progress.chunk_completed {
+                                        rt.selected_segment_chunks_completed_total = rt
+                                            .selected_segment_chunks_completed_total
+                                            .saturating_add(1);
+                                    }
+                                    if progress.session_completed {
+                                        rt.sync_state = DagSyncStage::SelectedSegmentComplete
+                                            .as_str()
+                                            .to_string();
+                                        rt.active_session_remaining_blocks = 0;
+                                        rt.selected_segment_gap_blocks = 0;
+                                        rt.active_session_id = None;
+                                        rt.active_session_peer = None;
+                                        rt.active_session_remote_tip = None;
+                                        rt.active_session_remote_height = 0;
+                                        rt.active_session_common_ancestor = None;
+                                    } else if progress.applied_new > 0 {
+                                        rt.sync_state = DagSyncStage::ApplyingSelectedSegment
+                                            .as_str()
+                                            .to_string();
+                                        if remaining_blocks > 0 {
+                                            rt.selected_segment_gap_blocks = remaining_blocks;
                                         }
-                                    } else {
-                                        false
-                                    };
-                                    if request_sent {
+                                    }
+                                    info!(
+                                        event = "activated_v2_selected_segment_progress",
+                                        session_id,
+                                        received_new = progress.received_new,
+                                        applied_new = progress.applied_new,
+                                        chunk_completed = progress.chunk_completed,
+                                        session_completed = progress.session_completed,
+                                        received_total,
+                                        applied_total,
+                                        remaining_blocks,
+                                        "reconciled activated-v2 block outcomes into selected-segment session"
+                                    );
+                                }
+                            }
+
+                            let mut compact_retained_hashes = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.staged_hashes.iter())
+                                .chain(summary.duplicate_hashes.iter())
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if activated_v2_p2p_runtime.pending_contains(&block.hash)
+                                || activated_v2_p2p_runtime.staging().contains(&block.hash)
+                            {
+                                compact_retained_hashes.push(block.hash.clone());
+                            }
+                            compact_retained_hashes.sort();
+                            compact_retained_hashes.dedup();
+                            if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
+                                let mut compact_reconciled = 0usize;
+                                for hash in &compact_retained_hashes {
+                                    if compact_runtime.observe_full_block(hash) {
+                                        compact_reconciled = compact_reconciled.saturating_add(1);
+                                    }
+                                }
+                                if compact_reconciled > 0 {
+                                    let telemetry = compact_runtime.telemetry();
+                                    let mut rt = runtime.write().await;
+                                    rt.compact_relay_controller = (&telemetry).into();
+                                    info!(
+                                        compact_reconciled,
+                                        pending = telemetry.pending_announcements_current,
+                                        "reconciled compact-relay sessions from retained activated-v2 full blocks"
+                                    );
+                                }
+                            }
+
+                            let retained_in_activated_v2 = summary
+                                .accepted_hashes
+                                .iter()
+                                .chain(summary.staged_hashes.iter())
+                                .chain(summary.duplicate_hashes.iter())
+                                .any(|hash| hash == &block.hash)
+                                || activated_v2_p2p_runtime.pending_contains(&block.hash)
+                                || activated_v2_p2p_runtime.staging().contains(&block.hash);
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let inbound_was_prerequisite =
+                                    session.prerequisite_parent_hashes.contains(&block.hash);
+                                session
+                                    .unresolved_prerequisite_parent_hashes
+                                    .remove(&block.hash);
+                                if inbound_was_prerequisite {
+                                    // The body hash is already rooted in a validated selected
+                                    // header. Only parents committed by this exact body extend the
+                                    // trusted prerequisite closure. Do not use the aggregate drive
+                                    // summary here because it also contains outcomes from unrelated
+                                    // pending-v2 retries.
+                                    session
+                                        .prerequisite_parent_hashes
+                                        .extend(block.header.parents.iter().cloned());
+                                }
+                            }
+                            let selected_session_peer = selected_segment_session
+                                .as_ref()
+                                .map(|session| session.peer_id.clone());
+                            let missing_parent_candidates = summary
+                                .missing_parents
+                                .iter()
+                                .filter(|parent| {
+                                    !guard.dag.blocks.contains_key(*parent)
+                                        && !activated_v2_p2p_runtime.pending_contains(parent)
+                                        && !activated_v2_p2p_runtime.staging().contains(parent)
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let mut missing_parent_requests_issued = 0u64;
+                            for parent in &missing_parent_candidates {
+                                let selected_parent_reference =
+                                    selected_segment_session.as_ref().is_some_and(|session| {
+                                        session.prerequisite_parent_hashes.contains(parent)
+                                    });
+                                let missing_parent_route = activated_v2_missing_parent_fetch_route(
+                                    priority_active,
+                                    retained_in_activated_v2,
+                                    selected_session_peer.as_deref(),
+                                    selected_parent_reference,
+                                );
+                                if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
+                                    &missing_parent_route
+                                {
+                                    let newly_unresolved =
+                                        selected_segment_session.as_mut().is_some_and(|session| {
+                                            session
+                                                .unresolved_prerequisite_parent_hashes
+                                                .insert(parent.clone())
+                                        });
+                                    if newly_unresolved {
+                                        // Reopen stale failure state only on the first transition
+                                        // into unresolved for this session. Replaying an aggregate
+                                        // missing-parent summary must not erase later timeout or
+                                        // not-found evidence, otherwise exhaustion can never become
+                                        // stable enough to trigger deterministic session replanning.
+                                        block_requests.note_selected_parent_references(
+                                            peer_id,
+                                            [parent.clone()],
+                                        );
+                                    }
+                                }
+                                let admitted = match &missing_parent_route {
+                                    ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
+                                        block_requests.promote_getblock_to_peer(
+                                            parent,
+                                            now_unix(),
+                                            peer_id,
+                                        )
+                                    }
+                                    ActivatedV2MissingParentFetchRoute::Generic => block_requests
+                                        .should_issue_getblock_for_peers(
+                                            parent,
+                                            now_unix(),
+                                            active_peer_ids(&p2p),
+                                        ),
+                                    ActivatedV2MissingParentFetchRoute::Suppressed => false,
+                                };
+                                if !admitted {
+                                    continue;
+                                }
+
+                                let request_result = if let Some(ref p2p_handle) = p2p {
+                                    match &missing_parent_route {
+                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(
+                                            peer_id,
+                                        ) => p2p_handle
+                                            .request_block_from(peer_id, parent)
+                                            .map(|_| ()),
+                                        ActivatedV2MissingParentFetchRoute::Generic => {
+                                            p2p_handle.request_block(parent)
+                                        }
+                                        ActivatedV2MissingParentFetchRoute::Suppressed => continue,
+                                    }
+                                } else {
+                                    block_requests.resolve(parent);
+                                    continue;
+                                };
+                                match request_result {
+                                    Ok(()) => {
                                         missing_parent_requests_issued =
                                             missing_parent_requests_issued.saturating_add(1);
+                                    }
+                                    Err(error) => {
+                                        // Keep the admitted request pending so the normal timeout
+                                        // path can rotate it to another direct peer. Resolving here
+                                        // would erase the only retry trigger while selected-segment
+                                        // priority suppresses generic missing-parent recovery.
+                                        warn!(
+                                            error = %error,
+                                            missing_parent = %parent,
+                                            child = %block.hash,
+                                            route = ?missing_parent_route,
+                                            "failed issuing activated-v2 missing-parent GetBlock request; preserving request for peer failover"
+                                        );
                                     }
                                 }
                             }
@@ -4231,9 +5596,132 @@ async fn main() -> Result<()> {
                                     && v2_pending_missing == 0
                                     && v2_staged == 0
                                     && guard.orphan_blocks.is_empty()
+                                    && selected_segment_session.is_none()
                                 {
                                     rt.sync_state = "synced".to_string();
                                     rt.sync_pipeline.complete_cycle(now_unix());
+                                }
+                            }
+
+                            if !selected_segment_completed {
+                                if let Some((session_id, peer_id, candidates)) =
+                                    selected_segment_continuation.take()
+                                {
+                                    let mut issued_hashes = Vec::new();
+                                    for hash in candidates {
+                                        if !block_requests.promote_getblock_to_peer(
+                                            &hash,
+                                            now_unix(),
+                                            &peer_id,
+                                        ) {
+                                            continue;
+                                        }
+                                        let request_succeeded = if let Some(ref p2p_handle) = p2p {
+                                            match p2p_handle.request_block_from(&peer_id, &hash) {
+                                                Ok(_) => true,
+                                                Err(error) => {
+                                                    block_requests.resolve(&hash);
+                                                    warn!(
+                                                        error = %error,
+                                                        block_hash = %hash,
+                                                        session_id,
+                                                        peer = %peer_id,
+                                                        "failed issuing activated-v2 selected-segment continuation GetBlock request"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            block_requests.resolve(&hash);
+                                            false
+                                        };
+                                        if request_succeeded {
+                                            issued_hashes.push(hash);
+                                        }
+                                    }
+
+                                    if !issued_hashes.is_empty() {
+                                        let issued_at = now_unix();
+                                        let mut chunk_started = false;
+                                        if let Some(session) =
+                                            selected_segment_session.as_mut().filter(|session| {
+                                                session.session_id == session_id
+                                                    && session.peer_id == peer_id
+                                            })
+                                        {
+                                            for hash in &issued_hashes {
+                                                session.requested_hashes.insert(hash.clone());
+                                            }
+                                            chunk_started = session
+                                                .start_chunk(issued_hashes.clone(), issued_at);
+                                        }
+
+                                        if chunk_started {
+                                            let issued_count = issued_hashes.len() as u64;
+                                            let mut rt = runtime.write().await;
+                                            rt.getblock_sent =
+                                                rt.getblock_sent.saturating_add(issued_count);
+                                            rt.peer_addressed_getblock_sent_total = rt
+                                                .peer_addressed_getblock_sent_total
+                                                .saturating_add(issued_count);
+                                            rt.selected_segment_block_requests_total = rt
+                                                .selected_segment_block_requests_total
+                                                .saturating_add(issued_count);
+                                            rt.active_session_requested_blocks = rt
+                                                .active_session_requested_blocks
+                                                .saturating_add(issued_count);
+                                            rt.final_quiescence_missing_segment_request_total = rt
+                                                .final_quiescence_missing_segment_request_total
+                                                .saturating_add(issued_count);
+                                            rt.pending_block_requests =
+                                                block_requests.pending.len();
+                                            rt.inflight_block_requests =
+                                                block_requests.pending.len();
+                                            rt.pending_block_request_hashes =
+                                                block_requests.pending_hashes();
+                                            rt.sync_state = DagSyncStage::RequestingSelectedBlocks
+                                                .as_str()
+                                                .to_string();
+                                            info!(
+                                                event = "activated_v2_selected_segment_chunk_continued",
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count,
+                                                "scheduled next activated-v2 peer-addressed selected-segment chunk"
+                                            );
+                                        } else {
+                                            for hash in &issued_hashes {
+                                                block_requests.resolve(hash);
+                                            }
+                                            warn!(
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count = issued_hashes.len(),
+                                                "activated-v2 selected-segment continuation could not start; rolled back request tracking"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            if selected_segment_completed {
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                if let Some(ref p2p_handle) = p2p {
+                                    if let Err(error) = p2p_handle.request_tips() {
+                                        warn!(
+                                            error = %error,
+                                            "failed requesting DAG frontier tips after activated-v2 selected-segment completion"
+                                        );
+                                    } else {
+                                        let mut rt = runtime.write().await;
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        info!(
+                                            event = "activated_v2_selected_segment_frontier_reconcile_requested",
+                                            "activated-v2 selected segment complete; requested fresh tips for lateral DAG reconciliation"
+                                        );
+                                    }
                                 }
                             }
 
@@ -4314,6 +5802,26 @@ async fn main() -> Result<()> {
                                 BlockAcceptanceResult::Rejected(e.to_string())
                             }
                         };
+                        if acceptance.is_accepted()
+                            || matches!(
+                                acceptance,
+                                BlockAcceptanceResult::MissingParent
+                                    | BlockAcceptanceResult::Duplicate
+                            )
+                        {
+                            if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
+                                if compact_runtime.observe_full_block(&block.hash) {
+                                    let telemetry = compact_runtime.telemetry();
+                                    let mut rt = runtime.write().await;
+                                    rt.compact_relay_controller = (&telemetry).into();
+                                    info!(
+                                        block_hash = %block.hash,
+                                        pending = telemetry.pending_announcements_current,
+                                        "reconciled compact-relay session from received full block"
+                                    );
+                                }
+                            }
+                        }
                         if matches!(acceptance, BlockAcceptanceResult::MissingParent) {
                             let mut rt = runtime.write().await;
                             if final_height_reconcile_block {
@@ -4803,6 +6311,8 @@ async fn main() -> Result<()> {
                                         rt.selected_segment_blocks_applied_total = rt
                                             .selected_segment_blocks_applied_total
                                             .saturating_add(selected_applied);
+                                        rt.active_session_received_blocks =
+                                            session.received_hashes.len() as u64;
                                         rt.active_session_applied_blocks =
                                             session.accepted_applied_hashes.len() as u64;
                                         rt.active_session_remaining_blocks = session
@@ -4897,10 +6407,10 @@ async fn main() -> Result<()> {
                                 {
                                     let mut issued_hashes = Vec::new();
                                     for hash in candidates {
-                                        if !block_requests.should_issue_getblock_for_peers(
+                                        if !block_requests.promote_getblock_to_peer(
                                             &hash,
                                             now_unix(),
-                                            active_peer_ids(&p2p),
+                                            &peer_id,
                                         ) {
                                             continue;
                                         }
@@ -5253,10 +6763,30 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_locator_pending = pending_selected_locator.is_some();
+                        let activated_v2_retained_parent_graph = activated_v2_p2p_runtime
+                            .staging()
+                            .hashes()
+                            .into_iter()
+                            .filter_map(|hash| {
+                                activated_v2_p2p_runtime
+                                    .staging()
+                                    .get(&hash)
+                                    .map(|block| (hash, block.header.parents.clone()))
+                            })
+                            .chain(activated_v2_p2p_runtime.pending_blocks().map(|block| {
+                                (block.hash.clone(), block.header.parents.clone())
+                            }))
+                            .collect::<BTreeMap<_, _>>();
+                        let activated_v2_retained_hashes = activated_v2_retained_parent_graph
+                            .keys()
+                            .cloned()
+                            .collect::<HashSet<_>>();
+                        let pending_selected_peer = pending_selected_locator
+                            .as_ref()
+                            .map(|pending| pending.peer_id.as_str());
                         let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                             selected_segment_session.is_some(),
-                            selected_locator_pending,
+                            pending_selected_peer,
                             peer_id.as_deref(),
                             session_correlated,
                         );
@@ -5288,31 +6818,52 @@ async fn main() -> Result<()> {
                                     if let Some(pending) = pending_selected_locator.as_ref() {
                                         session.accept_header_page(pending, &headers, now_unix());
                                     }
-                                    let candidates = selected_segment_request_candidates(
+                                    let prerequisite_parents =
+                                        selected_segment_prerequisite_parent_hashes(
+                                            &headers,
+                                            &known,
+                                            &activated_v2_retained_parent_graph,
+                                        );
+                                    session
+                                        .prerequisite_parent_hashes
+                                        .extend(prerequisite_parents.iter().cloned());
+                                    // A validated selected-header response is fresh proof for both
+                                    // the selected hashes and the explicit parent hashes carried by
+                                    // those headers. Reopen only that bounded, peer-sourced context.
+                                    if let Some(selected_peer) = peer_id.as_deref() {
+                                        block_requests.note_selected_header_availability(
+                                            selected_peer,
+                                            headers.iter().map(|item| item.hash.clone()),
+                                        );
+                                        block_requests.note_selected_parent_references(
+                                            selected_peer,
+                                            prerequisite_parents.iter().cloned(),
+                                        );
+                                    }
+                                    // Selected-segment recovery owns these hashes. Existing
+                                    // generic pending requests are promoted below to the selected
+                                    // peer instead of filtering the hashes out of the session.
+                                    let missing_hashes = selected_segment_missing_hashes(
                                         &headers,
                                         selected_limits,
                                         &known,
-                                        &pending,
+                                        &HashSet::new(),
                                     );
-                                    session.missing_hashes = candidates.clone();
+                                    let candidates = missing_hashes
+                                        .iter()
+                                        .take(selected_limits.max_inflight_blocks_per_peer)
+                                        .cloned()
+                                        .collect::<Vec<_>>();
+                                    session.missing_hashes = missing_hashes;
                                     session.state = SelectedSegmentSessionState::RequestingBlocks;
                                     session.updated_at_unix = now_unix();
                                     {
                                         let mut guard = chain.write().await;
                                         let now_ms = now_unix().saturating_mul(1_000);
-                                        for item in headers
-                                            .iter()
-                                            .filter(|item| candidates.contains(&item.hash))
-                                        {
-                                            for parent in &item.header.parents {
-                                                if !known.contains(parent) {
-                                                    pulsedag_core::mark_selected_segment_required_parent(
-                                                        &mut guard,
-                                                        parent,
-                                                        now_ms,
-                                                    );
-                                                }
-                                            }
+                                        for parent in &prerequisite_parents {
+                                            pulsedag_core::mark_selected_segment_required_parent(
+                                                &mut guard, parent, now_ms,
+                                            );
                                         }
                                     }
                                     candidates
@@ -5325,66 +6876,71 @@ async fn main() -> Result<()> {
                         };
                         let selected_request_hashes =
                             selected_requests.iter().cloned().collect::<HashSet<_>>();
-                        let requests =
-                            if selected_locator_pending || selected_segment_session.is_some() {
-                                if selected_session_owns_headers {
-                                    selected_requests
-                                } else {
-                                    Vec::new()
-                                }
+                        let requests = if pending_selected_locator.is_some()
+                            || selected_segment_session.is_some()
+                        {
+                            if selected_session_owns_headers {
+                                selected_requests
                             } else {
-                                plan.requests
-                            };
+                                Vec::new()
+                            }
+                        } else {
+                            plan.requests
+                        };
                         let mut issued_selected_request_count = 0u64;
                         let mut issued_selected_hashes = Vec::new();
                         for hash in requests {
-                            if block_requests.should_issue_getblock_for_peers(
-                                &hash,
-                                now_unix(),
-                                active_peer_ids(&p2p),
-                            ) {
-                                let mut peer_addressed_request_succeeded = false;
-                                if let Some(ref p2p) = p2p {
-                                    let (result, peer_addressed) = if let Some(session) =
-                                        selected_segment_session
-                                            .as_ref()
-                                            .filter(|_| selected_request_hashes.contains(&hash))
-                                    {
-                                        (
-                                            p2p.request_block_from(&session.peer_id, &hash)
-                                                .map(|_| ()),
-                                            true,
-                                        )
+                            let selected_peer = selected_segment_session
+                                .as_ref()
+                                .filter(|_| selected_request_hashes.contains(&hash))
+                                .map(|session| session.peer_id.clone());
+                            let admitted = if let Some(peer_id) = selected_peer.as_deref() {
+                                block_requests.promote_getblock_to_peer(&hash, now_unix(), peer_id)
+                            } else {
+                                block_requests.should_issue_getblock_for_peers(
+                                    &hash,
+                                    now_unix(),
+                                    active_peer_ids(&p2p),
+                                )
+                            };
+                            if !admitted {
+                                continue;
+                            }
+
+                            let mut peer_addressed_request_succeeded = false;
+                            if let Some(ref p2p) = p2p {
+                                let (result, peer_addressed) =
+                                    if let Some(peer_id) = selected_peer.as_deref() {
+                                        (p2p.request_block_from(peer_id, &hash).map(|_| ()), true)
                                     } else {
                                         (p2p.request_block(&hash), false)
                                     };
-                                    match result {
-                                        Ok(()) => peer_addressed_request_succeeded = peer_addressed,
-                                        Err(e) => {
-                                            block_requests.resolve(&hash);
-                                            warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
-                                        }
+                                match result {
+                                    Ok(()) => peer_addressed_request_succeeded = peer_addressed,
+                                    Err(e) => {
+                                        block_requests.resolve(&hash);
+                                        warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
                                     }
                                 }
-                                if peer_addressed_request_succeeded {
-                                    if let Some(session) = selected_segment_session.as_mut() {
-                                        session.requested_hashes.insert(hash.clone());
-                                        issued_selected_hashes.push(hash.clone());
-                                        session.updated_at_unix = now_unix();
-                                    }
-                                }
-                                let mut rt = runtime.write().await;
-                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                                if peer_addressed_request_succeeded {
-                                    issued_selected_request_count =
-                                        issued_selected_request_count.saturating_add(1);
-                                    rt.peer_addressed_getblock_sent_total =
-                                        rt.peer_addressed_getblock_sent_total.saturating_add(1);
-                                }
-                                rt.pending_block_requests = block_requests.pending.len();
-                                rt.inflight_block_requests = block_requests.pending.len();
-                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
+                            if peer_addressed_request_succeeded {
+                                if let Some(session) = selected_segment_session.as_mut() {
+                                    session.requested_hashes.insert(hash.clone());
+                                    issued_selected_hashes.push(hash.clone());
+                                    session.updated_at_unix = now_unix();
+                                }
+                            }
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            if peer_addressed_request_succeeded {
+                                issued_selected_request_count =
+                                    issued_selected_request_count.saturating_add(1);
+                                rt.peer_addressed_getblock_sent_total =
+                                    rt.peer_addressed_getblock_sent_total.saturating_add(1);
+                            }
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
                         }
                         if !issued_selected_hashes.is_empty() {
                             if let Some(session) = selected_segment_session.as_mut() {
@@ -5973,7 +7529,16 @@ async fn main() -> Result<()> {
                     InboundEvent::GetBlock { hash, request_id } => {
                         let block = {
                             let guard = chain.read().await;
-                            guard.dag.blocks.get(&hash).cloned()
+                            let retained_block = activated_v2_p2p_runtime
+                                .staging()
+                                .get(&hash)
+                                .or_else(|| {
+                                    activated_v2_p2p_runtime
+                                        .pending_blocks()
+                                        .find(|block| block.hash == hash)
+                                });
+                            select_live_getblock_response_block(&hash, &guard, retained_block)
+                                .cloned()
                         }
                         .or_else(|| match storage.get_block(&hash) {
                             Ok(block) => block,
@@ -5982,26 +7547,41 @@ async fn main() -> Result<()> {
                                 None
                             }
                         });
-                        if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.send_block_data_with_request_id(
-                                request_id.as_deref(),
-                                Some(&hash),
-                                block.as_ref(),
-                            ) {
-                                warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
+                        let should_respond =
+                            should_send_getblock_response(request_id.as_deref(), block.is_some());
+                        if should_respond {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.send_block_data_with_request_id(
+                                    request_id.as_deref(),
+                                    Some(&hash),
+                                    block.as_ref(),
+                                ) {
+                                    warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
+                                }
                             }
                         }
                         let mut rt = runtime.write().await;
                         rt.getblock_received = rt.getblock_received.saturating_add(1);
-                        rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
+                        if should_respond {
+                            rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
+                        }
                     }
-                    InboundEvent::BlockDataMissing { hash } => {
+                    InboundEvent::BlockDataMissing {
+                        hash,
+                        peer_id,
+                        request_id,
+                    } => {
                         let mut fallback_getblock_sent = false;
-                        let mut retry_next_peer = false;
-                        let mut all_peers_exhausted = false;
-                        let mut final_height_not_found = false;
-                        let mut final_same_height_not_found = false;
+                        let retry_next_peer;
+                        let all_peers_exhausted;
+                        let final_height_not_found;
+                        let final_same_height_not_found;
                         if let Some(hash) = hash.as_ref() {
+                            if !block_requests
+                                .should_accept_not_found_from_peer(hash, peer_id.as_deref())
+                            {
+                                continue;
+                            }
                             final_height_not_found =
                                 final_quiescence_higher_tip_requests.contains(hash);
                             final_same_height_not_found =
@@ -6019,13 +7599,26 @@ async fn main() -> Result<()> {
                                     warn!(error = %e, block_hash = %hash, "failed issuing fallback headers after BlockData not-found");
                                 }
                                 if outcome.retry {
-                                    if let Err(e) = p2p.request_block(hash) {
-                                        warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
+                                    let send_result = if let Some(peer) = outcome.peer.as_deref() {
+                                        p2p.request_block_from(peer, hash).map(|_| ())
+                                    } else {
+                                        p2p.request_block_broadcast(hash)
+                                    };
+                                    if let Err(e) = send_result {
+                                        warn!(
+                                            error = %e,
+                                            block_hash = %hash,
+                                            requested_peer = ?outcome.peer,
+                                            request_id = ?request_id,
+                                            "failed issuing fallback GetBlock after BlockData not-found"
+                                        );
                                     } else {
                                         fallback_getblock_sent = true;
                                     }
                                 }
                             }
+                        } else {
+                            continue;
                         }
                         if all_peers_exhausted {
                             if let Some(hash) = hash.as_ref() {
@@ -6329,7 +7922,28 @@ async fn main() -> Result<()> {
                         };
                         let actions = {
                             let guard = chain.read().await;
-                            compact_runtime.handle_inbound(&peer_id, &wire, &guard)
+                            let retained_block = match &wire {
+                                CompactRelayWireV1::GetTransactions(request) => {
+                                    activated_v2_p2p_runtime
+                                        .staging()
+                                        .get(&request.block_hash)
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime.pending_blocks().find(
+                                                |block| {
+                                                    block.hash.as_str()
+                                                        == request.block_hash.as_str()
+                                                },
+                                            )
+                                        })
+                                }
+                                _ => None,
+                            };
+                            compact_runtime.handle_inbound_with_retained_block(
+                                &peer_id,
+                                &wire,
+                                &guard,
+                                retained_block,
+                            )
                         };
                         let actions = match actions {
                             Ok(actions) => actions,
@@ -6408,7 +8022,21 @@ async fn main() -> Result<()> {
                                                         let block = {
                                                             let guard = chain.read().await;
                                                             guard.dag.blocks.get(&block_hash).cloned()
-                                                        };
+                                                        }
+                                                        .or_else(|| {
+                                                            activated_v2_p2p_runtime
+                                                                .staging()
+                                                                .get(&block_hash)
+                                                                .cloned()
+                                                        })
+                                                        .or_else(|| {
+                                                            activated_v2_p2p_runtime
+                                                                .pending_blocks()
+                                                                .find(|block| {
+                                                                    block.hash.as_str() == block_hash.as_str()
+                                                                })
+                                                                .cloned()
+                                                        });
                                                         if let Err(fallback_error) = p2p_handle
                                                             .send_compact_relay_full_block_fallback_v1(
                                                                 &block_hash,
@@ -6502,7 +8130,21 @@ async fn main() -> Result<()> {
                                         let block = {
                                             let guard = chain.read().await;
                                             guard.dag.blocks.get(&block_hash).cloned()
-                                        };
+                                        }
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .staging()
+                                                .get(&block_hash)
+                                                .cloned()
+                                        })
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .pending_blocks()
+                                                .find(|block| {
+                                                    block.hash.as_str() == block_hash.as_str()
+                                                })
+                                                .cloned()
+                                        });
                                         if let Err(error) = p2p_handle
                                             .send_compact_relay_full_block_fallback_v1(
                                                 &block_hash,
@@ -6608,7 +8250,21 @@ async fn main() -> Result<()> {
                                         let block = {
                                             let guard = chain.read().await;
                                             guard.dag.blocks.get(&block_hash).cloned()
-                                        };
+                                        }
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .staging()
+                                                .get(&block_hash)
+                                                .cloned()
+                                        })
+                                        .or_else(|| {
+                                            activated_v2_p2p_runtime
+                                                .pending_blocks()
+                                                .find(|block| {
+                                                    block.hash.as_str() == block_hash.as_str()
+                                                })
+                                                .cloned()
+                                        });
                                         if let Err(fallback_error) = p2p_handle
                                             .send_compact_relay_full_block_fallback_v1(
                                                 &block_hash,
@@ -7864,25 +9520,34 @@ mod tests {
     }
 
     #[test]
-    fn first_valid_peer_can_own_broadcast_selected_locator_response() {
+    fn only_pending_peer_can_own_broadcast_selected_locator_response() {
         assert!(selected_headers_own_broadcast_locator(
             false,
-            true,
+            Some("peer-a"),
+            Some("peer-a"),
+            false,
+        ));
+        assert!(!selected_headers_own_broadcast_locator(
+            false,
+            Some("peer-a"),
             Some("peer-b"),
             false,
         ));
         assert!(!selected_headers_own_broadcast_locator(
-            false, true, None, false,
+            false,
+            Some("peer-a"),
+            None,
+            false,
         ));
         assert!(!selected_headers_own_broadcast_locator(
             true,
-            true,
+            Some("peer-a"),
             Some("peer-b"),
             false,
         ));
         assert!(selected_headers_own_broadcast_locator(
             true,
-            true,
+            Some("peer-a"),
             Some("peer-a"),
             true,
         ));
@@ -8360,12 +10025,103 @@ mod tests {
     }
 
     #[test]
+    fn selected_segment_validation_allows_unknown_merge_parents_on_parent_first_path() {
+        let known = HashSet::from(["common".to_string()]);
+        let mut first = selected_test_header("b1", "common", 514);
+        first.header.parents.push("unknown-merge-a".to_string());
+        let mut second = selected_test_header("b2", "b1", 515);
+        second.header.parents.push("unknown-merge-b".to_string());
+
+        assert_eq!(
+            validate_selected_header_segment("common", &[first, second], &known),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn selected_segment_prerequisites_include_retained_external_dependency_closure() {
+        let known = HashSet::from(["common".to_string()]);
+        let retained_parent_graph = BTreeMap::from([(
+            "unknown-merge-b".to_string(),
+            vec!["retained-grandparent".to_string()],
+        )]);
+        let mut first = selected_test_header("b1", "common", 514);
+        first.header.parents.push("unknown-merge-a".to_string());
+        let mut second = selected_test_header("b2", "b1", 515);
+        second.header.parents.push("unknown-merge-b".to_string());
+
+        assert_eq!(
+            selected_segment_prerequisite_parent_hashes(
+                &[first, second],
+                &known,
+                &retained_parent_graph,
+            ),
+            vec![
+                "retained-grandparent".to_string(),
+                "unknown-merge-a".to_string(),
+                "unknown-merge-b".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_segment_prerequisite_retry_plan_preserves_backpressured_work() {
+        let unresolved = BTreeSet::from([
+            "parent-a".to_string(),
+            "parent-b".to_string(),
+            "parent-c".to_string(),
+            "parent-d".to_string(),
+        ]);
+        let known = HashSet::from(["parent-a".to_string()]);
+        let retained = HashSet::from(["parent-b".to_string()]);
+        let pending_requests = HashSet::from(["parent-c".to_string()]);
+
+        let (resolved, retry) = selected_segment_prerequisite_retry_plan(
+            &unresolved,
+            &known,
+            &retained,
+            &pending_requests,
+            16,
+        );
+        assert_eq!(
+            resolved,
+            vec!["parent-a".to_string(), "parent-b".to_string()]
+        );
+        assert_eq!(retry, vec!["parent-d".to_string()]);
+    }
+
+    #[test]
     fn selected_segment_validation_rejects_invalid_segment() {
         let known = HashSet::from(["common".to_string()]);
         let bad = vec![selected_test_header("b1", "unknown", 514)];
         assert_eq!(
             validate_selected_header_segment("common", &bad, &known),
             Err("first_header_not_connected_to_common_ancestor")
+        );
+        let disconnected = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "unknown", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &disconnected, &known),
+            Err("unknown_or_unstaged_parent")
+        );
+        let known_off_path = HashSet::from(["common".to_string(), "side".to_string()]);
+        let side_connected = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "side", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &side_connected, &known_off_path),
+            Err("unknown_or_unstaged_parent")
+        );
+        assert_eq!(
+            validate_selected_header_segment(
+                "unknown-common",
+                &[selected_test_header("b1", "unknown-common", 514)],
+                &known,
+            ),
+            Err("unknown_common_ancestor")
         );
         let dup = vec![
             selected_test_header("b1", "common", 514),
@@ -8531,6 +10287,171 @@ mod tests {
     }
 
     #[test]
+    fn activated_v2_selected_segment_progress_tracks_staged_then_authoritative_blocks() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            10,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            19,
+            1_000,
+        )
+        .expect("session");
+        let requested = vec!["b1".to_string(), "b2".to_string(), "b3".to_string()];
+        session.missing_hashes = requested.clone();
+        session.requested_hashes.extend(requested.iter().cloned());
+        assert!(session.start_chunk(requested, 1_001));
+
+        let staged = session.reconcile_authoritative_outcome(
+            "b2",
+            &[],
+            &HashSet::from(["common".to_string()]),
+            Some("common"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(staged.received_new);
+        assert_eq!(staged.applied_new, 0);
+        assert!(!staged.chunk_completed);
+        assert!(!staged.session_completed);
+        assert!(session.received_hashes.contains("b2"));
+        assert!(session.accepted_applied_hashes.is_empty());
+
+        let first_authoritative = session.reconcile_authoritative_outcome(
+            "b1",
+            &["b1".to_string(), "b2".to_string()],
+            &HashSet::from(["common".to_string(), "b1".to_string(), "b2".to_string()]),
+            Some("b2"),
+            2_001,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(first_authoritative.received_new);
+        assert_eq!(first_authoritative.applied_new, 2);
+        assert!(!first_authoritative.chunk_completed);
+        assert!(!first_authoritative.session_completed);
+
+        let completed = session.reconcile_authoritative_outcome(
+            "b3",
+            &["b3".to_string()],
+            &HashSet::from([
+                "common".to_string(),
+                "b1".to_string(),
+                "b2".to_string(),
+                "b3".to_string(),
+            ]),
+            Some("b3"),
+            2_002,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert!(completed.received_new);
+        assert_eq!(completed.applied_new, 1);
+        assert!(completed.chunk_completed);
+        assert!(completed.continuation_hashes.is_empty());
+        assert!(completed.session_completed);
+        assert_eq!(session.received_hashes.len(), 3);
+        assert_eq!(session.accepted_applied_hashes.len(), 3);
+        assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn selected_segment_periodic_orphan_adoption_completes_chunk_and_continues() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+            selected_test_header("b4", "b3", 4),
+            selected_test_header("b5", "b4", 5),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            11,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            20,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = headers.iter().map(|item| item.hash.clone()).collect();
+        let first_chunk = vec!["b1".to_string(), "b2".to_string(), "b3".to_string()];
+        session.requested_hashes.extend(first_chunk.iter().cloned());
+        assert!(session.start_chunk(first_chunk, 1_001));
+
+        let progress = session.reconcile_authoritative_hashes(
+            &["b1".to_string(), "b2".to_string(), "b3".to_string()],
+            &HashSet::from([
+                "common".to_string(),
+                "b1".to_string(),
+                "b2".to_string(),
+                "b3".to_string(),
+            ]),
+            Some("b3"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+
+        assert!(progress.received_new);
+        assert_eq!(progress.applied_new, 3);
+        assert!(progress.chunk_completed);
+        assert!(!progress.session_completed);
+        assert_eq!(
+            progress.continuation_hashes,
+            vec!["b4".to_string(), "b5".to_string()]
+        );
+        assert!(session.current_chunk.is_empty());
+        assert_eq!(session.accepted_applied_hashes.len(), 3);
+    }
+
+    #[test]
+    fn activated_v2_selected_segment_does_not_count_unrequested_authoritative_hash() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            12,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            21,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+        session.requested_hashes.insert("b1".to_string());
+        assert!(session.start_chunk(vec!["b1".to_string()], 1_001));
+
+        let progress = session.reconcile_authoritative_outcome(
+            "b2",
+            &["b2".to_string()],
+            &HashSet::from(["common".to_string(), "b1".to_string(), "b2".to_string()]),
+            Some("b2"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+
+        assert!(!progress.received_new);
+        assert_eq!(progress.applied_new, 0);
+        assert!(!progress.chunk_completed);
+        assert!(progress.session_completed);
+        assert!(!session.received_hashes.contains("b2"));
+        assert!(!session.accepted_applied_hashes.contains("b2"));
+    }
+
+    #[test]
     fn selected_segment_single_header_page_continues_after_global_64_request_cap() {
         let mut headers = Vec::new();
         let mut parent = "common".to_string();
@@ -8594,6 +10515,58 @@ mod tests {
         assert_eq!(session.accepted_applied_hashes.len(), 80);
         assert_eq!(session.remote_selected_tip, "selected-080");
         assert_eq!(session.remote_selected_height, 80);
+    }
+
+    #[test]
+    fn selected_segment_retains_full_backlog_beyond_immediate_inflight_window() {
+        let mut headers = Vec::new();
+        let mut parent = "common".to_string();
+        for height in 1..=80 {
+            let hash = format!("selected-{height:03}");
+            headers.push(selected_test_header(&hash, &parent, height));
+            parent = hash;
+        }
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 32,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let accepted = HashSet::from(["common".to_string()]);
+        let pending = HashSet::new();
+
+        let backlog = selected_segment_missing_hashes(&headers, limits, &accepted, &pending);
+        let immediate = selected_segment_request_candidates(&headers, limits, &accepted, &pending);
+        assert_eq!(backlog.len(), 80);
+        assert_eq!(immediate.len(), 32);
+        assert_eq!(backlog.first(), Some(&"selected-001".to_string()));
+        assert_eq!(backlog.last(), Some(&"selected-080".to_string()));
+
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            11,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            20,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = backlog;
+        for hash in &immediate {
+            session.requested_hashes.insert(hash.clone());
+        }
+        assert!(session.start_chunk(immediate.clone(), 1_001));
+        for hash in &immediate {
+            assert!(session.mark_applied(hash, 2_000));
+        }
+        assert!(session.complete_current_chunk_if_applied());
+
+        let continuation = session.continuation_hashes(MAX_INFLIGHT_BLOCK_REQUESTS);
+        assert_eq!(continuation.len(), 48);
+        assert_eq!(continuation.first(), Some(&"selected-033".to_string()));
+        assert_eq!(continuation.last(), Some(&"selected-080".to_string()));
     }
 
     #[test]

@@ -643,6 +643,25 @@ impl FastSyncDaemonRuntimeV1 {
                 .is_some_and(|controller| !controller.imported())
     }
 
+    pub fn transfer_source_selected(&self) -> bool {
+        self.controller
+            .as_ref()
+            .and_then(|controller| controller.source_peer())
+            .is_some()
+    }
+
+    pub fn pruning_handoff_active(&self) -> bool {
+        self.pruning_handoff_active
+    }
+
+    /// Live compact/block/header events must keep flowing on an empty clean
+    /// cluster. Hold them only when a real FastSync download or pruning
+    /// handoff is actually in flight, so import cannot race live acceptance.
+    pub fn holds_live_p2p_events(&self) -> bool {
+        self.authority_active()
+            && (self.pruning_handoff_active() || self.transfer_source_selected())
+    }
+
     fn discovery_expired(&self, now_unix: u64) -> bool {
         now_unix.saturating_sub(self.discovery_started_at_unix) >= FAST_SYNC_CLEAN_DISCOVERY_SECS
     }
@@ -1110,5 +1129,27 @@ mod tests {
         assert!(!runtime.discovery_expired(99));
         assert!(!runtime.discovery_expired(129));
         assert!(runtime.discovery_expired(130));
+    }
+
+    #[test]
+    fn clean_bootstrap_without_a_source_does_not_hold_live_p2p_events() {
+        let expected = identity();
+        let runtime = FastSyncDaemonRuntimeV1::new(expected, true, 100).unwrap();
+        assert!(runtime.authority_active());
+        assert!(!runtime.transfer_source_selected());
+        assert!(!runtime.pruning_handoff_active());
+        assert!(!runtime.holds_live_p2p_events());
+    }
+
+    #[test]
+    fn pruning_handoff_holds_live_p2p_events_while_authority_is_active() {
+        let expected = identity();
+        let mut runtime = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
+        runtime.last_local_height = 120;
+        runtime.last_drive_at_unix = 130;
+        assert!(runtime.apply_pruning_handoff_summary(&transfer_summary(Some(121))));
+        assert!(runtime.authority_active());
+        assert!(runtime.pruning_handoff_active());
+        assert!(runtime.holds_live_p2p_events());
     }
 }

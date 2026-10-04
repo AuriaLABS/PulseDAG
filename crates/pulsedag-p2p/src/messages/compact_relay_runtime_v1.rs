@@ -292,10 +292,23 @@ impl CompactRelayRuntimeSessionBookV1 {
             .count()
     }
 
+    pub fn clear_in_flight(&mut self) -> usize {
+        let cleared = self.in_flight.len();
+        self.in_flight.clear();
+        cleared
+    }
+
     pub fn abandon_in_flight(&mut self, peer_id: &str, block_hash: &str) -> bool {
         self.in_flight
             .remove(&(peer_id.to_string(), block_hash.to_string()))
             .is_some()
+    }
+
+    pub fn abandon_block(&mut self, block_hash: &str) -> usize {
+        let before = self.in_flight.len();
+        self.in_flight
+            .retain(|(_, hash), _| hash.as_str() != block_hash);
+        before.saturating_sub(self.in_flight.len())
     }
 
     pub fn complete_in_flight(
@@ -498,6 +511,26 @@ mod tests {
 
         sessions.peer_disconnected(PEER);
         assert!(!sessions.peer_session_authorized(PEER));
+    }
+
+    #[test]
+    fn clearing_in_flight_preserves_negotiated_peer_capability() {
+        let mut sessions = configured();
+        authorize(&mut sessions, PEER);
+        let candidate = block("block-reset");
+        sessions
+            .register_in_flight(PEER, request_state(&candidate))
+            .unwrap();
+
+        assert_eq!(sessions.in_flight_count(PEER), 1);
+        assert_eq!(sessions.clear_in_flight(), 1);
+        assert_eq!(sessions.in_flight_count(PEER), 0);
+        assert!(sessions.peer_session_authorized(PEER));
+
+        let announcement = build_compact_block_announcement_v1(&candidate).unwrap();
+        sessions
+            .validate_outbound(PEER, true, &CompactRelayWireV1::Announce(announcement))
+            .unwrap();
     }
 
     #[test]

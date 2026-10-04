@@ -92,7 +92,10 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   [[ "$gap_build_margin" =~ ^[0-9]+$ ]] || { echo "gap build margin must be numeric" >&2; return 2; }
   local target_gap=$((min_selected_gap + gap_build_margin))
   local baseline_timeout="${BASELINE_TIMEOUT:-600}"
-  local gap_build_timeout="${GAP_BUILD_TIMEOUT:-3600}"
+  # The drill keeps the conservative 60 s target cadence. The default 96-block
+  # proof plus the retained 16-block recovery margin therefore needs more than
+  # one nominal hour before recovery is even allowed to start.
+  local gap_build_timeout="${GAP_BUILD_TIMEOUT:-7200}"
   local recovery_timeout="${RECOVERY_TIMEOUT:-900}"
   local final_convergence_timeout="${FINAL_CONVERGENCE_TIMEOUT:-300}"
   local sample_interval="${SAMPLE_INTERVAL:-2}"
