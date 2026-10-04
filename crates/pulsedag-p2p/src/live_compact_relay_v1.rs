@@ -544,7 +544,10 @@ mod tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(observed)) if same_block(&observed, &expected)
+            Ok(InboundEvent::Block {
+                peer_id: Some(peer),
+                block: observed,
+            }) if peer == REMOTE_PEER && same_block(&observed, &expected)
         ));
         let guard = inner.lock().unwrap();
         assert_eq!(guard.blocks_received, 1);
