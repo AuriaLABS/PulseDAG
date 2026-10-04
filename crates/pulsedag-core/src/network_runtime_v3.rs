@@ -55,11 +55,11 @@ fn validate_runtime_accepted_block_reward(
     accepted_block: &Block,
     cadence_segments: &[MonetaryCadenceSegment],
 ) -> Result<(), PulseError> {
-    validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments).map_err(
-        |error| {
+    validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments)
+        .map(|_| ())
+        .map_err(|error| {
             invalid_monetary_runtime(format!("accepted block reward validation failed: {error}"))
-        },
-    )
+        })
 }
 
 fn validate_runtime_promoted_bundle_rewards(
@@ -174,7 +174,11 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                validate_runtime_promoted_bundle_rewards(prepared_state, bundle, cadence_segments)?;
+                validate_runtime_promoted_bundle_rewards(
+                    prepared_state,
+                    bundle,
+                    cadence_segments,
+                )?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
