@@ -10549,6 +10549,97 @@ mod inventory_tests {
     }
 
     #[test]
+    fn addressed_getheaders_is_delivered_only_to_target_peer() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            peer_id: "target-peer".into(),
+            ..InnerState::default()
+        }));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let request = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["common".into()],
+            stop_hash: None,
+            limit: 128,
+            request_id: Some("selected-segment-7".into()),
+            requested_peer_id: Some("target-peer".into()),
+        };
+        let wire = serde_json::to_vec(&request).expect("serialize addressed GetHeaders");
+        dispatch_network_message(
+            "testnet",
+            &wire,
+            Some("requesting-peer"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::GetHeaders {
+                peer_id: Some(peer),
+                request_id: Some(request_id),
+                locator,
+                ..
+            }) if peer == "requesting-peer"
+                && request_id == "selected-segment-7"
+                && locator == vec!["common".to_string()]
+        ));
+
+        let wrong_target = NetworkMessage::GetHeaders {
+            requested_peer_id: Some("other-peer".into()),
+            ..request
+        };
+        let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target GetHeaders");
+        dispatch_network_message(
+            "testnet",
+            &wire,
+            Some("requesting-peer"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn addressed_headers_preserve_owner_and_request_id() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            peer_id: "requesting-peer".into(),
+            ..InnerState::default()
+        }));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = sample_block("unused-hash");
+        let hash = protocol_block_hash(&block.header, "testnet").expect("header hash");
+        let response = NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![HeaderInventory {
+                hash: hash.clone(),
+                header: block.header.clone(),
+            }],
+            request_id: Some("selected-segment-9".into()),
+            requested_peer_id: Some("requesting-peer".into()),
+        };
+        let wire = serde_json::to_vec(&response).expect("serialize addressed Headers");
+        dispatch_network_message("testnet", &wire, Some("selected-peer"), &inner, &inbound_tx);
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Headers {
+                peer_id: Some(peer),
+                request_id: Some(request_id),
+                headers,
+            }) if peer == "selected-peer"
+                && request_id == "selected-segment-9"
+                && headers.len() == 1
+                && headers[0].hash == hash
+        ));
+
+        let wrong_target = NetworkMessage::Headers {
+            requested_peer_id: Some("other-peer".into()),
+            ..response
+        };
+        let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target Headers");
+        dispatch_network_message("testnet", &wire, Some("selected-peer"), &inner, &inbound_tx);
+        assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn get_block_message_roundtrip() {
         let msg = NetworkMessage::GetBlock {
             chain_id: "testnet".into(),
