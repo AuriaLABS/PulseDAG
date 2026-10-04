@@ -100,6 +100,7 @@ jobs:
             .claim_boundary.requires_runtime_persistence_audit_result_propagation == true and
             .claim_boundary.rejects_alternate_runtime_persistence_references == true and
             .claim_boundary.rejects_runtime_persistence_callback_macros == true and
+            .claim_boundary.rejects_runtime_persistence_callback_attributes == true and
             .claim_boundary.freezes_runtime_persistence_callback_execution_shape == true and
             .claim_boundary.selects_production_cadence == false and
             .claim_boundary.freezes_network_identity == false and
@@ -113,7 +114,7 @@ jobs:
             ([.required_symbol_shadow_checks[].hits[]] | length) == 0 and
             ([.required_local_call_checks[] | select(.missing_definition == true or (.missing_calls | length) > 0)] | length) == 0 and
             ([.required_runtime_persistence_callback_checks[] | select(.missing_definition == true or .constructor_count != 1 or .callback_count != 3)] | length) == 0 and
-            ([.required_runtime_persistence_callback_checks[].callbacks[] | select(.missing_callback == true or .audit_reference_count != 1 or .persist_reference_count != 1 or .macro_invocation_count != 0 or .execution_shape_matches != true or .missing_audit == true or .audit_result_propagated != true or .missing_persist == true or .audit_before_persist != true)] | length) == 0 and
+            ([.required_runtime_persistence_callback_checks[].callbacks[] | select(.missing_callback == true or .audit_reference_count != 1 or .persist_reference_count != 1 or .macro_invocation_count != 0 or .attribute_count != 0 or .execution_shape_matches != true or .missing_audit == true or .audit_result_propagated != true or .missing_persist == true or .audit_before_persist != true)] | length) == 0 and
             (.errors | length) == 0
           ' ci-evidence/v3-monetary-reachability/static-reachability.json >/dev/null
 
