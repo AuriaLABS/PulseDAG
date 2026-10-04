@@ -5084,8 +5084,9 @@ fn dispatch_network_message_with_transport_peer(
                     );
                 }
             }
+            let direct_peer = transport_peer.or(source_peer);
             let _ = inbound_tx.send(InboundEvent::Block {
-                peer_id: source_peer.map(str::to_string),
+                peer_id: direct_peer.map(str::to_string),
                 block,
             });
         }
@@ -5831,8 +5832,9 @@ fn dispatch_network_message_with_transport_peer(
                         );
                     }
                 }
-                let _ = inbound_tx.send(InboundEvent::Block {
-                peer_id: source_peer.map(str::to_string),
+                let direct_peer = transport_peer.or(source_peer);
+            let _ = inbound_tx.send(InboundEvent::Block {
+                peer_id: direct_peer.map(str::to_string),
                 block,
             });
             } else {
@@ -10695,6 +10697,42 @@ mod inventory_tests {
         let entry = guard.inbound_seen_cache.get("block:dedupe-block").unwrap();
         assert_eq!(entry.block_hash.as_deref(), Some("dedupe-block"));
         assert_eq!(entry.peer_source.as_deref(), Some("peer-a"));
+    }
+
+    #[test]
+    fn forwarded_block_event_uses_authenticated_transport_peer_for_recovery() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let mut block = sample_block("forwarded-block");
+        block.hash = protocol_block_hash(&block.header, "testnet").expect("block hash");
+        let wire = serde_json::to_vec(&NetworkMessage::NewBlock {
+            chain_id: "testnet".into(),
+            block: block.clone(),
+        })
+        .expect("serialize forwarded block");
+
+        dispatch_network_message_with_transport_peer(
+            "testnet",
+            &wire,
+            Some("original-author"),
+            Some("direct-neighbour"),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block {
+                peer_id: Some(peer),
+                block: received,
+            }) if peer == "direct-neighbour" && received.hash == block.hash
+        ));
+        let guard = inner.lock().unwrap();
+        let entry = guard
+            .inbound_seen_cache
+            .get(&message_id_for_block(&block))
+            .expect("block provenance");
+        assert_eq!(entry.peer_source.as_deref(), Some("original-author"));
     }
 
     #[test]
