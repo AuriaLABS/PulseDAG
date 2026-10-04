@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use pulsedag_core::{
     types::{Block, Hash, Transaction},
@@ -117,6 +120,14 @@ impl CompactRelayDaemonRuntimeV1 {
     pub fn observe_full_block(&mut self, block_hash: &str) -> bool {
         self.controller
             .observe_full_block(&mut self.sessions, block_hash)
+    }
+
+    pub fn expire_stale_pending(
+        &mut self,
+        timeout: Duration,
+    ) -> Vec<CompactRelayControllerActionV1> {
+        self.controller
+            .expire_stale_pending(&mut self.sessions, timeout)
     }
 
     pub fn peer_disconnected(&mut self, peer_id: &str) {

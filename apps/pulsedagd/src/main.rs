@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use activated_v2_runtime::restore_activated_v2_p2p_runtime_for_startup;
@@ -3141,6 +3141,53 @@ async fn main() -> Result<()> {
                 }
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
+                    if let Some(compact_runtime) = compact_relay_daemon_runtime.as_mut() {
+                        let expired = compact_runtime.expire_stale_pending(Duration::from_secs(15));
+                        if !expired.is_empty() {
+                            let expired_count = expired.len();
+                            if let Some(ref p2p_handle) = p2p {
+                                for action in expired {
+                                    let CompactRelayControllerActionV1::RequestFullBlock {
+                                        peer_id,
+                                        block_hash,
+                                    } = action
+                                    else {
+                                        continue;
+                                    };
+                                    if let Err(error) =
+                                        p2p_handle.request_block_from(&peer_id, &block_hash)
+                                    {
+                                        warn!(
+                                            peer = %peer_id,
+                                            block_hash = %block_hash,
+                                            error = %error,
+                                            "expired compact reconstruction could not enqueue peer-addressed full-block fallback; using broadcast GetBlock"
+                                        );
+                                        if let Err(fallback_error) =
+                                            p2p_handle.request_block(&block_hash)
+                                        {
+                                            warn!(
+                                                block_hash = %block_hash,
+                                                error = %fallback_error,
+                                                "expired compact reconstruction full-block fallback failed"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            let telemetry = compact_runtime.telemetry();
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.compact_relay_controller = (&telemetry).into();
+                            }
+                            info!(
+                                expired_count,
+                                pending = telemetry.pending_announcements_current,
+                                full_block_requests = telemetry.full_block_requests_total,
+                                "expired stale compact-relay reconstruction sessions"
+                            );
+                        }
+                    }
                     let tick_started = Instant::now();
                     let active_peers = active_peer_ids(&p2p);
                     let has_p2p = p2p.is_some();
