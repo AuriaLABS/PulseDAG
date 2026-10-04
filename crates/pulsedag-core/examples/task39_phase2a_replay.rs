@@ -3,8 +3,8 @@ use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, calculate_selected_parent,
     classify_merge_set, commit_rebuilt_state, merge_set_digest, ordered_dag_digest,
     rebuild_state_from_ordered_dag, refresh_block_consensus_ids, refresh_ordered_dag_phase,
-    refresh_selected_chain_phase, selection_digest, state_digest, Block, ChainState,
-    ConsensusMode, MergeSetClassification, MergeSetDiagnostics, SelectedParentPolicy,
+    refresh_selected_chain_phase, selection_digest, state_digest, Block, ChainState, ConsensusMode,
+    MergeSetClassification, MergeSetDiagnostics, SelectedParentPolicy,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -573,8 +573,7 @@ fn main() -> Result<(), String> {
     }
 
     let generation_started = Instant::now();
-    let (blocks, generation_production_classifier_reference_checks) =
-        generate_corpus(args.blocks)?;
+    let (blocks, generation_production_classifier_reference_checks) = generate_corpus(args.blocks)?;
     let generation_ms = generation_started.elapsed().as_millis();
     let corpus = corpus_digest(&blocks);
 
