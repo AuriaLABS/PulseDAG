@@ -1110,7 +1110,7 @@ impl SelectedSegmentSession {
     fn fail_on_rejected_body(&mut self, hash: &str, now: u64) -> Option<BTreeSet<String>> {
         let selected_body = self.requested_hashes.contains(hash)
             && self.current_chunk.iter().any(|candidate| candidate == hash);
-        let prerequisite_body = self.unresolved_prerequisite_parent_hashes.contains(hash);
+        let prerequisite_body = self.prerequisite_parent_hashes.contains(hash);
         if !selected_body && !prerequisite_body {
             return None;
         }
@@ -1125,6 +1125,7 @@ impl SelectedSegmentSession {
                 .iter()
                 .chain(self.unresolved_prerequisite_parent_hashes.iter())
                 .cloned()
+                .chain(std::iter::once(hash.to_string()))
                 .collect(),
         )
     }
@@ -5365,17 +5366,15 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            let rejected_selected_body = summary
-                                .rejected
-                                .iter()
-                                .find(|(hash, _)| hash == &block.hash)
-                                .and_then(|(_, result)| {
-                                    selected_segment_session.as_mut().and_then(|session| {
-                                        session.fail_on_rejected_body(&block.hash, now_unix()).map(
+                            let rejected_selected_body =
+                                selected_segment_session.as_mut().and_then(|session| {
+                                    summary.rejected.iter().find_map(|(hash, result)| {
+                                        session.fail_on_rejected_body(hash, now_unix()).map(
                                             |owned_requests| {
                                                 (
                                                     session.session_id,
                                                     session.peer_id.clone(),
+                                                    hash.clone(),
                                                     format!("{result:?}"),
                                                     owned_requests,
                                                 )
@@ -5383,8 +5382,13 @@ async fn main() -> Result<()> {
                                         )
                                     })
                                 });
-                            if let Some((session_id, peer_id, rejection, owned_requests)) =
-                                rejected_selected_body
+                            if let Some((
+                                session_id,
+                                peer_id,
+                                rejected_hash,
+                                rejection,
+                                owned_requests,
+                            )) = rejected_selected_body
                             {
                                 for hash in owned_requests {
                                     if block_requests.pending.contains_key(&hash) {
@@ -5408,9 +5412,10 @@ async fn main() -> Result<()> {
                                     event = "selected_segment_body_rejected_replan",
                                     session_id,
                                     peer = %peer_id,
-                                    block_hash = %block.hash,
+                                    block_hash = %rejected_hash,
+                                    inbound_block_hash = %block.hash,
                                     rejection = %rejection,
-                                    "selected-segment body was rejected; abandoned session for deterministic Task 27 replanning"
+                                    "selected-segment body or prerequisite was rejected; abandoned session for deterministic Task 27 replanning"
                                 );
                             }
 
@@ -10863,9 +10868,18 @@ mod tests {
             .insert("merge-parent".to_string());
         assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
 
+        // Receiving/staging a prerequisite removes it from the unresolved set, but
+        // its selected-session ownership must survive a later contextual retry.
+        session
+            .unresolved_prerequisite_parent_hashes
+            .remove("merge-parent");
+        assert!(session
+            .prerequisite_parent_hashes
+            .contains("merge-parent"));
+
         let owned = session
             .fail_on_rejected_body("merge-parent", 2_000)
-            .expect("owned prerequisite rejection must fail the session");
+            .expect("retained prerequisite retry rejection must fail the session");
 
         assert_eq!(session.state, SelectedSegmentSessionState::Failed);
         assert!(!session.received_hashes.contains("merge-parent"));
