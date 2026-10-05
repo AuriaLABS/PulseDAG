@@ -6211,15 +6211,13 @@ async fn main() -> Result<()> {
                                         &missing_parent_route,
                                         ActivatedV2MissingParentFetchRoute::SelectedPeer(_)
                                     ) {
-                                        rt.peer_addressed_getblock_sent_total = rt
-                                            .peer_addressed_getblock_sent_total
-                                            .saturating_add(1);
+                                        rt.peer_addressed_getblock_sent_total =
+                                            rt.peer_addressed_getblock_sent_total.saturating_add(1);
                                     }
                                 }
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
-                                rt.pending_block_request_hashes =
-                                    block_requests.pending_hashes();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                                 info!(
                                     event = "missing_block_requested",
                                     missing_parent = %parent,
@@ -6330,30 +6328,31 @@ async fn main() -> Result<()> {
                                         )
                                     })
                                 };
-                            let selected_segment_replanned =
-                                if let Some((session_id, peer_id, owned_requests)) =
-                                    rejected_selected_body
-                                {
-                                    for hash in owned_requests {
-                                        if block_requests.pending.contains_key(&hash) {
-                                            block_requests.resolve(&hash);
-                                        }
+                            let selected_segment_replanned = if let Some((
+                                session_id,
+                                peer_id,
+                                owned_requests,
+                            )) = rejected_selected_body
+                            {
+                                for hash in owned_requests {
+                                    if block_requests.pending.contains_key(&hash) {
+                                        block_requests.resolve(&hash);
                                     }
-                                    selected_segment_session = None;
-                                    selected_segment_locator_state.lock().await.pending_locator =
-                                        None;
-                                    warn!(
-                                        event = "selected_segment_body_rejected_replan",
-                                        session_id,
-                                        peer = %peer_id,
-                                        block_hash = %block.hash,
-                                        rejection = ?acceptance,
-                                        "legacy selected-segment body or prerequisite was rejected; abandoned session for deterministic replanning"
-                                    );
-                                    true
-                                } else {
-                                    false
-                                };
+                                }
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                warn!(
+                                    event = "selected_segment_body_rejected_replan",
+                                    session_id,
+                                    peer = %peer_id,
+                                    block_hash = %block.hash,
+                                    rejection = ?acceptance,
+                                    "legacy selected-segment body or prerequisite was rejected; abandoned session for deterministic replanning"
+                                );
+                                true
+                            } else {
+                                false
+                            };
                             let mut rt = runtime.write().await;
                             if selected_segment_replanned {
                                 rt.active_session_id = None;
