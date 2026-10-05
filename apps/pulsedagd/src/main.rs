@@ -6314,7 +6314,58 @@ async fn main() -> Result<()> {
                                     "rejected inbound p2p block with invalid state root"
                                 );
                             }
+                            let rejected_selected_body =
+                                if matches!(acceptance, BlockAcceptanceResult::Duplicate) {
+                                    None
+                                } else {
+                                    selected_segment_session.as_mut().and_then(|session| {
+                                        session.fail_on_rejected_body(&block.hash, now_unix()).map(
+                                            |owned_requests| {
+                                                (
+                                                    session.session_id,
+                                                    session.peer_id.clone(),
+                                                    owned_requests,
+                                                )
+                                            },
+                                        )
+                                    })
+                                };
+                            let selected_segment_replanned =
+                                if let Some((session_id, peer_id, owned_requests)) =
+                                    rejected_selected_body
+                                {
+                                    for hash in owned_requests {
+                                        if block_requests.pending.contains_key(&hash) {
+                                            block_requests.resolve(&hash);
+                                        }
+                                    }
+                                    selected_segment_session = None;
+                                    selected_segment_locator_state.lock().await.pending_locator =
+                                        None;
+                                    warn!(
+                                        event = "selected_segment_body_rejected_replan",
+                                        session_id,
+                                        peer = %peer_id,
+                                        block_hash = %block.hash,
+                                        rejection = ?acceptance,
+                                        "legacy selected-segment body or prerequisite was rejected; abandoned session for deterministic replanning"
+                                    );
+                                    true
+                                } else {
+                                    false
+                                };
                             let mut rt = runtime.write().await;
+                            if selected_segment_replanned {
+                                rt.active_session_id = None;
+                                rt.active_session_peer = None;
+                                rt.active_session_remote_tip = None;
+                                rt.active_session_remote_height = 0;
+                                rt.active_session_common_ancestor = None;
+                                rt.active_session_remaining_blocks = 0;
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
+                            }
                             if final_height_reconcile_block {
                                 final_quiescence_higher_tip_requests.remove(&block.hash);
                                 rt.final_quiescence_higher_tip_fetch_success_total = rt
