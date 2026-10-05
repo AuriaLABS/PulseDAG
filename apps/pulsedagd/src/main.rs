@@ -345,7 +345,10 @@ fn observed_block_selected_locator_peer(
         return None;
     }
     let peer = source_peer?;
-    let connected = status.connected_peers.iter().any(|candidate| candidate == peer);
+    let connected = status
+        .connected_peers
+        .iter()
+        .any(|candidate| candidate == peer);
     let direct_request_capable = status
         .direct_request_capable_peers
         .iter()
@@ -6733,9 +6736,12 @@ async fn main() -> Result<()> {
                                     p2p.send_headers_to(peer, request_id, &headers)
                                 }
                                 (_, None) => p2p.send_headers(&headers),
-                                (None, Some(_)) => Err(pulsedag_core::errors::PulseError::Internal(
-                                    "addressed GetHeaders arrived without source peer".to_string(),
-                                )),
+                                (None, Some(_)) => {
+                                    Err(pulsedag_core::errors::PulseError::Internal(
+                                        "addressed GetHeaders arrived without source peer"
+                                            .to_string(),
+                                    ))
+                                }
                             };
                             if let Err(e) = result {
                                 warn!(
@@ -6843,21 +6849,16 @@ async fn main() -> Result<()> {
                         let pending_selected_peer = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.peer_id.as_str());
-                        let selected_request_correlated = pending_selected_locator
-                            .as_ref()
-                            .is_some_and(|pending| {
-                                selected_segment_request_id_matches(
-                                    pending,
-                                    request_id.as_deref(),
-                                )
+                        let selected_request_correlated =
+                            pending_selected_locator.as_ref().is_some_and(|pending| {
+                                selected_segment_request_id_matches(pending, request_id.as_deref())
                             });
-                        let selected_session_owns_headers =
-                            selected_headers_own_pending_locator(
-                                selected_segment_session.is_some(),
-                                pending_selected_peer,
-                                peer_id.as_deref(),
-                                session_correlated,
-                            ) && selected_request_correlated;
+                        let selected_session_owns_headers = selected_headers_own_pending_locator(
+                            selected_segment_session.is_some(),
+                            pending_selected_peer,
+                            peer_id.as_deref(),
+                            session_correlated,
+                        ) && selected_request_correlated;
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -7252,8 +7253,9 @@ async fn main() -> Result<()> {
                                     ) && !task27_recovery_active.load(Ordering::SeqCst);
                                 if priority_still_inactive {
                                     let selected_locator_request_id = locator_guard.next_request_id;
-                                    let wire_request_id =
-                                        selected_segment_wire_request_id(selected_locator_request_id);
+                                    let wire_request_id = selected_segment_wire_request_id(
+                                        selected_locator_request_id,
+                                    );
                                     if p2p_handle
                                         .request_headers_from(
                                             &peer_id,
@@ -8831,13 +8833,12 @@ async fn main() -> Result<()> {
                                     let selected_locator_needed = selected_locator_peer.is_some();
                                     let mut locator_guard =
                                         selected_segment_locator_state.lock().await;
-                                    let selected_locator_request_id =
-                                        locator_guard.next_request_id;
-                                    let wire_request_id =
-                                        selected_segment_wire_request_id(selected_locator_request_id);
-                                    let selected_locator_requested = selected_locator_peer
-                                        .as_deref()
-                                        .is_some_and(|peer_id| {
+                                    let selected_locator_request_id = locator_guard.next_request_id;
+                                    let wire_request_id = selected_segment_wire_request_id(
+                                        selected_locator_request_id,
+                                    );
+                                    let selected_locator_requested =
+                                        selected_locator_peer.as_deref().is_some_and(|peer_id| {
                                             !task27_recovery_active.load(Ordering::SeqCst)
                                                 && p2p
                                                     .request_headers_from(
