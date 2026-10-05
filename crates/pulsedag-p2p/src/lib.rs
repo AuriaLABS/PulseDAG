@@ -10586,8 +10586,12 @@ mod inventory_tests {
         ));
 
         let wrong_target = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["common".into()],
+            stop_hash: None,
+            limit: 128,
+            request_id: Some("selected-segment-7".into()),
             requested_peer_id: Some("other-peer".into()),
-            ..request
         };
         let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target GetHeaders");
         dispatch_network_message(
@@ -10633,8 +10637,13 @@ mod inventory_tests {
         ));
 
         let wrong_target = NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![HeaderInventory {
+                hash: hash.clone(),
+                header: block.header.clone(),
+            }],
+            request_id: Some("selected-segment-9".into()),
             requested_peer_id: Some("other-peer".into()),
-            ..response
         };
         let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target Headers");
         dispatch_network_message("testnet", &wire, Some("selected-peer"), &inner, &inbound_tx);
