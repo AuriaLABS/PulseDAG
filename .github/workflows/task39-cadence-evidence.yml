@@ -29,6 +29,12 @@ on:
       - scripts/private_testnet/task39_cadence_strict.py
       - .github/workflows/task39-cadence-evidence.yml
 
+concurrency:
+  # Supersede only stale heads from the same pull request. Keep push and
+  # workflow_dispatch evidence isolated so retained/manual runs are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
