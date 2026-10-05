@@ -118,9 +118,7 @@ impl ActivatedV2P2pRuntime {
             let Some(block) = live_state.dag.blocks.get(&hash) else {
                 continue;
             };
-            if prune_boundary_height
-                .is_some_and(|boundary| block.header.height <= boundary)
-            {
+            if prune_boundary_height.is_some_and(|boundary| block.header.height <= boundary) {
                 continue;
             }
             frontier.extend(block.header.parents.iter().cloned());
@@ -1014,20 +1012,10 @@ mod tests {
         let block1 = finalized_block(&base, &expected_identity, vec![genesis], 41);
         let state1 =
             prepare_activated_v2_p2p_block_state(&block1, &base, &expected_identity).unwrap();
-        let block2 = finalized_block(
-            &state1,
-            &expected_identity,
-            vec![block1.hash.clone()],
-            42,
-        );
+        let block2 = finalized_block(&state1, &expected_identity, vec![block1.hash.clone()], 42);
         let state2 =
             prepare_activated_v2_p2p_block_state(&block2, &state1, &expected_identity).unwrap();
-        let block3 = finalized_block(
-            &state2,
-            &expected_identity,
-            vec![block2.hash.clone()],
-            43,
-        );
+        let block3 = finalized_block(&state2, &expected_identity, vec![block2.hash.clone()], 43);
         let live =
             prepare_activated_v2_p2p_block_state(&block3, &state2, &expected_identity).unwrap();
         let runtime = ActivatedV2P2pRuntime::default();

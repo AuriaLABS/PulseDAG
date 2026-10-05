@@ -1107,11 +1107,7 @@ impl SelectedSegmentSession {
         true
     }
 
-    fn fail_on_rejected_body(
-        &mut self,
-        hash: &str,
-        now: u64,
-    ) -> Option<BTreeSet<String>> {
+    fn fail_on_rejected_body(&mut self, hash: &str, now: u64) -> Option<BTreeSet<String>> {
         if !self.requested_hashes.contains(hash)
             || !self.current_chunk.iter().any(|candidate| candidate == hash)
         {
@@ -3244,11 +3240,12 @@ async fn main() -> Result<()> {
                                         &block_hash,
                                         request_now,
                                         &peer_id,
-                                    ) || block_requests.should_issue_getblock_for_peers(
-                                        &block_hash,
-                                        request_now,
-                                        active_peer_ids(&p2p),
-                                    );
+                                    ) || block_requests
+                                        .should_issue_getblock_for_peers(
+                                            &block_hash,
+                                            request_now,
+                                            active_peer_ids(&p2p),
+                                        );
                                     if !tracked {
                                         warn!(
                                             peer = %peer_id,
@@ -3263,9 +3260,7 @@ async fn main() -> Result<()> {
                                         .get(&block_hash)
                                         .and_then(|request| request.peer.clone());
                                     let send_result = if let Some(peer) = tracked_peer.as_deref() {
-                                        p2p_handle
-                                            .request_block_from(peer, &block_hash)
-                                            .map(|_| ())
+                                        p2p_handle.request_block_from(peer, &block_hash).map(|_| ())
                                     } else {
                                         p2p_handle.request_block(&block_hash)
                                     };
@@ -5373,16 +5368,16 @@ async fn main() -> Result<()> {
                                 .find(|(hash, _)| hash == &block.hash)
                                 .and_then(|(_, result)| {
                                     selected_segment_session.as_mut().and_then(|session| {
-                                        session
-                                            .fail_on_rejected_body(&block.hash, now_unix())
-                                            .map(|owned_requests| {
+                                        session.fail_on_rejected_body(&block.hash, now_unix()).map(
+                                            |owned_requests| {
                                                 (
                                                     session.session_id,
                                                     session.peer_id.clone(),
                                                     format!("{result:?}"),
                                                     owned_requests,
                                                 )
-                                            })
+                                            },
+                                        )
                                     })
                                 });
                             if let Some((session_id, peer_id, rejection, owned_requests)) =
@@ -10716,11 +10711,7 @@ mod tests {
 
         let progress = session.reconcile_recovery_tick(
             &[],
-            &HashSet::from([
-                "common".to_string(),
-                "b1".to_string(),
-                "b2".to_string(),
-            ]),
+            &HashSet::from(["common".to_string(), "b1".to_string(), "b2".to_string()]),
             Some("b2"),
             2_000,
             MAX_INFLIGHT_BLOCK_REQUESTS,
