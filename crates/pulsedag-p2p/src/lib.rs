@@ -5833,10 +5833,10 @@ fn dispatch_network_message_with_transport_peer(
                     }
                 }
                 let direct_peer = transport_peer.or(source_peer);
-            let _ = inbound_tx.send(InboundEvent::Block {
-                peer_id: direct_peer.map(str::to_string),
-                block,
-            });
+                let _ = inbound_tx.send(InboundEvent::Block {
+                    peer_id: direct_peer.map(str::to_string),
+                    block,
+                });
             } else {
                 let mut deliver_missing = request_id.is_none();
                 if let Some(request_id_ref) = request_id.as_ref() {
