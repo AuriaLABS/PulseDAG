@@ -10873,9 +10873,7 @@ mod tests {
         session
             .unresolved_prerequisite_parent_hashes
             .remove("merge-parent");
-        assert!(session
-            .prerequisite_parent_hashes
-            .contains("merge-parent"));
+        assert!(session.prerequisite_parent_hashes.contains("merge-parent"));
 
         let owned = session
             .fail_on_rejected_body("merge-parent", 2_000)
