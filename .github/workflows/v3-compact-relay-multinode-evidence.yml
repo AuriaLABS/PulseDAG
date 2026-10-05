@@ -21,6 +21,12 @@ on:
         default: false
         type: boolean
 
+concurrency:
+  # Supersede only stale heads from the same pull request. Keep manual evidence
+  # isolated so workflow_dispatch rehearsals are never cancelled by PR updates.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   evidence-contract:
     runs-on: ubuntu-latest
