@@ -1107,6 +1107,29 @@ impl SelectedSegmentSession {
         true
     }
 
+    fn fail_on_rejected_body(
+        &mut self,
+        hash: &str,
+        now: u64,
+    ) -> Option<BTreeSet<String>> {
+        if !self.requested_hashes.contains(hash)
+            || !self.current_chunk.iter().any(|candidate| candidate == hash)
+        {
+            return None;
+        }
+
+        self.received_hashes.insert(hash.to_string());
+        self.updated_at_unix = now;
+        self.state = SelectedSegmentSessionState::Failed;
+        Some(
+            self.current_chunk
+                .iter()
+                .chain(self.unresolved_prerequisite_parent_hashes.iter())
+                .cloned()
+                .collect(),
+        )
+    }
+
     fn continuation_hashes(&self, limit: usize) -> Vec<String> {
         self.missing_hashes
             .iter()
@@ -1194,6 +1217,33 @@ impl SelectedSegmentSession {
             continuation_hashes,
             session_completed,
         }
+    }
+
+    fn reconcile_recovery_tick(
+        &mut self,
+        newly_authoritative_hashes: &[String],
+        known_blocks: &HashSet<String>,
+        selected_tip: Option<&str>,
+        now: u64,
+        continuation_limit: usize,
+    ) -> SelectedSegmentAuthoritativeProgress {
+        let mut authoritative = newly_authoritative_hashes
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        authoritative.extend(
+            self.current_chunk
+                .iter()
+                .filter(|hash| known_blocks.contains(hash.as_str()))
+                .cloned(),
+        );
+        self.reconcile_authoritative_hashes(
+            &authoritative.into_iter().collect::<Vec<_>>(),
+            known_blocks,
+            selected_tip,
+            now,
+            continuation_limit,
+        )
     }
 
     fn reconcile_authoritative_outcome(
@@ -2741,6 +2791,7 @@ async fn main() -> Result<()> {
                                     .fast_sync_handoff_blocks_parent_first(
                                         &live_chain_state,
                                         &imported.chain_state,
+                                        imported.prune_boundary_height,
                                     );
                                 let preserved_count = preserved_handoff_blocks.len();
                                 let mut imported_chain_state = imported.chain_state;
@@ -3184,26 +3235,53 @@ async fn main() -> Result<()> {
                                     else {
                                         continue;
                                     };
-                                    if let Err(error) =
-                                        p2p_handle.request_block_from(&peer_id, &block_hash)
-                                    {
+                                    if block_requests.pending.contains_key(&block_hash) {
+                                        continue;
+                                    }
+
+                                    let request_now = now_unix();
+                                    let tracked = block_requests.should_issue_getblock_from_peer(
+                                        &block_hash,
+                                        request_now,
+                                        &peer_id,
+                                    ) || block_requests.should_issue_getblock_for_peers(
+                                        &block_hash,
+                                        request_now,
+                                        active_peer_ids(&p2p),
+                                    );
+                                    if !tracked {
                                         warn!(
                                             peer = %peer_id,
                                             block_hash = %block_hash,
-                                            error = %error,
-                                            "expired compact reconstruction could not enqueue peer-addressed full-block fallback; using broadcast GetBlock"
+                                            "expired compact reconstruction full-block fallback could not enter tracked GetBlock lifecycle"
                                         );
-                                        if let Err(fallback_error) =
-                                            p2p_handle.request_block(&block_hash)
-                                        {
-                                            warn!(
-                                                block_hash = %block_hash,
-                                                error = %fallback_error,
-                                                "expired compact reconstruction full-block fallback failed"
-                                            );
-                                        }
+                                        continue;
+                                    }
+
+                                    let tracked_peer = block_requests
+                                        .pending
+                                        .get(&block_hash)
+                                        .and_then(|request| request.peer.clone());
+                                    let send_result = if let Some(peer) = tracked_peer.as_deref() {
+                                        p2p_handle
+                                            .request_block_from(peer, &block_hash)
+                                            .map(|_| ())
+                                    } else {
+                                        p2p_handle.request_block(&block_hash)
+                                    };
+                                    if let Err(error) = send_result {
+                                        warn!(
+                                            requested_peer = ?tracked_peer,
+                                            block_hash = %block_hash,
+                                            error = %error,
+                                            "expired compact reconstruction full-block send failed; preserving tracked request for timeout-based peer failover"
+                                        );
                                     }
                                 }
+                                let mut rt = runtime.write().await;
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
                             let telemetry = compact_runtime.telemetry();
                             {
@@ -3434,7 +3512,7 @@ async fn main() -> Result<()> {
                     };
                     let mut recovery_selected_segment_continuation = None;
                     let mut recovery_selected_segment_completed = false;
-                    if !tick.adopted_hashes.is_empty() {
+                    if selected_segment_session.is_some() {
                         let (known_blocks, selected_tip, local_height) = {
                             let guard = chain.read().await;
                             (
@@ -3444,7 +3522,7 @@ async fn main() -> Result<()> {
                             )
                         };
                         if let Some(session) = selected_segment_session.as_mut() {
-                            let progress = session.reconcile_authoritative_hashes(
+                            let progress = session.reconcile_recovery_tick(
                                 &tick.adopted_hashes,
                                 &known_blocks,
                                 selected_tip.as_deref(),
@@ -5287,6 +5365,55 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                            }
+
+                            let rejected_selected_body = summary
+                                .rejected
+                                .iter()
+                                .find(|(hash, _)| hash == &block.hash)
+                                .and_then(|(_, result)| {
+                                    selected_segment_session.as_mut().and_then(|session| {
+                                        session
+                                            .fail_on_rejected_body(&block.hash, now_unix())
+                                            .map(|owned_requests| {
+                                                (
+                                                    session.session_id,
+                                                    session.peer_id.clone(),
+                                                    format!("{result:?}"),
+                                                    owned_requests,
+                                                )
+                                            })
+                                    })
+                                });
+                            if let Some((session_id, peer_id, rejection, owned_requests)) =
+                                rejected_selected_body
+                            {
+                                for hash in owned_requests {
+                                    if block_requests.pending.contains_key(&hash) {
+                                        block_requests.resolve(&hash);
+                                    }
+                                }
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                let mut rt = runtime.write().await;
+                                rt.active_session_id = None;
+                                rt.active_session_peer = None;
+                                rt.active_session_remote_tip = None;
+                                rt.active_session_remote_height = 0;
+                                rt.active_session_common_ancestor = None;
+                                rt.active_session_remaining_blocks = 0;
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
+                                rt.sync_state = "catching_up".to_string();
+                                warn!(
+                                    event = "selected_segment_body_rejected_replan",
+                                    session_id,
+                                    peer = %peer_id,
+                                    block_hash = %block.hash,
+                                    rejection = %rejection,
+                                    "selected-segment body was rejected; abandoned session for deterministic Task 27 replanning"
+                                );
                             }
 
                             block_requests.resolve(&block.hash);
@@ -10521,6 +10648,89 @@ mod tests {
         assert_eq!(session.received_hashes.len(), 3);
         assert_eq!(session.accepted_applied_hashes.len(), 3);
         assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn rejected_selected_segment_body_fails_session_for_replan() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            77,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            31,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+        session
+            .requested_hashes
+            .extend(session.missing_hashes.iter().cloned());
+        session
+            .unresolved_prerequisite_parent_hashes
+            .insert("merge-parent".to_string());
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
+
+        let owned = session
+            .fail_on_rejected_body("b2", 2_000)
+            .expect("requested selected body must fail the session");
+
+        assert_eq!(session.state, SelectedSegmentSessionState::Failed);
+        assert!(session.received_hashes.contains("b2"));
+        assert!(owned.contains("b1"));
+        assert!(owned.contains("b2"));
+        assert!(owned.contains("merge-parent"));
+        assert!(!session.start_chunk(vec!["b2".to_string()], 2_001));
+    }
+
+    #[test]
+    fn selected_segment_recovery_tick_heals_known_current_chunk() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            78,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            32,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = vec!["b1".to_string(), "b2".to_string(), "b3".to_string()];
+        session
+            .requested_hashes
+            .extend(["b1".to_string(), "b2".to_string()]);
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
+
+        let progress = session.reconcile_recovery_tick(
+            &[],
+            &HashSet::from([
+                "common".to_string(),
+                "b1".to_string(),
+                "b2".to_string(),
+            ]),
+            Some("b2"),
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+
+        assert_eq!(progress.applied_new, 2);
+        assert!(progress.chunk_completed);
+        assert!(!progress.session_completed);
+        assert_eq!(progress.continuation_hashes, vec!["b3".to_string()]);
+        assert!(session.current_chunk.is_empty());
     }
 
     #[test]

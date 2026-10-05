@@ -592,6 +592,7 @@ pub struct FastSyncImportedStateV1 {
     pub report: SnapshotVerificationReport,
     pub chain_state: ChainState,
     pub runtime: ActivatedV2P2pRuntime,
+    pub prune_boundary_height: Option<u64>,
 }
 
 pub struct FastSyncDaemonRuntimeV1 {
@@ -835,12 +836,18 @@ impl FastSyncDaemonRuntimeV1 {
         };
         match outcome {
             Ok(FastSyncBootstrapOutcome::Imported(report)) => {
+                let prune_boundary_height = self
+                    .controller
+                    .as_ref()
+                    .and_then(|controller| controller.summary.as_ref())
+                    .and_then(|summary| summary.prune_boundary_height);
                 let (chain_state, runtime) =
                     storage.load_activated_v2_p2p_runtime_snapshot(&self.expected)?;
                 Ok(Some(FastSyncImportedStateV1 {
                     report,
                     chain_state,
                     runtime,
+                    prune_boundary_height,
                 }))
             }
             Ok(FastSyncBootstrapOutcome::Progress) => {

@@ -86,16 +86,23 @@ impl ActivatedV2P2pRuntime {
     ///
     /// Walking local tips back only until they intersect the imported DAG keeps
     /// the handoff scoped to the divergent live frontier instead of replaying
-    /// historical blocks already covered by the snapshot.
+    /// historical blocks already covered by the snapshot. Pruning handoffs also
+    /// stop at the imported checkpoint boundary so omitted history is never rebuilt.
     pub fn fast_sync_handoff_blocks_parent_first(
         &self,
         live_state: &ChainState,
         imported_state: &ChainState,
+        prune_boundary_height: Option<u64>,
     ) -> Vec<Block> {
         let mut by_hash = self
             .transient_blocks_parent_first()
             .into_iter()
-            .filter(|block| !imported_state.dag.blocks.contains_key(&block.hash))
+            .filter(|block| {
+                !imported_state.dag.blocks.contains_key(&block.hash)
+                    && prune_boundary_height
+                        .map(|boundary| block.header.height > boundary)
+                        .unwrap_or(true)
+            })
             .map(|block| (block.hash.clone(), block))
             .collect::<BTreeMap<_, _>>();
 
@@ -111,6 +118,11 @@ impl ActivatedV2P2pRuntime {
             let Some(block) = live_state.dag.blocks.get(&hash) else {
                 continue;
             };
+            if prune_boundary_height
+                .is_some_and(|boundary| block.header.height <= boundary)
+            {
+                continue;
+            }
             frontier.extend(block.header.parents.iter().cloned());
             by_hash.insert(hash, block.clone());
         }
@@ -965,7 +977,7 @@ mod tests {
         assert!(runtime.staging().contains(&staged_tip.hash));
         assert!(!imported.dag.blocks.contains_key(&local_tip.hash));
 
-        let preserved = runtime.fast_sync_handoff_blocks_parent_first(&live, &imported);
+        let preserved = runtime.fast_sync_handoff_blocks_parent_first(&live, &imported, None);
         assert_eq!(preserved.len(), 2);
         assert!(preserved.iter().any(|block| block.hash == local_tip.hash));
         assert!(preserved.iter().any(|block| block.hash == staged_tip.hash));
@@ -991,6 +1003,46 @@ mod tests {
         assert!(imported_runtime.staging().contains(&local_tip.hash));
         assert!(imported_runtime.staging().contains(&staged_tip.hash));
         assert!(imported_runtime.pending_is_empty());
+    }
+
+    #[test]
+    fn fast_sync_handoff_stops_at_imported_prune_boundary() {
+        let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let genesis = base.dag.genesis_hash.clone();
+
+        let block1 = finalized_block(&base, &expected_identity, vec![genesis], 41);
+        let state1 =
+            prepare_activated_v2_p2p_block_state(&block1, &base, &expected_identity).unwrap();
+        let block2 = finalized_block(
+            &state1,
+            &expected_identity,
+            vec![block1.hash.clone()],
+            42,
+        );
+        let state2 =
+            prepare_activated_v2_p2p_block_state(&block2, &state1, &expected_identity).unwrap();
+        let block3 = finalized_block(
+            &state2,
+            &expected_identity,
+            vec![block2.hash.clone()],
+            43,
+        );
+        let live =
+            prepare_activated_v2_p2p_block_state(&block3, &state2, &expected_identity).unwrap();
+        let runtime = ActivatedV2P2pRuntime::default();
+
+        let preserved =
+            runtime.fast_sync_handoff_blocks_parent_first(&live, &base, Some(block2.header.height));
+        assert_eq!(
+            preserved
+                .iter()
+                .map(|block| block.hash.clone())
+                .collect::<Vec<_>>(),
+            vec![block3.hash.clone()]
+        );
+        assert!(!preserved.iter().any(|block| block.hash == block1.hash));
+        assert!(!preserved.iter().any(|block| block.hash == block2.hash));
     }
 
     #[test]
