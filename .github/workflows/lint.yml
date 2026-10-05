@@ -3,6 +3,12 @@ name: v3.0 Lint
 on:
   pull_request:
 
+concurrency:
+  # Supersede only stale heads from the same pull request. Keep push, tag and
+  # workflow_dispatch runs isolated so retained/manual evidence is never cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest

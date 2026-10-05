@@ -122,6 +122,31 @@ pub fn preflight_monetary_v3_p2p_block(
     }
 }
 
+fn validate_and_persist_monetary_v3_p2p_prepared<FPersist>(
+    accepted_block: &Block,
+    prepared: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+    persist: &mut FPersist,
+) -> Result<(), PulseError>
+where
+    FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
+{
+    validate_ordered_monetary_reward_v3(prepared, &accepted_block.hash, cadence_segments).map_err(
+        |error| {
+            invalid_monetary_network_block(format!("ordered reward validation failed: {error}"))
+        },
+    )?;
+    audit_monetary_state_v3(prepared, cadence_segments).map_err(|error| {
+        invalid_monetary_network_block(format!("accepted-state monetary audit failed: {error}"))
+    })?;
+    validate_live_reward_settlement_v3(
+        prepared,
+        cadence_segments,
+        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    )?;
+    persist(accepted_block, prepared)
+}
+
 /// Atomically accept a finalizable v3 P2P block. The existing activated-v2
 /// network path continues to own header/DAG/state/PoW checks, while monetary
 /// validation is injected into the serialized persistence boundary. A failed
@@ -148,21 +173,12 @@ where
         source,
         identity,
         |accepted_block, prepared| {
-            validate_ordered_monetary_reward_v3(prepared, &accepted_block.hash, cadence_segments)
-                .map_err(|error| {
-                invalid_monetary_network_block(format!("ordered reward validation failed: {error}"))
-            })?;
-            audit_monetary_state_v3(prepared, cadence_segments).map_err(|error| {
-                invalid_monetary_network_block(format!(
-                    "accepted-state monetary audit failed: {error}"
-                ))
-            })?;
-            validate_live_reward_settlement_v3(
+            validate_and_persist_monetary_v3_p2p_prepared(
+                accepted_block,
                 prepared,
                 cadence_segments,
-                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
-            )?;
-            persist(accepted_block, prepared)
+                &mut persist,
+            )
         },
         broadcast,
     )
@@ -173,9 +189,10 @@ mod tests {
     use super::*;
     use crate::{
         block_subsidy, build_activated_v2_mining_template, build_monetary_mining_template_v3,
-        compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
+        compute_block_hash_v2, compute_txid_v2, current_ts, finalize_monetary_mining_template_v3,
         genesis_v3::init_chain_state_v3, mining_template_v2::ActivatedV2MiningTemplateSpec,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol,
+        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol, Transaction,
+        TRANSACTION_VERSION_V2,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -203,16 +220,21 @@ mod tests {
     }
 
     fn monetary_block(state: &ChainState, identity: &ProtocolActivationIdentity) -> Block {
-        let timestamp = state.dag.blocks[&state.dag.genesis_hash]
-            .header
-            .timestamp
-            .saturating_add(1);
+        let parent = state
+            .dag
+            .selected_chain
+            .last()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone());
+        let parent_block = &state.dag.blocks[&parent];
+        let timestamp = parent_block.header.timestamp.saturating_add(1);
+        let claim_nonce = parent_block.header.height.saturating_add(1);
         let template = build_monetary_mining_template_v3(
             state,
             identity,
             &ONE_SECOND,
             "pulse1p2pminer",
-            1,
+            claim_nonce,
             timestamp,
             vec![],
         )
@@ -220,6 +242,19 @@ mod tests {
         let finalized =
             finalize_monetary_mining_template_v3(state, identity, &ONE_SECOND, &template).unwrap();
         mine(finalized.block, state, identity)
+    }
+
+    fn hidden_inputless_noop(chain_id: &str, nonce: u64) -> Transaction {
+        let mut transaction = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce,
+        };
+        transaction.txid = compute_txid_v2(&transaction, chain_id).unwrap();
+        transaction
     }
 
     #[test]
@@ -302,6 +337,77 @@ mod tests {
         assert!(accepted.result.is_accepted());
         assert!(persisted);
         assert!(state.dag.blocks.contains_key(&expected_hash));
+    }
+
+    #[test]
+    fn accepted_state_audit_rejects_hidden_historical_issuance_before_persist() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
+        let mut state =
+            init_chain_state_v3("monetary-v3-p2p-audit-boundary".into(), frozen_ts).unwrap();
+        let identity = identity(&state);
+
+        let first_block = monetary_block(&state, &identity);
+        let first_hash = first_block.hash.clone();
+        let first_claim_txid = first_block.transactions[0].txid.clone();
+        accept_monetary_v3_p2p_block_atomically(
+            first_block,
+            &mut state,
+            AcceptSource::P2p,
+            &identity,
+            &ONE_SECOND,
+            |_, _| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        // Build the second block while history is still clean. The deterministic
+        // per-height reward-claim nonce guarantees that the second claim does
+        // not collide with the first claim's v2 compatibility outpoint.
+        let second_block = monetary_block(&state, &identity);
+        assert_ne!(second_block.transactions[0].txid, first_claim_txid);
+
+        let hidden = hidden_inputless_noop(&state.chain_id, 10_001);
+        state
+            .dag
+            .blocks
+            .get_mut(&first_hash)
+            .unwrap()
+            .transactions
+            .push(hidden);
+
+        // The hidden historical no-op leaves the activated-v2 UTXO/state-root
+        // projection unchanged, so the underlying P2P preparation must still
+        // succeed. The v3 whole-history audit is the boundary that rejects it.
+        prepare_activated_v2_p2p_block_state(&second_block, &state, &identity).unwrap();
+        match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
+            ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
+                assert!(reason.contains("accepted-state monetary audit failed"));
+            }
+            other => panic!("expected monetary audit rejection, got {other:?}"),
+        }
+
+        let before = bincode::serialize(&state).unwrap();
+        let mut persisted = false;
+        let accepted = accept_monetary_v3_p2p_block_atomically(
+            second_block,
+            &mut state,
+            AcceptSource::P2p,
+            &identity,
+            &ONE_SECOND,
+            |_, _| {
+                persisted = true;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(accepted.result, BlockAcceptanceResult::Malformed);
+        assert!(!accepted.persisted);
+        assert!(!accepted.committed);
+        assert!(!accepted.broadcast);
+        assert!(!persisted);
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
 
     #[test]

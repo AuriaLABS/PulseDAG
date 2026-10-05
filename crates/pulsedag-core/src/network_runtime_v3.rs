@@ -1,5 +1,4 @@
 use crate::{
-    audit_monetary_state_v3,
     errors::PulseError,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v3::validate_monetary_v3_p2p_staging_envelope,
@@ -10,8 +9,7 @@ use crate::{
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    validate_ordered_monetary_reward_v3, GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
 fn invalid_monetary_runtime(message: impl Into<String>) -> PulseError {
@@ -39,16 +37,45 @@ fn audit_authoritative_monetary_state(
     state: &ChainState,
     cadence_segments: &[MonetaryCadenceSegment],
 ) -> Result<(), PulseError> {
-    audit_monetary_state_v3(state, cadence_segments)
+    crate::audit_monetary_state_v3(state, cadence_segments)
         .map(|_| ())
         .map_err(|error| {
             invalid_monetary_runtime(format!("authoritative monetary audit failed: {error}"))
         })?;
-    validate_live_reward_settlement_v3(
+    crate::validate_live_reward_settlement_v3(
         state,
         cadence_segments,
         GHOSTDAG_V1_FINALITY_POLICY_VERSION,
     )?;
+    Ok(())
+}
+
+fn validate_runtime_accepted_block_reward(
+    state: &ChainState,
+    accepted_block: &Block,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<(), PulseError> {
+    validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments)
+        .map(|_| ())
+        .map_err(|error| {
+            invalid_monetary_runtime(format!("accepted block reward validation failed: {error}"))
+        })
+}
+
+fn validate_runtime_promoted_bundle_rewards(
+    state: &ChainState,
+    bundle: &[Block],
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<(), PulseError> {
+    for accepted_block in bundle {
+        validate_ordered_monetary_reward_v3(state, &accepted_block.hash, cadence_segments)
+            .map_err(|error| {
+                invalid_monetary_runtime(format!(
+                    "promoted block {} reward validation failed: {error}",
+                    accepted_block.hash
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -131,16 +158,11 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                validate_ordered_monetary_reward_v3(
+                validate_runtime_accepted_block_reward(
                     prepared_state,
-                    &accepted_block.hash,
+                    accepted_block,
                     cadence_segments,
-                )
-                .map_err(|error| {
-                    invalid_monetary_runtime(format!(
-                        "accepted block reward validation failed: {error}"
-                    ))
-                })?;
+                )?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_one(accepted_block, prepared_state, prepared_runtime)
             },
@@ -152,19 +174,7 @@ where
                     prepared_runtime,
                     identity,
                 )?;
-                for accepted_block in bundle {
-                    validate_ordered_monetary_reward_v3(
-                        prepared_state,
-                        &accepted_block.hash,
-                        cadence_segments,
-                    )
-                    .map_err(|error| {
-                        invalid_monetary_runtime(format!(
-                            "promoted block {} reward validation failed: {error}",
-                            accepted_block.hash
-                        ))
-                    })?;
-                }
+                validate_runtime_promoted_bundle_rewards(prepared_state, bundle, cadence_segments)?;
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
@@ -177,9 +187,10 @@ where
 mod tests {
     use super::*;
     use crate::{
-        build_monetary_mining_template_v3, compute_block_hash_v2, current_ts,
-        finalize_monetary_mining_template_v3, genesis_v3::init_chain_state_v3,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, validate_pow_for_protocol,
+        build_monetary_mining_template_v3, build_reward_claim_transaction_v3,
+        compute_block_hash_v2, current_ts, finalize_monetary_mining_template_v3,
+        genesis_v3::init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+        validate_pow_for_protocol,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
@@ -243,7 +254,7 @@ mod tests {
             |accepted, prepared, _| {
                 persisted = true;
                 assert_eq!(accepted.hash, expected_hash);
-                audit_monetary_state_v3(prepared, &ONE_SECOND).unwrap();
+                crate::audit_monetary_state_v3(prepared, &ONE_SECOND).unwrap();
                 Ok(())
             },
             |_, _, _| panic!("single finalizable block must not persist a bundle"),
@@ -257,6 +268,38 @@ mod tests {
             driven.primary,
             crate::ActivatedV2P2pRuntimeOutcome::Accepted { .. }
         ));
+    }
+
+    #[test]
+    fn authoritative_runtime_helper_executes_supply_audit() {
+        let frozen_ts = current_ts().saturating_sub(10).max(1);
+        let mut state =
+            init_chain_state_v3("monetary-v3-runtime-authority-audit".into(), frozen_ts).unwrap();
+        let genesis = state.dag.genesis_hash.clone();
+        let forbidden =
+            build_reward_claim_transaction_v3("pulse1forbiddenruntime", 91, &state.chain_id)
+                .unwrap();
+        state
+            .dag
+            .blocks
+            .get_mut(&genesis)
+            .unwrap()
+            .transactions
+            .push(forbidden);
+
+        // Reward settlement deliberately ignores genesis issuance, so this proves
+        // the rejection below comes from the whole-history monetary supply audit.
+        crate::validate_live_reward_settlement_v3(
+            &state,
+            &ONE_SECOND,
+            GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+        )
+        .unwrap();
+
+        let error = audit_authoritative_monetary_state(&state, &ONE_SECOND).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("authoritative monetary audit failed"));
     }
 
     #[test]

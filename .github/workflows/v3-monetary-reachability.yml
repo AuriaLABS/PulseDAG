@@ -1,44 +1,27 @@
-name: v3 monetary policy exact-candidate
+name: v3 monetary reachability exact-candidate
 
 on:
   pull_request:
     branches:
       - main
     paths:
-      - .github/workflows/v3-monetary-policy.yml
       - .github/workflows/v3-monetary-reachability.yml
       - scripts/v3_monetary_reachability.py
       - scripts/v3_require_cargo_test_log.py
-      - apps/pulsedagd/src/activated_v2_runtime.rs
-      - crates/pulsedag-core/src/validation.rs
-      - crates/pulsedag-core/src/mining_template_v2.rs
-      - crates/pulsedag-core/src/monetary_v3.rs
-      - crates/pulsedag-core/src/monetary_audit_v3.rs
-      - crates/pulsedag-core/src/validation_v3.rs
-      - crates/pulsedag-core/src/reward_settlement_v3.rs
-      - crates/pulsedag-core/src/state_replay_v3.rs
-      - crates/pulsedag-core/src/mining_template_v3.rs
-      - crates/pulsedag-core/src/mined_block_v3.rs
-      - crates/pulsedag-core/src/network_block_v3.rs
-      - crates/pulsedag-core/src/network_runtime_v3.rs
-      - crates/pulsedag-rpc/src/handlers/policy.rs
-      - crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs
-      - crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs
-      - crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs
-      - crates/pulsedag-rpc/src/handlers/block_validate.rs
-      - docs/MONETARY_POLICY_V3_0_0.md
+      - crates/**/src/**/*.rs
+      - apps/**/src/**/*.rs
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: v3-monetary-policy-${{ github.event.pull_request.number || github.ref }}
+  group: v3-monetary-reachability-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  exact-candidate:
-    name: monetary policy exact-candidate
+  reachability:
+    name: monetary issuance reachability
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -56,7 +39,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.91.0
-          components: rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -69,78 +51,22 @@ jobs:
           test -z "$(git status --porcelain)"
           echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Verify canonical policy fingerprint
+      - name: Audit static monetary authority reachability
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ci-evidence/v3-monetary-policy
-          python - <<'PY'
-          import hashlib
-          import json
-          import re
-          from pathlib import Path
-          import os
-
-          src = Path("crates/pulsedag-core/src/monetary_v3.rs").read_text(encoding="utf-8")
-          docs = Path("docs/MONETARY_POLICY_V3_0_0.md").read_text(encoding="utf-8")
-
-          canonical_match = re.search(
-              r'MONETARY_POLICY_CANONICAL_V3: &\[u8\] = br#"(.*?)"#;',
-              src,
-              re.S,
-          )
-          fingerprint_match = re.search(
-              r'MONETARY_POLICY_FINGERPRINT_V3: &str =\s*"([0-9a-f]{64})";',
-              src,
-          )
-          version_match = re.search(
-              r'MONETARY_POLICY_VERSION_V3: &str = "([^"]+)";',
-              src,
-          )
-          if not canonical_match or not fingerprint_match or not version_match:
-              raise SystemExit("unable to parse frozen monetary policy identity")
-
-          canonical = canonical_match.group(1).encode("utf-8")
-          expected = fingerprint_match.group(1)
-          observed = hashlib.sha256(canonical).hexdigest()
-          if observed != expected:
-              raise SystemExit(f"policy fingerprint mismatch: expected={expected} observed={observed}")
-          if expected not in docs:
-              raise SystemExit("policy documentation does not carry the exact frozen fingerprint")
-
-          evidence = {
-              "schema": "pulsedag.v3-monetary-policy-evidence.v1",
-              "candidate_sha": os.environ["CANDIDATE_SHA"],
-              "candidate_tree_sha": os.environ["CANDIDATE_TREE"],
-              "policy_version": version_match.group(1),
-              "policy_fingerprint": expected,
-              "canonical_sha256": observed,
-          }
-          Path("ci-evidence/v3-monetary-policy/identity.json").write_text(
-              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          print(json.dumps(evidence, sort_keys=True))
-          PY
-
-      - name: Audit no-alternate-issuance reachability
-        shell: bash
-        run: |
-          set -euo pipefail
+          mkdir -p ci-evidence/v3-monetary-reachability
           python scripts/v3_monetary_reachability.py --self-test
           python scripts/v3_monetary_reachability.py \
             --repo-root . \
             --candidate-sha "$CANDIDATE_SHA" \
             --candidate-tree "$CANDIDATE_TREE" \
-            --out ci-evidence/v3-monetary-policy/reachability.json
+            --out ci-evidence/v3-monetary-reachability/static-reachability.json
           jq -e '
             .result == "PASS" and
             .auditor_version == 16 and
-            (.monetary_policy_fingerprint | type) == "string" and
             .claim_boundary.proves_static_live_authority_shape == true and
+            .claim_boundary.requires_dynamic_guard_tests == true and
             .claim_boundary.strips_all_cfg_test_items == true and
             .claim_boundary.handles_cfg_test_comma_items == true and
             .claim_boundary.excludes_provably_disabled_cfg_items == true and
@@ -176,7 +102,10 @@ jobs:
             .claim_boundary.rejects_runtime_persistence_callback_macros == true and
             .claim_boundary.rejects_runtime_persistence_callback_attributes == true and
             .claim_boundary.freezes_runtime_persistence_callback_execution_shape == true and
+            .claim_boundary.selects_production_cadence == false and
+            .claim_boundary.freezes_network_identity == false and
             .claim_boundary.authorizes_launch == false and
+            (.monetary_policy_fingerprint | type) == "string" and
             (.legacy_height_subsidy_authority.unexpected_live_calls | length) == 0 and
             (.legacy_height_subsidy_authority.live_aliases | length) == 0 and
             (.legacy_height_subsidy_authority.live_other_references | length) == 0 and
@@ -187,13 +116,13 @@ jobs:
             ([.required_runtime_persistence_callback_checks[] | select(.missing_definition == true or .constructor_count != 1 or .callback_count != 3)] | length) == 0 and
             ([.required_runtime_persistence_callback_checks[].callbacks[] | select(.missing_callback == true or .audit_reference_count != 1 or .persist_reference_count != 1 or .macro_invocation_count != 0 or .attribute_count != 0 or .execution_shape_matches != true or .missing_audit == true or .audit_result_propagated != true or .missing_persist == true or .audit_before_persist != true)] | length) == 0 and
             (.errors | length) == 0
-          ' ci-evidence/v3-monetary-policy/reachability.json >/dev/null
+          ' ci-evidence/v3-monetary-reachability/static-reachability.json >/dev/null
 
-      - name: Run monetary consensus vectors
+      - name: Run dynamic no-alternate-issuance guards
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ci-evidence/v3-monetary-policy/dynamic-logs
+          mkdir -p ci-evidence/v3-monetary-reachability/dynamic-logs
           run_required() {
             local pkg="$1"
             local filter="$2"
@@ -202,30 +131,7 @@ jobs:
             if [[ "${4:-}" == "exact" ]]; then
               extra_harness+=(--exact)
             fi
-            local log="ci-evidence/v3-monetary-policy/dynamic-logs/${slug}.log"
-            cargo test --locked -p "$pkg" "$filter" -- --nocapture "${extra_harness[@]}" | tee "$log"
-            python3 scripts/v3_require_cargo_test_log.py "$log" --filter "$filter"
-          }
-          run_required pulsedag-core monetary_v3::tests monetary_v3_vectors
-          run_required pulsedag-core monetary_audit_v3::tests monetary_audit_v3_vectors
-          run_required pulsedag-core validation_v3::tests validation_v3_vectors
-          run_required pulsedag-core reward_settlement_v3::tests reward_settlement_v3_vectors
-          run_required pulsedag-core state_replay_v3::tests state_replay_v3_vectors
-
-      - name: Run monetary RPC and legacy-fallback guards
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ci-evidence/v3-monetary-policy/dynamic-logs
-          run_required() {
-            local pkg="$1"
-            local filter="$2"
-            local slug="$3"
-            local extra_harness=()
-            if [[ "${4:-}" == "exact" ]]; then
-              extra_harness+=(--exact)
-            fi
-            local log="ci-evidence/v3-monetary-policy/dynamic-logs/${slug}.log"
+            local log="ci-evidence/v3-monetary-reachability/dynamic-logs/${slug}.log"
             cargo test --locked -p "$pkg" "$filter" -- --nocapture "${extra_harness[@]}" | tee "$log"
             python3 scripts/v3_require_cargo_test_log.py "$log" --filter "$filter"
           }
@@ -234,7 +140,9 @@ jobs:
           run_required pulsedag-core mined_block_v3::tests::accepted_state_audit_rejects_hidden_historical_issuance_before_persist mined_v3_audit_boundary exact
           run_required pulsedag-core network_block_v3::tests::accepted_state_audit_rejects_hidden_historical_issuance_before_persist p2p_v3_audit_boundary exact
           run_required pulsedag-core network_runtime_v3::tests::authoritative_runtime_helper_executes_supply_audit runtime_v3_authority_audit exact
-          run_required pulsedag-rpc monetary_v3_ rpc_monetary_v3
+          run_required pulsedag-core validation_v3::tests validation_v3_vectors
+          run_required pulsedag-core monetary_audit_v3::tests monetary_audit_v3_vectors
+          run_required pulsedag-core state_replay_v3::tests state_replay_v3_vectors
           run_required pulsedag-rpc monetary_sidecar_disables_every_legacy_mining_surface rpc_legacy_mining_surfaces_disabled
           run_required pulsedagd monetary_sidecar_without_activated_capabilities_refuses_legacy_startup daemon_legacy_startup_fallback_disabled
           {
@@ -244,28 +152,32 @@ jobs:
             echo "mined_v3_audit_boundary=PASS"
             echo "p2p_v3_audit_boundary=PASS"
             echo "runtime_v3_authority_audit=PASS"
+            echo "validation_v3_vectors=PASS"
+            echo "monetary_audit_v3_vectors=PASS"
+            echo "state_replay_v3_vectors=PASS"
             echo "rpc_legacy_mining_surfaces_disabled=PASS"
             echo "daemon_legacy_startup_fallback_disabled=PASS"
-          } > ci-evidence/v3-monetary-policy/reachability-dynamic-tests.txt
+          } > ci-evidence/v3-monetary-reachability/dynamic-tests.txt
 
-      - name: Record evidence digests
+      - name: Record evidence provenance and digests
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p ci-evidence/v3-monetary-reachability
           {
             echo "candidate_sha=$CANDIDATE_SHA"
-            echo "candidate_tree_sha=$CANDIDATE_TREE"
-            echo "rustc=$(rustc --version)"
-            echo "cargo=$(cargo --version)"
-          } > ci-evidence/v3-monetary-policy/provenance.txt
-          find ci-evidence/v3-monetary-policy -type f ! -name SHA256SUMS \
-            -print0 | sort -z | xargs -0 sha256sum > ci-evidence/v3-monetary-policy/SHA256SUMS
+            echo "candidate_tree_sha=${CANDIDATE_TREE:-unknown}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+          } > ci-evidence/v3-monetary-reachability/provenance.txt
+          find ci-evidence/v3-monetary-reachability -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ci-evidence/v3-monetary-reachability/SHA256SUMS
 
-      - name: Upload exact-candidate monetary evidence
+      - name: Upload exact-candidate reachability evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v3-monetary-policy-${{ env.CANDIDATE_SHA }}
-          path: ci-evidence/v3-monetary-policy
+          name: v3-monetary-reachability-${{ env.CANDIDATE_SHA }}
+          path: ci-evidence/v3-monetary-reachability
           if-no-files-found: error
           retention-days: 90
