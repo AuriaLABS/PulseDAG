@@ -834,6 +834,65 @@ enum SelectedSegmentSessionState {
     Failed,
 }
 
+const SELECTED_SEGMENT_PEER_POISON_SECS: u64 = 120;
+const SELECTED_SEGMENT_MAX_REPLANS_PER_TIP: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnedSelectedRequestRole {
+    Chunk,
+    Prerequisite,
+    Promoted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedSelectedRequest {
+    #[allow(dead_code)]
+    role: OwnedSelectedRequestRole,
+    #[allow(dead_code)]
+    owned_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedSegmentPeerPoison {
+    until_unix: u64,
+    replan_count: u8,
+}
+
+fn selected_segment_note_rejection(
+    poison: &mut BTreeMap<(String, String), SelectedSegmentPeerPoison>,
+    peer_id: &str,
+    tip: &str,
+    now: u64,
+) -> bool {
+    let entry = poison
+        .entry((peer_id.to_string(), tip.to_string()))
+        .or_insert(SelectedSegmentPeerPoison {
+            until_unix: 0,
+            replan_count: 0,
+        });
+    entry.replan_count = entry.replan_count.saturating_add(1);
+    entry.until_unix = now.saturating_add(SELECTED_SEGMENT_PEER_POISON_SECS);
+    entry.replan_count >= SELECTED_SEGMENT_MAX_REPLANS_PER_TIP
+}
+
+fn selected_segment_peer_poisoned(
+    poison: &BTreeMap<(String, String), SelectedSegmentPeerPoison>,
+    peer_id: &str,
+    tip: &str,
+    now: u64,
+) -> bool {
+    poison
+        .get(&(peer_id.to_string(), tip.to_string()))
+        .is_some_and(|entry| entry.until_unix > now)
+}
+
+fn selected_segment_prune_poison(
+    poison: &mut BTreeMap<(String, String), SelectedSegmentPeerPoison>,
+    now: u64,
+) {
+    poison.retain(|_, entry| entry.until_unix > now);
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct PendingSelectedLocator {
@@ -860,6 +919,7 @@ struct SelectedSegmentSession {
     expected_header_hashes: Vec<String>,
     prerequisite_parent_hashes: HashSet<String>,
     unresolved_prerequisite_parent_hashes: BTreeSet<String>,
+    owned_requests: BTreeMap<String, OwnedSelectedRequest>,
     missing_hashes: Vec<String>,
     requested_hashes: HashSet<String>,
     received_hashes: HashSet<String>,
@@ -1014,6 +1074,7 @@ impl SelectedSegmentSession {
             expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
             prerequisite_parent_hashes: HashSet::new(),
             unresolved_prerequisite_parent_hashes: BTreeSet::new(),
+            owned_requests: BTreeMap::new(),
             missing_hashes: Vec::new(),
             requested_hashes: HashSet::new(),
             received_hashes: HashSet::new(),
@@ -1089,9 +1150,41 @@ impl SelectedSegmentSession {
             return false;
         }
         self.current_chunk = hashes;
+        let owned_chunk = self.current_chunk.clone();
+        for hash in owned_chunk {
+            self.own_request(&hash, OwnedSelectedRequestRole::Chunk, now);
+        }
         self.state = SelectedSegmentSessionState::RequestingBlocks;
         self.updated_at_unix = now;
         true
+    }
+
+    fn own_request(&mut self, hash: &str, role: OwnedSelectedRequestRole, now: u64) {
+        self.owned_requests.insert(
+            hash.to_string(),
+            OwnedSelectedRequest {
+                role,
+                owned_at_unix: now,
+            },
+        );
+        self.updated_at_unix = now;
+    }
+
+    fn owns_request(&self, hash: &str) -> bool {
+        self.owned_requests.contains_key(hash)
+            || self.prerequisite_parent_hashes.contains(hash)
+            || (self.requested_hashes.contains(hash)
+                && self.current_chunk.iter().any(|candidate| candidate == hash))
+    }
+
+    fn owned_request_hashes(&self) -> BTreeSet<String> {
+        self.owned_requests
+            .keys()
+            .cloned()
+            .chain(self.current_chunk.iter().cloned())
+            .chain(self.unresolved_prerequisite_parent_hashes.iter().cloned())
+            .chain(self.prerequisite_parent_hashes.iter().cloned())
+            .collect()
     }
 
     fn complete_current_chunk_if_applied(&mut self) -> bool {
@@ -1108,26 +1201,18 @@ impl SelectedSegmentSession {
     }
 
     fn fail_on_rejected_body(&mut self, hash: &str, now: u64) -> Option<BTreeSet<String>> {
-        let selected_body = self.requested_hashes.contains(hash)
-            && self.current_chunk.iter().any(|candidate| candidate == hash);
-        let prerequisite_body = self.prerequisite_parent_hashes.contains(hash);
-        if !selected_body && !prerequisite_body {
+        if !self.owns_request(hash) {
             return None;
         }
 
-        if selected_body {
+        if self.requested_hashes.contains(hash) {
             self.received_hashes.insert(hash.to_string());
         }
         self.updated_at_unix = now;
         self.state = SelectedSegmentSessionState::Failed;
-        Some(
-            self.current_chunk
-                .iter()
-                .chain(self.unresolved_prerequisite_parent_hashes.iter())
-                .cloned()
-                .chain(std::iter::once(hash.to_string()))
-                .collect(),
-        )
+        let mut owned = self.owned_request_hashes();
+        owned.insert(hash.to_string());
+        Some(owned)
     }
 
     fn continuation_hashes(&self, limit: usize) -> Vec<String> {
@@ -2755,6 +2840,10 @@ async fn main() -> Result<()> {
             let mut final_quiescence_higher_tip_requests: HashSet<String> = HashSet::new();
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut selected_segment_session: Option<SelectedSegmentSession> = None;
+            let mut selected_segment_peer_poison: BTreeMap<
+                (String, String),
+                SelectedSegmentPeerPoison,
+            > = BTreeMap::new();
             let mut selected_segment_next_session_id: u64 = 1;
             let mut recovery_tick: u64 = 0;
             loop {
@@ -3635,6 +3724,11 @@ async fn main() -> Result<()> {
                                 {
                                     for hash in &issued_hashes {
                                         session.requested_hashes.insert(hash.clone());
+                                        session.own_request(
+                                            hash,
+                                            OwnedSelectedRequestRole::Chunk,
+                                            now_unix(),
+                                        );
                                     }
                                     chunk_started =
                                         session.start_chunk(issued_hashes.clone(), issued_at);
@@ -3962,7 +4056,16 @@ async fn main() -> Result<()> {
                             }
                             if let Some(ref p2p_handle) = p2p {
                                 match p2p_handle.request_block_from(&peer_id, &parent) {
-                                    Ok(_) => sent = sent.saturating_add(1),
+                                    Ok(_) => {
+                                        sent = sent.saturating_add(1);
+                                        if let Some(session) = selected_segment_session.as_mut() {
+                                            session.own_request(
+                                                &parent,
+                                                OwnedSelectedRequestRole::Prerequisite,
+                                                now_unix(),
+                                            );
+                                        }
+                                    }
                                     Err(error) => {
                                         // Keep the admitted tracker entry. Its timeout path will
                                         // rotate to another direct peer, while the unresolved set
@@ -4052,6 +4155,11 @@ async fn main() -> Result<()> {
                                 {
                                     for hash in &tracked_hashes {
                                         session.requested_hashes.insert(hash.clone());
+                                        session.own_request(
+                                            hash,
+                                            OwnedSelectedRequestRole::Chunk,
+                                            now_unix(),
+                                        );
                                     }
                                     chunk_started =
                                         session.start_chunk(tracked_hashes.clone(), now_unix());
@@ -5395,6 +5503,26 @@ async fn main() -> Result<()> {
                                         block_requests.resolve(&hash);
                                     }
                                 }
+                                selected_segment_prune_poison(
+                                    &mut selected_segment_peer_poison,
+                                    now_unix(),
+                                );
+                                if let Some(session) = selected_segment_session.as_ref() {
+                                    let exhausted = selected_segment_note_rejection(
+                                        &mut selected_segment_peer_poison,
+                                        &session.peer_id,
+                                        &session.remote_selected_tip,
+                                        now_unix(),
+                                    );
+                                    if exhausted {
+                                        warn!(
+                                            event = "selected_segment_replan_exhausted",
+                                            peer = %session.peer_id,
+                                            tip = %session.remote_selected_tip,
+                                            "selected-segment replan budget exhausted; peer/tip stays poisoned"
+                                        );
+                                    }
+                                }
                                 selected_segment_session = None;
                                 selected_segment_locator_state.lock().await.pending_locator = None;
                                 let mut rt = runtime.write().await;
@@ -5589,6 +5717,13 @@ async fn main() -> Result<()> {
                                     session
                                         .prerequisite_parent_hashes
                                         .extend(block.header.parents.iter().cloned());
+                                    for parent in &block.header.parents {
+                                        session.own_request(
+                                            parent,
+                                            OwnedSelectedRequestRole::Prerequisite,
+                                            now_unix(),
+                                        );
+                                    }
                                 }
                             }
                             let selected_session_peer = selected_segment_session
@@ -5621,9 +5756,17 @@ async fn main() -> Result<()> {
                                 {
                                     let newly_unresolved =
                                         selected_segment_session.as_mut().is_some_and(|session| {
-                                            session
+                                            let inserted = session
                                                 .unresolved_prerequisite_parent_hashes
-                                                .insert(parent.clone())
+                                                .insert(parent.clone());
+                                            if inserted {
+                                                session.own_request(
+                                                    parent,
+                                                    OwnedSelectedRequestRole::Prerequisite,
+                                                    now_unix(),
+                                                );
+                                            }
+                                            inserted
                                         });
                                     if newly_unresolved {
                                         // Reopen stale failure state only on the first transition
@@ -5826,6 +5969,11 @@ async fn main() -> Result<()> {
                                         {
                                             for hash in &issued_hashes {
                                                 session.requested_hashes.insert(hash.clone());
+                                                session.own_request(
+                                                    hash,
+                                                    OwnedSelectedRequestRole::Chunk,
+                                                    now_unix(),
+                                                );
                                             }
                                             chunk_started = session
                                                 .start_chunk(issued_hashes.clone(), issued_at);
@@ -6006,6 +6154,13 @@ async fn main() -> Result<()> {
                                     session
                                         .prerequisite_parent_hashes
                                         .extend(block.header.parents.iter().cloned());
+                                    for parent in &block.header.parents {
+                                        session.own_request(
+                                            parent,
+                                            OwnedSelectedRequestRole::Prerequisite,
+                                            now_unix(),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -6132,9 +6287,17 @@ async fn main() -> Result<()> {
                                 {
                                     let newly_unresolved =
                                         selected_segment_session.as_mut().is_some_and(|session| {
-                                            session
+                                            let inserted = session
                                                 .unresolved_prerequisite_parent_hashes
-                                                .insert(parent.clone())
+                                                .insert(parent.clone());
+                                            if inserted {
+                                                session.own_request(
+                                                    parent,
+                                                    OwnedSelectedRequestRole::Prerequisite,
+                                                    now_unix(),
+                                                );
+                                            }
+                                            inserted
                                         });
                                     if newly_unresolved {
                                         block_requests.note_selected_parent_references(
@@ -6342,6 +6505,26 @@ async fn main() -> Result<()> {
                                 for hash in owned_requests {
                                     if block_requests.pending.contains_key(&hash) {
                                         block_requests.resolve(&hash);
+                                    }
+                                }
+                                selected_segment_prune_poison(
+                                    &mut selected_segment_peer_poison,
+                                    now_unix(),
+                                );
+                                if let Some(session) = selected_segment_session.as_ref() {
+                                    let exhausted = selected_segment_note_rejection(
+                                        &mut selected_segment_peer_poison,
+                                        &session.peer_id,
+                                        &session.remote_selected_tip,
+                                        now_unix(),
+                                    );
+                                    if exhausted {
+                                        warn!(
+                                            event = "selected_segment_replan_exhausted",
+                                            peer = %session.peer_id,
+                                            tip = %session.remote_selected_tip,
+                                            "selected-segment replan budget exhausted; peer/tip stays poisoned"
+                                        );
                                     }
                                 }
                                 selected_segment_session = None;
@@ -6770,6 +6953,11 @@ async fn main() -> Result<()> {
                                         {
                                             for hash in &issued_hashes {
                                                 session.requested_hashes.insert(hash.clone());
+                                                session.own_request(
+                                                    hash,
+                                                    OwnedSelectedRequestRole::Chunk,
+                                                    now_unix(),
+                                                );
                                             }
                                             chunk_started = session
                                                 .start_chunk(issued_hashes.clone(), issued_at);
@@ -7142,18 +7330,43 @@ async fn main() -> Result<()> {
                                 if let (Some(peer), Some(common)) =
                                     (peer_id.clone(), common_ancestor.clone())
                                 {
-                                    selected_segment_session = SelectedSegmentSession::new(
-                                        selected_segment_next_session_id,
-                                        peer,
-                                        common,
-                                        common_ancestor_height,
-                                        &headers,
-                                        &pending_locator,
-                                        pending_request_id,
-                                        now_unix(),
-                                    );
-                                    selected_segment_next_session_id =
-                                        selected_segment_next_session_id.saturating_add(1);
+                                    let remote_tip = headers
+                                        .iter()
+                                        .max_by(|left, right| {
+                                            left.header
+                                                .height
+                                                .cmp(&right.header.height)
+                                                .then_with(|| left.hash.cmp(&right.hash))
+                                        })
+                                        .map(|item| item.hash.clone());
+                                    let poisoned = remote_tip.as_deref().is_some_and(|tip| {
+                                        selected_segment_peer_poisoned(
+                                            &selected_segment_peer_poison,
+                                            &peer,
+                                            tip,
+                                            now_unix(),
+                                        )
+                                    });
+                                    if poisoned {
+                                        warn!(
+                                            peer = %peer,
+                                            tip = ?remote_tip,
+                                            "skipped selected-segment session; peer/tip remains poisoned after a rejected owned body"
+                                        );
+                                    } else {
+                                        selected_segment_session = SelectedSegmentSession::new(
+                                            selected_segment_next_session_id,
+                                            peer,
+                                            common,
+                                            common_ancestor_height,
+                                            &headers,
+                                            &pending_locator,
+                                            pending_request_id,
+                                            now_unix(),
+                                        );
+                                        selected_segment_next_session_id =
+                                            selected_segment_next_session_id.saturating_add(1);
+                                    }
                                 }
                             }
                             if let Some(session) = selected_segment_session.as_mut() {
@@ -7172,6 +7385,13 @@ async fn main() -> Result<()> {
                                     session
                                         .prerequisite_parent_hashes
                                         .extend(prerequisite_parents.iter().cloned());
+                                    for parent in &prerequisite_parents {
+                                        session.own_request(
+                                            parent,
+                                            OwnedSelectedRequestRole::Prerequisite,
+                                            now_unix(),
+                                        );
+                                    }
                                     // A validated selected-header response is fresh proof for both
                                     // the selected hashes and the explicit parent hashes carried by
                                     // those headers. Reopen only that bounded, peer-sourced context.
@@ -7271,6 +7491,11 @@ async fn main() -> Result<()> {
                             if peer_addressed_request_succeeded {
                                 if let Some(session) = selected_segment_session.as_mut() {
                                     session.requested_hashes.insert(hash.clone());
+                                    session.own_request(
+                                        &hash,
+                                        OwnedSelectedRequestRole::Chunk,
+                                        now_unix(),
+                                    );
                                     issued_selected_hashes.push(hash.clone());
                                     session.updated_at_unix = now_unix();
                                 }
@@ -10885,6 +11110,75 @@ mod tests {
         assert!(owned.contains("b2"));
         assert!(owned.contains("merge-parent"));
         assert!(!session.start_chunk(vec!["b2".to_string()], 2_001));
+    }
+
+    #[test]
+    fn owned_promoted_hash_rejection_fails_session_outside_chunk() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            91,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            32,
+            1_000,
+        )
+        .expect("session");
+        session.own_request("promoted-child", OwnedSelectedRequestRole::Promoted, 1_500);
+        assert!(!session
+            .current_chunk
+            .iter()
+            .any(|hash| hash == "promoted-child"));
+        assert!(!session
+            .prerequisite_parent_hashes
+            .contains("promoted-child"));
+
+        let owned = session
+            .fail_on_rejected_body("promoted-child", 2_000)
+            .expect("promoted owned hash must fail the session");
+        assert!(owned.contains("promoted-child"));
+        assert!(matches!(session.state, SelectedSegmentSessionState::Failed));
+        assert!(!session.start_chunk(vec!["b2".to_string()], 2_001));
+    }
+
+    #[test]
+    fn rejected_peer_tip_is_poisoned_until_window_and_replan_budget_caps() {
+        let mut poison = BTreeMap::new();
+        assert!(!selected_segment_note_rejection(
+            &mut poison,
+            "peer-a",
+            "tip-1",
+            1_000
+        ));
+        assert!(selected_segment_peer_poisoned(
+            &poison, "peer-a", "tip-1", 1_050
+        ));
+        assert!(!selected_segment_peer_poisoned(
+            &poison,
+            "peer-a",
+            "tip-1",
+            1_000 + SELECTED_SEGMENT_PEER_POISON_SECS
+        ));
+        assert!(!selected_segment_note_rejection(
+            &mut poison,
+            "peer-a",
+            "tip-1",
+            2_000
+        ));
+        assert!(selected_segment_note_rejection(
+            &mut poison,
+            "peer-a",
+            "tip-1",
+            3_000
+        ));
+        selected_segment_prune_poison(&mut poison, 3_000 + SELECTED_SEGMENT_PEER_POISON_SECS);
+        assert!(poison.is_empty());
     }
 
     #[test]
