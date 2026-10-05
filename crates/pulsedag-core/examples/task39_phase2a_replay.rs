@@ -1,9 +1,10 @@
 use pulsedag_core::retarget::CONSENSUS_POW_LIMIT_BITS;
 use pulsedag_core::{
-    accept_block_to_dag_metadata, build_candidate_block, build_coinbase_transaction,
-    commit_rebuilt_state, merge_set_digest, ordered_dag_digest, rebuild_state_from_ordered_dag,
-    refresh_block_consensus_ids, refresh_ordered_dag_phase, refresh_selected_chain_phase,
-    selection_digest, state_digest, Block, ChainState, ConsensusMode, SelectedParentPolicy,
+    build_candidate_block, build_coinbase_transaction, calculate_selected_parent,
+    classify_merge_set, commit_rebuilt_state, merge_set_digest, ordered_dag_digest,
+    rebuild_state_from_ordered_dag, refresh_block_consensus_ids, refresh_ordered_dag_phase,
+    refresh_selected_chain_phase, selection_digest, state_digest, Block, ChainState, ConsensusMode,
+    MergeSetClassification, MergeSetDiagnostics, SelectedParentPolicy,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -19,6 +20,7 @@ const CHAIN_ID: &str = "pulsedag-task39-phase2a-replay";
 const FORK_INTERVAL: u64 = 64;
 const DEFAULT_WINDOW: usize = 32;
 const MILLION: usize = 1_000_000;
+const PRODUCTION_CLASSIFIER_REFERENCE_CHECK_LIMIT: usize = 4_096;
 
 #[derive(Debug)]
 struct Args {
@@ -53,6 +55,7 @@ struct ReplayRun {
     name: String,
     elapsed_ms: u128,
     buffered_orphan_peak: usize,
+    production_classifier_reference_checks: usize,
     observation: Observation,
 }
 
@@ -63,6 +66,7 @@ struct Manifest {
     candidate_tree_sha: String,
     requested_blocks: usize,
     generated_blocks: usize,
+    generation_production_classifier_reference_checks: usize,
     corpus_digest: String,
     topology: Topology,
     corpus_contract: CorpusContract,
@@ -86,6 +90,8 @@ struct Topology {
 #[derive(Debug, Serialize)]
 struct CorpusContract {
     metadata_replay_uses_production_ghostdag_classifier: bool,
+    metadata_replay_uses_equivalence_checked_fast_path: bool,
+    production_classifier_reference_check_limit: usize,
     canonical_rebuild_uses_production_ordered_dag_state_rebuild: bool,
     transaction_model: &'static str,
     production_valid_pow_and_state_root_per_block: bool,
@@ -167,24 +173,160 @@ fn make_block(parents: Vec<String>, height: u64, sequence: u64) -> Block {
     block
 }
 
-fn accept_metadata(state: &mut ChainState, block: &Block) -> Result<(), String> {
-    accept_block_to_dag_metadata(block, state).map_err(|e| e.to_string())
+fn corpus_fast_classification(
+    state: &ChainState,
+    block: &Block,
+) -> Result<MergeSetClassification, String> {
+    let selected_parent = calculate_selected_parent(block, state)
+        .ok_or_else(|| format!("corpus block {} has no selected parent", block.hash))?;
+    let selected_parent_block = state
+        .dag
+        .blocks
+        .get(&selected_parent)
+        .ok_or_else(|| format!("missing selected parent {selected_parent}"))?;
+
+    let (merge_set, blues) = match block.header.parents.as_slice() {
+        [only_parent] if only_parent == &selected_parent => (Vec::new(), Vec::new()),
+        [left, right] => {
+            let other = if left == &selected_parent {
+                right
+            } else if right == &selected_parent {
+                left
+            } else {
+                return Err(format!(
+                    "selected parent {selected_parent} is not in corpus join {}",
+                    block.hash
+                ));
+            };
+            let other_block = state
+                .dag
+                .blocks
+                .get(other)
+                .ok_or_else(|| format!("missing sibling parent {other}"))?;
+            if other_block.header.parents != selected_parent_block.header.parents {
+                return Err(format!(
+                    "unsupported Task39 join topology at {}: parents are not immediate siblings",
+                    block.hash
+                ));
+            }
+            (vec![other.clone()], vec![other.clone()])
+        }
+        _ => {
+            return Err(format!(
+                "unsupported Task39 corpus topology at {} with {} parents",
+                block.hash,
+                block.header.parents.len()
+            ));
+        }
+    };
+
+    let selected_parent_score = selected_parent_block.header.blue_score;
+    let blue_score = selected_parent_score
+        .saturating_add(1)
+        .saturating_add(blues.len() as u64);
+    let selected_parent_work = state
+        .dag
+        .blue_work
+        .get(&selected_parent)
+        .copied()
+        .unwrap_or(selected_parent_score as u128);
+    let blue_work = selected_parent_work
+        .saturating_add(1)
+        .saturating_add(blues.len() as u128);
+
+    Ok(MergeSetClassification {
+        selected_parent: Some(selected_parent.clone()),
+        merge_set: merge_set.clone(),
+        blues: blues.clone(),
+        reds: Vec::new(),
+        blue_score,
+        blue_work,
+        diagnostics: MergeSetDiagnostics {
+            selected_parent: Some(selected_parent),
+            blue_score,
+            merge_set_size: merge_set.len(),
+            merge_set_blues_count: blues.len(),
+            merge_set_reds_count: 0,
+        },
+    })
 }
 
-fn generate_corpus(count: usize) -> Result<Vec<Block>, String> {
+fn commit_corpus_metadata(
+    state: &mut ChainState,
+    block: &Block,
+    classification: MergeSetClassification,
+) {
+    let mut committed_block = block.clone();
+    committed_block.header.blue_score = classification.blue_score;
+    let block = &committed_block;
+
+    for parent in &block.header.parents {
+        state.dag.tips.remove(parent);
+        let children = state.dag.children.entry(parent.clone()).or_default();
+        children.push(block.hash.clone());
+        children.sort();
+        children.dedup();
+    }
+    state.dag.tips.insert(block.hash.clone());
+    state.dag.best_height = state.dag.best_height.max(block.header.height);
+    state
+        .dag
+        .selected_parents
+        .insert(block.hash.clone(), classification.selected_parent.clone());
+    state
+        .dag
+        .merge_set_blues
+        .insert(block.hash.clone(), classification.blues.clone());
+    state
+        .dag
+        .merge_set_reds
+        .insert(block.hash.clone(), classification.reds.clone());
+    state
+        .dag
+        .blue_work
+        .insert(block.hash.clone(), classification.blue_work);
+    state
+        .dag
+        .merge_set_diagnostics
+        .insert(block.hash.clone(), classification.diagnostics);
+    state.dag.blocks.insert(block.hash.clone(), block.clone());
+}
+
+fn accept_metadata(
+    state: &mut ChainState,
+    block: &Block,
+    production_reference_checks: &mut usize,
+) -> Result<(), String> {
+    let classification = corpus_fast_classification(state, block)?;
+    if *production_reference_checks < PRODUCTION_CLASSIFIER_REFERENCE_CHECK_LIMIT {
+        let production = classify_merge_set(block, state);
+        if production != classification {
+            return Err(format!(
+                "Task39 fast-path classification diverged from production classifier at block {}: fast={classification:?} production={production:?}",
+                block.hash
+            ));
+        }
+        *production_reference_checks = (*production_reference_checks).saturating_add(1);
+    }
+    commit_corpus_metadata(state, block, classification);
+    Ok(())
+}
+
+fn generate_corpus(count: usize) -> Result<(Vec<Block>, usize), String> {
     let mut state = ghostdag_state();
     let mut blocks = Vec::with_capacity(count);
     let mut tip = state.dag.genesis_hash.clone();
     let mut tip_height = 0_u64;
     let mut pending_join: Option<(String, String, u64)> = None;
     let mut sequence = 1_u64;
+    let mut production_reference_checks = 0usize;
 
     while blocks.len() < count {
         if let Some((left, right, fork_height)) = pending_join.take() {
             let mut parents = vec![left, right];
             parents.sort();
             let block = make_block(parents, fork_height.saturating_add(1), sequence);
-            accept_metadata(&mut state, &block)?;
+            accept_metadata(&mut state, &block, &mut production_reference_checks)?;
             tip = block.hash.clone();
             tip_height = block.header.height;
             blocks.push(block);
@@ -199,8 +341,8 @@ fn generate_corpus(count: usize) -> Result<Vec<Block>, String> {
             sequence = sequence.saturating_add(1);
             let right = make_block(vec![tip.clone()], next_height, sequence);
             sequence = sequence.saturating_add(1);
-            accept_metadata(&mut state, &left)?;
-            accept_metadata(&mut state, &right)?;
+            accept_metadata(&mut state, &left, &mut production_reference_checks)?;
+            accept_metadata(&mut state, &right, &mut production_reference_checks)?;
             pending_join = Some((left.hash.clone(), right.hash.clone(), next_height));
             blocks.push(left);
             if blocks.len() < count {
@@ -209,7 +351,7 @@ fn generate_corpus(count: usize) -> Result<Vec<Block>, String> {
         } else {
             let block = make_block(vec![tip.clone()], next_height, sequence);
             sequence = sequence.saturating_add(1);
-            accept_metadata(&mut state, &block)?;
+            accept_metadata(&mut state, &block, &mut production_reference_checks)?;
             tip = block.hash.clone();
             tip_height = next_height;
             blocks.push(block);
@@ -217,7 +359,7 @@ fn generate_corpus(count: usize) -> Result<Vec<Block>, String> {
     }
 
     blocks.truncate(count);
-    Ok(blocks)
+    Ok((blocks, production_reference_checks))
 }
 
 fn digest_strings(domain: &str, values: impl IntoIterator<Item = String>) -> String {
@@ -289,6 +431,7 @@ fn replay(blocks: &[Block], order: &[usize], name: &str) -> Result<ReplayRun, St
     let mut state = ghostdag_state();
     let mut pending = VecDeque::<usize>::new();
     let mut peak = 0usize;
+    let mut production_reference_checks = 0usize;
 
     for index in order {
         pending.push_back(*index);
@@ -300,7 +443,7 @@ fn replay(blocks: &[Block], order: &[usize], name: &str) -> Result<ReplayRun, St
                 let idx = pending.pop_front().expect("pending length checked");
                 let block = &blocks[idx];
                 if parents_known(block, &state) {
-                    accept_metadata(&mut state, block)?;
+                    accept_metadata(&mut state, block, &mut production_reference_checks)?;
                     progressed = true;
                 } else {
                     pending.push_back(idx);
@@ -336,6 +479,7 @@ fn replay(blocks: &[Block], order: &[usize], name: &str) -> Result<ReplayRun, St
         name: name.to_string(),
         elapsed_ms: started.elapsed().as_millis(),
         buffered_orphan_peak: peak,
+        production_classifier_reference_checks: production_reference_checks,
         observation,
     })
 }
@@ -429,7 +573,7 @@ fn main() -> Result<(), String> {
     }
 
     let generation_started = Instant::now();
-    let blocks = generate_corpus(args.blocks)?;
+    let (blocks, generation_production_classifier_reference_checks) = generate_corpus(args.blocks)?;
     let generation_ms = generation_started.elapsed().as_millis();
     let corpus = corpus_digest(&blocks);
 
@@ -460,6 +604,7 @@ fn main() -> Result<(), String> {
         candidate_tree_sha: args.candidate_tree,
         requested_blocks: args.blocks,
         generated_blocks: blocks.len(),
+        generation_production_classifier_reference_checks,
         corpus_digest: corpus,
         topology: Topology {
             chain_id: CHAIN_ID,
@@ -469,11 +614,15 @@ fn main() -> Result<(), String> {
             includes_multi_parent_joins: true,
         },
         corpus_contract: CorpusContract {
-            metadata_replay_uses_production_ghostdag_classifier: true,
+            metadata_replay_uses_production_ghostdag_classifier:
+                blocks.len() <= PRODUCTION_CLASSIFIER_REFERENCE_CHECK_LIMIT,
+            metadata_replay_uses_equivalence_checked_fast_path: true,
+            production_classifier_reference_check_limit:
+                PRODUCTION_CLASSIFIER_REFERENCE_CHECK_LIMIT,
             canonical_rebuild_uses_production_ordered_dag_state_rebuild: true,
             transaction_model: "unique coinbase-only transactions; final canonical rebuild applies production transaction state transition",
             production_valid_pow_and_state_root_per_block: false,
-            limitation: "Phase 2a is a scalable metadata-replay foundation. It does not claim every generated header satisfies PoW/state-root validation.",
+            limitation: "Phase 2a uses a Task39-topology fast path that is checked block-for-block against the production classifier for the first 4096 accepted blocks of generation and each replay. It does not claim every generated header satisfies PoW/state-root validation.",
         },
         runs: vec![canonical, permuted],
         exact_equivalence,
