@@ -1108,13 +1108,16 @@ impl SelectedSegmentSession {
     }
 
     fn fail_on_rejected_body(&mut self, hash: &str, now: u64) -> Option<BTreeSet<String>> {
-        if !self.requested_hashes.contains(hash)
-            || !self.current_chunk.iter().any(|candidate| candidate == hash)
-        {
+        let selected_body = self.requested_hashes.contains(hash)
+            && self.current_chunk.iter().any(|candidate| candidate == hash);
+        let prerequisite_body = self.unresolved_prerequisite_parent_hashes.contains(hash);
+        if !selected_body && !prerequisite_body {
             return None;
         }
 
-        self.received_hashes.insert(hash.to_string());
+        if selected_body {
+            self.received_hashes.insert(hash.to_string());
+        }
         self.updated_at_unix = now;
         self.state = SelectedSegmentSessionState::Failed;
         Some(
@@ -5988,6 +5991,18 @@ async fn main() -> Result<()> {
                                     );
                                 }
                             }
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let inbound_was_prerequisite =
+                                    session.prerequisite_parent_hashes.contains(&block.hash);
+                                session
+                                    .unresolved_prerequisite_parent_hashes
+                                    .remove(&block.hash);
+                                if inbound_was_prerequisite {
+                                    session
+                                        .prerequisite_parent_hashes
+                                        .extend(block.header.parents.iter().cloned());
+                                }
+                            }
                         }
                         if matches!(acceptance, BlockAcceptanceResult::MissingParent) {
                             let mut rt = runtime.write().await;
@@ -6090,37 +6105,57 @@ async fn main() -> Result<()> {
                                     now_unix(),
                                 )
                             };
+                            let retained_legacy_orphan =
+                                guard.orphan_blocks.contains_key(&block.hash);
+                            let selected_session_peer = selected_segment_session
+                                .as_ref()
+                                .map(|session| session.peer_id.clone());
                             let mut missing_parent_requests_issued = 0usize;
                             for parent in &missing_parents {
-                                if !selected_segment_priority
-                                    && block_requests.should_issue_getblock_for_peers(
-                                        parent,
-                                        now_unix(),
-                                        active_peer_ids(&p2p),
-                                    )
+                                let selected_parent_reference =
+                                    selected_segment_session.as_ref().is_some_and(|session| {
+                                        session.prerequisite_parent_hashes.contains(parent)
+                                    });
+                                let missing_parent_route = activated_v2_missing_parent_fetch_route(
+                                    selected_segment_priority,
+                                    retained_legacy_orphan,
+                                    selected_session_peer.as_deref(),
+                                    selected_parent_reference,
+                                );
+                                if let ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) =
+                                    &missing_parent_route
                                 {
-                                    let mut request_sent = false;
-                                    if let Some(ref p2p) = p2p {
-                                        if let Err(e) = p2p.request_block(parent) {
-                                            warn!(error = %e, missing_parent = %parent, "failed issuing missing-parent GetBlock request");
-                                        } else {
-                                            request_sent = true;
-                                            missing_parent_requests_issued =
-                                                missing_parent_requests_issued.saturating_add(1);
-                                        }
+                                    let newly_unresolved =
+                                        selected_segment_session.as_mut().is_some_and(|session| {
+                                            session
+                                                .unresolved_prerequisite_parent_hashes
+                                                .insert(parent.clone())
+                                        });
+                                    if newly_unresolved {
+                                        block_requests.note_selected_parent_references(
+                                            peer_id,
+                                            [parent.clone()],
+                                        );
                                     }
-                                    let mut rt = runtime.write().await;
-                                    if request_sent {
-                                        rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                                        rt.missing_parent_requests_sent =
-                                            rt.missing_parent_requests_sent.saturating_add(1);
+                                }
+
+                                let admitted = match &missing_parent_route {
+                                    ActivatedV2MissingParentFetchRoute::SelectedPeer(peer_id) => {
+                                        block_requests.promote_getblock_to_peer(
+                                            parent,
+                                            now_unix(),
+                                            peer_id,
+                                        )
                                     }
-                                    rt.pending_block_requests = block_requests.pending.len();
-                                    rt.inflight_block_requests = block_requests.pending.len();
-                                    rt.pending_block_request_hashes =
-                                        block_requests.pending_hashes();
-                                    info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; GetBlock request emitted");
-                                } else {
+                                    ActivatedV2MissingParentFetchRoute::Generic => block_requests
+                                        .should_issue_getblock_for_peers(
+                                            parent,
+                                            now_unix(),
+                                            active_peer_ids(&p2p),
+                                        ),
+                                    ActivatedV2MissingParentFetchRoute::Suppressed => false,
+                                };
+                                if !admitted {
                                     let mut rt = runtime.write().await;
                                     rt.duplicate_block_requests_suppressed =
                                         rt.duplicate_block_requests_suppressed.saturating_add(1);
@@ -6128,7 +6163,71 @@ async fn main() -> Result<()> {
                                     rt.inflight_block_requests = block_requests.pending.len();
                                     rt.pending_block_request_hashes =
                                         block_requests.pending_hashes();
+                                    continue;
                                 }
+
+                                let request_result = if let Some(ref p2p_handle) = p2p {
+                                    match &missing_parent_route {
+                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(
+                                            peer_id,
+                                        ) => p2p_handle
+                                            .request_block_from(peer_id, parent)
+                                            .map(|_| ()),
+                                        ActivatedV2MissingParentFetchRoute::Generic => {
+                                            p2p_handle.request_block(parent)
+                                        }
+                                        ActivatedV2MissingParentFetchRoute::Suppressed => {
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    continue;
+                                };
+
+                                let mut request_sent = false;
+                                match request_result {
+                                    Ok(()) => {
+                                        request_sent = true;
+                                        missing_parent_requests_issued =
+                                            missing_parent_requests_issued.saturating_add(1);
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            error = %error,
+                                            missing_parent = %parent,
+                                            child = %block.hash,
+                                            route = ?missing_parent_route,
+                                            "failed issuing legacy missing-parent GetBlock request; preserving tracked request for peer failover"
+                                        );
+                                    }
+                                }
+
+                                let mut rt = runtime.write().await;
+                                if request_sent {
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                    rt.missing_parent_requests_sent =
+                                        rt.missing_parent_requests_sent.saturating_add(1);
+                                    if matches!(
+                                        &missing_parent_route,
+                                        ActivatedV2MissingParentFetchRoute::SelectedPeer(_)
+                                    ) {
+                                        rt.peer_addressed_getblock_sent_total = rt
+                                            .peer_addressed_getblock_sent_total
+                                            .saturating_add(1);
+                                    }
+                                }
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes =
+                                    block_requests.pending_hashes();
+                                info!(
+                                    event = "missing_block_requested",
+                                    missing_parent = %parent,
+                                    child = %block.hash,
+                                    route = ?missing_parent_route,
+                                    request_sent,
+                                    "missing parent discovered; routed GetBlock request"
+                                );
                             }
                             if final_same_height_reconcile_block {
                                 let mut rt = runtime.write().await;
@@ -10678,6 +10777,48 @@ mod tests {
 
         assert_eq!(session.state, SelectedSegmentSessionState::Failed);
         assert!(session.received_hashes.contains("b2"));
+        assert!(owned.contains("b1"));
+        assert!(owned.contains("b2"));
+        assert!(owned.contains("merge-parent"));
+        assert!(!session.start_chunk(vec!["b2".to_string()], 2_001));
+    }
+
+    #[test]
+    fn rejected_selected_segment_prerequisite_fails_session_for_replan() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            79,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            33,
+            1_000,
+        )
+        .expect("session");
+        session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+        session
+            .requested_hashes
+            .extend(session.missing_hashes.iter().cloned());
+        session
+            .prerequisite_parent_hashes
+            .insert("merge-parent".to_string());
+        session
+            .unresolved_prerequisite_parent_hashes
+            .insert("merge-parent".to_string());
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
+
+        let owned = session
+            .fail_on_rejected_body("merge-parent", 2_000)
+            .expect("owned prerequisite rejection must fail the session");
+
+        assert_eq!(session.state, SelectedSegmentSessionState::Failed);
+        assert!(!session.received_hashes.contains("merge-parent"));
         assert!(owned.contains("b1"));
         assert!(owned.contains("b2"));
         assert!(owned.contains("merge-parent"));
