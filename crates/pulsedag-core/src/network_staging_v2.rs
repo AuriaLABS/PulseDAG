@@ -246,6 +246,7 @@ pub fn materialize_activated_v2_mining_overlay(
     }
 
     let mut working = state.clone();
+    let mut staged_blocks = Vec::with_capacity(closure.ordered.len());
     for hash in &closure.ordered {
         let staged = staging
             .blocks
@@ -253,13 +254,22 @@ pub fn materialize_activated_v2_mining_overlay(
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
         validate_activated_v2_p2p_block_context(staged, &working, identity)?;
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
+        staged_blocks.push(staged.clone());
     }
 
-    // The mining overlay is intentionally not an authoritative snapshot.
+    // The overlay intentionally keeps the live canonical UTXO/state-root until
+    // a merge anchor commits the staged closure. Its mempool, however, must not
+    // continue advertising transactions that are already present anywhere in
+    // that staged ancestry: a template may select the staged tip as a parent,
+    // and counting the same transaction again would overstate candidate fees.
+    remove_staged_transactions_from_mempool(&mut working, &staged_blocks);
+    reconcile_mempool_for_protocol(&mut working, identity)?;
+
     // Staged parallel tips are valid parent candidates, but they are not fully
     // classified into the frozen total order until a merge anchor commits them.
-    // Keep the live canonical UTXO/state-root intact and expose only the
-    // validated DAG metadata needed for deterministic parent selection.
+    // Keep the live canonical UTXO/state-root intact and expose the validated DAG
+    // metadata plus the staged-ancestry-filtered mempool needed for deterministic
+    // parent and transaction selection.
     Ok(working)
 }
 
@@ -338,11 +348,7 @@ pub fn stage_activated_v2_p2p_block(
     }
 }
 
-fn remove_promoted_transactions_from_mempool(
-    state: &mut ChainState,
-    blocks: &[Block],
-    identity: &ProtocolActivationIdentity,
-) -> Result<(), PulseError> {
+fn remove_staged_transactions_from_mempool(state: &mut ChainState, blocks: &[Block]) {
     for block in blocks {
         for transaction in block.transactions.iter().skip(1) {
             if state
@@ -364,6 +370,14 @@ fn remove_promoted_transactions_from_mempool(
             }
         }
     }
+}
+
+fn remove_promoted_transactions_from_mempool(
+    state: &mut ChainState,
+    blocks: &[Block],
+    identity: &ProtocolActivationIdentity,
+) -> Result<(), PulseError> {
+    remove_staged_transactions_from_mempool(state, blocks);
     reconcile_mempool_for_protocol(state, identity)?;
     Ok(())
 }
@@ -642,6 +656,40 @@ mod tests {
         );
         assert_eq!(bincode::serialize(&live).unwrap(), live_before);
         assert_eq!(bincode::serialize(&staging).unwrap(), staging_before);
+    }
+
+    #[test]
+    fn staged_ancestry_mempool_filter_removes_transactions_from_every_staged_block() {
+        let (mut live, _identity, _staging, _main, mut staged_parent) = staged_side_fixture();
+        let mut staged_child = staged_parent.clone();
+
+        let mut parent_tx = staged_parent.transactions[0].clone();
+        parent_tx.txid = "staged-parent-tx".to_string();
+        let mut child_tx = staged_child.transactions[0].clone();
+        child_tx.txid = "staged-child-tx".to_string();
+        let mut unrelated_tx = staged_child.transactions[0].clone();
+        unrelated_tx.txid = "unrelated-live-tx".to_string();
+
+        staged_parent.transactions.push(parent_tx.clone());
+        staged_child.transactions.push(child_tx.clone());
+
+        for tx in [&parent_tx, &child_tx, &unrelated_tx] {
+            live.mempool.transactions.insert(tx.txid.clone(), tx.clone());
+            live.mempool.first_seen.insert(tx.txid.clone(), 1);
+            live.mempool.admission_height.insert(tx.txid.clone(), 0);
+        }
+
+        remove_staged_transactions_from_mempool(
+            &mut live,
+            &[staged_parent.clone(), staged_child.clone()],
+        );
+
+        assert!(!live.mempool.transactions.contains_key(&parent_tx.txid));
+        assert!(!live.mempool.transactions.contains_key(&child_tx.txid));
+        assert!(live.mempool.transactions.contains_key(&unrelated_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&parent_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&child_tx.txid));
+        assert_eq!(live.mempool.counters.confirmed_removed_total, 2);
     }
 
     #[test]
