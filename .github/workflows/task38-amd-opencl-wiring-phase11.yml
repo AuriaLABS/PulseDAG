@@ -40,7 +40,7 @@ permissions:
 concurrency:
   # Only first-attempt pull_request runs share a PR cancellation group. Re-runs
   # and push/tag/workflow_dispatch evidence are isolated by run_id.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.number || github.run_id }}
+  group: pr-supersession-v2-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
