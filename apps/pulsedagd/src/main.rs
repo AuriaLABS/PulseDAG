@@ -703,6 +703,25 @@ fn selected_segment_session_should_replan(
     inflight_for_peer == 0 && !direct_request_peers.iter().any(|peer| peer == session_peer)
 }
 
+fn selected_segment_driver_error_replan(
+    selected_segment_session: &mut Option<SelectedSegmentSession>,
+    hash: &str,
+    now: u64,
+) -> Option<(u64, String, String, BTreeSet<String>)> {
+    selected_segment_session.as_mut().and_then(|session| {
+        session
+            .fail_on_rejected_body(hash, now)
+            .map(|owned_requests| {
+                (
+                    session.session_id,
+                    session.peer_id.clone(),
+                    session.remote_selected_tip.clone(),
+                    owned_requests,
+                )
+            })
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ActivatedV2MissingParentFetchRoute {
     SelectedPeer(String),
@@ -5437,8 +5456,70 @@ async fn main() -> Result<()> {
                                         "peer_block_v2_failed",
                                         &reason,
                                     );
+
+                                    let mut selected_segment_driver_replanned = false;
+                                    if let Some((
+                                        session_id,
+                                        peer_id,
+                                        remote_selected_tip,
+                                        owned_requests,
+                                    )) = selected_segment_driver_error_replan(
+                                        &mut selected_segment_session,
+                                        &block.hash,
+                                        now_unix(),
+                                    ) {
+                                        for hash in owned_requests {
+                                            if block_requests.pending.contains_key(&hash) {
+                                                block_requests.resolve(&hash);
+                                            }
+                                        }
+                                        selected_segment_prune_poison(
+                                            &mut selected_segment_peer_poison,
+                                            now_unix(),
+                                        );
+                                        let exhausted = selected_segment_note_rejection(
+                                            &mut selected_segment_peer_poison,
+                                            &peer_id,
+                                            &remote_selected_tip,
+                                            now_unix(),
+                                        );
+                                        if exhausted {
+                                            warn!(
+                                                event = "selected_segment_replan_exhausted",
+                                                peer = %peer_id,
+                                                tip = %remote_selected_tip,
+                                                "selected-segment replan budget exhausted after driver error; peer/tip stays poisoned"
+                                            );
+                                        }
+                                        selected_segment_session = None;
+                                        selected_segment_locator_state.lock().await.pending_locator =
+                                            None;
+                                        selected_segment_driver_replanned = true;
+                                        warn!(
+                                            event = "selected_segment_driver_error_replan",
+                                            session_id,
+                                            peer = %peer_id,
+                                            tip = %remote_selected_tip,
+                                            block_hash = %block.hash,
+                                            error = %error,
+                                            "owned selected-segment body failed activated-v2 driver validation; abandoned session for deterministic replanning"
+                                        );
+                                    }
+
                                     block_requests.resolve(&block.hash);
                                     let mut rt = runtime.write().await;
+                                    if selected_segment_driver_replanned {
+                                        rt.active_session_id = None;
+                                        rt.active_session_peer = None;
+                                        rt.active_session_remote_tip = None;
+                                        rt.active_session_remote_height = 0;
+                                        rt.active_session_common_ancestor = None;
+                                        rt.active_session_remaining_blocks = 0;
+                                        rt.pending_block_requests = block_requests.pending.len();
+                                        rt.inflight_block_requests = block_requests.pending.len();
+                                        rt.pending_block_request_hashes =
+                                            block_requests.pending_hashes();
+                                    }
                                     rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                     rt.rejected_p2p_blocks =
                                         rt.rejected_p2p_blocks.saturating_add(1);
@@ -5446,7 +5527,11 @@ async fn main() -> Result<()> {
                                         rt.pulsedag_blocks_rejected_total.saturating_add(1);
                                     rt.record_rejected_block_reason("activated_v2_runtime_error");
                                     rt.last_rejected_peer_block_reason = Some(reason.clone());
-                                    rt.sync_state = "degraded".to_string();
+                                    rt.sync_state = if selected_segment_driver_replanned {
+                                        "catching_up".to_string()
+                                    } else {
+                                        "degraded".to_string()
+                                    };
                                     rt.sync_failures = rt.sync_failures.saturating_add(1);
                                     rt.sync_pipeline.fallback_after_failure(reason, now_unix());
                                     continue;
@@ -11043,6 +11128,58 @@ mod tests {
         assert_eq!(session.received_hashes.len(), 3);
         assert_eq!(session.accepted_applied_hashes.len(), 3);
         assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn activated_v2_driver_error_on_owned_selected_body_plans_replan() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut selected_segment_session = Some(
+            SelectedSegmentSession::new(
+                76,
+                "peer-driver".to_string(),
+                "common".to_string(),
+                0,
+                &headers,
+                &locator,
+                30,
+                1_000,
+            )
+            .expect("session"),
+        );
+        {
+            let session = selected_segment_session.as_mut().expect("session");
+            session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+            session
+                .requested_hashes
+                .extend(session.missing_hashes.iter().cloned());
+            session
+                .unresolved_prerequisite_parent_hashes
+                .insert("merge-parent".to_string());
+            assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
+        }
+
+        let (session_id, peer_id, remote_selected_tip, owned) =
+            selected_segment_driver_error_replan(
+                &mut selected_segment_session,
+                "b2",
+                2_000,
+            )
+            .expect("owned driver error must plan selected-segment replan");
+
+        assert_eq!(session_id, 76);
+        assert_eq!(peer_id, "peer-driver");
+        assert!(!remote_selected_tip.is_empty());
+        assert!(owned.contains("b1"));
+        assert!(owned.contains("b2"));
+        assert!(owned.contains("merge-parent"));
+        assert_eq!(
+            selected_segment_session.as_ref().expect("session").state,
+            SelectedSegmentSessionState::Failed
+        );
     }
 
     #[test]
