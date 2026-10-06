@@ -674,7 +674,9 @@ mod tests {
         staged_child.transactions.push(child_tx.clone());
 
         for tx in [&parent_tx, &child_tx, &unrelated_tx] {
-            live.mempool.transactions.insert(tx.txid.clone(), tx.clone());
+            live.mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
             live.mempool.first_seen.insert(tx.txid.clone(), 1);
             live.mempool.admission_height.insert(tx.txid.clone(), 0);
         }
