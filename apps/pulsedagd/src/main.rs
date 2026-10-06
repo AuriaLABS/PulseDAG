@@ -909,8 +909,7 @@ fn selected_segment_peer_poisoned(
     poison
         .get(&(peer_id.to_string(), tip.to_string()))
         .is_some_and(|entry| {
-            entry.replan_count >= SELECTED_SEGMENT_MAX_REPLANS_PER_TIP
-                || entry.until_unix > now
+            entry.replan_count >= SELECTED_SEGMENT_MAX_REPLANS_PER_TIP || entry.until_unix > now
         })
 }
 
@@ -5364,17 +5363,16 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            let selected_segment_owned_pending_retries =
-                                selected_segment_session
-                                    .as_ref()
-                                    .map(|session| {
-                                        activated_v2_p2p_runtime
-                                            .pending_hashes()
-                                            .into_iter()
-                                            .filter(|hash| session.owns_request(hash))
-                                            .collect::<Vec<_>>()
-                                    })
-                                    .unwrap_or_default();
+                            let selected_segment_owned_pending_retries = selected_segment_session
+                                .as_ref()
+                                .map(|session| {
+                                    activated_v2_p2p_runtime
+                                        .pending_hashes()
+                                        .into_iter()
+                                        .filter(|hash| session.owns_request(hash))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
 
                             let drive = if let Some(monetary) = monetary_activation.as_ref() {
                                 pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
