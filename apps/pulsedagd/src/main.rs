@@ -2204,12 +2204,17 @@ fn headers_for_request(
     limit: usize,
 ) -> Vec<HeaderInventory> {
     let limit = limit.clamp(1, 512);
-    let locator_heights = locator
-        .iter()
-        .filter_map(|hash| chain.dag.blocks.get(hash).map(|block| block.header.height))
-        .collect::<Vec<_>>();
-    let start_height = locator_heights.into_iter().max().unwrap_or(0);
     let selected: HashSet<_> = chain.dag.selected_chain.iter().cloned().collect();
+    // A retained side-branch locator is not a common selected-chain ancestor.
+    // Advancing from its height can skip the actual join point and return a
+    // segment whose first header is disconnected from the requester. Match only
+    // locator hashes that are on this node's selected chain.
+    let start_height = locator
+        .iter()
+        .filter(|hash| selected.contains(*hash))
+        .filter_map(|hash| chain.dag.blocks.get(hash).map(|block| block.header.height))
+        .max()
+        .unwrap_or(0);
     let mut blocks = chain
         .dag
         .blocks
@@ -10766,6 +10771,64 @@ mod tests {
                 height,
             },
         }
+    }
+
+    #[test]
+    fn headers_locator_ignores_retained_side_branch_height() {
+        let mut chain =
+            pulsedag_core::genesis::init_chain_state("selected-locator-side-branch".to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+
+        let block = |hash: &str, parent: &str, height: u64| {
+            let item = selected_test_header(hash, parent, height);
+            pulsedag_core::types::Block {
+                hash: item.hash,
+                header: item.header,
+                transactions: Vec::new(),
+            }
+        };
+
+        let selected_1 = block("selected-1", &genesis, 1);
+        let selected_2 = block("selected-2", &selected_1.hash, 2);
+        let selected_3 = block("selected-3", &selected_2.hash, 3);
+        let selected_4 = block("selected-4", &selected_3.hash, 4);
+        let side_3 = block("side-3", &selected_2.hash, 3);
+
+        for candidate in [
+            selected_1.clone(),
+            selected_2.clone(),
+            selected_3.clone(),
+            selected_4.clone(),
+            side_3.clone(),
+        ] {
+            chain.dag.blocks.insert(candidate.hash.clone(), candidate);
+        }
+        chain.dag.selected_chain = vec![
+            genesis.clone(),
+            selected_1.hash.clone(),
+            selected_2.hash.clone(),
+            selected_3.hash.clone(),
+            selected_4.hash.clone(),
+        ];
+
+        // The requester retained side-3 at a higher height than its last actual
+        // common selected-chain block (selected-1). The responder must not use
+        // side-3's height as the continuation point.
+        let headers = headers_for_request(
+            &chain,
+            &[side_3.hash.clone(), selected_1.hash.clone(), genesis],
+            None,
+            16,
+        );
+
+        assert_eq!(
+            headers.iter().map(|item| item.hash.as_str()).collect::<Vec<_>>(),
+            vec!["selected-2", "selected-3", "selected-4"]
+        );
+        assert_eq!(
+            headers.first().unwrap().header.parents,
+            vec![selected_1.hash]
+        );
     }
 
     #[test]
