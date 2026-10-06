@@ -34,10 +34,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Supersede only stale heads from the same pull request. Keep push, tag and
-  # workflow_dispatch runs isolated so retained/manual evidence is never cancelled.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Only first-attempt pull_request runs share a PR cancellation group. Re-runs
+  # and push/tag/workflow_dispatch evidence are isolated by run_id.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
   reconnect-foundation-contract:
