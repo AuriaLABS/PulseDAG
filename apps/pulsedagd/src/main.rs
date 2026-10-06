@@ -1152,7 +1152,12 @@ impl SelectedSegmentSession {
         self.current_chunk = hashes;
         let owned_chunk = self.current_chunk.clone();
         for hash in owned_chunk {
-            self.own_request(&hash, OwnedSelectedRequestRole::Chunk, now);
+            // Preserve explicit ownership established while promoting an already
+            // pending generic request into the selected-peer route. Newly issued
+            // selected requests are owned by the active sequential chunk.
+            if !self.owned_requests.contains_key(&hash) {
+                self.own_request(&hash, OwnedSelectedRequestRole::Chunk, now);
+            }
         }
         self.state = SelectedSegmentSessionState::RequestingBlocks;
         self.updated_at_unix = now;
@@ -1421,6 +1426,16 @@ fn validate_selected_header_segment(
         selected_path.insert(item.hash.clone());
     }
     Ok(())
+}
+
+fn selected_segment_peer_request_window<I>(candidates: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    candidates
+        .into_iter()
+        .take(MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER)
+        .collect()
 }
 
 fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> Vec<String> {
@@ -3681,7 +3696,7 @@ async fn main() -> Result<()> {
                             recovery_selected_segment_continuation.take()
                         {
                             let mut issued_hashes = Vec::new();
-                            for hash in candidates {
+                            for hash in selected_segment_peer_request_window(candidates) {
                                 if !block_requests.promote_getblock_to_peer(
                                     &hash,
                                     now_unix(),
@@ -4113,7 +4128,7 @@ async fn main() -> Result<()> {
                         if !candidates.is_empty() {
                             let mut tracked_hashes = Vec::new();
                             let mut sent = 0u64;
-                            for hash in candidates {
+                            for hash in selected_segment_peer_request_window(candidates) {
                                 if !block_requests.promote_getblock_to_peer(
                                     &hash,
                                     now_unix(),
@@ -5926,7 +5941,7 @@ async fn main() -> Result<()> {
                                     selected_segment_continuation.take()
                                 {
                                     let mut issued_hashes = Vec::new();
-                                    for hash in candidates {
+                                    for hash in selected_segment_peer_request_window(candidates) {
                                         if !block_requests.promote_getblock_to_peer(
                                             &hash,
                                             now_unix(),
@@ -6910,7 +6925,7 @@ async fn main() -> Result<()> {
                                     selected_segment_continuation.take()
                                 {
                                     let mut issued_hashes = Vec::new();
-                                    for hash in candidates {
+                                    for hash in selected_segment_peer_request_window(candidates) {
                                         if !block_requests.promote_getblock_to_peer(
                                             &hash,
                                             now_unix(),
@@ -7414,11 +7429,12 @@ async fn main() -> Result<()> {
                                         &known,
                                         &HashSet::new(),
                                     );
-                                    let candidates = missing_hashes
-                                        .iter()
-                                        .take(selected_limits.max_inflight_blocks_per_peer)
-                                        .cloned()
-                                        .collect::<Vec<_>>();
+                                    let candidates = selected_segment_peer_request_window(
+                                        missing_hashes
+                                            .iter()
+                                            .take(selected_limits.max_inflight_blocks_per_peer)
+                                            .cloned(),
+                                    );
                                     session.missing_hashes = missing_hashes;
                                     session.state = SelectedSegmentSessionState::RequestingBlocks;
                                     session.updated_at_unix = now_unix();
@@ -7455,6 +7471,7 @@ async fn main() -> Result<()> {
                         let mut issued_selected_request_count = 0u64;
                         let mut issued_selected_hashes = Vec::new();
                         for hash in requests {
+                            let selected_request_was_pending = pending.contains(&hash);
                             let selected_peer = selected_segment_session
                                 .as_ref()
                                 .filter(|_| selected_request_hashes.contains(&hash))
@@ -7493,7 +7510,11 @@ async fn main() -> Result<()> {
                                     session.requested_hashes.insert(hash.clone());
                                     session.own_request(
                                         &hash,
-                                        OwnedSelectedRequestRole::Chunk,
+                                        if selected_request_was_pending {
+                                            OwnedSelectedRequestRole::Promoted
+                                        } else {
+                                            OwnedSelectedRequestRole::Chunk
+                                        },
                                         now_unix(),
                                     );
                                     issued_selected_hashes.push(hash.clone());
@@ -11309,6 +11330,66 @@ mod tests {
         assert!(progress.session_completed);
         assert!(!session.received_hashes.contains("b2"));
         assert!(!session.accepted_applied_hashes.contains("b2"));
+    }
+
+    #[test]
+    fn selected_segment_peer_window_prevents_far_pending_promotion_from_joining_chunk() {
+        let candidates = (1..=80)
+            .map(|height| format!("selected-{height:03}"))
+            .collect::<Vec<_>>();
+        let window = selected_segment_peer_request_window(candidates.clone());
+        assert_eq!(window.len(), MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER);
+        assert_eq!(window.first(), Some(&"selected-001".to_string()));
+        assert_eq!(window.last(), Some(&"selected-016".to_string()));
+        assert!(!window.contains(&"selected-078".to_string()));
+
+        let mut tracker = BlockRequestTracker::with_limits(
+            8,
+            2,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+            MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER,
+        );
+        assert!(tracker.should_issue_getblock_from_peer("selected-078", 900, "peer-a"));
+
+        let mut issued = Vec::new();
+        for hash in selected_segment_peer_request_window(candidates) {
+            if tracker.promote_getblock_to_peer(&hash, 901, "peer-a") {
+                issued.push(hash);
+            }
+        }
+        assert!(!issued.contains(&"selected-078".to_string()));
+        assert!(issued
+            .iter()
+            .all(|hash| hash <= &"selected-016".to_string()));
+    }
+
+    #[test]
+    fn start_chunk_preserves_promoted_request_ownership() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let mut session = SelectedSegmentSession::new(
+            92,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &["common".to_string()],
+            40,
+            1_000,
+        )
+        .expect("session");
+        session.own_request("b1", OwnedSelectedRequestRole::Promoted, 1_001);
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_002));
+        assert_eq!(
+            session.owned_requests.get("b1").map(|owned| owned.role),
+            Some(OwnedSelectedRequestRole::Promoted)
+        );
+        assert_eq!(
+            session.owned_requests.get("b2").map(|owned| owned.role),
+            Some(OwnedSelectedRequestRole::Chunk)
+        );
     }
 
     #[test]
