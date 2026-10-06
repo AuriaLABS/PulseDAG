@@ -5457,7 +5457,7 @@ fn dispatch_network_message_with_transport_peer(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::Tips { tips });
-            match authorized_protocol_sync_from_tip(bytes, transport_peer, inner) {
+            match authorized_protocol_sync_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -5490,7 +5490,7 @@ fn dispatch_network_message_with_transport_peer(
                     }
                 }
             }
-            match authorized_fast_sync_from_tip(bytes, transport_peer, inner) {
+            match authorized_fast_sync_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -5523,7 +5523,7 @@ fn dispatch_network_message_with_transport_peer(
                     }
                 }
             }
-            match authorized_compact_relay_from_tip(bytes, transport_peer, inner) {
+            match authorized_compact_relay_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -13309,7 +13309,8 @@ mod deterministic_p2p_sync_coverage_tests {
 mod task27_live_capability_io_tests {
     use super::*;
     use crate::messages::{
-        ProtocolMessageClassV1, ProtocolPeerRouteActionV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
+        attach_protocol_sync_carrier_v1, ProtocolCapabilityHandshakeV1, ProtocolMessageClassV1,
+        ProtocolPeerRouteActionV1, ProtocolSyncCarrierV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
     };
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -13450,6 +13451,85 @@ mod task27_live_capability_io_tests {
                 ProtocolPeerRouteActionV1::HoldForCapabilities
             );
         }
+    }
+
+    #[test]
+    fn forwarded_tip_carrier_cannot_inherit_transport_protocol_authorization() {
+        const LOCAL_PEER: &str = "local-peer";
+        const TRANSPORT_PEER: &str = "peer-transport";
+        const FORWARDED_AUTHOR: &str = "peer-author";
+
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard.peer_id = LOCAL_PEER.to_string();
+            guard.connected_peers.push(TRANSPORT_PEER.to_string());
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+
+            let mut direct_neighbor = ProtocolCapabilityTransportV1::default();
+            direct_neighbor
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+            let direct_capabilities = direct_neighbor
+                .encode_tip_message(&NetworkMessage::Tips {
+                    chain_id: CHAIN_ID.to_string(),
+                    tips: Vec::new(),
+                    inventory: None,
+                })
+                .unwrap();
+            guard
+                .protocol_capability_transport
+                .decode_from_peer(TRANSPORT_PEER, &direct_capabilities)
+                .unwrap();
+            assert!(protocol_sync_peer_is_authorized(&guard, TRANSPORT_PEER));
+        }
+
+        let mut forwarded_author = ProtocolCapabilityTransportV1::default();
+        forwarded_author
+            .configure_local_capabilities(CHAIN_ID, capabilities())
+            .unwrap();
+        let base = forwarded_author
+            .encode_tip_message(&NetworkMessage::Tips {
+                chain_id: CHAIN_ID.to_string(),
+                tips: vec!["forwarded-tip".to_string()],
+                inventory: None,
+            })
+            .unwrap();
+        let wire = attach_protocol_sync_carrier_v1(
+            &base,
+            &ProtocolSyncCarrierV1 {
+                target_peer_id: LOCAL_PEER.to_string(),
+                wire: ProtocolSyncWireV1::CapabilityHandshake(
+                    ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
+                        chain_id: CHAIN_ID.to_string(),
+                    },
+                ),
+            },
+        )
+        .unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message_with_transport_peer(
+            CHAIN_ID,
+            &wire,
+            Some(FORWARDED_AUTHOR),
+            Some(TRANSPORT_PEER),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Tips { tips }) if tips == vec!["forwarded-tip".to_string()]
+        ));
+        assert!(
+            inbound_rx.try_recv().is_err(),
+            "forwarded Tips carrier must not inherit the direct transport peer's protocol authorization"
+        );
     }
 
     #[test]
