@@ -13309,8 +13309,9 @@ mod deterministic_p2p_sync_coverage_tests {
 mod task27_live_capability_io_tests {
     use super::*;
     use crate::messages::{
-        attach_protocol_sync_carrier_v1, ProtocolCapabilityHandshakeV1, ProtocolMessageClassV1,
-        ProtocolPeerRouteActionV1, ProtocolSyncCarrierV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
+        attach_protocol_sync_carrier_v1, ProtocolMessageClassV1, ProtocolPeerRouteActionV1,
+        ProtocolSyncCarrierV1, SelectedChainLocatorV1, P2P_DAG_SYNC_CONTRACT_VERSION,
+        P2P_PROTOCOL_CAPABILITIES_VERSION,
     };
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -13503,11 +13504,12 @@ mod task27_live_capability_io_tests {
             &base,
             &ProtocolSyncCarrierV1 {
                 target_peer_id: LOCAL_PEER.to_string(),
-                wire: ProtocolSyncWireV1::CapabilityHandshake(
-                    ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
-                        chain_id: CHAIN_ID.to_string(),
-                    },
-                ),
+                wire: ProtocolSyncWireV1::SelectedChainLocator(SelectedChainLocatorV1 {
+                    contract_version: P2P_DAG_SYNC_CONTRACT_VERSION,
+                    protocol_identity: capabilities().protocol_identity,
+                    selected_tip: "forwarded-tip".to_string(),
+                    locator: vec!["forwarded-tip".to_string(), "ancestor".to_string()],
+                }),
             },
         )
         .unwrap();
