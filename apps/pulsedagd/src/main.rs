@@ -5492,8 +5492,10 @@ async fn main() -> Result<()> {
                                             );
                                         }
                                         selected_segment_session = None;
-                                        selected_segment_locator_state.lock().await.pending_locator =
-                                            None;
+                                        selected_segment_locator_state
+                                            .lock()
+                                            .await
+                                            .pending_locator = None;
                                         selected_segment_driver_replanned = true;
                                         warn!(
                                             event = "selected_segment_driver_error_replan",
@@ -11163,12 +11165,8 @@ mod tests {
         }
 
         let (session_id, peer_id, remote_selected_tip, owned) =
-            selected_segment_driver_error_replan(
-                &mut selected_segment_session,
-                "b2",
-                2_000,
-            )
-            .expect("owned driver error must plan selected-segment replan");
+            selected_segment_driver_error_replan(&mut selected_segment_session, "b2", 2_000)
+                .expect("owned driver error must plan selected-segment replan");
 
         assert_eq!(session_id, 76);
         assert_eq!(peer_id, "peer-driver");
