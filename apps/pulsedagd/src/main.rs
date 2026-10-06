@@ -705,21 +705,27 @@ fn selected_segment_session_should_replan(
 
 fn selected_segment_driver_error_replan(
     selected_segment_session: &mut Option<SelectedSegmentSession>,
-    hash: &str,
+    primary_hash: &str,
+    pending_retry_hashes: &[String],
     now: u64,
-) -> Option<(u64, String, String, BTreeSet<String>)> {
-    selected_segment_session.as_mut().and_then(|session| {
-        session
-            .fail_on_rejected_body(hash, now)
-            .map(|owned_requests| {
-                (
-                    session.session_id,
-                    session.peer_id.clone(),
-                    session.remote_selected_tip.clone(),
-                    owned_requests,
-                )
-            })
-    })
+) -> Option<(u64, String, String, String, BTreeSet<String>)> {
+    let session = selected_segment_session.as_mut()?;
+    let failed_hash = if session.owns_request(primary_hash) {
+        primary_hash.to_string()
+    } else {
+        pending_retry_hashes
+            .iter()
+            .find(|hash| session.owns_request(hash))
+            .cloned()?
+    };
+    let owned_requests = session.fail_on_rejected_body(&failed_hash, now)?;
+    Some((
+        session.session_id,
+        session.peer_id.clone(),
+        session.remote_selected_tip.clone(),
+        failed_hash,
+        owned_requests,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -902,14 +908,19 @@ fn selected_segment_peer_poisoned(
 ) -> bool {
     poison
         .get(&(peer_id.to_string(), tip.to_string()))
-        .is_some_and(|entry| entry.until_unix > now)
+        .is_some_and(|entry| {
+            entry.replan_count >= SELECTED_SEGMENT_MAX_REPLANS_PER_TIP
+                || entry.until_unix > now
+        })
 }
 
 fn selected_segment_prune_poison(
     poison: &mut BTreeMap<(String, String), SelectedSegmentPeerPoison>,
     now: u64,
 ) {
-    poison.retain(|_, entry| entry.until_unix > now);
+    poison.retain(|_, entry| {
+        entry.replan_count >= SELECTED_SEGMENT_MAX_REPLANS_PER_TIP || entry.until_unix > now
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -5353,6 +5364,18 @@ async fn main() -> Result<()> {
                                 }
                             }
 
+                            let selected_segment_owned_pending_retries =
+                                selected_segment_session
+                                    .as_ref()
+                                    .map(|session| {
+                                        activated_v2_p2p_runtime
+                                            .pending_hashes()
+                                            .into_iter()
+                                            .filter(|hash| session.owns_request(hash))
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+
                             let drive = if let Some(monetary) = monetary_activation.as_ref() {
                                 pulsedag_core::drive_monetary_v3_p2p_block_with_runtime_persistence(
                                     block.clone(),
@@ -5462,10 +5485,12 @@ async fn main() -> Result<()> {
                                         session_id,
                                         peer_id,
                                         remote_selected_tip,
+                                        failed_selected_hash,
                                         owned_requests,
                                     )) = selected_segment_driver_error_replan(
                                         &mut selected_segment_session,
                                         &block.hash,
+                                        &selected_segment_owned_pending_retries,
                                         now_unix(),
                                     ) {
                                         for hash in owned_requests {
@@ -5503,8 +5528,9 @@ async fn main() -> Result<()> {
                                             peer = %peer_id,
                                             tip = %remote_selected_tip,
                                             block_hash = %block.hash,
+                                            failed_selected_hash = %failed_selected_hash,
                                             error = %error,
-                                            "owned selected-segment body failed activated-v2 driver validation; abandoned session for deterministic replanning"
+                                            "owned selected-segment body or pending retry failed activated-v2 driver validation; abandoned session for deterministic replanning"
                                         );
                                     }
 
@@ -11164,16 +11190,68 @@ mod tests {
             assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
         }
 
-        let (session_id, peer_id, remote_selected_tip, owned) =
-            selected_segment_driver_error_replan(&mut selected_segment_session, "b2", 2_000)
+        let (session_id, peer_id, remote_selected_tip, failed_hash, owned) =
+            selected_segment_driver_error_replan(&mut selected_segment_session, "b2", &[], 2_000)
                 .expect("owned driver error must plan selected-segment replan");
 
         assert_eq!(session_id, 76);
         assert_eq!(peer_id, "peer-driver");
         assert!(!remote_selected_tip.is_empty());
+        assert_eq!(failed_hash, "b2");
         assert!(owned.contains("b1"));
         assert!(owned.contains("b2"));
         assert!(owned.contains("merge-parent"));
+        assert_eq!(
+            selected_segment_session.as_ref().expect("session").state,
+            SelectedSegmentSessionState::Failed
+        );
+    }
+
+    #[test]
+    fn activated_v2_driver_error_on_unrelated_primary_replans_owned_pending_retry() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut selected_segment_session = Some(
+            SelectedSegmentSession::new(
+                92,
+                "peer-retry".to_string(),
+                "common".to_string(),
+                0,
+                &headers,
+                &locator,
+                34,
+                1_000,
+            )
+            .expect("session"),
+        );
+        {
+            let session = selected_segment_session.as_mut().expect("session");
+            session.missing_hashes = vec!["b1".to_string(), "b2".to_string()];
+            session
+                .requested_hashes
+                .extend(session.missing_hashes.iter().cloned());
+            assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 1_001));
+        }
+
+        let pending_retries = vec!["b2".to_string()];
+        let (session_id, peer_id, remote_selected_tip, failed_hash, owned) =
+            selected_segment_driver_error_replan(
+                &mut selected_segment_session,
+                "unrelated-primary",
+                &pending_retries,
+                2_000,
+            )
+            .expect("owned pending retry must force selected-segment replan");
+
+        assert_eq!(session_id, 92);
+        assert_eq!(peer_id, "peer-retry");
+        assert!(!remote_selected_tip.is_empty());
+        assert_eq!(failed_hash, "b2");
+        assert!(owned.contains("b1"));
+        assert!(owned.contains("b2"));
         assert_eq!(
             selected_segment_session.as_ref().expect("session").state,
             SelectedSegmentSessionState::Failed
@@ -11333,8 +11411,26 @@ mod tests {
             "tip-1",
             3_000
         ));
+        assert!(selected_segment_peer_poisoned(
+            &poison,
+            "peer-a",
+            "tip-1",
+            3_000 + SELECTED_SEGMENT_PEER_POISON_SECS
+        ));
         selected_segment_prune_poison(&mut poison, 3_000 + SELECTED_SEGMENT_PEER_POISON_SECS);
-        assert!(poison.is_empty());
+        assert_eq!(poison.len(), 1);
+        assert!(selected_segment_peer_poisoned(
+            &poison,
+            "peer-a",
+            "tip-1",
+            u64::MAX
+        ));
+        assert!(!selected_segment_peer_poisoned(
+            &poison,
+            "peer-a",
+            "fresh-tip",
+            u64::MAX
+        ));
     }
 
     #[test]
