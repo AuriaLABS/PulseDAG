@@ -10822,7 +10822,10 @@ mod tests {
         );
 
         assert_eq!(
-            headers.iter().map(|item| item.hash.as_str()).collect::<Vec<_>>(),
+            headers
+                .iter()
+                .map(|item| item.hash.as_str())
+                .collect::<Vec<_>>(),
             vec!["selected-2", "selected-3", "selected-4"]
         );
         assert_eq!(
