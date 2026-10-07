@@ -3,13 +3,13 @@ use crate::{
     monetary_v3::MonetaryCadenceSegment,
     network_block_v3::validate_monetary_v3_p2p_staging_envelope,
     network_runtime_v2::{
-        drive_activated_v2_p2p_block_with_runtime_persistence, ActivatedV2P2pDriveResult,
-        ActivatedV2P2pRuntime, ActivatedV2P2pRuntimePersistence,
+        drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer,
+        ActivatedV2P2pDriveResult, ActivatedV2P2pRuntime, ActivatedV2P2pRuntimePersistence,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Block,
-    validate_ordered_monetary_reward_v3, GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    validate_ordered_monetary_reward_v3, REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 fn invalid_monetary_runtime(message: impl Into<String>) -> PulseError {
@@ -45,7 +45,7 @@ fn audit_authoritative_monetary_state(
     crate::validate_live_reward_settlement_v3(
         state,
         cadence_segments,
-        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+        REWARD_FINALITY_POLICY_VERSION_V3,
     )?;
     Ok(())
 }
@@ -135,7 +135,7 @@ where
     validate_monetary_v3_p2p_runtime_snapshot(state, runtime, identity, cadence_segments)?;
     validate_monetary_v3_p2p_staging_envelope(&block, state, identity)?;
 
-    drive_activated_v2_p2p_block_with_runtime_persistence(
+    drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer(
         block,
         state,
         runtime,
@@ -178,6 +178,10 @@ where
                 audit_authoritative_monetary_state(prepared_state, cadence_segments)?;
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
+        ),
+        &|prepared: &ChainState| crate::materialize_authoritative_state_v3(
+            prepared,
+            cadence_segments,
         ),
         broadcast,
     )
@@ -292,7 +296,7 @@ mod tests {
         crate::validate_live_reward_settlement_v3(
             &state,
             &ONE_SECOND,
-            GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            REWARD_FINALITY_POLICY_VERSION_V3,
         )
         .unwrap();
 
