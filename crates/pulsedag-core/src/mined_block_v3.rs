@@ -84,9 +84,7 @@ pub fn prepare_monetary_v3_mined_block_state(
     reconcile_mempool_for_protocol(&mut prepared, identity)?;
 
     validate_ordered_monetary_reward_v3(&prepared, &block.hash, cadence_segments).map_err(
-        |error| {
-            invalid_monetary_mined_block(format!("ordered reward validation failed: {error}"))
-        },
+        |error| invalid_monetary_mined_block(format!("ordered reward validation failed: {error}")),
     )?;
     audit_monetary_state_v3(&prepared, cadence_segments).map_err(|error| {
         invalid_monetary_mined_block(format!("accepted-state monetary audit failed: {error}"))
