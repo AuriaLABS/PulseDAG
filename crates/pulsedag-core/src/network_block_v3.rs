@@ -423,15 +423,15 @@ mod tests {
             .transactions
             .push(hidden);
 
-        // The hidden historical no-op leaves the activated-v2 UTXO/state-root
-        // projection unchanged, so the underlying P2P preparation must still
-        // succeed. The v3 whole-history audit is the boundary that rejects it.
+        // The hidden historical no-op leaves the activated-v2 compatibility
+        // projection unchanged, so the underlying v2 preparation still succeeds.
+        // The authoritative v3 replay must reject it before persistence.
         prepare_activated_v2_p2p_block_state(&second_block, &state, &identity).unwrap();
         match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
             ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
-                assert!(reason.contains("accepted-state monetary audit failed"));
+                assert!(reason.contains("additional inputless transaction"));
             }
-            other => panic!("expected monetary audit rejection, got {other:?}"),
+            other => panic!("expected authoritative v3 replay rejection, got {other:?}"),
         }
 
         let before = bincode::serialize(&state).unwrap();
