@@ -38,7 +38,7 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         init_chain_state_v3, MonetaryCadenceSegment, ProtocolActivationIdentity,
-        REWARD_FINALITY_POLICY_VERSION_V3, GHOSTDAG_V1_ORDERING_VERSION,
+        GHOSTDAG_V1_ORDERING_VERSION, REWARD_FINALITY_POLICY_VERSION_V3,
     };
 
     const ONE_SECOND: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
