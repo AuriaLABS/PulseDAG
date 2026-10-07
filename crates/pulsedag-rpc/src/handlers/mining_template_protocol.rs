@@ -438,11 +438,6 @@ fn activated_monetary_v3_template_data(
             pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         )));
     }
-    pulsedag_core::validate_live_reward_settlement_v3(
-        chain,
-        &monetary_activation.monetary_cadence_segments,
-        &monetary_activation.reward_finality_policy_version,
-    )?;
     if chain.contracts.config.enabled {
         return Err(PulseError::InvalidBlock(
             "v3.0.0 monetary mining requires smart-contract execution to remain inactive"
@@ -732,6 +727,16 @@ pub async fn post_mining_template<S: RpcStateLike>(
                         return Json(ApiResponse::err(
                             "PROTOCOL_MISMATCH",
                             "v3 monetary activation identity does not match mining protocol identity",
+                        ));
+                    }
+                    if let Err(error) = pulsedag_core::validate_live_reward_settlement_v3(
+                        &chain,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
+                    ) {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            format!("live v3 monetary snapshot is invalid: {error}"),
                         ));
                     }
                 }
