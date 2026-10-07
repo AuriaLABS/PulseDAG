@@ -365,8 +365,9 @@ mod tests {
             .transactions
             .push(hidden);
 
-        // The historical no-op does not change v2 replay UTXO/state-root output,
-        // but it is an additional inputless issuance path that the v3 audit must reject.
+        // The historical no-op does not change the old v2 compatibility projection,
+        // but authoritative v3 replay rejects the additional inputless issuance path
+        // before the explicit post-materialization audit can be reached.
         let before = bincode::serialize(&state).unwrap();
         let mut persisted = false;
         let error = accept_monetary_v3_mined_block_atomically(
@@ -385,7 +386,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("accepted-state monetary audit failed"));
+            .contains("additional inputless transaction"));
         assert!(!persisted);
         assert_eq!(bincode::serialize(&state).unwrap(), before);
     }
