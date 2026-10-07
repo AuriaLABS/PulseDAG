@@ -311,9 +311,7 @@ pub fn finalize_monetary_mining_template_v3(
         ordered_dag_tip: final_replay.diagnostics.ordered_dag_tip,
         ordered_dag_digest: final_replay.diagnostics.ordered_dag_digest,
         applied_transactions: final_replay.diagnostics.applied_transactions,
-        skipped_conflicting_transactions: final_replay
-            .diagnostics
-            .skipped_conflicting_transactions,
+        skipped_conflicting_transactions: final_replay.diagnostics.skipped_conflicting_transactions,
         conflict_diagnostics: final_replay.diagnostics.conflict_diagnostics,
     };
 
