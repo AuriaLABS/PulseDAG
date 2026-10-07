@@ -1,8 +1,7 @@
 use pulsedag_core::{
     errors::PulseError, verify_protocol_restore_identity, MonetaryCadenceSegment,
     ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolConsensusMode,
-    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate, PRODUCTION_CADENCE_V3,
-    REWARD_FINALITY_POLICY_VERSION_V3,
+    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
 };
 use rocksdb::WriteBatch;
 
@@ -341,7 +340,8 @@ mod tests {
     use pulsedag_core::{
         genesis::init_chain_state, init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
         MonetaryCadenceSegment, ProtocolActivationIdentity, ProtocolConsensusMode,
-        BLOCK_HEADER_VERSION_V1, PRODUCTION_CADENCE_FINGERPRINT_V3, TRANSACTION_VERSION_V1,
+        BLOCK_HEADER_VERSION_V1, PRODUCTION_CADENCE_FINGERPRINT_V3, PRODUCTION_CADENCE_V3,
+        REWARD_FINALITY_POLICY_VERSION_V3, TRANSACTION_VERSION_V1,
     };
 
     fn temp_db_path(test_name: &str) -> String {
