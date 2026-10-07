@@ -1,8 +1,8 @@
 use crate::{
-    bind_reward_finality_boundary_v3, derive_ordered_dag_v2,
-    derive_reward_settlement_snapshot_v3, mature_reward_prefix_score_v3,
-    verify_authoritative_state_snapshot_v3, ChainState, MonetaryCadenceSegment, PulseError,
-    RewardFinalityBoundaryV3, RewardSettlementSnapshotV3, REWARD_FINALITY_POLICY_VERSION_V3,
+    bind_reward_finality_boundary_v3, derive_ordered_dag_v2, derive_reward_settlement_snapshot_v3,
+    mature_reward_prefix_score_v3, verify_authoritative_state_snapshot_v3, ChainState,
+    MonetaryCadenceSegment, PulseError, RewardFinalityBoundaryV3, RewardSettlementSnapshotV3,
+    REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 fn invalid_live_settlement(message: impl Into<String>) -> PulseError {
@@ -36,8 +36,7 @@ pub fn derive_live_reward_finality_boundary_v3(
     })?;
     let current_score = u64::try_from(ordered.blocks.len().saturating_sub(1))
         .map_err(|_| invalid_live_settlement("monetary score exceeds u64"))?;
-    let finalized_through_score =
-        mature_reward_prefix_score_v3(current_score, cadence_segments)?;
+    let finalized_through_score = mature_reward_prefix_score_v3(current_score, cadence_segments)?;
 
     bind_reward_finality_boundary_v3(
         state,
@@ -92,7 +91,8 @@ pub fn validate_live_reward_settlement_v3(
 mod tests {
     use super::*;
     use crate::{
-        genesis_v3::init_chain_state_v3, materialize_authoritative_state_v3,
+        genesis_v3::init_chain_state_v3,
+        materialize_authoritative_state_v3,
         reward_settlement_v3::build_reward_claim_transaction_v3,
         types::{Block, BlockHeader},
     };
@@ -131,7 +131,10 @@ mod tests {
             transactions: vec![claim],
         };
         state.dag.blocks.insert(hash.to_string(), block);
-        state.dag.blue_work.insert(hash.to_string(), u128::from(score));
+        state
+            .dag
+            .blue_work
+            .insert(hash.to_string(), u128::from(score));
         state
             .dag
             .selected_parents
@@ -188,9 +191,11 @@ mod tests {
 
     #[test]
     fn general_p2p_finality_policy_is_not_monetary_reward_finality() {
-        let state =
-            init_chain_state_v3("monetary-v3-live-finality-wrong-policy".into(), 1_800_000_020)
-                .unwrap();
+        let state = init_chain_state_v3(
+            "monetary-v3-live-finality-wrong-policy".into(),
+            1_800_000_020,
+        )
+        .unwrap();
 
         assert!(validate_live_reward_settlement_v3(
             &state,
