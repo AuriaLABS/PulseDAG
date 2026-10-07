@@ -93,8 +93,10 @@ impl MonetaryPolicyV3Data {
             activation_state: "candidate_not_activated",
             policy_version: pulsedag_core::MONETARY_POLICY_VERSION_V3,
             policy_fingerprint: pulsedag_core::monetary_policy_fingerprint_v3(),
-            production_cadence_fingerprint: None,
-            production_cadence_frozen: false,
+            production_cadence_fingerprint: Some(
+                pulsedag_core::PRODUCTION_CADENCE_FINGERPRINT_V3.to_string(),
+            ),
+            production_cadence_frozen: true,
             symbol: pulsedag_core::PDG_SYMBOL_V3,
             decimals: pulsedag_core::PDG_DECIMALS_V3,
             atoms_per_coin: pulsedag_core::ATOMS_PER_COIN.to_string(),
@@ -189,8 +191,11 @@ mod tests {
     fn monetary_v3_policy_wire_view_is_explicitly_non_activating() {
         let data = MonetaryPolicyV3Data::candidate_unactivated();
         assert_eq!(data.activation_state, "candidate_not_activated");
-        assert!(!data.production_cadence_frozen);
-        assert_eq!(data.production_cadence_fingerprint, None);
+        assert!(data.production_cadence_frozen);
+        assert_eq!(
+            data.production_cadence_fingerprint.as_deref(),
+            Some(pulsedag_core::PRODUCTION_CADENCE_FINGERPRINT_V3)
+        );
         assert_eq!(
             data.policy_fingerprint,
             pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3
