@@ -116,12 +116,7 @@ pub fn validate_ordered_monetary_reward_v3(
     let monetary_score =
         u64::try_from(position).map_err(|_| MonetaryValidationV3Error::FeeOverflow)?;
 
-    validate_monetary_reward_at_canonical_score_v3(
-        state,
-        block,
-        monetary_score,
-        cadence_segments,
-    )
+    validate_monetary_reward_at_canonical_score_v3(state, block, monetary_score, cadence_segments)
 }
 
 #[cfg(test)]
@@ -251,9 +246,10 @@ mod tests {
             nonce: 1,
         };
         let mut state = accepted_state_with_reward(Some(fee_tx));
-        state.dag.ordered_dag_conflict_diagnostics.push(
-            "ordered_pos=1 block=reward-block tx=skipped-fee skipped_conflict_atomic".into(),
-        );
+        state
+            .dag
+            .ordered_dag_conflict_diagnostics
+            .push("ordered_pos=1 block=reward-block tx=skipped-fee skipped_conflict_atomic".into());
 
         let validated =
             validate_ordered_monetary_reward_v3(&state, "reward-block", &ONE_SECOND).unwrap();
