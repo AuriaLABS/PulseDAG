@@ -1,7 +1,8 @@
 use pulsedag_core::{
     errors::PulseError, verify_protocol_restore_identity, MonetaryCadenceSegment,
     ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolConsensusMode,
-    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
+    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate, PRODUCTION_CADENCE_V3,
+    REWARD_FINALITY_POLICY_VERSION_V3,
 };
 use rocksdb::WriteBatch;
 
@@ -244,54 +245,14 @@ impl Storage {
         state: &pulsedag_core::ChainState,
         identity: &ProtocolActivationIdentity,
     ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
-        identity.validate().map_err(storage_error)?;
-        if identity.chain_id != state.chain_id {
-            return Err(PulseError::ChainIdMismatch);
-        }
-        if identity.genesis_hash != state.dag.genesis_hash {
-            return Err(storage_error(
-                "v3 production identity genesis does not match chain state",
-            ));
-        }
-        if identity.dag_ordering_version != state.dag.ordering_version {
-            return Err(storage_error(
-                "v3 production identity DAG ordering does not match chain state",
-            ));
-        }
-        if state.contracts.config.enabled {
-            return Err(storage_error(
-                "v3.0.0 production monetary activation requires smart-contract execution to remain inactive",
-            ));
-        }
-
-        let protocol_record =
-            ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
-        let monetary_record =
-            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(identity.clone())
-                .map_err(storage_error)?;
-        let meta_cf = self
-            .db
-            .cf_handle("meta")
-            .ok_or_else(|| storage_error("missing cf meta"))?;
-        let mut batch = WriteBatch::default();
-
-        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
-        batch.put_cf(
-            &meta_cf,
-            PROTOCOL_ACTIVATION_STORAGE_KEY,
-            serde_json::to_vec(&protocol_record)
-                .map_err(|error| storage_error(error.to_string()))?,
-        );
-        batch.put_cf(
-            &meta_cf,
-            PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
-            serde_json::to_vec(&monetary_record)
-                .map_err(|error| storage_error(error.to_string()))?,
-        );
-        self.db
-            .write(batch)
-            .map_err(|error| storage_error(error.to_string()))?;
-        Ok(monetary_record)
+        let record = self.persist_chain_state_with_monetary_protocol_record(
+            state,
+            identity,
+            &PRODUCTION_CADENCE_V3,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )?;
+        record.verify_production_v3(identity).map_err(storage_error)?;
+        Ok(record)
     }
 
     /// Return whether snapshot + protocol sidecar + monetary sidecar are
@@ -348,7 +309,6 @@ mod tests {
     use pulsedag_core::{
         genesis::init_chain_state, init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
         MonetaryCadenceSegment, ProtocolActivationIdentity, PRODUCTION_CADENCE_FINGERPRINT_V3,
-        PRODUCTION_CADENCE_V3, REWARD_FINALITY_POLICY_VERSION_V3,
     };
 
     fn temp_db_path(test_name: &str) -> String {
