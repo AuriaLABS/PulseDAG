@@ -42,6 +42,9 @@ pub struct StateReplayV3Diagnostics {
 pub struct StateReplayV3 {
     pub utxo: UtxoState,
     pub ordered_dag: OrderedDagV2,
+    /// Exact per-score fees from ordinary transactions that actually applied
+    /// during authoritative replay. Conflict losers never fund settlement.
+    pub eligible_fees_by_score: Vec<u64>,
     pub diagnostics: StateReplayV3Diagnostics,
 }
 
@@ -181,10 +184,9 @@ fn materialize_reward_at_score(
 ///
 /// This foundation intentionally supports full v3 replay only. Compact-pruned
 /// checkpoint verification and live activation remain fail-closed follow-ups.
-pub fn rebuild_authoritative_state_v3(
+fn validate_v3_replay_source(
     state: &ChainState,
-    cadence_segments: &[MonetaryCadenceSegment],
-) -> Result<StateReplayV3, PulseError> {
+) -> Result<(&crate::types::Block, OrderedDagV2), PulseError> {
     let genesis = state
         .dag
         .blocks
@@ -201,8 +203,32 @@ pub fn rebuild_authoritative_state_v3(
     if ordered_dag.blocks.first() != Some(&state.dag.genesis_hash) {
         return Err(invalid_replay("ordered DAG does not start at genesis"));
     }
+    Ok((genesis, ordered_dag))
+}
 
-    let mut rebuilt = init_chain_state_v3(state.chain_id.clone(), genesis.header.timestamp)?;
+struct ReplayPrefixV3 {
+    rebuilt: ChainState,
+    validated_reward_claims: usize,
+    applied_transactions: usize,
+    skipped_conflicting_transactions: usize,
+    materialized_rewards: usize,
+    mature_reward_prefix_score: u64,
+    conflict_diagnostics: Vec<String>,
+    eligible_fees_by_score: Vec<u64>,
+}
+
+fn replay_authoritative_prefix_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+    genesis_timestamp: u64,
+    ordered_dag: &OrderedDagV2,
+    end_exclusive: usize,
+) -> Result<ReplayPrefixV3, PulseError> {
+    if end_exclusive > ordered_dag.blocks.len() {
+        return Err(invalid_replay("replay prefix exceeds ordered DAG length"));
+    }
+
+    let mut rebuilt = init_chain_state_v3(state.chain_id.clone(), genesis_timestamp)?;
     if rebuilt.dag.genesis_hash != state.dag.genesis_hash {
         return Err(invalid_replay(format!(
             "v3 genesis identity mismatch: expected {}, rebuilt {}",
@@ -221,7 +247,7 @@ pub fn rebuild_authoritative_state_v3(
     let mut mature_reward_prefix_score = 0_u64;
     let mut eligible_fees_by_score = vec![0_u64; ordered_dag.blocks.len()];
 
-    for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate() {
+    for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate().take(end_exclusive) {
         if hash == &state.dag.genesis_hash {
             continue;
         }
@@ -249,10 +275,6 @@ pub fn rebuild_authoritative_state_v3(
             )));
         }
 
-        // The amountless claim is an authorization envelope, not a spendable
-        // transaction output. Its beneficiary is consumed only when the
-        // block-bound synthetic settlement UTXO is materialized after maturity.
-        // Competing blocks may legitimately reuse the same claim txid.
         validated_reward_claims = validated_reward_claims.saturating_add(1);
 
         for tx in block.transactions.iter().skip(1) {
@@ -260,7 +282,6 @@ pub fn rebuild_authoritative_state_v3(
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
                     rebuilt = candidate;
-                    // Only committed transactions fund this block's settlement.
                     eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
                         .checked_add(tx.fee)
                         .ok_or_else(|| invalid_replay("eligible fee arithmetic overflow"))?;
@@ -284,7 +305,7 @@ pub fn rebuild_authoritative_state_v3(
             materialize_reward_at_score(
                 &mut rebuilt,
                 state,
-                &ordered_dag,
+                ordered_dag,
                 next_reward_score,
                 eligible_fees_by_score[usize::try_from(next_reward_score)
                     .map_err(|_| invalid_replay("reward score exceeds platform index width"))?],
@@ -295,22 +316,175 @@ pub fn rebuild_authoritative_state_v3(
         }
     }
 
-    let state_root = rebuilt.utxo.compute_state_root()?;
+    Ok(ReplayPrefixV3 {
+        rebuilt,
+        validated_reward_claims,
+        applied_transactions,
+        skipped_conflicting_transactions,
+        materialized_rewards,
+        mature_reward_prefix_score,
+        conflict_diagnostics,
+        eligible_fees_by_score,
+    })
+}
+
+/// Rebuild authoritative v3 UTXO state from the exact ordered DAG while
+/// materializing mining rewards at their deterministic economic-maturity
+/// boundary.
+///
+/// Ordering of one canonical score is:
+/// 1. validate the amountless reward claim and apply ordinary txs atomically;
+/// 2. materialize all prior rewards mature at the end of that score;
+/// 3. expose those synthetic reward UTXOs to the next score and later.
+///
+/// Same-score spending is therefore impossible and mining-template construction
+/// gets a stable pre-state. Reorganizations replay the new canonical order; no
+/// local wall clock or raw block height is authority.
+///
+/// This foundation intentionally supports full v3 replay only. Compact-pruned
+/// checkpoint verification and live activation remain fail-closed follow-ups.
+pub fn rebuild_authoritative_state_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<StateReplayV3, PulseError> {
+    let (genesis, ordered_dag) = validate_v3_replay_source(state)?;
+    let replay = replay_authoritative_prefix_v3(
+        state,
+        cadence_segments,
+        genesis.header.timestamp,
+        &ordered_dag,
+        ordered_dag.blocks.len(),
+    )?;
+    let state_root = replay.rebuilt.utxo.compute_state_root()?;
+
     Ok(StateReplayV3 {
-        utxo: rebuilt.utxo,
+        utxo: replay.rebuilt.utxo,
+        eligible_fees_by_score: replay.eligible_fees_by_score,
         diagnostics: StateReplayV3Diagnostics {
-            validated_reward_claims,
-            applied_transactions,
-            skipped_conflicting_transactions,
-            materialized_rewards,
-            mature_reward_prefix_score,
-            conflict_diagnostics,
+            validated_reward_claims: replay.validated_reward_claims,
+            applied_transactions: replay.applied_transactions,
+            skipped_conflicting_transactions: replay.skipped_conflicting_transactions,
+            materialized_rewards: replay.materialized_rewards,
+            mature_reward_prefix_score: replay.mature_reward_prefix_score,
+            conflict_diagnostics: replay.conflict_diagnostics,
             state_root,
             ordered_dag_tip: ordered_dag.blocks.last().cloned(),
             ordered_dag_digest: ordered_dag.digest.clone(),
         },
         ordered_dag,
     })
+}
+
+/// Materialize the exact authoritative state immediately before the candidate
+/// transaction set executes, while still using the candidate itself to close
+/// and classify its complete parent DAG. This preserves the frozen rule that
+/// rewards maturing at the candidate score become spendable only at the next
+/// score.
+pub fn materialize_authoritative_pre_candidate_state_v3(
+    context: &ChainState,
+    candidate_hash: &Hash,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<ChainState, PulseError> {
+    let (genesis, ordered_dag) = validate_v3_replay_source(context)?;
+    if ordered_dag.blocks.last() != Some(candidate_hash) {
+        return Err(invalid_replay(format!(
+            "candidate {candidate_hash} is not the tip of its own authoritative context {:?}",
+            ordered_dag.blocks.last()
+        )));
+    }
+    let candidate_pos = ordered_dag
+        .blocks
+        .iter()
+        .position(|hash| hash == candidate_hash)
+        .ok_or_else(|| invalid_replay("candidate is missing from authoritative order"))?;
+    let replay = replay_authoritative_prefix_v3(
+        context,
+        cadence_segments,
+        genesis.header.timestamp,
+        &ordered_dag,
+        candidate_pos,
+    )?;
+
+    let mut materialized = context.clone();
+    materialized.utxo = replay.rebuilt.utxo;
+    materialized.dag.ordered_dag = ordered_dag.blocks[..candidate_pos].to_vec();
+    materialized.dag.ordering_version = ordered_dag.ordering_version.clone();
+    materialized.dag.ordered_dag_tip = candidate_pos
+        .checked_sub(1)
+        .and_then(|index| ordered_dag.blocks.get(index).cloned());
+    materialized.dag.ordered_dag_state_root = Some(materialized.utxo.compute_state_root()?);
+    materialized.dag.ordered_dag_conflict_diagnostics = replay.conflict_diagnostics;
+    materialized.mempool.transactions.clear();
+    materialized.mempool.spent_outpoints.clear();
+    materialized.mempool.first_seen.clear();
+    materialized.mempool.admission_height.clear();
+    Ok(materialized)
+}
+
+/// Materialize the exact authoritative v3 monetary state without mutating the
+/// caller. Unlike the v2 compatibility replay, reward claims remain amountless
+/// until the mature-prefix rule materializes their synthetic settlement UTXOs.
+pub fn materialize_authoritative_state_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<ChainState, PulseError> {
+    let replay = rebuild_authoritative_state_v3(state, cadence_segments)?;
+    let mut materialized = state.clone();
+    materialized.utxo = replay.utxo.clone();
+    materialized.dag.ordered_dag = replay.ordered_dag.blocks.clone();
+    materialized.dag.ordering_version = replay.ordered_dag.ordering_version.clone();
+    materialized.dag.ordered_dag_tip = replay.diagnostics.ordered_dag_tip.clone();
+    materialized.dag.ordered_dag_state_root = Some(replay.diagnostics.state_root.clone());
+    materialized.dag.ordered_dag_conflict_diagnostics =
+        replay.diagnostics.conflict_diagnostics.clone();
+    Ok(materialized)
+}
+
+/// Prove that a live/restored full v3 state is already materialized from the
+/// same ordered-DAG monetary replay it claims. Compact-pruned v3 verification
+/// remains a separate launch gate and therefore fails closed here if full replay
+/// cannot be performed.
+pub fn verify_authoritative_state_snapshot_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<StateReplayV3Diagnostics, PulseError> {
+    let replay = rebuild_authoritative_state_v3(state, cadence_segments)?;
+    let observed_state_root = state.utxo.compute_state_root()?;
+
+    if state.dag.ordering_version != replay.ordered_dag.ordering_version {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordering version does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag != replay.ordered_dag.blocks {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordered DAG does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_tip != replay.diagnostics.ordered_dag_tip {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordered DAG tip does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_state_root.as_deref() != Some(replay.diagnostics.state_root.as_str()) {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot recorded state root does not match authoritative monetary replay"
+                .to_string(),
+        ));
+    }
+    if observed_state_root != replay.diagnostics.state_root {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot UTXO root does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_conflict_diagnostics != replay.diagnostics.conflict_diagnostics {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot conflict diagnostics do not match authoritative monetary replay"
+                .to_string(),
+        ));
+    }
+
+    Ok(replay.diagnostics)
 }
 
 #[cfg(test)]

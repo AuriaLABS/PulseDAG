@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     errors::PulseError,
+    header_v2::compute_block_hash_v2,
     mining_protocol::derive_activated_v2_mining_parent_context,
-    mining_state_v2::{
-        finalize_activated_v2_mining_candidate_state, ActivatedV2MiningStateContext,
-    },
+    mining_state_v2::{validate_candidate_envelope, ActivatedV2MiningStateContext},
     monetary_v3::{
         monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, MonetaryCadenceSegment,
     },
@@ -15,6 +15,7 @@ use crate::{
         build_reward_claim_transaction_v3, validate_reward_claim_transaction_v3,
     },
     state::ChainState,
+    state_replay_v3::rebuild_authoritative_state_v3,
     tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
     types::{compute_merkle_root, Block, BlockHeader, Hash, Transaction},
 };
@@ -275,8 +276,44 @@ pub fn finalize_monetary_mining_template_v3(
         transactions: template.transactions.clone(),
     };
 
-    let finalized_state =
-        finalize_activated_v2_mining_candidate_state(&mut block, state, identity)?;
+    validate_candidate_envelope(&mut block, state, identity)?;
+
+    let replay_candidate = |candidate: &Block| -> Result<crate::StateReplayV3, PulseError> {
+        let mut working = state.clone();
+        commit_ghostdag_v1_metadata_for_activated_v2(candidate, &mut working, identity)?;
+        rebuild_authoritative_state_v3(&working, cadence_segments)
+    };
+
+    block.header.state_root = "00".repeat(32);
+    block.hash = compute_block_hash_v2(&block.header, &identity.chain_id)?;
+    let first = replay_candidate(&block)?;
+
+    block.header.state_root = first.diagnostics.state_root;
+    block.hash = compute_block_hash_v2(&block.header, &identity.chain_id)?;
+    let final_replay = replay_candidate(&block)?;
+
+    if final_replay.diagnostics.state_root != block.header.state_root {
+        return Err(invalid_template(format!(
+            "v3 state-root/hash fixed point is unstable: committed {}, replayed {}",
+            block.header.state_root, final_replay.diagnostics.state_root
+        )));
+    }
+    if final_replay.diagnostics.ordered_dag_tip.as_ref() != Some(&block.hash) {
+        return Err(invalid_template(format!(
+            "finalized monetary candidate {} is not the authoritative ordered DAG tip {:?}",
+            block.hash, final_replay.diagnostics.ordered_dag_tip
+        )));
+    }
+
+    let finalized_state = ActivatedV2MiningStateContext {
+        block_hash: block.hash.clone(),
+        state_root: block.header.state_root.clone(),
+        ordered_dag_tip: final_replay.diagnostics.ordered_dag_tip,
+        ordered_dag_digest: final_replay.diagnostics.ordered_dag_digest,
+        applied_transactions: final_replay.diagnostics.applied_transactions,
+        skipped_conflicting_transactions: final_replay.diagnostics.skipped_conflicting_transactions,
+        conflict_diagnostics: final_replay.diagnostics.conflict_diagnostics,
+    };
 
     Ok(FinalizedMonetaryMiningCandidateV3 {
         block,
@@ -294,6 +331,7 @@ mod tests {
     use super::*;
     use crate::{
         genesis::init_chain_state,
+        genesis_v3::init_chain_state_v3,
         ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
         types::{OutPoint, TxInput, TxOutput},
     };
@@ -377,7 +415,8 @@ mod tests {
 
     #[test]
     fn finalizer_binds_state_root_without_embedding_issuance() {
-        let state = init_chain_state("monetary-mining-v3-finalize".into());
+        let state =
+            init_chain_state_v3("monetary-mining-v3-finalize".into(), 1_800_000_000).unwrap();
         let identity = identity(&state);
         let parent_ts = state.dag.blocks[&state.dag.genesis_hash].header.timestamp;
         let template = build_monetary_mining_template_v3(

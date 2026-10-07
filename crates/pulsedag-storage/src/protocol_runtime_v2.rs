@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use pulsedag_core::{
-    errors::PulseError, verify_authoritative_state_snapshot_v2, ActivatedV2P2pRuntime, Block,
-    ChainState, ProtocolActivationIdentity, ProtocolActivationRecordV1,
+    errors::PulseError, verify_authoritative_state_snapshot_v2,
+    verify_authoritative_state_snapshot_v3, ActivatedV2P2pRuntime, Block, ChainState,
+    MonetaryCadenceSegment, ProtocolActivationIdentity, ProtocolActivationRecordV1,
     ProtocolRestoreIdentityGate, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
     ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS, GHOSTDAG_V1_ORDERING_VERSION,
 };
@@ -131,12 +132,12 @@ fn verify_runtime_against_state(
 }
 
 impl ActivatedV2P2pRuntimeRecordV1 {
-    fn from_runtime(
+    fn from_runtime_after_state_verification(
         expected: &ProtocolActivationIdentity,
         state: &ChainState,
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<Self, PulseError> {
-        verify_activated_v2_state(state, expected)?;
+        require_canonical_activated_v2_identity(expected)?;
         verify_runtime_against_state(runtime, state)?;
         let activation_record =
             ProtocolActivationRecordV1::from_identity(expected.clone()).map_err(storage_error)?;
@@ -148,7 +149,16 @@ impl ActivatedV2P2pRuntimeRecordV1 {
         })
     }
 
-    pub fn verify_expected(
+    fn from_runtime(
+        expected: &ProtocolActivationIdentity,
+        state: &ChainState,
+        runtime: &ActivatedV2P2pRuntime,
+    ) -> Result<Self, PulseError> {
+        verify_activated_v2_state(state, expected)?;
+        Self::from_runtime_after_state_verification(expected, state, runtime)
+    }
+
+    fn verify_identity_runtime_and_generation(
         &self,
         expected: &ProtocolActivationIdentity,
         state: &ChainState,
@@ -163,7 +173,6 @@ impl ActivatedV2P2pRuntimeRecordV1 {
         self.activation_record
             .verify_expected(expected)
             .map_err(storage_error)?;
-        verify_activated_v2_state(state, expected)?;
         if self.chain_state_generation != state.chain_state_generation {
             return Err(storage_error(format!(
                 "activated-v2 runtime generation {} does not match chain snapshot generation {}",
@@ -171,6 +180,15 @@ impl ActivatedV2P2pRuntimeRecordV1 {
             )));
         }
         verify_runtime_against_state(&self.runtime, state)
+    }
+
+    pub fn verify_expected(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        verify_activated_v2_state(state, expected)?;
+        self.verify_identity_runtime_and_generation(expected, state)
     }
 }
 
@@ -323,6 +341,198 @@ impl Storage {
         self.db
             .write(batch)
             .map_err(|error| storage_error(error.to_string()))
+    }
+
+    fn verify_monetary_v3_runtime_state(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        require_canonical_activated_v2_identity(expected)?;
+        if state.chain_id != expected.chain_id {
+            return Err(storage_error(format!(
+                "monetary-v3 runtime state chain_id={} does not match expected {}",
+                state.chain_id, expected.chain_id
+            )));
+        }
+        if state.dag.genesis_hash != expected.genesis_hash {
+            return Err(storage_error(format!(
+                "monetary-v3 runtime state genesis={} does not match expected {}",
+                state.dag.genesis_hash, expected.genesis_hash
+            )));
+        }
+        if state.contracts.config.enabled {
+            return Err(storage_error(
+                "v3.0.0 monetary runtime persistence requires smart contracts to remain inactive",
+            ));
+        }
+        self.verify_persisted_monetary_identity(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+        )?;
+        verify_authoritative_state_snapshot_v3(state, cadence_segments).map_err(|error| {
+            storage_error(format!(
+                "monetary-v3 runtime state is not an authoritative v3 snapshot: {error:?}"
+            ))
+        })?;
+        Ok(())
+    }
+
+    /// Persist a monetary-v3 authoritative chain snapshot and the existing
+    /// transient activated-v2 P2P runtime schema in one RocksDB batch.
+    pub fn persist_monetary_v3_p2p_runtime_snapshot(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+        state: &ChainState,
+        runtime: &ActivatedV2P2pRuntime,
+    ) -> Result<(), PulseError> {
+        self.verify_monetary_v3_runtime_state(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+            state,
+        )?;
+        let record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
+            expected, state, runtime,
+        )?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let mut batch = WriteBatch::default();
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        self.stage_activated_v2_runtime_sidecars(&mut batch, &meta_cf, &record)?;
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))
+    }
+
+    pub fn persist_monetary_v3_p2p_block_and_runtime(
+        &self,
+        block: &Block,
+        expected: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+        state: &ChainState,
+        runtime: &ActivatedV2P2pRuntime,
+    ) -> Result<(), PulseError> {
+        self.persist_monetary_v3_p2p_blocks_and_runtime(
+            std::slice::from_ref(block),
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+            state,
+            runtime,
+        )
+    }
+
+    pub fn persist_monetary_v3_p2p_blocks_and_runtime(
+        &self,
+        blocks: &[Block],
+        expected: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+        state: &ChainState,
+        runtime: &ActivatedV2P2pRuntime,
+    ) -> Result<(), PulseError> {
+        self.verify_monetary_v3_runtime_state(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+            state,
+        )?;
+        let record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
+            expected, state, runtime,
+        )?;
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| storage_error("missing cf accepted blocks"))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let mut seen = BTreeSet::new();
+        let mut batch = WriteBatch::default();
+
+        for block in blocks {
+            if !seen.insert(block.hash.clone()) {
+                return Err(storage_error(format!(
+                    "monetary-v3 accepted block batch contains duplicate hash {}",
+                    block.hash
+                )));
+            }
+            let state_block = state.dag.blocks.get(&block.hash).ok_or_else(|| {
+                storage_error(format!(
+                    "monetary-v3 accepted block {} is absent from committed chain state",
+                    block.hash
+                ))
+            })?;
+            if serde_json::to_vec(state_block).map_err(|error| storage_error(error.to_string()))?
+                != serde_json::to_vec(block).map_err(|error| storage_error(error.to_string()))?
+            {
+                return Err(storage_error(format!(
+                    "monetary-v3 accepted block {} differs from committed chain state",
+                    block.hash
+                )));
+            }
+            batch.put_cf(
+                &blocks_cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|error| storage_error(error.to_string()))?,
+            );
+        }
+
+        if !blocks.is_empty() {
+            self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
+        }
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        self.stage_activated_v2_runtime_sidecars(&mut batch, &meta_cf, &record)?;
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))
+    }
+
+    /// Restore a monetary-v3 authoritative state while reusing the exact same
+    /// transient P2P runtime record schema. Both monetary identity and v3 replay
+    /// must match; there is no v2 replay fallback.
+    pub fn load_monetary_v3_p2p_runtime_snapshot(
+        &self,
+        expected: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+    ) -> Result<(ChainState, ActivatedV2P2pRuntime), PulseError> {
+        require_canonical_activated_v2_identity(expected)?;
+        let gate = self.verify_persisted_protocol_identity(expected)?;
+        if gate != ProtocolRestoreIdentityGate::VerifiedRecordV1 {
+            return Err(storage_error(
+                "monetary-v3 P2P runtime restore requires an explicit verified activation record",
+            ));
+        }
+        let state = self
+            .load_chain_state()?
+            .ok_or_else(|| storage_error("monetary-v3 chain snapshot missing"))?;
+        if !self.chain_anchor_valid(&state)? {
+            return Err(storage_error(
+                "monetary-v3 chain snapshot has neither genesis nor a valid compact-prune checkpoint anchor",
+            ));
+        }
+        self.verify_monetary_v3_runtime_state(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+            &state,
+        )?;
+        let record = self
+            .activated_v2_p2p_runtime_record()?
+            .ok_or_else(|| storage_error("monetary-v3 P2P runtime sidecar missing"))?;
+        record.verify_identity_runtime_and_generation(expected, &state)?;
+        Ok((state, record.runtime))
     }
 
     /// Restore only from an exact activated-v2 durable identity. Missing

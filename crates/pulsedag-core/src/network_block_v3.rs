@@ -1,18 +1,23 @@
 use crate::{
-    accept::{AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult},
+    accept::{
+        mutate_chain_state_serialized, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
+    },
+    acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     audit_monetary_state_v3,
     errors::PulseError,
+    mempool_protocol::reconcile_mempool_for_protocol,
     monetary_v3::MonetaryCadenceSegment,
     network_block_v2::{
-        accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
-        prepare_activated_v2_p2p_block_state, ActivatedV2P2pDisposition,
+        classify_network_block_error, preflight_activated_v2_p2p_block_context,
+        validate_network_block_envelope, ActivatedV2P2pDisposition,
     },
     protocol::ProtocolActivationIdentity,
     reward_settlement_v3::validate_reward_claim_transaction_v3,
     state::ChainState,
+    state_replay_v3::materialize_authoritative_state_v3,
     types::Block,
     validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
-    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+    REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 fn invalid_monetary_network_block(message: impl Into<String>) -> PulseError {
@@ -75,7 +80,54 @@ pub fn prepare_monetary_v3_p2p_block_state(
     cadence_segments: &[MonetaryCadenceSegment],
 ) -> Result<ChainState, PulseError> {
     validate_monetary_v3_p2p_staging_envelope(block, state, identity)?;
-    let prepared = prepare_activated_v2_p2p_block_state(block, state, identity)?;
+    validate_network_block_envelope(block, state, identity)?;
+
+    let mut working = state.clone();
+    commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
+    let mut prepared =
+        materialize_authoritative_state_v3(&working, cadence_segments).map_err(|error| {
+            invalid_monetary_network_block(format!(
+                "candidate is not finalizable under authoritative v3 replay: {error}"
+            ))
+        })?;
+
+    let observed_state_root = prepared.utxo.compute_state_root()?;
+    if observed_state_root != block.header.state_root {
+        return Err(invalid_monetary_network_block(format!(
+            "state root mismatch for {}: committed {}, v3 replay produced {}",
+            block.hash, block.header.state_root, observed_state_root
+        )));
+    }
+    if prepared.dag.ordered_dag_tip.as_ref() != Some(&block.hash) {
+        return Err(invalid_monetary_network_block(format!(
+            "candidate {} is not the authoritative v3 ordered DAG tip {:?}",
+            block.hash, prepared.dag.ordered_dag_tip
+        )));
+    }
+
+    for transaction in block.transactions.iter().skip(1) {
+        if prepared
+            .mempool
+            .transactions
+            .remove(&transaction.txid)
+            .is_some()
+        {
+            prepared.mempool.first_seen.remove(&transaction.txid);
+            prepared.mempool.admission_height.remove(&transaction.txid);
+            prepared.mempool.counters.confirmed_removed_total = prepared
+                .mempool
+                .counters
+                .confirmed_removed_total
+                .saturating_add(1);
+        }
+        for input in &transaction.inputs {
+            prepared
+                .mempool
+                .spent_outpoints
+                .remove(&input.previous_output);
+        }
+    }
+    reconcile_mempool_for_protocol(&mut prepared, identity)?;
 
     validate_ordered_monetary_reward_v3(&prepared, &block.hash, cadence_segments).map_err(
         |error| {
@@ -88,15 +140,15 @@ pub fn prepare_monetary_v3_p2p_block_state(
     validate_live_reward_settlement_v3(
         &prepared,
         cadence_segments,
-        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+        REWARD_FINALITY_POLICY_VERSION_V3,
     )?;
 
     Ok(prepared)
 }
 
 /// Classify a v3 monetary P2P candidate without allowing invalid issuance into
-/// transient staging. Canonical-score checks are deferred only when the
-/// activated-v2 DAG classifier itself reports deferred context.
+/// transient staging. Ordering/context classification is shared with v2, but
+/// finalizable candidates are materialized with the v3 monetary replay.
 pub fn preflight_monetary_v3_p2p_block(
     block: &Block,
     state: &ChainState,
@@ -109,7 +161,7 @@ pub fn preflight_monetary_v3_p2p_block(
         ));
     }
 
-    match preflight_activated_v2_p2p_block(block, state, identity) {
+    match preflight_activated_v2_p2p_block_context(block, state, identity) {
         ActivatedV2P2pDisposition::Finalizable => {
             match prepare_monetary_v3_p2p_block_state(block, state, identity, cadence_segments) {
                 Ok(_) => ActivatedV2P2pDisposition::Finalizable,
@@ -122,36 +174,8 @@ pub fn preflight_monetary_v3_p2p_block(
     }
 }
 
-fn validate_and_persist_monetary_v3_p2p_prepared<FPersist>(
-    accepted_block: &Block,
-    prepared: &ChainState,
-    cadence_segments: &[MonetaryCadenceSegment],
-    persist: &mut FPersist,
-) -> Result<(), PulseError>
-where
-    FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
-{
-    validate_ordered_monetary_reward_v3(prepared, &accepted_block.hash, cadence_segments).map_err(
-        |error| {
-            invalid_monetary_network_block(format!("ordered reward validation failed: {error}"))
-        },
-    )?;
-    audit_monetary_state_v3(prepared, cadence_segments).map_err(|error| {
-        invalid_monetary_network_block(format!("accepted-state monetary audit failed: {error}"))
-    })?;
-    validate_live_reward_settlement_v3(
-        prepared,
-        cadence_segments,
-        GHOSTDAG_V1_FINALITY_POLICY_VERSION,
-    )?;
-    persist(accepted_block, prepared)
-}
-
-/// Atomically accept a finalizable v3 P2P block. The existing activated-v2
-/// network path continues to own header/DAG/state/PoW checks, while monetary
-/// validation is injected into the serialized persistence boundary. A failed
-/// monetary audit therefore prevents persistence, live-state commit and
-/// broadcast.
+/// Atomically accept a finalizable v3 P2P block using the v3 authoritative
+/// materialization before persistence and broadcast.
 pub fn accept_monetary_v3_p2p_block_atomically<FPersist, FBroadcast>(
     block: Block,
     state: &mut ChainState,
@@ -165,23 +189,47 @@ where
     FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
 {
-    validate_monetary_v3_p2p_staging_envelope(&block, state, identity)?;
+    if !matches!(source, AcceptSource::P2p) {
+        return Err(invalid_monetary_network_block(
+            "network acceptance requires the P2P source boundary",
+        ));
+    }
 
-    accept_activated_v2_p2p_block_atomically(
-        block,
+    if let Err(error) =
+        prepare_monetary_v3_p2p_block_state(&block, state, identity, cadence_segments)
+    {
+        return Ok(AtomicBlockAcceptance::rejected(
+            classify_network_block_error(&error),
+        ));
+    }
+
+    let mutation = match mutate_chain_state_serialized(
         state,
-        source,
-        identity,
-        |accepted_block, prepared| {
-            validate_and_persist_monetary_v3_p2p_prepared(
-                accepted_block,
-                prepared,
-                cadence_segments,
-                &mut persist,
-            )
+        source.as_str(),
+        |base| {
+            let prepared =
+                prepare_monetary_v3_p2p_block_state(&block, base, identity, cadence_segments)?;
+            Ok((prepared, ()))
         },
-        broadcast,
-    )
+        |prepared| persist(&block, prepared),
+    ) {
+        Ok(mutation) => mutation,
+        Err(error @ PulseError::StorageError(_)) => return Err(error),
+        Err(error) => {
+            return Ok(AtomicBlockAcceptance::rejected(
+                classify_network_block_error(&error),
+            ))
+        }
+    };
+    debug_assert_eq!(state.chain_state_generation, mutation.generation);
+
+    broadcast(&block)?;
+    Ok(AtomicBlockAcceptance {
+        result: BlockAcceptanceResult::Accepted,
+        persisted: true,
+        committed: true,
+        broadcast: true,
+    })
 }
 
 #[cfg(test)]
@@ -375,15 +423,14 @@ mod tests {
             .transactions
             .push(hidden);
 
-        // The hidden historical no-op leaves the activated-v2 UTXO/state-root
-        // projection unchanged, so the underlying P2P preparation must still
-        // succeed. The v3 whole-history audit is the boundary that rejects it.
-        prepare_activated_v2_p2p_block_state(&second_block, &state, &identity).unwrap();
+        // The second block was built against authoritative v3 state. After
+        // mutating accepted history, monetary preflight must fail closed before
+        // persistence; no activated-v2 compatibility replay is authoritative here.
         match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
             ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
-                assert!(reason.contains("accepted-state monetary audit failed"));
+                assert!(reason.contains("additional inputless transaction"));
             }
-            other => panic!("expected monetary audit rejection, got {other:?}"),
+            other => panic!("expected authoritative v3 replay rejection, got {other:?}"),
         }
 
         let before = bincode::serialize(&state).unwrap();

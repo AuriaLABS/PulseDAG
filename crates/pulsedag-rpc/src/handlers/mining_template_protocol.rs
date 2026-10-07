@@ -12,6 +12,8 @@ use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
     finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
+    materialize_activated_v2_mining_overlay_with_materializer,
+    materialize_authoritative_pre_candidate_state_v3, materialize_authoritative_state_v3,
     ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
     ProtocolMonetaryActivationRecordV2, PulseError, TRANSACTION_VERSION_V2,
 };
@@ -429,19 +431,14 @@ fn activated_monetary_v3_template_data(
         ));
     }
     if monetary_activation.reward_finality_policy_version
-        != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
     {
         return Err(PulseError::InvalidBlock(format!(
             "unsupported v3 reward-finality policy {}; implemented live policy is {}",
             monetary_activation.reward_finality_policy_version,
-            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         )));
     }
-    pulsedag_core::validate_live_reward_settlement_v3(
-        chain,
-        &monetary_activation.monetary_cadence_segments,
-        &monetary_activation.reward_finality_policy_version,
-    )?;
     if chain.contracts.config.enabled {
         return Err(PulseError::InvalidBlock(
             "v3.0.0 monetary mining requires smart-contract execution to remain inactive"
@@ -733,10 +730,28 @@ pub async fn post_mining_template<S: RpcStateLike>(
                             "v3 monetary activation identity does not match mining protocol identity",
                         ));
                     }
+                    if let Err(error) = pulsedag_core::validate_live_reward_settlement_v3(
+                        &chain,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
+                    ) {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            format!("live v3 monetary snapshot is invalid: {error}"),
+                        ));
+                    }
                 }
 
-                let template_chain = match storage.load_activated_v2_p2p_runtime_snapshot(&identity)
-                {
+                let durable_runtime_snapshot = if let Some(record) = monetary_activation.as_ref() {
+                    storage.load_monetary_v3_p2p_runtime_snapshot(
+                        &identity,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
+                    )
+                } else {
+                    storage.load_activated_v2_p2p_runtime_snapshot(&identity)
+                };
+                let template_chain = match durable_runtime_snapshot {
                     Ok((durable_chain, runtime))
                         if durable_chain.chain_state_generation == chain.chain_state_generation
                             && durable_chain.dag.best_height == chain.dag.best_height
@@ -746,11 +761,33 @@ pub async fn post_mining_template<S: RpcStateLike>(
                         if runtime.staging().is_empty() {
                             chain.clone()
                         } else {
-                            match materialize_activated_v2_mining_overlay(
-                                &chain,
-                                runtime.staging(),
-                                &identity,
-                            ) {
+                            let overlay = if let Some(record) = monetary_activation.as_ref() {
+                                materialize_activated_v2_mining_overlay_with_materializer(
+                                    &chain,
+                                    runtime.staging(),
+                                    &identity,
+                                    &|prepared: &ChainState| {
+                                        materialize_authoritative_state_v3(
+                                            prepared,
+                                            &record.monetary_cadence_segments,
+                                        )
+                                    },
+                                    &|context: &ChainState, candidate_hash: &pulsedag_core::Hash| {
+                                        materialize_authoritative_pre_candidate_state_v3(
+                                            context,
+                                            candidate_hash,
+                                            &record.monetary_cadence_segments,
+                                        )
+                                    },
+                                )
+                            } else {
+                                materialize_activated_v2_mining_overlay(
+                                    &chain,
+                                    runtime.staging(),
+                                    &identity,
+                                )
+                            };
+                            match overlay {
                                 Ok(overlay) => overlay,
                                 Err(error) => {
                                     return Json(ApiResponse::err(
@@ -942,7 +979,7 @@ mod tests {
         let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
             identity.clone(),
             &cadence,
-            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
         )
         .unwrap();
         let timestamp = state.dag.blocks[&state.dag.genesis_hash]

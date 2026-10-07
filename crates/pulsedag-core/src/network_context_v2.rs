@@ -15,7 +15,7 @@ use crate::{
     retarget::expected_difficulty_for_parent,
     selection_v2::{calculate_selected_tip_v1, rebuild_selected_chain_v1},
     state::ChainState,
-    state_replay_v2::rebuild_authoritative_state_v2,
+    state_replay_v2::materialize_authoritative_state_v2,
     tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
     tx_protocol::validate_transaction_for_protocol,
     types::{compute_merkle_root, Block, Hash},
@@ -295,7 +295,7 @@ fn validate_context_envelope(
     Ok(selected_parent)
 }
 
-fn replay_pre_candidate_state(
+pub(crate) fn replay_pre_candidate_state_v2(
     context: &ChainState,
     candidate_hash: &Hash,
 ) -> Result<ChainState, PulseError> {
@@ -314,14 +314,14 @@ fn replay_pre_candidate_state(
     let mut replay = init_chain_state(context.chain_id.clone());
     replay.dag.consensus_mode = context.dag.consensus_mode;
     replay.dag.selected_parent_policy = context.dag.selected_parent_policy;
-    for hash in ordered.blocks {
-        if hash == context.dag.genesis_hash {
+    for hash in ordered.blocks.iter() {
+        if hash == &context.dag.genesis_hash {
             continue;
         }
-        if &hash == candidate_hash {
+        if hash == candidate_hash {
             break;
         }
-        let accepted = context.dag.blocks.get(&hash).ok_or_else(|| {
+        let accepted = context.dag.blocks.get(hash).ok_or_else(|| {
             invalid_context_block(format!(
                 "ordered candidate context references missing block {hash}"
             ))
@@ -335,18 +335,35 @@ fn replay_pre_candidate_state(
             }
         }
     }
+    replay.dag.ordered_dag = ordered
+        .blocks
+        .iter()
+        .take_while(|hash| *hash != candidate_hash)
+        .cloned()
+        .collect();
+    replay.dag.ordering_version = ordered.ordering_version;
+    replay.dag.ordered_dag_tip = replay.dag.ordered_dag.last().cloned();
+    replay.dag.ordered_dag_state_root = Some(replay.utxo.compute_state_root()?);
     replay.mempool.transactions.clear();
     replay.mempool.spent_outpoints.clear();
     replay.mempool.first_seen.clear();
+    replay.mempool.admission_height.clear();
     Ok(replay)
 }
 
 fn validate_candidate_transactions(
     block: &Block,
-    context: &ChainState,
+    pre_candidate_state: &ChainState,
     identity: &ProtocolActivationIdentity,
 ) -> Result<(), PulseError> {
-    let mut transaction_context = replay_pre_candidate_state(context, &block.hash)?;
+    let mut transaction_context = pre_candidate_state.clone();
+    // Candidate transactions may already be present in the local mempool.
+    // Their reservation markers are not consensus spends and must not make
+    // an otherwise valid inbound block look like a double spend.
+    transaction_context.mempool.transactions.clear();
+    transaction_context.mempool.spent_outpoints.clear();
+    transaction_context.mempool.first_seen.clear();
+    transaction_context.mempool.admission_height.clear();
     validate_created_utxo_outpoints(block, &transaction_context)?;
     let coinbase = block
         .transactions
@@ -360,11 +377,15 @@ fn validate_candidate_transactions(
     Ok(())
 }
 
-fn live_disposition(
+fn live_disposition_with_materializer<FMaterialize>(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
-) -> Result<ActivatedV2P2pContextDisposition, PulseError> {
+    materialize: &FMaterialize,
+) -> Result<ActivatedV2P2pContextDisposition, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     let mut live = state.clone();
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut live, identity)?;
     match derive_ordered_dag_v2(&live) {
@@ -378,9 +399,10 @@ fn live_disposition(
             Ok(ActivatedV2P2pContextDisposition::DeferredSideTip)
         }
         Ok(_) => {
-            let replay = rebuild_authoritative_state_v2(&live)?;
-            if replay.diagnostics.state_root == block.header.state_root
-                && replay.diagnostics.ordered_dag_tip.as_ref() == Some(&block.hash)
+            let materialized = materialize(&live)?;
+            if materialized.dag.ordered_dag_state_root.as_deref()
+                == Some(block.header.state_root.as_str())
+                && materialized.dag.ordered_dag_tip.as_ref() == Some(&block.hash)
             {
                 Ok(ActivatedV2P2pContextDisposition::ImmediatelyFinalizable)
             } else {
@@ -403,11 +425,20 @@ fn live_disposition(
 /// This first context slice intentionally requires every parent to already exist
 /// in the accepted DAG. Staged-parent closure and atomic anchor promotion are
 /// separate follow-up boundaries. The caller's `ChainState` is never mutated.
-pub fn validate_activated_v2_p2p_block_context(
+pub(crate) fn validate_activated_v2_p2p_block_context_with_materializer<
+    FMaterialize,
+    FPreCandidate,
+>(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
-) -> Result<ActivatedV2P2pContextValidation, PulseError> {
+    materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
+) -> Result<ActivatedV2P2pContextValidation, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
+{
     if state.dag.blocks.contains_key(&block.hash) {
         return Err(PulseError::BlockAlreadyExists);
     }
@@ -416,28 +447,59 @@ pub fn validate_activated_v2_p2p_block_context(
 
     let mut context = projection;
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut context, identity)?;
-    validate_candidate_transactions(block, &context, identity)?;
-    let replay = rebuild_authoritative_state_v2(&context)?;
-    if replay.diagnostics.ordered_dag_tip.as_ref() != Some(&block.hash) {
+    let pre_candidate_state =
+        materialize_pre_candidate(&context, &block.hash).map_err(|error| {
+            invalid_context_block(format!(
+                "candidate pre-state cannot be materialized by the selected replay authority: {error}"
+            ))
+        })?;
+    validate_candidate_transactions(block, &pre_candidate_state, identity)?;
+
+    let ordered = derive_ordered_dag_v2(&context).map_err(|error| {
+        invalid_context_block(format!(
+            "candidate context ordered-DAG derivation failed: {error:?}"
+        ))
+    })?;
+    let materialized = materialize(&context).map_err(|error| {
+        invalid_context_block(format!(
+            "candidate context cannot be materialized by the selected replay authority: {error}"
+        ))
+    })?;
+    if materialized.dag.ordered_dag_tip.as_ref() != Some(&block.hash) {
         return Err(invalid_context_block(format!(
             "candidate {} is not the authoritative tip of its past context {:?}",
-            block.hash, replay.diagnostics.ordered_dag_tip
+            block.hash, materialized.dag.ordered_dag_tip
         )));
     }
-    if replay.diagnostics.state_root != block.header.state_root {
+    let observed_root = materialized.utxo.compute_state_root()?;
+    if observed_root != block.header.state_root {
         return Err(invalid_context_block(format!(
             "state root mismatch for {} in candidate past: committed {}, replay produced {}",
-            block.hash, block.header.state_root, replay.diagnostics.state_root
+            block.hash, block.header.state_root, observed_root
         )));
     }
 
     Ok(ActivatedV2P2pContextValidation {
         block_hash: block.hash.clone(),
-        disposition: live_disposition(block, state, identity)?,
+        disposition: live_disposition_with_materializer(block, state, identity, materialize)?,
         selected_parent,
-        ordered_dag_digest: replay.diagnostics.ordered_dag_digest,
-        state_root: replay.diagnostics.state_root,
+        ordered_dag_digest: ordered.digest,
+        state_root: observed_root,
     })
+}
+
+pub fn validate_activated_v2_p2p_block_context(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ActivatedV2P2pContextValidation, PulseError> {
+    validate_activated_v2_p2p_block_context_with_materializer(
+        block,
+        state,
+        identity,
+        &materialize_authoritative_state_v2,
+        &replay_pre_candidate_state_v2,
+    )
 }
 
 #[cfg(test)]

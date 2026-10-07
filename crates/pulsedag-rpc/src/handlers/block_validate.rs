@@ -49,12 +49,12 @@ pub async fn post_block_validate<S: RpcStateLike>(
                 "v3 monetary activation identity does not match validation state".to_string(),
             ))
         } else if record.reward_finality_policy_version
-            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         {
             Err(pulsedag_core::PulseError::InvalidBlock(format!(
                 "unsupported v3 reward-finality policy {}; implemented live policy is {}",
                 record.reward_finality_policy_version,
-                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
             )))
         } else {
             pulsedag_core::prepare_monetary_v3_p2p_block_state(

@@ -12,8 +12,8 @@ use crate::{
     ghostdag_v1::GHOSTDAG_V1_MAX_ANCESTOR_VISITS,
     mempool_protocol::reconcile_mempool_for_protocol,
     network_context_v2::{
-        validate_activated_v2_p2p_block_context, ActivatedV2P2pContextDisposition,
-        ActivatedV2P2pContextValidation,
+        replay_pre_candidate_state_v2, validate_activated_v2_p2p_block_context_with_materializer,
+        ActivatedV2P2pContextDisposition, ActivatedV2P2pContextValidation,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
@@ -196,12 +196,18 @@ fn collect_staged_closure(
     })
 }
 
-fn augment_with_staged_parents(
+fn augment_with_staged_parents<FMaterialize, FPreCandidate>(
     block: &Block,
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<(ChainState, StagedClosure), PulseError> {
+    materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
+) -> Result<(ChainState, StagedClosure), PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
+{
     let closure = collect_staged_closure(&block.header.parents, state, staging)?;
     if !closure.missing.is_empty() {
         return Ok((state.clone(), closure));
@@ -213,7 +219,13 @@ fn augment_with_staged_parents(
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            staged,
+            &working,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
     }
     Ok((working, closure))
@@ -227,11 +239,17 @@ fn augment_with_staged_parents(
 /// materialized only in memory so mining parent selection can see validated
 /// parallel tips and produce a merge anchor that can later promote the staged
 /// closure atomically.
-pub fn materialize_activated_v2_mining_overlay(
+pub fn materialize_activated_v2_mining_overlay_with_materializer<FMaterialize, FPreCandidate>(
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<ChainState, PulseError> {
+    materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
+) -> Result<ChainState, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
+{
     if staging.is_empty() {
         return Ok(state.clone());
     }
@@ -252,7 +270,13 @@ pub fn materialize_activated_v2_mining_overlay(
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            staged,
+            &working,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
         staged_blocks.push(staged.clone());
     }
@@ -273,27 +297,56 @@ pub fn materialize_activated_v2_mining_overlay(
     Ok(working)
 }
 
-pub fn stage_activated_v2_p2p_block(
+pub fn materialize_activated_v2_mining_overlay(
+    state: &ChainState,
+    staging: &ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ChainState, PulseError> {
+    materialize_activated_v2_mining_overlay_with_materializer(
+        state,
+        staging,
+        identity,
+        &materialize_authoritative_state_v2,
+        &replay_pre_candidate_state_v2,
+    )
+}
+
+pub(crate) fn stage_activated_v2_p2p_block_with_materializer<FMaterialize, FPreCandidate>(
     block: Block,
     state: &ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
+    materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
+) -> Result<ActivatedV2P2pStageOutcome, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
+{
     if state.dag.blocks.contains_key(&block.hash) {
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
     }
     if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
-        let Ok((augmented, closure)) =
-            augment_with_staged_parents(&staged_block, state, staging, identity)
-        else {
+        let Ok((augmented, closure)) = augment_with_staged_parents(
+            &staged_block,
+            state,
+            staging,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        ) else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
         if !closure.missing.is_empty() {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         }
-        let Ok(validation) =
-            validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
-        else {
+        let Ok(validation) = validate_activated_v2_p2p_block_context_with_materializer(
+            &staged_block,
+            &augmented,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        ) else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
         if validation.disposition != ActivatedV2P2pContextDisposition::ImmediatelyFinalizable {
@@ -306,7 +359,14 @@ pub fn stage_activated_v2_p2p_block(
         });
     }
 
-    let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity)?;
+    let (augmented, closure) = augment_with_staged_parents(
+        &block,
+        state,
+        staging,
+        identity,
+        materialize,
+        materialize_pre_candidate,
+    )?;
     if !closure.missing.is_empty() {
         return Ok(ActivatedV2P2pStageOutcome::MissingParents {
             block_hash: block.hash,
@@ -314,7 +374,13 @@ pub fn stage_activated_v2_p2p_block(
         });
     }
 
-    let validation = validate_activated_v2_p2p_block_context(&block, &augmented, identity)?;
+    let validation = validate_activated_v2_p2p_block_context_with_materializer(
+        &block,
+        &augmented,
+        identity,
+        materialize,
+        materialize_pre_candidate,
+    )?;
     if closure.ordered.is_empty()
         && validation.disposition == ActivatedV2P2pContextDisposition::ImmediatelyFinalizable
     {
@@ -346,6 +412,22 @@ pub fn stage_activated_v2_p2p_block(
             staged_count,
         })
     }
+}
+
+pub fn stage_activated_v2_p2p_block(
+    block: Block,
+    state: &ChainState,
+    staging: &mut ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
+    stage_activated_v2_p2p_block_with_materializer(
+        block,
+        state,
+        staging,
+        identity,
+        &materialize_authoritative_state_v2,
+        &replay_pre_candidate_state_v2,
+    )
 }
 
 fn remove_staged_transactions_from_mempool(state: &mut ChainState, blocks: &[Block]) {
@@ -416,12 +498,18 @@ fn remove_promoted_transactions_from_mempool(
     Ok(())
 }
 
-fn prepare_anchor_promotion(
+fn prepare_anchor_promotion_with_materializer<FMaterialize, FPreCandidate>(
     anchor_hash: &Hash,
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<(ChainState, PreparedPromotion), PulseError> {
+    materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
+) -> Result<(ChainState, PreparedPromotion), PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
+{
     if state.dag.blocks.contains_key(anchor_hash) {
         return Err(PulseError::BlockAlreadyExists);
     }
@@ -448,12 +536,18 @@ fn prepare_anchor_promotion(
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(block, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            block,
+            &working,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
         bundle.push(block.clone());
     }
 
-    let mut materialized = materialize_authoritative_state_v2(&working).map_err(|error| {
+    let mut materialized = materialize(&working).map_err(|error| {
         invalid_staging(format!(
             "anchor {anchor_hash} does not yet close the authoritative DAG: {error}"
         ))
@@ -482,25 +576,40 @@ fn prepare_anchor_promotion(
     ))
 }
 
-pub fn promote_activated_v2_p2p_anchor_atomically<FPersist, FBroadcast>(
+pub(crate) fn promote_activated_v2_p2p_anchor_atomically_with_materializer<
+    FPersist,
+    FBroadcast,
+    FMaterialize,
+    FPreCandidate,
+>(
     anchor_hash: &Hash,
     state: &mut ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
+    replay_materializers: (&FMaterialize, &FPreCandidate),
     mut persist: FPersist,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pPromotion, PulseError>
 where
     FPersist: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
+    let (materialize, materialize_pre_candidate) = replay_materializers;
     let persist_bundle = RefCell::new(Vec::<Block>::new());
     let mutation = mutate_chain_state_serialized(
         state,
         "p2p_v2_staged_promotion",
         |base| {
-            let (prepared, details) =
-                prepare_anchor_promotion(anchor_hash, base, staging, identity)?;
+            let (prepared, details) = prepare_anchor_promotion_with_materializer(
+                anchor_hash,
+                base,
+                staging,
+                identity,
+                materialize,
+                materialize_pre_candidate,
+            )?;
             *persist_bundle.borrow_mut() = details.bundle.clone();
             Ok((prepared, details))
         },
@@ -533,6 +642,32 @@ where
         committed: true,
         broadcast_count,
     })
+}
+
+pub fn promote_activated_v2_p2p_anchor_atomically<FPersist, FBroadcast>(
+    anchor_hash: &Hash,
+    state: &mut ChainState,
+    staging: &mut ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+    persist: FPersist,
+    broadcast: FBroadcast,
+) -> Result<ActivatedV2P2pPromotion, PulseError>
+where
+    FPersist: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+{
+    promote_activated_v2_p2p_anchor_atomically_with_materializer(
+        anchor_hash,
+        state,
+        staging,
+        identity,
+        (
+            &materialize_authoritative_state_v2,
+            &replay_pre_candidate_state_v2,
+        ),
+        persist,
+        broadcast,
+    )
 }
 
 #[cfg(test)]

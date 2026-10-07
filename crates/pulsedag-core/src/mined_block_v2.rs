@@ -31,7 +31,7 @@ fn invalid_mined_block(message: impl Into<String>) -> PulseError {
     ))
 }
 
-fn validate_mined_block_envelope(
+pub(crate) fn validate_mined_block_envelope(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,

@@ -349,8 +349,10 @@ pub use state_replay_v2::{
     verify_authoritative_state_snapshot_v2, StateReplayV2, StateReplayV2Diagnostics,
 };
 pub use state_replay_v3::{
-    mature_reward_prefix_score_v3, rebuild_authoritative_state_v3, StateReplayV3,
-    StateReplayV3Diagnostics, REWARD_FINALITY_POLICY_VERSION_V3,
+    materialize_authoritative_pre_candidate_state_v3, materialize_authoritative_state_v3,
+    mature_reward_prefix_score_v3, rebuild_authoritative_state_v3,
+    verify_authoritative_state_snapshot_v3, StateReplayV3, StateReplayV3Diagnostics,
+    REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 pub use apply::{
@@ -461,9 +463,11 @@ pub use network_runtime_v3::{
     drive_monetary_v3_p2p_block_with_runtime_persistence, validate_monetary_v3_p2p_runtime_snapshot,
 };
 pub use network_staging_v2::{
-    materialize_activated_v2_mining_overlay, promote_activated_v2_p2p_anchor_atomically,
-    stage_activated_v2_p2p_block, ActivatedV2P2pPromotion, ActivatedV2P2pStageOutcome,
-    ActivatedV2P2pStaging, ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS,
+    materialize_activated_v2_mining_overlay,
+    materialize_activated_v2_mining_overlay_with_materializer,
+    promote_activated_v2_p2p_anchor_atomically, stage_activated_v2_p2p_block,
+    ActivatedV2P2pPromotion, ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
+    ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS,
 };
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,

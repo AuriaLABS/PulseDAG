@@ -45,32 +45,36 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
         }
     };
 
-    let (restored_state, restored_runtime) =
-        storage.load_activated_v2_p2p_runtime_snapshot(&identity)?;
-
     // A monetary sidecar is never sufficient to activate this path: reaching
     // here already required explicit matching P2P capabilities. Once present,
-    // however, it becomes an additional fail-closed restore constraint.
-    if let Some(monetary) = storage.protocol_monetary_activation_record()? {
+    // however, it selects the v3-aware snapshot verifier and there is no v2
+    // replay fallback for that durable monetary identity.
+    let monetary = storage.protocol_monetary_activation_record()?;
+    let (restored_state, restored_runtime) = if let Some(monetary) = monetary.as_ref() {
         if monetary.identity != identity {
             anyhow::bail!(
                 "v3 monetary activation identity does not match activated-v2 startup identity"
             );
         }
         if monetary.reward_finality_policy_version
-            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         {
             anyhow::bail!(
                 "unsupported v3 reward-finality policy {}; implemented live policy is {}",
                 monetary.reward_finality_policy_version,
-                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
             );
         }
-        storage.verify_persisted_monetary_identity(
+        storage.load_monetary_v3_p2p_runtime_snapshot(
             &identity,
             &monetary.monetary_cadence_segments,
             &monetary.reward_finality_policy_version,
-        )?;
+        )?
+    } else {
+        storage.load_activated_v2_p2p_runtime_snapshot(&identity)?
+    };
+
+    if let Some(monetary) = monetary.as_ref() {
         validate_monetary_v3_p2p_runtime_snapshot(
             &restored_state,
             &restored_runtime,
@@ -89,6 +93,7 @@ mod tests {
         finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
         init_chain_state_v3, materialize_authoritative_state_v2, MonetaryCadenceSegment,
         CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
+        REWARD_FINALITY_POLICY_VERSION_V3,
     };
     use pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION;
 
@@ -169,7 +174,7 @@ mod tests {
                 &state,
                 &identity,
                 &cadence,
-                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+                REWARD_FINALITY_POLICY_VERSION_V3,
             )
             .unwrap();
 
