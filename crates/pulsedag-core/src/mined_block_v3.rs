@@ -1,13 +1,22 @@
+use std::time::Instant;
+
 use crate::{
-    accept::{AcceptSource, AtomicBlockAcceptance},
+    accept::{
+        mutate_chain_state_serialized, record_canonical_state_apply_latency, AcceptSource,
+        AtomicBlockAcceptance, BlockAcceptanceResult,
+    },
+    acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     audit_monetary_state_v3,
     errors::PulseError,
-    mined_block_v2::accept_activated_v2_mined_block_atomically,
+    mempool_protocol::reconcile_mempool_for_protocol,
+    mined_block_v2::validate_mined_block_envelope,
     monetary_v3::MonetaryCadenceSegment,
     protocol::ProtocolActivationIdentity,
     state::ChainState,
+    state_replay_v3::materialize_authoritative_state_v3,
     types::Block,
-    validate_ordered_monetary_reward_v3,
+    validate_live_reward_settlement_v3, validate_ordered_monetary_reward_v3,
+    REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
 fn invalid_monetary_mined_block(message: impl Into<String>) -> PulseError {
@@ -17,20 +26,81 @@ fn invalid_monetary_mined_block(message: impl Into<String>) -> PulseError {
     ))
 }
 
-/// Accept one locally/RPC-mined v3 monetary block through the existing
-/// activated-v2 header/DAG/state machinery while replacing legacy height
-/// subsidy authority with the frozen ordered-DAG monetary policy.
-///
-/// The underlying v2 envelope still performs header, parent, transaction,
-/// state-root and PoW validation. Before the prepared state can be persisted or
-/// published, this wrapper additionally requires:
-/// - smart-contract execution to remain inactive;
-/// - an amountless, chain-bound v3 reward claim at the canonical ordered score;
-/// - no additional inputless issuance path;
-/// - exact cumulative authorized supply for the whole accepted ordered DAG.
-///
-/// Because the monetary checks run inside the serialized persistence callback,
-/// any failure aborts before the live ChainState commit and before broadcast.
+/// Prepare one mined/RPC v3 monetary block against the authoritative v3
+/// ordered-DAG replay before it can be persisted.
+pub fn prepare_monetary_v3_mined_block_state(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<ChainState, PulseError> {
+    if state.contracts.config.enabled {
+        return Err(invalid_monetary_mined_block(
+            "v3.0.0 monetary acceptance requires smart-contract execution to remain inactive",
+        ));
+    }
+    validate_mined_block_envelope(block, state, identity)?;
+
+    let mut working = state.clone();
+    commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
+    let mut prepared = materialize_authoritative_state_v3(&working, cadence_segments)?;
+
+    let observed_state_root = prepared.utxo.compute_state_root()?;
+    if observed_state_root != block.header.state_root {
+        return Err(invalid_monetary_mined_block(format!(
+            "state root mismatch for {}: committed {}, v3 replay produced {}",
+            block.hash, block.header.state_root, observed_state_root
+        )));
+    }
+    if prepared.dag.ordered_dag_tip.as_ref() != Some(&block.hash) {
+        return Err(invalid_monetary_mined_block(format!(
+            "accepted mined block {} is not the authoritative v3 ordered DAG tip {:?}",
+            block.hash, prepared.dag.ordered_dag_tip
+        )));
+    }
+
+    for transaction in block.transactions.iter().skip(1) {
+        if prepared
+            .mempool
+            .transactions
+            .remove(&transaction.txid)
+            .is_some()
+        {
+            prepared.mempool.first_seen.remove(&transaction.txid);
+            prepared.mempool.admission_height.remove(&transaction.txid);
+            prepared.mempool.counters.confirmed_removed_total = prepared
+                .mempool
+                .counters
+                .confirmed_removed_total
+                .saturating_add(1);
+        }
+        for input in &transaction.inputs {
+            prepared
+                .mempool
+                .spent_outpoints
+                .remove(&input.previous_output);
+        }
+    }
+    reconcile_mempool_for_protocol(&mut prepared, identity)?;
+
+    validate_ordered_monetary_reward_v3(&prepared, &block.hash, cadence_segments).map_err(
+        |error| {
+            invalid_monetary_mined_block(format!("ordered reward validation failed: {error}"))
+        },
+    )?;
+    audit_monetary_state_v3(&prepared, cadence_segments).map_err(|error| {
+        invalid_monetary_mined_block(format!("accepted-state monetary audit failed: {error}"))
+    })?;
+    validate_live_reward_settlement_v3(
+        &prepared,
+        cadence_segments,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )?;
+    Ok(prepared)
+}
+
+/// Accept one locally/RPC-mined v3 monetary block through the serialized
+/// ChainState coordinator while using the v3 monetary replay as state authority.
 pub fn accept_monetary_v3_mined_block_atomically<FPersist, FBroadcast>(
     block: Block,
     state: &mut ChainState,
@@ -44,39 +114,45 @@ where
     FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
 {
+    if matches!(source, AcceptSource::P2p) {
+        return Err(invalid_monetary_mined_block(
+            "mining-specific acceptance cannot be used for P2P blocks",
+        ));
+    }
     if state.contracts.config.enabled {
         return Err(invalid_monetary_mined_block(
             "v3.0.0 monetary acceptance requires smart-contract execution to remain inactive",
         ));
     }
 
-    accept_activated_v2_mined_block_atomically(
-        block,
+    let mut final_prepare_latency_us = None;
+    let mut prepare_attempts = 0_u64;
+    let mutation = mutate_chain_state_serialized(
         state,
-        source,
-        identity,
-        |accepted_block, prepared| {
-            if prepared.contracts.config.enabled {
-                return Err(invalid_monetary_mined_block(
-                    "prepared state enabled smart-contract execution",
-                ));
-            }
-
-            validate_ordered_monetary_reward_v3(prepared, &accepted_block.hash, cadence_segments)
-                .map_err(|error| {
-                invalid_monetary_mined_block(format!("ordered reward validation failed: {error}"))
-            })?;
-
-            audit_monetary_state_v3(prepared, cadence_segments).map_err(|error| {
-                invalid_monetary_mined_block(format!(
-                    "accepted-state monetary audit failed: {error}"
-                ))
-            })?;
-
-            persist(accepted_block, prepared)
+        source.as_str(),
+        |base| {
+            let prepare_started = Instant::now();
+            let prepared =
+                prepare_monetary_v3_mined_block_state(&block, base, identity, cadence_segments)?;
+            final_prepare_latency_us =
+                Some(prepare_started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+            prepare_attempts = prepare_attempts.saturating_add(1);
+            Ok((prepared, ()))
         },
-        broadcast,
-    )
+        |prepared| persist(&block, prepared),
+    )?;
+    debug_assert_eq!(state.chain_state_generation, mutation.generation);
+
+    if let Some(latency_us) = final_prepare_latency_us {
+        record_canonical_state_apply_latency(latency_us, prepare_attempts.saturating_sub(1));
+    }
+    broadcast(&block)?;
+    Ok(AtomicBlockAcceptance {
+        result: BlockAcceptanceResult::Accepted,
+        persisted: true,
+        committed: true,
+        broadcast: true,
+    })
 }
 
 #[cfg(test)]
