@@ -1,7 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use pulsedag_core::{
-    types::{Hash, Transaction},
+    types::{Block, Hash, Transaction},
     ChainState,
 };
 use pulsedag_p2p::messages::{
@@ -88,18 +91,43 @@ impl CompactRelayDaemonRuntimeV1 {
         })
     }
 
+    #[cfg(test)]
     pub fn handle_inbound(
         &mut self,
         peer_id: &str,
         wire: &CompactRelayWireV1,
         chain: &ChainState,
     ) -> Result<Vec<CompactRelayControllerActionV1>, CompactRelayControllerErrorV1> {
+        self.handle_inbound_with_retained_block(peer_id, wire, chain, None)
+    }
+
+    pub fn handle_inbound_with_retained_block(
+        &mut self,
+        peer_id: &str,
+        wire: &CompactRelayWireV1,
+        chain: &ChainState,
+        retained_block: Option<&Block>,
+    ) -> Result<Vec<CompactRelayControllerActionV1>, CompactRelayControllerErrorV1> {
         if matches!(wire, CompactRelayWireV1::Capabilities(_)) {
             self.peer_disconnected(peer_id);
         }
-        let known_transactions = known_transactions_for_wire(chain, wire);
+        let known_transactions =
+            known_transactions_for_wire_with_retained_block(chain, wire, retained_block);
         self.controller
             .handle_wire(&mut self.sessions, peer_id, wire, &known_transactions)
+    }
+
+    pub fn observe_full_block(&mut self, block_hash: &str) -> bool {
+        self.controller
+            .observe_full_block(&mut self.sessions, block_hash)
+    }
+
+    pub fn expire_stale_pending(
+        &mut self,
+        timeout: Duration,
+    ) -> Vec<CompactRelayControllerActionV1> {
+        self.controller
+            .expire_stale_pending(&mut self.sessions, timeout)
     }
 
     pub fn peer_disconnected(&mut self, peer_id: &str) {
@@ -121,9 +149,18 @@ impl CompactRelayDaemonRuntimeV1 {
     }
 }
 
+#[cfg(test)]
 fn known_transactions_for_wire(
     chain: &ChainState,
     wire: &CompactRelayWireV1,
+) -> HashMap<Hash, Transaction> {
+    known_transactions_for_wire_with_retained_block(chain, wire, None)
+}
+
+fn known_transactions_for_wire_with_retained_block(
+    chain: &ChainState,
+    wire: &CompactRelayWireV1,
+    retained_block: Option<&Block>,
 ) -> HashMap<Hash, Transaction> {
     let (retained_block_hash, txids) = match wire {
         CompactRelayWireV1::Announce(announcement) => (None, announcement.txids.as_slice()),
@@ -136,7 +173,13 @@ fn known_transactions_for_wire(
     let requested = txids.iter().collect::<HashSet<_>>();
     let mut known = HashMap::with_capacity(txids.len());
 
-    if let Some(block) = retained_block_hash.and_then(|hash| chain.dag.blocks.get(hash)) {
+    if let Some(block) = retained_block_hash.and_then(|hash| {
+        chain
+            .dag
+            .blocks
+            .get(hash)
+            .or_else(|| retained_block.filter(|block| &block.hash == hash))
+    }) {
         for transaction in &block.transactions {
             if requested.contains(&transaction.txid) {
                 known.insert(transaction.txid.clone(), transaction.clone());
@@ -306,6 +349,41 @@ mod tests {
             serde_json::to_vec(observed).unwrap(),
             serde_json::to_vec(&transaction("body-b")).unwrap()
         );
+    }
+
+    #[test]
+    fn body_service_can_use_activated_v2_retained_block_outside_live_dag() {
+        let chain_id = "compact-daemon-test";
+        let peer = "peer-a";
+        let mut runtime = CompactRelayDaemonRuntimeV1::new(chain_id).unwrap();
+        let chain = init_chain_state(chain_id.to_string());
+        let block = block();
+
+        let capabilities =
+            CompactRelayWireV1::Capabilities(CompactRelayCapabilitiesV1::canonical(chain_id));
+        runtime.handle_inbound(peer, &capabilities, &chain).unwrap();
+
+        let request = CompactRelayWireV1::GetTransactions(CompactTransactionRequestV1 {
+            version: COMPACT_DAG_RELAY_VERSION_V1,
+            block_hash: block.hash.clone(),
+            txids: vec!["body-b".to_string()],
+        });
+        let actions = runtime
+            .handle_inbound_with_retained_block(peer, &request, &chain, Some(&block))
+            .unwrap();
+
+        assert!(matches!(
+            actions.as_slice(),
+            [CompactRelayControllerActionV1::Send {
+                wire: CompactRelayWireV1::Transactions(response),
+                ..
+            }] if response.block_hash.as_str() == block.hash.as_str()
+                && response.transactions.len() == 1
+                && response.transactions[0].txid == "body-b"
+        ));
+        let telemetry = runtime.telemetry();
+        assert_eq!(telemetry.body_responses_sent_total, 1);
+        assert_eq!(telemetry.full_block_service_fallback_total, 0);
     }
 
     #[test]
