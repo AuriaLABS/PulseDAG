@@ -445,7 +445,7 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
             );
         }
         if record.reward_finality_policy_version
-            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         {
             return rejected_response(
                 &req,
@@ -453,7 +453,7 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 format!(
                     "unsupported v3 reward-finality policy {}; implemented live policy is {}",
                     record.reward_finality_policy_version,
-                    pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                    pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
                 ),
                 None,
             );
