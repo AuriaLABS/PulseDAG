@@ -4,6 +4,7 @@ use crate::{
     acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     apply::apply_transaction,
     errors::PulseError,
+    genesis::init_chain_state,
     ghostdag_v1::{classify_merge_set_v1, GHOSTDAG_V1_MAX_ANCESTOR_VISITS},
     header_v2::{compute_block_hash_v2, validate_block_header_v2_shape},
     mining::{current_ts, is_coinbase},
@@ -294,6 +295,62 @@ fn validate_context_envelope(
     Ok(selected_parent)
 }
 
+fn replay_pre_candidate_state_v2(
+    context: &ChainState,
+    candidate_hash: &Hash,
+) -> Result<ChainState, PulseError> {
+    let ordered = derive_ordered_dag_v2(context).map_err(|error| {
+        invalid_context_block(format!(
+            "candidate context has no authoritative ordered DAG: {error:?}"
+        ))
+    })?;
+    if ordered.blocks.last() != Some(candidate_hash) {
+        return Err(invalid_context_block(format!(
+            "candidate {candidate_hash} is not the tip of its own past-context order {:?}",
+            ordered.blocks.last()
+        )));
+    }
+
+    let mut replay = init_chain_state(context.chain_id.clone());
+    replay.dag.consensus_mode = context.dag.consensus_mode;
+    replay.dag.selected_parent_policy = context.dag.selected_parent_policy;
+    for hash in ordered.blocks.iter() {
+        if hash == &context.dag.genesis_hash {
+            continue;
+        }
+        if hash == candidate_hash {
+            break;
+        }
+        let accepted = context.dag.blocks.get(hash).ok_or_else(|| {
+            invalid_context_block(format!(
+                "ordered candidate context references missing block {hash}"
+            ))
+        })?;
+        for transaction in &accepted.transactions {
+            let mut next = replay.clone();
+            match apply_transaction(transaction, &mut next, accepted.header.height) {
+                Ok(()) => replay = next,
+                Err(PulseError::UtxoNotFound | PulseError::DuplicateUtxoOutpoint(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    replay.dag.ordered_dag = ordered
+        .blocks
+        .iter()
+        .take_while(|hash| *hash != candidate_hash)
+        .cloned()
+        .collect();
+    replay.dag.ordering_version = ordered.ordering_version;
+    replay.dag.ordered_dag_tip = replay.dag.ordered_dag.last().cloned();
+    replay.dag.ordered_dag_state_root = Some(replay.utxo.compute_state_root()?);
+    replay.mempool.transactions.clear();
+    replay.mempool.spent_outpoints.clear();
+    replay.mempool.first_seen.clear();
+    replay.mempool.admission_height.clear();
+    Ok(replay)
+}
+
 fn validate_candidate_transactions(
     block: &Block,
     pre_candidate_state: &ChainState,
@@ -368,28 +425,33 @@ where
 /// This first context slice intentionally requires every parent to already exist
 /// in the accepted DAG. Staged-parent closure and atomic anchor promotion are
 /// separate follow-up boundaries. The caller's `ChainState` is never mutated.
-pub(crate) fn validate_activated_v2_p2p_block_context_with_materializer<FMaterialize>(
+pub(crate) fn validate_activated_v2_p2p_block_context_with_materializer<
+    FMaterialize,
+    FPreCandidate,
+>(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
     materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
 ) -> Result<ActivatedV2P2pContextValidation, PulseError>
 where
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
     if state.dag.blocks.contains_key(&block.hash) {
         return Err(PulseError::BlockAlreadyExists);
     }
     let projection = candidate_past_projection(block, state)?;
     let selected_parent = validate_context_envelope(block, &projection, identity)?;
-    let pre_candidate_state = materialize(&projection).map_err(|error| {
-        invalid_context_block(format!(
-            "candidate past cannot be materialized by the selected replay authority: {error}"
-        ))
-    })?;
 
     let mut context = projection;
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut context, identity)?;
+    let pre_candidate_state = materialize_pre_candidate(&context, &block.hash).map_err(|error| {
+        invalid_context_block(format!(
+            "candidate pre-state cannot be materialized by the selected replay authority: {error}"
+        ))
+    })?;
     validate_candidate_transactions(block, &pre_candidate_state, identity)?;
 
     let ordered = derive_ordered_dag_v2(&context).map_err(|error| {
@@ -435,6 +497,7 @@ pub fn validate_activated_v2_p2p_block_context(
         state,
         identity,
         &materialize_authoritative_state_v2,
+        &replay_pre_candidate_state_v2,
     )
 }
 
