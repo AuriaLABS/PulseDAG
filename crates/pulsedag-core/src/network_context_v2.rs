@@ -447,11 +447,12 @@ where
 
     let mut context = projection;
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut context, identity)?;
-    let pre_candidate_state = materialize_pre_candidate(&context, &block.hash).map_err(|error| {
-        invalid_context_block(format!(
-            "candidate pre-state cannot be materialized by the selected replay authority: {error}"
-        ))
-    })?;
+    let pre_candidate_state =
+        materialize_pre_candidate(&context, &block.hash).map_err(|error| {
+            invalid_context_block(format!(
+                "candidate pre-state cannot be materialized by the selected replay authority: {error}"
+            ))
+        })?;
     validate_candidate_transactions(block, &pre_candidate_state, identity)?;
 
     let ordered = derive_ordered_dag_v2(&context).map_err(|error| {
