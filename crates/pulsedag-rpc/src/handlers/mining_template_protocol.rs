@@ -12,7 +12,8 @@ use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
     finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
-    materialize_activated_v2_mining_overlay_with_materializer, materialize_authoritative_state_v3,
+    materialize_activated_v2_mining_overlay_with_materializer,
+    materialize_authoritative_pre_candidate_state_v3, materialize_authoritative_state_v3,
     ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
     ProtocolMonetaryActivationRecordV2, PulseError, TRANSACTION_VERSION_V2,
 };
@@ -768,6 +769,13 @@ pub async fn post_mining_template<S: RpcStateLike>(
                                     &|prepared: &ChainState| {
                                         materialize_authoritative_state_v3(
                                             prepared,
+                                            &record.monetary_cadence_segments,
+                                        )
+                                    },
+                                    &|context: &ChainState, candidate_hash: &pulsedag_core::Hash| {
+                                        materialize_authoritative_pre_candidate_state_v3(
+                                            context,
+                                            candidate_hash,
                                             &record.monetary_cadence_segments,
                                         )
                                     },
