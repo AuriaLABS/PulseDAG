@@ -326,14 +326,12 @@ where
         if !closure.missing.is_empty() {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         }
-        let Ok(validation) =
-            validate_activated_v2_p2p_block_context_with_materializer(
-                &staged_block,
-                &augmented,
-                identity,
-                materialize,
-            )
-        else {
+        let Ok(validation) = validate_activated_v2_p2p_block_context_with_materializer(
+            &staged_block,
+            &augmented,
+            identity,
+            materialize,
+        ) else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
         if validation.disposition != ActivatedV2P2pContextDisposition::ImmediatelyFinalizable {
@@ -346,7 +344,8 @@ where
         });
     }
 
-    let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity, materialize)?;
+    let (augmented, closure) =
+        augment_with_staged_parents(&block, state, staging, identity, materialize)?;
     if !closure.missing.is_empty() {
         return Ok(ActivatedV2P2pStageOutcome::MissingParents {
             block_hash: block.hash,
