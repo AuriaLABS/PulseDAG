@@ -45,6 +45,7 @@ FORBIDDEN_V3_LIVE_MARKERS = [
 REQUIRED_LIVE_MARKERS = {
     "crates/pulsedag-core/src/state_replay_v3.rs": [
         "rebuild_authoritative_state_v3",
+        "materialize_authoritative_pre_candidate_state_v3",
         "validate_reward_claim_transaction_v3",
         "eligible_fees_by_score",
         "settlement_outpoint_v3",
@@ -134,6 +135,7 @@ REQUIRED_LIVE_CALLS = {
         "validate_monetary_v3_p2p_staging_envelope",
         "audit_authoritative_monetary_state",
         "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        "materialize_authoritative_pre_candidate_state_v3",
     ],
     "crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs": [
         "protocol_monetary_activation_record",
@@ -142,11 +144,13 @@ REQUIRED_LIVE_CALLS = {
         "protocol_monetary_activation_record",
         "build_monetary_mining_template_v3",
         "ensure_legacy_mining_disabled_when_monetary_v3_active",
+        "materialize_authoritative_pre_candidate_state_v3",
     ],
     "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs": [
         "protocol_monetary_activation_record",
         "accept_monetary_v3_mined_block_atomically",
         "ensure_legacy_mining_disabled_when_monetary_v3_active",
+        "materialize_authoritative_pre_candidate_state_v3",
     ],
     "apps/pulsedagd/src/activated_v2_runtime.rs": [
         "protocol_monetary_activation_record",
