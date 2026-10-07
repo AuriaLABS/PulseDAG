@@ -349,27 +349,61 @@ pub fn stage_activated_v2_p2p_block(
 }
 
 fn remove_staged_transactions_from_mempool(state: &mut ChainState, blocks: &[Block]) {
+    let mut staged_txids = BTreeSet::new();
+    let mut staged_spent_outpoints = BTreeSet::new();
     for block in blocks {
         for transaction in block.transactions.iter().skip(1) {
-            if state
-                .mempool
-                .transactions
-                .remove(&transaction.txid)
-                .is_some()
-            {
-                state.mempool.first_seen.remove(&transaction.txid);
-                state.mempool.admission_height.remove(&transaction.txid);
-                state.mempool.counters.confirmed_removed_total = state
-                    .mempool
-                    .counters
-                    .confirmed_removed_total
-                    .saturating_add(1);
-            }
-            for input in &transaction.inputs {
-                state.mempool.spent_outpoints.remove(&input.previous_output);
-            }
+            staged_txids.insert(transaction.txid.clone());
+            staged_spent_outpoints.extend(
+                transaction
+                    .inputs
+                    .iter()
+                    .map(|input| input.previous_output.clone()),
+            );
         }
     }
+
+    let mut confirmed_txids = BTreeSet::new();
+    let mut conflicting_txids = BTreeSet::new();
+    for (txid, transaction) in &state.mempool.transactions {
+        if staged_txids.contains(txid) {
+            confirmed_txids.insert(txid.clone());
+        } else if transaction
+            .inputs
+            .iter()
+            .any(|input| staged_spent_outpoints.contains(&input.previous_output))
+        {
+            conflicting_txids.insert(txid.clone());
+        }
+    }
+
+    for txid in confirmed_txids.iter().chain(conflicting_txids.iter()) {
+        state.mempool.transactions.remove(txid);
+        state.mempool.first_seen.remove(txid);
+        state.mempool.admission_height.remove(txid);
+    }
+    state.mempool.counters.confirmed_removed_total = state
+        .mempool
+        .counters
+        .confirmed_removed_total
+        .saturating_add(confirmed_txids.len() as u64);
+    state.mempool.counters.reconcile_removed_total = state
+        .mempool
+        .counters
+        .reconcile_removed_total
+        .saturating_add(conflicting_txids.len() as u64);
+
+    state.mempool.spent_outpoints = state
+        .mempool
+        .transactions
+        .values()
+        .flat_map(|transaction| {
+            transaction
+                .inputs
+                .iter()
+                .map(|input| input.previous_output.clone())
+        })
+        .collect();
 }
 
 fn remove_promoted_transactions_from_mempool(
@@ -518,6 +552,7 @@ mod tests {
         pow_protocol::validate_pow_for_protocol,
         retarget::expected_difficulty_for_parent,
         state_replay_v2::rebuild_authoritative_state_v2,
+        types::{OutPoint, TxInput},
         validation::block_subsidy,
     };
 
@@ -659,26 +694,56 @@ mod tests {
     }
 
     #[test]
-    fn staged_ancestry_mempool_filter_removes_transactions_from_every_staged_block() {
+    fn staged_ancestry_mempool_filter_removes_confirmed_and_input_conflicting_transactions() {
         let (mut live, _identity, _staging, _main, mut staged_parent) = staged_side_fixture();
         let mut staged_child = staged_parent.clone();
 
+        let shared_outpoint = OutPoint {
+            txid: "shared-funding".to_string(),
+            index: 0,
+        };
+        let child_outpoint = OutPoint {
+            txid: "child-funding".to_string(),
+            index: 1,
+        };
+        let unrelated_outpoint = OutPoint {
+            txid: "unrelated-funding".to_string(),
+            index: 2,
+        };
+        let input = |previous_output: OutPoint| TxInput {
+            previous_output,
+            public_key: "test-public-key".to_string(),
+            signature: "test-signature".to_string(),
+        };
+
         let mut parent_tx = staged_parent.transactions[0].clone();
         parent_tx.txid = "staged-parent-tx".to_string();
+        parent_tx.inputs = vec![input(shared_outpoint.clone())];
+
         let mut child_tx = staged_child.transactions[0].clone();
         child_tx.txid = "staged-child-tx".to_string();
+        child_tx.inputs = vec![input(child_outpoint.clone())];
+
+        let mut conflicting_tx = staged_child.transactions[0].clone();
+        conflicting_tx.txid = "conflicting-live-tx".to_string();
+        conflicting_tx.inputs = vec![input(shared_outpoint.clone())];
+
         let mut unrelated_tx = staged_child.transactions[0].clone();
         unrelated_tx.txid = "unrelated-live-tx".to_string();
+        unrelated_tx.inputs = vec![input(unrelated_outpoint.clone())];
 
         staged_parent.transactions.push(parent_tx.clone());
         staged_child.transactions.push(child_tx.clone());
 
-        for tx in [&parent_tx, &child_tx, &unrelated_tx] {
+        for tx in [&parent_tx, &child_tx, &conflicting_tx, &unrelated_tx] {
             live.mempool
                 .transactions
                 .insert(tx.txid.clone(), tx.clone());
             live.mempool.first_seen.insert(tx.txid.clone(), 1);
             live.mempool.admission_height.insert(tx.txid.clone(), 0);
+            live.mempool
+                .spent_outpoints
+                .extend(tx.inputs.iter().map(|input| input.previous_output.clone()));
         }
 
         remove_staged_transactions_from_mempool(
@@ -688,10 +753,17 @@ mod tests {
 
         assert!(!live.mempool.transactions.contains_key(&parent_tx.txid));
         assert!(!live.mempool.transactions.contains_key(&child_tx.txid));
+        assert!(!live.mempool.transactions.contains_key(&conflicting_tx.txid));
         assert!(live.mempool.transactions.contains_key(&unrelated_tx.txid));
         assert!(!live.mempool.first_seen.contains_key(&parent_tx.txid));
         assert!(!live.mempool.first_seen.contains_key(&child_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&conflicting_tx.txid));
         assert_eq!(live.mempool.counters.confirmed_removed_total, 2);
+        assert_eq!(live.mempool.counters.reconcile_removed_total, 1);
+        assert_eq!(
+            live.mempool.spent_outpoints,
+            std::collections::HashSet::from([unrelated_outpoint])
+        );
     }
 
     #[test]
