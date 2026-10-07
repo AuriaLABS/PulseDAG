@@ -108,6 +108,19 @@ impl Storage {
             .map_err(storage_error)
     }
 
+    /// Verify a persisted sidecar against the canonical v3.0.0 production
+    /// monetary contract. The expected chain/genesis identity remains an
+    /// explicit #1049 input and is never inferred here.
+    pub fn verify_persisted_production_v3_identity(
+        &self,
+        expected: &ProtocolActivationIdentity,
+    ) -> Result<(), PulseError> {
+        let record = self
+            .protocol_monetary_activation_record()?
+            .ok_or_else(|| storage_error("missing v3 monetary activation sidecar"))?;
+        record.verify_production_v3(expected).map_err(storage_error)
+    }
+
     /// Verify the durable sidecar against an explicit restore expectation.
     /// Missing records are accepted only through the core legacy-schema1 gate;
     /// activated or mixed expectations fail closed before any fallback decision.
@@ -221,6 +234,66 @@ impl Storage {
         Ok(monetary_record)
     }
 
+    /// Atomically persist a v3 chain snapshot using the canonical production
+    /// monetary cadence and reward-finality identities.
+    ///
+    /// The caller still supplies the exact protocol identity; this does not
+    /// choose mainnet/testnet chain IDs or genesis values.
+    pub fn persist_chain_state_with_production_v3_protocol_record(
+        &self,
+        state: &pulsedag_core::ChainState,
+        identity: &ProtocolActivationIdentity,
+    ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
+        identity.validate().map_err(storage_error)?;
+        if identity.chain_id != state.chain_id {
+            return Err(PulseError::ChainIdMismatch);
+        }
+        if identity.genesis_hash != state.dag.genesis_hash {
+            return Err(storage_error(
+                "v3 production identity genesis does not match chain state",
+            ));
+        }
+        if identity.dag_ordering_version != state.dag.ordering_version {
+            return Err(storage_error(
+                "v3 production identity DAG ordering does not match chain state",
+            ));
+        }
+        if state.contracts.config.enabled {
+            return Err(storage_error(
+                "v3.0.0 production monetary activation requires smart-contract execution to remain inactive",
+            ));
+        }
+
+        let protocol_record =
+            ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
+        let monetary_record =
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(identity.clone())
+                .map_err(storage_error)?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let mut batch = WriteBatch::default();
+
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&protocol_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&monetary_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))?;
+        Ok(monetary_record)
+    }
+
     /// Return whether snapshot + protocol sidecar + monetary sidecar are
     /// durably present together. Semantic authorization still requires
     /// verify_persisted_monetary_identity.
@@ -274,7 +347,8 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         genesis::init_chain_state, init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
-        MonetaryCadenceSegment, ProtocolActivationIdentity,
+        MonetaryCadenceSegment, ProtocolActivationIdentity, PRODUCTION_CADENCE_FINGERPRINT_V3,
+        PRODUCTION_CADENCE_V3, REWARD_FINALITY_POLICY_VERSION_V3,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -286,6 +360,48 @@ mod tests {
             .join(format!("pulsedag-storage-protocol-{test_name}-{unique}"))
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[test]
+    fn production_v3_storage_wrapper_binds_frozen_monetary_contract() {
+        let path = temp_db_path("production-v3-contract");
+        let storage = Storage::open(&path).unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-production-candidate".to_string(), 1_800_000_123)
+                .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+
+        let record = storage
+            .persist_chain_state_with_production_v3_protocol_record(&state, &identity)
+            .unwrap();
+        assert_eq!(record.monetary_cadence_segments, PRODUCTION_CADENCE_V3);
+        assert_eq!(
+            record.monetary_cadence_fingerprint,
+            PRODUCTION_CADENCE_FINGERPRINT_V3
+        );
+        assert_eq!(
+            record.reward_finality_policy_version,
+            REWARD_FINALITY_POLICY_VERSION_V3
+        );
+        storage
+            .verify_persisted_production_v3_identity(&identity)
+            .unwrap();
+
+        let alternate_identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-production-other",
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        assert!(storage
+            .verify_persisted_production_v3_identity(&alternate_identity)
+            .is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
