@@ -88,8 +88,8 @@ mod tests {
     use pulsedag_core::{
         finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
         init_chain_state_v3, materialize_authoritative_state_v2, MonetaryCadenceSegment,
-        REWARD_FINALITY_POLICY_VERSION_V3, CONSENSUS_METADATA_SCHEMA_VERSION,
-        GHOSTDAG_V1_ORDERING_VERSION,
+        CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
+        REWARD_FINALITY_POLICY_VERSION_V3,
     };
     use pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION;
 
