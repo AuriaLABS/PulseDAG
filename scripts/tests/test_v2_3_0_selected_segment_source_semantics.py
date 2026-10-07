@@ -34,9 +34,9 @@ debt_mirrors = re.findall(
     r"rt\.selected_segment_gap_blocks\s*=\s*rt\.active_session_remaining_blocks\s*;",
     node,
 )
-if len(debt_mirrors) != 2:
+if len(debt_mirrors) != 3:
     missing.append(
-        f"selected gap real-debt mirrors expected=2 actual={len(debt_mirrors)}"
+        f"selected gap real-debt mirrors expected=3 actual={len(debt_mirrors)}"
     )
 
 verified_clear = re.search(
@@ -51,10 +51,24 @@ verified_clear = re.search(
 if not verified_clear:
     missing.append("selected gap verified-completion clear")
 
-selected_gap_clears = re.findall(r"rt\.selected_segment_gap_blocks\s*=\s*0\s*;", node)
-if len(selected_gap_clears) != 1:
+progress_completion_clears = re.findall(
+    r"if\s+progress\.session_completed\s*\{.*?"
+    r"rt\.active_session_remaining_blocks\s*=\s*0;\s*"
+    r"rt\.selected_segment_gap_blocks\s*=\s*0;\s*"
+    r"rt\.active_session_id\s*=\s*None;",
+    node,
+    re.S,
+)
+if len(progress_completion_clears) != 2:
     missing.append(
-        f"selected gap cleared outside verified completion count={len(selected_gap_clears)}"
+        "selected gap progress-completion clears "
+        f"expected=2 actual={len(progress_completion_clears)}"
+    )
+
+selected_gap_clears = re.findall(r"rt\.selected_segment_gap_blocks\s*=\s*0\s*;", node)
+if len(selected_gap_clears) != 3:
+    missing.append(
+        f"selected gap cleared outside verified completion paths expected=3 actual={len(selected_gap_clears)}"
     )
 
 if "!staged.contains(hash)" in node:

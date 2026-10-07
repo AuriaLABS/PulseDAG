@@ -880,8 +880,30 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
+    fn request_headers_from(
+        &self,
+        _peer_id: &str,
+        _request_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed GetHeaders is not supported by this p2p handle".into(),
+        ))
+    }
     fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
         Ok(())
+    }
+    fn send_headers_to(
+        &self,
+        _peer_id: &str,
+        _request_id: &str,
+        _headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed Headers is not supported by this p2p handle".into(),
+        ))
     }
     fn send_block_data(
         &self,
@@ -932,7 +954,10 @@ pub enum P2pMode {
 #[derive(Debug, Clone)]
 pub enum InboundEvent {
     Transaction(Transaction),
-    Block(Block),
+    Block {
+        peer_id: Option<String>,
+        block: Block,
+    },
     BlockAnnouncement {
         hash: String,
     },
@@ -944,12 +969,15 @@ pub enum InboundEvent {
         tips: Vec<PulseHash>,
     },
     GetHeaders {
+        peer_id: Option<String>,
+        request_id: Option<String>,
         locator: Vec<PulseHash>,
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
     Headers {
         peer_id: Option<String>,
+        request_id: Option<String>,
         headers: Vec<HeaderInventory>,
     },
     GetBlockHeaders {
@@ -964,6 +992,8 @@ pub enum InboundEvent {
     },
     BlockDataMissing {
         hash: Option<PulseHash>,
+        peer_id: Option<String>,
+        request_id: Option<String>,
     },
     PeerConnected(String),
     PeerDisconnected(String),
@@ -1007,7 +1037,19 @@ enum OutboundMessage {
         stop_hash: Option<PulseHash>,
         limit: usize,
     },
+    GetHeadersFrom {
+        peer_id: String,
+        request_id: String,
+        locator: Vec<PulseHash>,
+        stop_hash: Option<PulseHash>,
+        limit: usize,
+    },
     Headers(Vec<HeaderInventory>),
+    HeadersTo {
+        peer_id: String,
+        request_id: String,
+        headers: Vec<HeaderInventory>,
+    },
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
@@ -1675,6 +1717,30 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not connected for peer-addressed GetHeaders"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        inner.last_message_kind = Some("get-headers-from".into());
+        Ok(())
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -1684,6 +1750,28 @@ impl P2pHandle for MemoryP2pHandle {
         inner.broadcasted_messages += 1;
         inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         inner.last_message_kind = Some("headers".into());
+        Ok(())
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        _request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|peer| peer == peer_id) {
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not connected for peer-addressed Headers"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        inner.last_message_kind = Some("headers-to".into());
         Ok(())
     }
 
@@ -3041,6 +3129,22 @@ fn update_selected_sync_peer(
             .unwrap_or(i64::MIN / 2)
     };
     let direct_transport_required = mode_connected_peers_are_real_network(&state.mode);
+    let progress_for = |peer_id: &str| -> Option<(u64, u64, u64)> {
+        let entry = state.remote_selected_tip_inventory.get(peer_id)?;
+        let direct_connection = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0;
+        if entry.status.chain_id != state.chain_id
+            || now.saturating_sub(entry.last_seen_unix) > TIP_INVENTORY_TTL_SECS
+            || !direct_connection
+            || entry.status.selected_tip.is_none()
+        {
+            return None;
+        }
+        Some((
+            entry.status.selected_height,
+            entry.status.selected_blue_score.unwrap_or(0),
+            entry.status.inventory_generation,
+        ))
+    };
     let preferred = sync_candidates
         .iter()
         .filter(|candidate| is_valid_peer_id(&candidate.peer_id))
@@ -3051,6 +3155,7 @@ fn update_selected_sync_peer(
         .max_by(|a, b| {
             a.rank_score
                 .cmp(&b.rank_score)
+                .then_with(|| progress_for(&a.peer_id).cmp(&progress_for(&b.peer_id)))
                 .then_with(|| b.peer_id.cmp(&a.peer_id))
         })
         .map(|candidate| candidate.peer_id.clone())
@@ -3089,7 +3194,9 @@ fn update_selected_sync_peer(
         if current_peer != next_peer && current_is_eligible {
             let current_rank_score = rank_score_for(current_peer);
             let switch_delta = preferred_rank_score.saturating_sub(current_rank_score);
-            if switch_delta < SYNC_SELECTION_SWITCH_MARGIN {
+            let equal_health_progress_advance = preferred_rank_score == current_rank_score
+                && progress_for(next_peer) > progress_for(current_peer);
+            if switch_delta < SYNC_SELECTION_SWITCH_MARGIN && !equal_health_progress_advance {
                 state.sync_selection_sticky_until_unix = now.saturating_add(
                     state
                         .sync_selection_stickiness_secs
@@ -3305,8 +3412,34 @@ fn enqueue_outbound_message(
                 limit,
             });
         }
+        OutboundMessage::GetHeadersFrom {
+            peer_id,
+            request_id,
+            locator,
+            stop_hash,
+            limit,
+        } => {
+            queue.blocks.push_back(OutboundMessage::GetHeadersFrom {
+                peer_id,
+                request_id,
+                locator,
+                stop_hash,
+                limit,
+            });
+        }
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
+        }
+        OutboundMessage::HeadersTo {
+            peer_id,
+            request_id,
+            headers,
+        } => {
+            queue.blocks.push_back(OutboundMessage::HeadersTo {
+                peer_id,
+                request_id,
+                headers,
+            });
         }
         OutboundMessage::GetBlockHeaders(hashes) => {
             queue
@@ -3431,7 +3564,9 @@ fn pop_outbound_message(
             | OutboundMessage::CompactRelayReconstructedBlock { .. }
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
+            | OutboundMessage::GetHeadersFrom { .. }
             | OutboundMessage::Headers(_)
+            | OutboundMessage::HeadersTo { .. }
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
@@ -4403,9 +4538,7 @@ impl MessageClass {
 
 fn classify_network_message(msg: &NetworkMessage) -> MessageClass {
     match msg {
-        NetworkMessage::GetHeaders { .. }
-        | NetworkMessage::Headers { .. }
-        | NetworkMessage::GetTips { .. }
+        NetworkMessage::GetTips { .. }
         | NetworkMessage::Tips { .. }
         | NetworkMessage::Reject { .. }
         | NetworkMessage::Error { .. } => MessageClass::Control,
@@ -4414,12 +4547,12 @@ fn classify_network_message(msg: &NetworkMessage) -> MessageClass {
         | NetworkMessage::Block { .. }
         | NetworkMessage::BlockAnnounce { .. }
         | NetworkMessage::NewBlockHash { .. } => MessageClass::Gossip,
-        NetworkMessage::GetBlock { .. } | NetworkMessage::GetBlockHeaders { .. } => {
-            MessageClass::RecoveryRequest
-        }
-        NetworkMessage::BlockData { .. } | NetworkMessage::BlockHeaders { .. } => {
-            MessageClass::RecoveryResponse
-        }
+        NetworkMessage::GetHeaders { .. }
+        | NetworkMessage::GetBlock { .. }
+        | NetworkMessage::GetBlockHeaders { .. } => MessageClass::RecoveryRequest,
+        NetworkMessage::Headers { .. }
+        | NetworkMessage::BlockData { .. }
+        | NetworkMessage::BlockHeaders { .. } => MessageClass::RecoveryResponse,
         NetworkMessage::NewTransaction { .. } => MessageClass::Transactions,
     }
 }
@@ -4716,7 +4849,42 @@ fn dispatch_network_message(
     inner: &Arc<Mutex<InnerState>>,
     inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
 ) {
-    let parsed = decode_network_message_for_transport(bytes, source_peer, expected_chain_id, inner);
+    dispatch_network_message_with_transport_peer(
+        expected_chain_id,
+        bytes,
+        source_peer,
+        source_peer,
+        inner,
+        inbound_tx,
+    );
+}
+
+fn dispatch_network_message_with_transport_peer(
+    expected_chain_id: &str,
+    bytes: &[u8],
+    source_peer: Option<&str>,
+    transport_peer: Option<&str>,
+    inner: &Arc<Mutex<InnerState>>,
+    inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
+) {
+    // Capability negotiation must never be inherited from a forwarded gossipsub
+    // author. Only a directly authored carrier (signed author == transport peer),
+    // or a non-gossipsub call with no distinct transport identity, may mutate the
+    // protocol capability session. Forwarded carriers are still decoded as their
+    // legacy message and remain subject to both author and transport rate limits.
+    let capability_peer = match (source_peer, transport_peer) {
+        (Some(source), Some(transport)) if source == transport => Some(source),
+        (Some(source), None) => Some(source),
+        _ => None,
+    };
+    let parsed =
+        decode_network_message_for_transport(bytes, capability_peer, expected_chain_id, inner);
+    // Gossipsub can forward a message authored by one peer through a different
+    // directly connected neighbour. Keep author accounting/reputation separate
+    // from the transport neighbour, while enforcing a rate budget on both
+    // identities so rotating signed authors cannot bypass one connection's
+    // aggregate inbound allowance.
+    let source_peer = source_peer.or(transport_peer);
     let msg = match parsed {
         Ok(v) => v,
         Err(_) => {
@@ -4746,15 +4914,32 @@ fn dispatch_network_message(
     };
 
     if let Ok(mut guard) = inner.lock() {
+        let now = now_unix();
         if !admit_peer_inbound_message(
             &mut guard,
             source_peer,
-            now_unix(),
+            now,
             msg_class,
             msg_kind,
             requested_blockdata,
         ) {
             guard.last_drop_reason = Some("peer_inbound_rate_limited".into());
+            refresh_connected_peers_from_health(&mut guard);
+            persist_peer_state_if_configured(&guard);
+            return;
+        }
+
+        let distinct_transport_peer =
+            transport_peer.filter(|transport| source_peer != Some(*transport));
+        if !admit_peer_inbound_message(
+            &mut guard,
+            distinct_transport_peer,
+            now,
+            msg_class,
+            msg_kind,
+            requested_blockdata,
+        ) {
+            guard.last_drop_reason = Some("transport_peer_inbound_rate_limited".into());
             refresh_connected_peers_from_health(&mut guard);
             persist_peer_state_if_configured(&guard);
             return;
@@ -4899,7 +5084,11 @@ fn dispatch_network_message(
                     );
                 }
             }
-            let _ = inbound_tx.send(InboundEvent::Block(block));
+            let direct_peer = transport_peer.or(source_peer);
+            let _ = inbound_tx.send(InboundEvent::Block {
+                peer_id: direct_peer.map(str::to_string),
+                block,
+            });
         }
         NetworkMessage::BlockAnnounce { chain_id, hash }
         | NetworkMessage::NewBlockHash { chain_id, hash } => {
@@ -5041,6 +5230,8 @@ fn dispatch_network_message(
             locator,
             stop_hash,
             limit,
+            request_id,
+            requested_peer_id,
         } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -5059,6 +5250,17 @@ fn dispatch_network_message(
                 }
                 return;
             }
+            if requested_peer_id.is_some() && request_id.is_none() {
+                return;
+            }
+            if requested_peer_id.as_ref().is_some_and(|requested| {
+                inner
+                    .lock()
+                    .map(|guard| requested != &guard.peer_id)
+                    .unwrap_or(true)
+            }) {
+                return;
+            }
             if let Ok(mut guard) = inner.lock() {
                 guard.inbound_messages += 1;
                 guard.header_requests_received = guard.header_requests_received.saturating_add(1);
@@ -5073,12 +5275,19 @@ fn dispatch_network_message(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::GetHeaders {
+                peer_id: source_peer.map(ToOwned::to_owned),
+                request_id,
                 locator,
                 stop_hash,
                 limit,
             });
         }
-        NetworkMessage::Headers { chain_id, headers } => {
+        NetworkMessage::Headers {
+            chain_id,
+            headers,
+            request_id,
+            requested_peer_id,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -5094,6 +5303,17 @@ fn dispatch_network_message(
                         persist_peer_state_if_configured(&guard);
                     }
                 }
+                return;
+            }
+            if requested_peer_id.is_some() && request_id.is_none() {
+                return;
+            }
+            if requested_peer_id.as_ref().is_some_and(|requested| {
+                inner
+                    .lock()
+                    .map(|guard| requested != &guard.peer_id)
+                    .unwrap_or(true)
+            }) {
                 return;
             }
             let mut accepted_headers = Vec::new();
@@ -5140,6 +5360,7 @@ fn dispatch_network_message(
             if !accepted_headers.is_empty() {
                 let _ = inbound_tx.send(InboundEvent::Headers {
                     peer_id: source_peer.map(ToOwned::to_owned),
+                    request_id,
                     headers: accepted_headers,
                 });
             }
@@ -5236,7 +5457,7 @@ fn dispatch_network_message(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::Tips { tips });
-            match authorized_protocol_sync_from_tip(bytes, source_peer, inner) {
+            match authorized_protocol_sync_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -5269,7 +5490,7 @@ fn dispatch_network_message(
                     }
                 }
             }
-            match authorized_fast_sync_from_tip(bytes, source_peer, inner) {
+            match authorized_fast_sync_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -5302,7 +5523,7 @@ fn dispatch_network_message(
                     }
                 }
             }
-            match authorized_compact_relay_from_tip(bytes, source_peer, inner) {
+            match authorized_compact_relay_from_tip(bytes, capability_peer, inner) {
                 Ok(Some((peer_id, wire))) => {
                     if let Ok(mut guard) = inner.lock() {
                         guard.last_message_kind =
@@ -5549,9 +5770,7 @@ fn dispatch_network_message(
                                 guard.wrong_peer_response_total =
                                     guard.wrong_peer_response_total.saturating_add(1);
                             } else if outstanding.block_hash != block.hash
-                                || request_hash
-                                    .as_ref()
-                                    .is_some_and(|h| h != &outstanding.block_hash)
+                                || request_hash.as_ref() != Some(&outstanding.block_hash)
                             {
                                 guard.wrong_hash_response_total =
                                     guard.wrong_hash_response_total.saturating_add(1);
@@ -5568,6 +5787,11 @@ fn dispatch_network_message(
                             guard.unknown_request_response_total =
                                 guard.unknown_request_response_total.saturating_add(1);
                         }
+                        if !correlated_request {
+                            guard.last_drop_reason =
+                                Some("uncorrelated_block_data_response".into());
+                            return;
+                        }
                     } else if request_hash.as_ref() == Some(&block.hash) {
                         guard.generic_getblock_response_total =
                             guard.generic_getblock_response_total.saturating_add(1);
@@ -5575,22 +5799,21 @@ fn dispatch_network_message(
                         guard.unsolicited_blockdata_total =
                             guard.unsolicited_blockdata_total.saturating_add(1);
                     }
-                    if !mark_inbound_block_seen(
+                    let duplicate_block = !mark_inbound_block_seen(
                         &mut guard,
                         id,
                         block.hash.clone(),
                         source_peer,
                         now_unix(),
-                    ) {
-                        guard.inbound_duplicates_suppressed += 1;
+                    );
+                    if duplicate_block {
                         guard.duplicate_blocks_received =
                             guard.duplicate_blocks_received.saturating_add(1);
-                        if correlated_request {
-                            guard.duplicate_correlated_response_total =
-                                guard.duplicate_correlated_response_total.saturating_add(1);
+                        if !correlated_request {
+                            guard.inbound_duplicates_suppressed += 1;
+                            guard.last_drop_reason = Some("duplicate_block_data".into());
+                            return;
                         }
-                        guard.last_drop_reason = Some("duplicate_block_data".into());
-                        return;
                     }
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());
@@ -5609,13 +5832,53 @@ fn dispatch_network_message(
                         );
                     }
                 }
-                let _ = inbound_tx.send(InboundEvent::Block(block));
+                let direct_peer = transport_peer.or(source_peer);
+                let _ = inbound_tx.send(InboundEvent::Block {
+                    peer_id: direct_peer.map(str::to_string),
+                    block,
+                });
             } else {
-                if let Ok(mut guard) = inner.lock() {
-                    guard.inbound_messages += 1;
-                    guard.last_message_kind = Some("block-data-missing".into());
+                let mut deliver_missing = request_id.is_none();
+                if let Some(request_id_ref) = request_id.as_ref() {
+                    if let Ok(mut guard) = inner.lock() {
+                        if let Some(outstanding) =
+                            guard.outstanding_getblock_requests.get_mut(request_id_ref)
+                        {
+                            if outstanding.completed {
+                                guard.duplicate_correlated_response_total =
+                                    guard.duplicate_correlated_response_total.saturating_add(1);
+                            } else if source_peer != Some(outstanding.target_peer_id.as_str()) {
+                                guard.wrong_peer_response_total =
+                                    guard.wrong_peer_response_total.saturating_add(1);
+                            } else if request_hash.as_ref() != Some(&outstanding.block_hash) {
+                                guard.wrong_hash_response_total =
+                                    guard.wrong_hash_response_total.saturating_add(1);
+                            } else {
+                                outstanding.completed = true;
+                                deliver_missing = true;
+                                guard.getblock_responses_correlated_total =
+                                    guard.getblock_responses_correlated_total.saturating_add(1);
+                                guard.peer_addressed_getblock_response_total = guard
+                                    .peer_addressed_getblock_response_total
+                                    .saturating_add(1);
+                            }
+                        } else {
+                            guard.unknown_request_response_total =
+                                guard.unknown_request_response_total.saturating_add(1);
+                        }
+                    }
                 }
-                let _ = inbound_tx.send(InboundEvent::BlockDataMissing { hash: request_hash });
+                if deliver_missing {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.inbound_messages += 1;
+                        guard.last_message_kind = Some("block-data-missing".into());
+                    }
+                    let _ = inbound_tx.send(InboundEvent::BlockDataMissing {
+                        hash: request_hash,
+                        peer_id: source_peer.map(str::to_string),
+                        request_id,
+                    });
+                }
             }
         }
         NetworkMessage::Reject { chain_id, .. } | NetworkMessage::Error { chain_id, .. } => {
@@ -5815,15 +6078,51 @@ async fn run_libp2p_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "get-headers", message_id)
+                    }
+                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "headers", message_id)
+                    }
+                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6599,15 +6898,51 @@ async fn run_libp2p_real_runtime(
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
                         let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "get-headers", message_id)
+                    }
+                    OutboundMessage::GetHeadersFrom { peer_id, request_id, locator, stop_hash, limit } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders {
+                            chain_id: cfg.chain_id.clone(),
+                            locator,
+                            stop_hash,
+                            limit,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "get-headers-from", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let hashes = headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(",");
                         let message_id = format!("sync:headers:{hashes}");
-                        let wire = serde_json::to_vec(&NetworkMessage::Headers { chain_id: cfg.chain_id.clone(), headers });
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: None,
+                            requested_peer_id: None,
+                        });
                         (wire, topic_name, "headers", message_id)
+                    }
+                    OutboundMessage::HeadersTo { peer_id, request_id, headers } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:headers:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::Headers {
+                            chain_id: cfg.chain_id.clone(),
+                            headers,
+                            request_id: Some(request_id),
+                            requested_peer_id: Some(peer_id),
+                        });
+                        (wire, topic_name, "headers-to", message_id)
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -6713,9 +7048,20 @@ async fn run_libp2p_real_runtime(
             }
             event = swarm.select_next_some() => {
                 match event {
-                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message, .. })) => {
+                        // Keep two identities distinct: message.source is the original author used
+                        // for anti-spam/reputation accounting, while propagation_source is the
+                        // authenticated direct neighbour used for Protocol-v2 session authorization.
                         let source_peer = message.source.as_ref().map(|peer| peer.to_string());
-                        dispatch_network_message(&cfg.chain_id, &message.data, source_peer.as_deref(), &inner, &inbound_tx);
+                        let transport_peer = propagation_source.to_string();
+                        dispatch_network_message_with_transport_peer(
+                            &cfg.chain_id,
+                            &message.data,
+                            source_peer.as_deref(),
+                            Some(transport_peer.as_str()),
+                            &inner,
+                            &inbound_tx,
+                        );
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
                         note_swarm_event(&inner, format!("ping:{event:?}"));
@@ -6954,7 +7300,9 @@ impl Libp2pHandle {
             OutboundMessage::InvBlock(_)
                 | OutboundMessage::CompactRelayReconstructedBlock { .. }
                 | OutboundMessage::GetHeaders { .. }
+                | OutboundMessage::GetHeadersFrom { .. }
                 | OutboundMessage::Headers(_)
+                | OutboundMessage::HeadersTo { .. }
                 | OutboundMessage::GetBlockHeaders(_)
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
@@ -7451,6 +7799,38 @@ impl P2pHandle for Libp2pHandle {
         )
     }
 
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        locator: &[PulseHash],
+        stop_hash: Option<&PulseHash>,
+        limit: usize,
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::GetHeadersFrom {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                locator: locator.to_vec(),
+                stop_hash: stop_hash.cloned(),
+                limit,
+            },
+            "get-headers-from",
+        )
+    }
+
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
         {
             let mut inner = self
@@ -7460,6 +7840,34 @@ impl P2pHandle for Libp2pHandle {
             inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
         }
         self.queue_sync_message(OutboundMessage::Headers(headers.to_vec()), "headers")
+    }
+
+    fn send_headers_to(
+        &self,
+        peer_id: &str,
+        request_id: &str,
+        headers: &[HeaderInventory],
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.headers_sent = inner.headers_sent.saturating_add(headers.len() as u64);
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::HeadersTo {
+                peer_id: peer_id.to_string(),
+                request_id: request_id.to_string(),
+                headers: headers.to_vec(),
+            },
+            "headers-to",
+        )
     }
 
     fn send_block_data(
@@ -9858,6 +10266,113 @@ mod tests {
     }
 
     #[test]
+    fn selected_sync_peer_equal_health_prefers_freshest_higher_direct_tip() {
+        let now = 1_000;
+        let mut state = InnerState {
+            chain_id: "test-chain".to_string(),
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            selected_sync_peer: Some("peer-low".into()),
+            connected_peers: vec!["peer-low".into(), "peer-high".into()],
+            ..InnerState::default()
+        };
+        state.active_connections.insert("peer-low".into(), 1);
+        state.active_connections.insert("peer-high".into(), 1);
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-low",
+            TipInventoryStatus {
+                chain_id: "test-chain".into(),
+                selected_tip: Some("tip-low".into()),
+                selected_height: Some(15),
+                selected_blue_score: Some(15),
+                ordered_dag_tip: Some("tip-low".into()),
+                state_root_digest: Some("root-low".into()),
+                observed_at_unix: now,
+                inventory_generation: 1,
+            },
+            now,
+            "Tips",
+        ));
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-high",
+            TipInventoryStatus {
+                chain_id: "test-chain".into(),
+                selected_tip: Some("tip-high".into()),
+                selected_height: Some(24),
+                selected_blue_score: Some(24),
+                ordered_dag_tip: Some("tip-high".into()),
+                state_root_digest: Some("root-high".into()),
+                observed_at_unix: now,
+                inventory_generation: 1,
+            },
+            now,
+            "Tips",
+        ));
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-low".into(),
+                rank_score: 255,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-high".into(),
+                rank_score: 255,
+                excluded_until_unix: None,
+            },
+        ];
+
+        let selected = update_selected_sync_peer(&mut state, &ranked, now).unwrap();
+        assert_eq!(selected, "peer-high");
+    }
+
+    #[test]
+    fn selected_sync_peer_health_rank_still_beats_tip_height() {
+        let now = 2_000;
+        let mut state = InnerState {
+            chain_id: "test-chain".to_string(),
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            connected_peers: vec!["peer-healthy".into(), "peer-tall".into()],
+            ..InnerState::default()
+        };
+        state.active_connections.insert("peer-healthy".into(), 1);
+        state.active_connections.insert("peer-tall".into(), 1);
+        for (peer, height) in [("peer-healthy", 15_u64), ("peer-tall", 100_u64)] {
+            assert!(note_remote_tip_inventory(
+                &mut state,
+                peer,
+                TipInventoryStatus {
+                    chain_id: "test-chain".into(),
+                    selected_tip: Some(format!("tip-{peer}")),
+                    selected_height: Some(height),
+                    selected_blue_score: Some(height),
+                    ordered_dag_tip: Some(format!("tip-{peer}")),
+                    state_root_digest: Some(format!("root-{peer}")),
+                    observed_at_unix: now,
+                    inventory_generation: 1,
+                },
+                now,
+                "Tips",
+            ));
+        }
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-healthy".into(),
+                rank_score: 200,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-tall".into(),
+                rank_score: 180,
+                excluded_until_unix: None,
+            },
+        ];
+
+        let selected = update_selected_sync_peer(&mut state, &ranked, now).unwrap();
+        assert_eq!(selected, "peer-healthy");
+    }
+
+    #[test]
     fn sync_candidates_reject_full_multiaddr_peer_ids() {
         let mut state = InnerState::default();
         state.peer_book.insert(
@@ -10036,6 +10551,106 @@ mod inventory_tests {
     }
 
     #[test]
+    fn addressed_getheaders_is_delivered_only_to_target_peer() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            peer_id: "target-peer".into(),
+            ..InnerState::default()
+        }));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let request = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["common".into()],
+            stop_hash: None,
+            limit: 128,
+            request_id: Some("selected-segment-7".into()),
+            requested_peer_id: Some("target-peer".into()),
+        };
+        let wire = serde_json::to_vec(&request).expect("serialize addressed GetHeaders");
+        dispatch_network_message(
+            "testnet",
+            &wire,
+            Some("requesting-peer"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::GetHeaders {
+                peer_id: Some(peer),
+                request_id: Some(request_id),
+                locator,
+                ..
+            }) if peer == "requesting-peer"
+                && request_id == "selected-segment-7"
+                && locator == vec!["common".to_string()]
+        ));
+
+        let wrong_target = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["common".into()],
+            stop_hash: None,
+            limit: 128,
+            request_id: Some("selected-segment-7".into()),
+            requested_peer_id: Some("other-peer".into()),
+        };
+        let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target GetHeaders");
+        dispatch_network_message(
+            "testnet",
+            &wire,
+            Some("requesting-peer"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn addressed_headers_preserve_owner_and_request_id() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            peer_id: "requesting-peer".into(),
+            ..InnerState::default()
+        }));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = sample_block("unused-hash");
+        let hash = protocol_block_hash(&block.header, "testnet").expect("header hash");
+        let response = NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![HeaderInventory {
+                hash: hash.clone(),
+                header: block.header.clone(),
+            }],
+            request_id: Some("selected-segment-9".into()),
+            requested_peer_id: Some("requesting-peer".into()),
+        };
+        let wire = serde_json::to_vec(&response).expect("serialize addressed Headers");
+        dispatch_network_message("testnet", &wire, Some("selected-peer"), &inner, &inbound_tx);
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Headers {
+                peer_id: Some(peer),
+                request_id: Some(request_id),
+                headers,
+            }) if peer == "selected-peer"
+                && request_id == "selected-segment-9"
+                && headers.len() == 1
+                && headers[0].hash == hash
+        ));
+
+        let wrong_target = NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![HeaderInventory {
+                hash: hash.clone(),
+                header: block.header.clone(),
+            }],
+            request_id: Some("selected-segment-9".into()),
+            requested_peer_id: Some("other-peer".into()),
+        };
+        let wire = serde_json::to_vec(&wrong_target).expect("serialize wrong-target Headers");
+        dispatch_network_message("testnet", &wire, Some("selected-peer"), &inner, &inbound_tx);
+        assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn get_block_message_roundtrip() {
         let msg = NetworkMessage::GetBlock {
             chain_id: "testnet".into(),
@@ -10080,7 +10695,10 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block {
+                peer_id: Some(peer),
+                block: received,
+            }) if peer == "peer-a" && received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -10088,6 +10706,42 @@ mod inventory_tests {
         let entry = guard.inbound_seen_cache.get("block:dedupe-block").unwrap();
         assert_eq!(entry.block_hash.as_deref(), Some("dedupe-block"));
         assert_eq!(entry.peer_source.as_deref(), Some("peer-a"));
+    }
+
+    #[test]
+    fn forwarded_block_event_uses_authenticated_transport_peer_for_recovery() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let mut block = sample_block("forwarded-block");
+        block.hash = protocol_block_hash(&block.header, "testnet").expect("block hash");
+        let wire = serde_json::to_vec(&NetworkMessage::NewBlock {
+            chain_id: "testnet".into(),
+            block: block.clone(),
+        })
+        .expect("serialize forwarded block");
+
+        dispatch_network_message_with_transport_peer(
+            "testnet",
+            &wire,
+            Some("original-author"),
+            Some("direct-neighbour"),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block {
+                peer_id: Some(peer),
+                block: received,
+            }) if peer == "direct-neighbour" && received.hash == block.hash
+        ));
+        let guard = inner.lock().unwrap();
+        let entry = guard
+            .inbound_seen_cache
+            .get(&message_id_for_block(&block))
+            .expect("block provenance");
+        assert_eq!(entry.peer_source.as_deref(), Some("original-author"));
     }
 
     #[test]
@@ -10549,7 +11203,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
     }
 
@@ -10676,7 +11330,7 @@ mod inventory_tests {
 
         assert!(matches!(
             inbound_rx.try_recv(),
-            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
         ));
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -10685,6 +11339,266 @@ mod inventory_tests {
         assert_eq!(
             guard.last_drop_reason.as_deref(),
             Some("duplicate_block_data")
+        );
+    }
+
+    #[test]
+    fn correlated_blockdata_reenters_acceptance_after_prior_generic_relay() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "correlated-recovery-block".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+
+        let generic_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: None,
+            request_hash: Some(block.hash.clone()),
+        })
+        .expect("serialize generic block data");
+        dispatch_network_message(
+            "testnet",
+            &generic_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
+        ));
+
+        let request_id = "selected-recovery-request".to_string();
+        inner.lock().unwrap().outstanding_getblock_requests.insert(
+            request_id.clone(),
+            OutstandingGetBlockRequest {
+                request_id: request_id.clone(),
+                target_peer_id: "peer-a".into(),
+                block_hash: block.hash.clone(),
+                completed: false,
+            },
+        );
+        let correlated_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id),
+            request_hash: Some(block.hash.clone()),
+        })
+        .expect("serialize correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &correlated_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.getblock_responses_correlated_total, 1);
+        assert_eq!(guard.peer_addressed_getblock_response_total, 1);
+        assert_eq!(guard.duplicate_correlated_response_total, 0);
+        assert_eq!(guard.inbound_duplicates_suppressed, 0);
+        assert_eq!(guard.duplicate_blocks_received, 1);
+        assert_eq!(guard.inbound_messages, 2);
+    }
+
+    #[test]
+    fn peer_addressed_blockdata_requires_exact_request_peer_and_hash() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "correlated-exact-block".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let request_id = "correlated-exact-request".to_string();
+        inner.lock().unwrap().outstanding_getblock_requests.insert(
+            request_id.clone(),
+            OutstandingGetBlockRequest {
+                request_id: request_id.clone(),
+                target_peer_id: "peer-a".into(),
+                block_hash: block.hash.clone(),
+                completed: false,
+            },
+        );
+
+        let exact_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: Some(block.hash.clone()),
+        })
+        .expect("serialize exact correlated block data");
+        dispatch_network_message("testnet", &exact_wire, Some("peer-b"), &inner, &inbound_tx);
+        assert!(inbound_rx.try_recv().is_err());
+        {
+            let guard = inner.lock().unwrap();
+            assert_eq!(guard.wrong_peer_response_total, 1);
+            assert_eq!(
+                guard.last_drop_reason.as_deref(),
+                Some("uncorrelated_block_data_response")
+            );
+            assert!(
+                !guard
+                    .outstanding_getblock_requests
+                    .get(&request_id)
+                    .unwrap()
+                    .completed
+            );
+        }
+
+        let wrong_hash_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: Some("other-hash".into()),
+        })
+        .expect("serialize wrong-hash correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &wrong_hash_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+
+        let missing_hash_wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+            request_id: Some(request_id.clone()),
+            request_hash: None,
+        })
+        .expect("serialize missing-hash correlated block data");
+        dispatch_network_message(
+            "testnet",
+            &missing_hash_wire,
+            Some("peer-a"),
+            &inner,
+            &inbound_tx,
+        );
+        assert!(inbound_rx.try_recv().is_err());
+        {
+            let guard = inner.lock().unwrap();
+            assert_eq!(guard.wrong_hash_response_total, 2);
+            assert!(
+                !guard
+                    .outstanding_getblock_requests
+                    .get(&request_id)
+                    .unwrap()
+                    .completed
+            );
+        }
+
+        dispatch_network_message("testnet", &exact_wire, Some("peer-a"), &inner, &inbound_tx);
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block { block: received, .. }) if received.hash == block.hash
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.getblock_responses_correlated_total, 1);
+        assert_eq!(guard.peer_addressed_getblock_response_total, 1);
+        assert!(
+            guard
+                .outstanding_getblock_requests
+                .get(&request_id)
+                .unwrap()
+                .completed
+        );
+    }
+
+    #[test]
+    fn peer_addressed_missing_blockdata_requires_exact_request_peer_and_hash() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let request_id = "missing-recovery-request".to_string();
+        let block_hash = "missing-recovery-block".to_string();
+        inner.lock().unwrap().outstanding_getblock_requests.insert(
+            request_id.clone(),
+            OutstandingGetBlockRequest {
+                request_id: request_id.clone(),
+                target_peer_id: "peer-a".into(),
+                block_hash: block_hash.clone(),
+                completed: false,
+            },
+        );
+        let wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: None,
+            request_id: Some(request_id.clone()),
+            request_hash: Some(block_hash.clone()),
+        })
+        .expect("serialize correlated missing block data");
+
+        dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+        assert!(inbound_rx.try_recv().is_err());
+        {
+            let guard = inner.lock().unwrap();
+            assert_eq!(guard.wrong_peer_response_total, 1);
+            assert!(
+                !guard
+                    .outstanding_getblock_requests
+                    .get(&request_id)
+                    .unwrap()
+                    .completed
+            );
+        }
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::BlockDataMissing {
+                hash: Some(hash),
+                peer_id: Some(peer),
+                request_id: Some(id),
+            }) if hash == block_hash && peer == "peer-a" && id == request_id
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        assert!(inbound_rx.try_recv().is_err());
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.getblock_responses_correlated_total, 1);
+        assert_eq!(guard.peer_addressed_getblock_response_total, 1);
+        assert_eq!(guard.duplicate_correlated_response_total, 1);
+        assert!(
+            guard
+                .outstanding_getblock_requests
+                .get(&request_id)
+                .unwrap()
+                .completed
         );
     }
 
@@ -12168,6 +13082,32 @@ mod deterministic_p2p_sync_coverage_tests {
     }
 
     #[test]
+    fn header_sync_uses_reserved_recovery_rate_classes() {
+        let get_headers = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: Vec::new(),
+            stop_hash: None,
+            limit: 128,
+            request_id: None,
+            requested_peer_id: None,
+        };
+        let headers = NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: Vec::new(),
+            request_id: None,
+            requested_peer_id: None,
+        };
+        assert_eq!(
+            classify_network_message(&get_headers),
+            MessageClass::RecoveryRequest
+        );
+        assert_eq!(
+            classify_network_message(&headers),
+            MessageClass::RecoveryResponse
+        );
+    }
+
+    #[test]
     fn rate_limit_separates_gossip_from_reserved_recovery_classes() {
         let mut state = InnerState::default();
         let peer = "peer-recovery";
@@ -12369,7 +13309,9 @@ mod deterministic_p2p_sync_coverage_tests {
 mod task27_live_capability_io_tests {
     use super::*;
     use crate::messages::{
-        ProtocolMessageClassV1, ProtocolPeerRouteActionV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
+        attach_protocol_sync_carrier_v1, ProtocolMessageClassV1, ProtocolPeerRouteActionV1,
+        ProtocolSyncCarrierV1, SelectedChainLocatorV1, P2P_DAG_SYNC_CONTRACT_VERSION,
+        P2P_PROTOCOL_CAPABILITIES_VERSION,
     };
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -12439,6 +13381,156 @@ mod task27_live_capability_io_tests {
                 .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
                 .action,
             ProtocolPeerRouteActionV1::SendProtocolV2
+        );
+    }
+
+    #[test]
+    fn forwarded_capability_does_not_authorize_transport_and_enforces_aggregate_budget() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+        }
+        let mut remote = ProtocolCapabilityTransportV1::default();
+        remote
+            .configure_local_capabilities(CHAIN_ID, capabilities())
+            .unwrap();
+        let wire = remote.encode_tip_message(&get_tips()).unwrap();
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
+
+        // Each authenticated author remains below its own budget, while their aggregate
+        // exceeds the budget of the one directly connected propagation peer.
+        for author_index in 0..2 {
+            let author = format!("peer-author-{author_index}");
+            for _ in 0..(PEER_MAX_INBOUND_MESSAGES_PER_WINDOW / 2 + 1) {
+                dispatch_network_message_with_transport_peer(
+                    CHAIN_ID,
+                    &wire,
+                    Some(author.as_str()),
+                    Some("peer-transport"),
+                    &inner,
+                    &inbound_tx,
+                );
+            }
+        }
+
+        let guard = inner.lock().unwrap();
+        assert!(guard.peer_message_rate_limited_count >= 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("transport_peer_inbound_rate_limited")
+        );
+        assert!(guard
+            .peer_book
+            .get("peer-transport")
+            .and_then(|health| health.last_rate_limited_unix)
+            .is_some());
+        for author in ["peer-author-0", "peer-author-1"] {
+            assert!(guard
+                .peer_book
+                .get(author)
+                .and_then(|health| health.last_rate_limited_unix)
+                .is_none());
+        }
+        assert_eq!(
+            guard
+                .protocol_capability_transport
+                .route("peer-transport", ProtocolMessageClassV1::ProtocolV2Sync)
+                .action,
+            ProtocolPeerRouteActionV1::HoldForCapabilities
+        );
+        for author in ["peer-author-0", "peer-author-1"] {
+            assert_eq!(
+                guard
+                    .protocol_capability_transport
+                    .route(author, ProtocolMessageClassV1::ProtocolV2Sync)
+                    .action,
+                ProtocolPeerRouteActionV1::HoldForCapabilities
+            );
+        }
+    }
+
+    #[test]
+    fn forwarded_tip_carrier_cannot_inherit_transport_protocol_authorization() {
+        const LOCAL_PEER: &str = "local-peer";
+        const TRANSPORT_PEER: &str = "peer-transport";
+        const FORWARDED_AUTHOR: &str = "peer-author";
+
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard.peer_id = LOCAL_PEER.to_string();
+            guard.connected_peers.push(TRANSPORT_PEER.to_string());
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+
+            let mut direct_neighbor = ProtocolCapabilityTransportV1::default();
+            direct_neighbor
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+            let direct_capabilities = direct_neighbor
+                .encode_tip_message(&NetworkMessage::Tips {
+                    chain_id: CHAIN_ID.to_string(),
+                    tips: Vec::new(),
+                    inventory: None,
+                })
+                .unwrap();
+            guard
+                .protocol_capability_transport
+                .decode_from_peer(TRANSPORT_PEER, &direct_capabilities)
+                .unwrap();
+            assert!(protocol_sync_peer_is_authorized(&guard, TRANSPORT_PEER));
+        }
+
+        let mut forwarded_author = ProtocolCapabilityTransportV1::default();
+        forwarded_author
+            .configure_local_capabilities(CHAIN_ID, capabilities())
+            .unwrap();
+        let base = forwarded_author
+            .encode_tip_message(&NetworkMessage::Tips {
+                chain_id: CHAIN_ID.to_string(),
+                tips: vec!["forwarded-tip".to_string()],
+                inventory: None,
+            })
+            .unwrap();
+        let wire = attach_protocol_sync_carrier_v1(
+            &base,
+            &ProtocolSyncCarrierV1 {
+                target_peer_id: LOCAL_PEER.to_string(),
+                wire: ProtocolSyncWireV1::SelectedChainLocator(SelectedChainLocatorV1 {
+                    contract_version: P2P_DAG_SYNC_CONTRACT_VERSION,
+                    protocol_identity: capabilities().protocol_identity,
+                    selected_tip: "forwarded-tip".to_string(),
+                    locator: vec!["forwarded-tip".to_string(), "ancestor".to_string()],
+                }),
+            },
+        )
+        .unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message_with_transport_peer(
+            CHAIN_ID,
+            &wire,
+            Some(FORWARDED_AUTHOR),
+            Some(TRANSPORT_PEER),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Tips { tips }) if tips == vec!["forwarded-tip".to_string()]
+        ));
+        assert!(
+            inbound_rx.try_recv().is_err(),
+            "forwarded Tips carrier must not inherit the direct transport peer's protocol authorization"
         );
     }
 

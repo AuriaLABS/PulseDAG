@@ -592,6 +592,7 @@ pub struct FastSyncImportedStateV1 {
     pub report: SnapshotVerificationReport,
     pub chain_state: ChainState,
     pub runtime: ActivatedV2P2pRuntime,
+    pub prune_boundary_height: Option<u64>,
 }
 
 pub struct FastSyncDaemonRuntimeV1 {
@@ -641,6 +642,25 @@ impl FastSyncDaemonRuntimeV1 {
                 .controller
                 .as_ref()
                 .is_some_and(|controller| !controller.imported())
+    }
+
+    pub fn transfer_source_selected(&self) -> bool {
+        self.controller
+            .as_ref()
+            .and_then(|controller| controller.source_peer())
+            .is_some()
+    }
+
+    pub fn pruning_handoff_active(&self) -> bool {
+        self.pruning_handoff_active
+    }
+
+    /// Live compact/block/header events must keep flowing on an empty clean
+    /// cluster. Hold them only when a real FastSync download or pruning
+    /// handoff is actually in flight, so import cannot race live acceptance.
+    pub fn holds_live_p2p_events(&self) -> bool {
+        self.authority_active()
+            && (self.pruning_handoff_active() || self.transfer_source_selected())
     }
 
     fn discovery_expired(&self, now_unix: u64) -> bool {
@@ -816,12 +836,18 @@ impl FastSyncDaemonRuntimeV1 {
         };
         match outcome {
             Ok(FastSyncBootstrapOutcome::Imported(report)) => {
+                let prune_boundary_height = self
+                    .controller
+                    .as_ref()
+                    .and_then(|controller| controller.summary.as_ref())
+                    .and_then(|summary| summary.prune_boundary_height);
                 let (chain_state, runtime) =
                     storage.load_activated_v2_p2p_runtime_snapshot(&self.expected)?;
                 Ok(Some(FastSyncImportedStateV1 {
                     report,
                     chain_state,
                     runtime,
+                    prune_boundary_height,
                 }))
             }
             Ok(FastSyncBootstrapOutcome::Progress) => {
@@ -1110,5 +1136,27 @@ mod tests {
         assert!(!runtime.discovery_expired(99));
         assert!(!runtime.discovery_expired(129));
         assert!(runtime.discovery_expired(130));
+    }
+
+    #[test]
+    fn clean_bootstrap_without_a_source_does_not_hold_live_p2p_events() {
+        let expected = identity();
+        let runtime = FastSyncDaemonRuntimeV1::new(expected, true, 100).unwrap();
+        assert!(runtime.authority_active());
+        assert!(!runtime.transfer_source_selected());
+        assert!(!runtime.pruning_handoff_active());
+        assert!(!runtime.holds_live_p2p_events());
+    }
+
+    #[test]
+    fn pruning_handoff_holds_live_p2p_events_while_authority_is_active() {
+        let expected = identity();
+        let mut runtime = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
+        runtime.last_local_height = 120;
+        runtime.last_drive_at_unix = 130;
+        assert!(runtime.apply_pruning_handoff_summary(&transfer_summary(Some(121))));
+        assert!(runtime.authority_active());
+        assert!(runtime.pruning_handoff_active());
+        assert!(runtime.holds_live_p2p_events());
     }
 }

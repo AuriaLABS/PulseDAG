@@ -219,14 +219,91 @@ fn augment_with_staged_parents(
     Ok((working, closure))
 }
 
+/// Build a read-only mining view that includes every fully staged activated-v2
+/// block without mutating the live authoritative chain or transient runtime.
+///
+/// Staged blocks are replayed in bounded topological order through the same
+/// context/GHOSTDAG validation used by P2P promotion. The resulting state is
+/// materialized only in memory so mining parent selection can see validated
+/// parallel tips and produce a merge anchor that can later promote the staged
+/// closure atomically.
+pub fn materialize_activated_v2_mining_overlay(
+    state: &ChainState,
+    staging: &ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ChainState, PulseError> {
+    if staging.is_empty() {
+        return Ok(state.clone());
+    }
+
+    let roots = staging.hashes();
+    let closure = collect_staged_closure(&roots, state, staging)?;
+    if !closure.missing.is_empty() {
+        return Err(invalid_staging(format!(
+            "mining overlay has missing staged parents: {}",
+            closure.missing.join(",")
+        )));
+    }
+
+    let mut working = state.clone();
+    let mut staged_blocks = Vec::with_capacity(closure.ordered.len());
+    for hash in &closure.ordered {
+        let staged = staging
+            .blocks
+            .get(hash)
+            .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
+        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
+        staged_blocks.push(staged.clone());
+    }
+
+    // The overlay intentionally keeps the live canonical UTXO/state-root until
+    // a merge anchor commits the staged closure. Its mempool, however, must not
+    // continue advertising transactions that are already present anywhere in
+    // that staged ancestry: a template may select the staged tip as a parent,
+    // and counting the same transaction again would overstate candidate fees.
+    remove_staged_transactions_from_mempool(&mut working, &staged_blocks);
+    reconcile_mempool_for_protocol(&mut working, identity)?;
+
+    // Staged parallel tips are valid parent candidates, but they are not fully
+    // classified into the frozen total order until a merge anchor commits them.
+    // Keep the live canonical UTXO/state-root intact and expose the validated DAG
+    // metadata plus the staged-ancestry-filtered mempool needed for deterministic
+    // parent and transaction selection.
+    Ok(working)
+}
+
 pub fn stage_activated_v2_p2p_block(
     block: Block,
     state: &ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
 ) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
-    if state.dag.blocks.contains_key(&block.hash) || staging.blocks.contains_key(&block.hash) {
+    if state.dag.blocks.contains_key(&block.hash) {
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+    }
+    if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
+        let Ok((augmented, closure)) =
+            augment_with_staged_parents(&staged_block, state, staging, identity)
+        else {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        };
+        if !closure.missing.is_empty() {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        }
+        let Ok(validation) =
+            validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
+        else {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        };
+        if validation.disposition != ActivatedV2P2pContextDisposition::ImmediatelyFinalizable {
+            return Ok(ActivatedV2P2pStageOutcome::Duplicate);
+        }
+        return Ok(ActivatedV2P2pStageOutcome::ReadyForPromotion {
+            validation,
+            staged_parent_closure: closure.ordered,
+            staged_count: staging.blocks.len(),
+        });
     }
 
     let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity)?;
@@ -271,32 +348,70 @@ pub fn stage_activated_v2_p2p_block(
     }
 }
 
+fn remove_staged_transactions_from_mempool(state: &mut ChainState, blocks: &[Block]) {
+    let mut staged_txids = BTreeSet::new();
+    let mut staged_spent_outpoints = BTreeSet::new();
+    for block in blocks {
+        for transaction in block.transactions.iter().skip(1) {
+            staged_txids.insert(transaction.txid.clone());
+            staged_spent_outpoints.extend(
+                transaction
+                    .inputs
+                    .iter()
+                    .map(|input| input.previous_output.clone()),
+            );
+        }
+    }
+
+    let mut confirmed_txids = BTreeSet::new();
+    let mut conflicting_txids = BTreeSet::new();
+    for (txid, transaction) in &state.mempool.transactions {
+        if staged_txids.contains(txid) {
+            confirmed_txids.insert(txid.clone());
+        } else if transaction
+            .inputs
+            .iter()
+            .any(|input| staged_spent_outpoints.contains(&input.previous_output))
+        {
+            conflicting_txids.insert(txid.clone());
+        }
+    }
+
+    for txid in confirmed_txids.iter().chain(conflicting_txids.iter()) {
+        state.mempool.transactions.remove(txid);
+        state.mempool.first_seen.remove(txid);
+        state.mempool.admission_height.remove(txid);
+    }
+    state.mempool.counters.confirmed_removed_total = state
+        .mempool
+        .counters
+        .confirmed_removed_total
+        .saturating_add(confirmed_txids.len() as u64);
+    state.mempool.counters.reconcile_removed_total = state
+        .mempool
+        .counters
+        .reconcile_removed_total
+        .saturating_add(conflicting_txids.len() as u64);
+
+    state.mempool.spent_outpoints = state
+        .mempool
+        .transactions
+        .values()
+        .flat_map(|transaction| {
+            transaction
+                .inputs
+                .iter()
+                .map(|input| input.previous_output.clone())
+        })
+        .collect();
+}
+
 fn remove_promoted_transactions_from_mempool(
     state: &mut ChainState,
     blocks: &[Block],
     identity: &ProtocolActivationIdentity,
 ) -> Result<(), PulseError> {
-    for block in blocks {
-        for transaction in block.transactions.iter().skip(1) {
-            if state
-                .mempool
-                .transactions
-                .remove(&transaction.txid)
-                .is_some()
-            {
-                state.mempool.first_seen.remove(&transaction.txid);
-                state.mempool.admission_height.remove(&transaction.txid);
-                state.mempool.counters.confirmed_removed_total = state
-                    .mempool
-                    .counters
-                    .confirmed_removed_total
-                    .saturating_add(1);
-            }
-            for input in &transaction.inputs {
-                state.mempool.spent_outpoints.remove(&input.previous_output);
-            }
-        }
-    }
+    remove_staged_transactions_from_mempool(state, blocks);
     reconcile_mempool_for_protocol(state, identity)?;
     Ok(())
 }
@@ -428,6 +543,7 @@ mod tests {
         ghostdag_v1::classify_merge_set_v1,
         header_v2::{canonicalize_block_parents_v2, compute_block_hash_v2},
         mining::current_ts,
+        mining_protocol::derive_activated_v2_mining_parent_context,
         mining_v2::{
             build_candidate_block_v2, build_coinbase_transaction_v2, CandidateBlockV2Spec,
         },
@@ -436,6 +552,7 @@ mod tests {
         pow_protocol::validate_pow_for_protocol,
         retarget::expected_difficulty_for_parent,
         state_replay_v2::rebuild_authoritative_state_v2,
+        types::{OutPoint, TxInput},
         validation::block_subsidy,
     };
 
@@ -552,6 +669,104 @@ mod tests {
     }
 
     #[test]
+    fn mining_overlay_exposes_validated_staged_side_tip_as_parallel_parent() {
+        let (live, expected_identity, staging, main, side) = staged_side_fixture();
+        let live_before = bincode::serialize(&live).unwrap();
+        let staging_before = bincode::serialize(&staging).unwrap();
+
+        let overlay =
+            materialize_activated_v2_mining_overlay(&live, &staging, &expected_identity).unwrap();
+        let context =
+            derive_activated_v2_mining_parent_context(&overlay, &expected_identity).unwrap();
+
+        assert!(overlay.dag.blocks.contains_key(&main.hash));
+        assert!(overlay.dag.blocks.contains_key(&side.hash));
+        assert!(overlay.dag.tips.contains(&main.hash));
+        assert!(overlay.dag.tips.contains(&side.hash));
+        assert!(context.parents.contains(&main.hash));
+        assert!(context.parents.contains(&side.hash));
+        assert!(
+            context.included_parallel_parents.contains(&main.hash)
+                || context.included_parallel_parents.contains(&side.hash)
+        );
+        assert_eq!(bincode::serialize(&live).unwrap(), live_before);
+        assert_eq!(bincode::serialize(&staging).unwrap(), staging_before);
+    }
+
+    #[test]
+    fn staged_ancestry_mempool_filter_removes_confirmed_and_input_conflicting_transactions() {
+        let (mut live, _identity, _staging, _main, mut staged_parent) = staged_side_fixture();
+        let mut staged_child = staged_parent.clone();
+
+        let shared_outpoint = OutPoint {
+            txid: "shared-funding".to_string(),
+            index: 0,
+        };
+        let child_outpoint = OutPoint {
+            txid: "child-funding".to_string(),
+            index: 1,
+        };
+        let unrelated_outpoint = OutPoint {
+            txid: "unrelated-funding".to_string(),
+            index: 2,
+        };
+        let input = |previous_output: OutPoint| TxInput {
+            previous_output,
+            public_key: "test-public-key".to_string(),
+            signature: "test-signature".to_string(),
+        };
+
+        let mut parent_tx = staged_parent.transactions[0].clone();
+        parent_tx.txid = "staged-parent-tx".to_string();
+        parent_tx.inputs = vec![input(shared_outpoint.clone())];
+
+        let mut child_tx = staged_child.transactions[0].clone();
+        child_tx.txid = "staged-child-tx".to_string();
+        child_tx.inputs = vec![input(child_outpoint.clone())];
+
+        let mut conflicting_tx = staged_child.transactions[0].clone();
+        conflicting_tx.txid = "conflicting-live-tx".to_string();
+        conflicting_tx.inputs = vec![input(shared_outpoint.clone())];
+
+        let mut unrelated_tx = staged_child.transactions[0].clone();
+        unrelated_tx.txid = "unrelated-live-tx".to_string();
+        unrelated_tx.inputs = vec![input(unrelated_outpoint.clone())];
+
+        staged_parent.transactions.push(parent_tx.clone());
+        staged_child.transactions.push(child_tx.clone());
+
+        for tx in [&parent_tx, &child_tx, &conflicting_tx, &unrelated_tx] {
+            live.mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
+            live.mempool.first_seen.insert(tx.txid.clone(), 1);
+            live.mempool.admission_height.insert(tx.txid.clone(), 0);
+            live.mempool
+                .spent_outpoints
+                .extend(tx.inputs.iter().map(|input| input.previous_output.clone()));
+        }
+
+        remove_staged_transactions_from_mempool(
+            &mut live,
+            &[staged_parent.clone(), staged_child.clone()],
+        );
+
+        assert!(!live.mempool.transactions.contains_key(&parent_tx.txid));
+        assert!(!live.mempool.transactions.contains_key(&child_tx.txid));
+        assert!(!live.mempool.transactions.contains_key(&conflicting_tx.txid));
+        assert!(live.mempool.transactions.contains_key(&unrelated_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&parent_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&child_tx.txid));
+        assert!(!live.mempool.first_seen.contains_key(&conflicting_tx.txid));
+        assert_eq!(live.mempool.counters.confirmed_removed_total, 2);
+        assert_eq!(live.mempool.counters.reconcile_removed_total, 1);
+        assert_eq!(
+            live.mempool.spent_outpoints,
+            std::collections::HashSet::from([unrelated_outpoint])
+        );
+    }
+
+    #[test]
     fn child_of_staged_parent_validates_through_bounded_staged_closure() {
         let (live, expected_identity, mut staging, _main, side) = staged_side_fixture();
         let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
@@ -570,6 +785,35 @@ mod tests {
             other => panic!("expected staged child, got {other:?}"),
         }
         assert!(staging.contains(&child.hash));
+    }
+
+    #[test]
+    fn staged_duplicate_rechecks_current_context_for_safe_promotion() {
+        let live = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&live);
+        let genesis = live.dag.genesis_hash.clone();
+        let block = finalized_block(&live, &expected_identity, vec![genesis], 24);
+        let mut staging = ActivatedV2P2pStaging::default();
+
+        staging.blocks.insert(block.hash.clone(), block.clone());
+
+        let outcome =
+            stage_activated_v2_p2p_block(block.clone(), &live, &mut staging, &expected_identity)
+                .unwrap();
+        match outcome {
+            ActivatedV2P2pStageOutcome::ReadyForPromotion {
+                staged_parent_closure,
+                staged_count,
+                ..
+            } => {
+                assert!(staged_parent_closure.is_empty());
+                assert_eq!(staged_count, 1);
+            }
+            other => {
+                panic!("expected staged duplicate to be re-evaluated for promotion, got {other:?}")
+            }
+        }
+        assert!(staging.contains(&block.hash));
     }
 
     fn stage_merge_anchor(

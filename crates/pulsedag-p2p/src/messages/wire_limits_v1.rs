@@ -206,6 +206,8 @@ mod tests {
             locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
             stop_hash: None,
             limit: MAX_INV_BLOCK_HASHES,
+            request_id: None,
+            requested_peer_id: None,
         })
         .is_ok());
 
@@ -222,6 +224,8 @@ mod tests {
         assert!(decode(&NetworkMessage::Headers {
             chain_id: "testnet".into(),
             headers: vec![header_inventory; MAX_INV_BLOCK_HASHES],
+            request_id: None,
+            requested_peer_id: None,
         })
         .is_ok());
 
@@ -245,6 +249,8 @@ mod tests {
         let error = decode(&NetworkMessage::Headers {
             chain_id: "testnet".into(),
             headers: vec![header_inventory; MAX_INV_BLOCK_HASHES + 1],
+            request_id: None,
+            requested_peer_id: None,
         })
         .unwrap_err();
         assert!(error.to_string().contains("Headers.headers"));

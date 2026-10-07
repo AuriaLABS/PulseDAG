@@ -257,6 +257,8 @@ impl NetworkMessageWire<'_> {
                 locator: parse_locator_hashes(self.locator)?,
                 stop_hash: parse_optional_raw(self.stop_hash, "stop_hash")?,
                 limit: parse_response_limit(self.limit)?,
+                request_id: parse_optional_raw(self.request_id, "request_id")?,
+                requested_peer_id: parse_optional_raw(self.requested_peer_id, "requested_peer_id")?,
             }),
             NetworkMessageTag::Headers => Ok(NetworkMessage::Headers {
                 chain_id: self.chain_id,
@@ -265,6 +267,8 @@ impl NetworkMessageWire<'_> {
                     E,
                     { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 },
                 >(self.headers, "Headers.headers")?,
+                request_id: parse_optional_raw(self.request_id, "request_id")?,
+                requested_peer_id: parse_optional_raw(self.requested_peer_id, "requested_peer_id")?,
             }),
             NetworkMessageTag::GetTips => Ok(NetworkMessage::GetTips {
                 chain_id: self.chain_id,

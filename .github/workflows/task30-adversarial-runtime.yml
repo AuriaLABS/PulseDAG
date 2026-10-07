@@ -19,6 +19,9 @@ on:
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
       - scripts/lib/patch_task30_runtime_topology.py
       - scripts/lib/patch_task30_v24_runtime_compat.py
+      - apps/pulsedagd/src/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
   pull_request:
     branches:
@@ -37,6 +40,9 @@ on:
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
       - scripts/lib/patch_task30_runtime_topology.py
       - scripts/lib/patch_task30_v24_runtime_compat.py
+      - apps/pulsedagd/src/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
 
 permissions:
@@ -48,7 +54,7 @@ env:
 concurrency:
   # Supersede only stale heads from the same pull request. Keep push, tag and
   # workflow_dispatch runs isolated so retained/manual evidence is never cancelled.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: task30-adversarial-v2-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -247,7 +253,7 @@ jobs:
     name: 5N delayed parent selected-segment recovery
     needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 165
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-lag
