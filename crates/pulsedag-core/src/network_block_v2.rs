@@ -336,16 +336,20 @@ pub fn preflight_activated_v2_p2p_block(
 /// materialized immediately as the authoritative ordered-DAG tip. A valid but
 /// still-unabsorbed side tip must be staged by the later live P2P transient-
 /// context layer rather than being mislabeled as final canonical state.
-pub fn prepare_activated_v2_p2p_block_state(
+pub(crate) fn prepare_activated_v2_p2p_block_state_with_materializer<FMaterialize>(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
-) -> Result<ChainState, PulseError> {
+    materialize: &FMaterialize,
+) -> Result<ChainState, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     validate_network_block_envelope(block, state, identity)?;
 
     let mut working = state.clone();
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
-    let mut materialized = materialize_authoritative_state_v2(&working).map_err(|error| {
+    let mut materialized = materialize(&working).map_err(|error| {
         invalid_network_block(format!(
             "candidate is not yet finalizable in authoritative ordered DAG: {error}"
         ))
@@ -394,19 +398,36 @@ pub fn prepare_activated_v2_p2p_block_state(
     Ok(materialized)
 }
 
-/// Atomically persist, publish and rebroadcast a finalizable activated-v2 P2P
-/// block under one explicit protocol identity.
-pub fn accept_activated_v2_p2p_block_atomically<FPersist, FBroadcast>(
+pub fn prepare_activated_v2_p2p_block_state(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ChainState, PulseError> {
+    prepare_activated_v2_p2p_block_state_with_materializer(
+        block,
+        state,
+        identity,
+        &materialize_authoritative_state_v2,
+    )
+}
+
+pub(crate) fn accept_activated_v2_p2p_block_atomically_with_materializer<
+    FPersist,
+    FBroadcast,
+    FMaterialize,
+>(
     block: Block,
     state: &mut ChainState,
     source: AcceptSource,
     identity: &ProtocolActivationIdentity,
+    materialize: &FMaterialize,
     mut persist: FPersist,
     broadcast: FBroadcast,
 ) -> Result<AtomicBlockAcceptance, PulseError>
 where
     FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
 {
     if !matches!(source, AcceptSource::P2p) {
         return Err(invalid_network_block(
@@ -414,7 +435,9 @@ where
         ));
     }
 
-    if let Err(error) = prepare_activated_v2_p2p_block_state(&block, state, identity) {
+    if let Err(error) =
+        prepare_activated_v2_p2p_block_state_with_materializer(&block, state, identity, materialize)
+    {
         return Ok(AtomicBlockAcceptance::rejected(
             classify_network_block_error(&error),
         ));
@@ -424,7 +447,12 @@ where
         state,
         source.as_str(),
         |base| {
-            let prepared = prepare_activated_v2_p2p_block_state(&block, base, identity)?;
+            let prepared = prepare_activated_v2_p2p_block_state_with_materializer(
+                &block,
+                base,
+                identity,
+                materialize,
+            )?;
             Ok((prepared, ()))
         },
         |prepared| persist(&block, prepared),
@@ -446,6 +474,31 @@ where
         committed: true,
         broadcast: true,
     })
+}
+
+/// Atomically persist, publish and rebroadcast a finalizable activated-v2 P2P
+/// block under one explicit protocol identity.
+pub fn accept_activated_v2_p2p_block_atomically<FPersist, FBroadcast>(
+    block: Block,
+    state: &mut ChainState,
+    source: AcceptSource,
+    identity: &ProtocolActivationIdentity,
+    persist: FPersist,
+    broadcast: FBroadcast,
+) -> Result<AtomicBlockAcceptance, PulseError>
+where
+    FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
+    FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
+{
+    accept_activated_v2_p2p_block_atomically_with_materializer(
+        block,
+        state,
+        source,
+        identity,
+        &materialize_authoritative_state_v2,
+        persist,
+        broadcast,
+    )
 }
 
 #[cfg(test)]
