@@ -7,8 +7,9 @@ use crate::{
     errors::PulseError,
     network_block_v2::accept_activated_v2_p2p_block_atomically_with_materializer,
     network_staging_v2::{
-        promote_activated_v2_p2p_anchor_atomically_with_materializer, stage_activated_v2_p2p_block,
-        ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
+        promote_activated_v2_p2p_anchor_atomically_with_materializer,
+        stage_activated_v2_p2p_block_with_materializer, ActivatedV2P2pStageOutcome,
+        ActivatedV2P2pStaging,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
@@ -309,7 +310,13 @@ where
 {
     let block_hash = block.hash.clone();
     let runtime_before = runtime.clone();
-    let stage = stage_activated_v2_p2p_block(block.clone(), state, &mut runtime.staging, identity)?;
+    let stage = stage_activated_v2_p2p_block_with_materializer(
+        block.clone(),
+        state,
+        &mut runtime.staging,
+        identity,
+        materialize,
+    )?;
 
     match stage {
         ActivatedV2P2pStageOutcome::Duplicate => {
