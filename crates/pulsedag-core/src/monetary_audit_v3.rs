@@ -98,12 +98,8 @@ pub fn audit_monetary_state_v3(
             .blocks
             .get(block_hash)
             .ok_or_else(|| MonetaryStateAuditV3Error::MissingBlock(block_hash.clone()))?;
-        let validated = validate_monetary_reward_at_canonical_score_v3(
-            state,
-            block,
-            score,
-            cadence_segments,
-        )?;
+        let validated =
+            validate_monetary_reward_at_canonical_score_v3(state, block, score, cadence_segments)?;
         authorized_subsidy_atoms = authorized_subsidy_atoms
             .checked_add(validated.authorized_subsidy_atoms)
             .ok_or(MonetaryStateAuditV3Error::ArithmeticOverflow)?;
