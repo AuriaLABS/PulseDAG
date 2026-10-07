@@ -105,6 +105,11 @@ REQUIRED_LIVE_MARKERS = {
         "refusing legacy startup fallback",
         "validate_monetary_v3_p2p_runtime_snapshot",
     ],
+    "apps/pulsedagd/src/main.rs": [
+        "protocol_monetary_activation_record",
+        "load_monetary_v3_p2p_runtime_snapshot",
+        "REWARD_FINALITY_POLICY_VERSION_V3",
+    ],
 }
 
 REQUIRED_LIVE_CALLS = {
@@ -155,6 +160,10 @@ REQUIRED_LIVE_CALLS = {
     "apps/pulsedagd/src/activated_v2_runtime.rs": [
         "protocol_monetary_activation_record",
         "validate_monetary_v3_p2p_runtime_snapshot",
+    ],
+    "apps/pulsedagd/src/main.rs": [
+        "protocol_monetary_activation_record",
+        "load_monetary_v3_p2p_runtime_snapshot",
     ],
 }
 
