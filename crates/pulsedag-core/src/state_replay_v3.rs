@@ -313,6 +313,69 @@ pub fn rebuild_authoritative_state_v3(
     })
 }
 
+/// Materialize the exact authoritative v3 monetary state without mutating the
+/// caller. Unlike the v2 compatibility replay, reward claims remain amountless
+/// until the mature-prefix rule materializes their synthetic settlement UTXOs.
+pub fn materialize_authoritative_state_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<ChainState, PulseError> {
+    let replay = rebuild_authoritative_state_v3(state, cadence_segments)?;
+    let mut materialized = state.clone();
+    materialized.utxo = replay.utxo.clone();
+    materialized.dag.ordered_dag = replay.ordered_dag.blocks.clone();
+    materialized.dag.ordering_version = replay.ordered_dag.ordering_version.clone();
+    materialized.dag.ordered_dag_tip = replay.diagnostics.ordered_dag_tip.clone();
+    materialized.dag.ordered_dag_state_root = Some(replay.diagnostics.state_root.clone());
+    materialized.dag.ordered_dag_conflict_diagnostics =
+        replay.diagnostics.conflict_diagnostics.clone();
+    Ok(materialized)
+}
+
+/// Prove that a live/restored full v3 state is already materialized from the
+/// same ordered-DAG monetary replay it claims. Compact-pruned v3 verification
+/// remains a separate launch gate and therefore fails closed here if full replay
+/// cannot be performed.
+pub fn verify_authoritative_state_snapshot_v3(
+    state: &ChainState,
+    cadence_segments: &[MonetaryCadenceSegment],
+) -> Result<StateReplayV3Diagnostics, PulseError> {
+    let replay = rebuild_authoritative_state_v3(state, cadence_segments)?;
+    let observed_state_root = state.utxo.compute_state_root()?;
+
+    if state.dag.ordered_dag != replay.ordered_dag.blocks {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordered DAG does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_tip != replay.diagnostics.ordered_dag_tip {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordered DAG tip does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_state_root.as_deref()
+        != Some(replay.diagnostics.state_root.as_str())
+    {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot recorded state root does not match authoritative monetary replay"
+                .to_string(),
+        ));
+    }
+    if observed_state_root != replay.diagnostics.state_root {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot UTXO root does not match authoritative monetary replay".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_conflict_diagnostics != replay.diagnostics.conflict_diagnostics {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot conflict diagnostics do not match authoritative monetary replay"
+                .to_string(),
+        ));
+    }
+
+    Ok(replay.diagnostics)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
