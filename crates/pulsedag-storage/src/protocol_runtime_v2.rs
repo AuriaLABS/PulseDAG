@@ -397,10 +397,9 @@ impl Storage {
             reward_finality_policy_version,
             state,
         )?;
-        let record =
-            ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
-                expected, state, runtime,
-            )?;
+        let record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
+            expected, state, runtime,
+        )?;
         let meta_cf = self
             .db
             .cf_handle("meta")
