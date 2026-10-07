@@ -429,12 +429,12 @@ fn activated_monetary_v3_template_data(
         ));
     }
     if monetary_activation.reward_finality_policy_version
-        != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+        != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
     {
         return Err(PulseError::InvalidBlock(format!(
             "unsupported v3 reward-finality policy {}; implemented live policy is {}",
             monetary_activation.reward_finality_policy_version,
-            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         )));
     }
     pulsedag_core::validate_live_reward_settlement_v3(
@@ -942,7 +942,7 @@ mod tests {
         let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
             identity.clone(),
             &cadence,
-            pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
         )
         .unwrap();
         let timestamp = state.dag.blocks[&state.dag.genesis_hash]
