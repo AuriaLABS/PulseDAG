@@ -12,9 +12,8 @@ use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
     finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
-    materialize_activated_v2_mining_overlay_with_materializer,
-    materialize_authoritative_state_v3, ActivatedV2MiningTemplateSpec, ChainState,
-    PowValidationPath, ProtocolActivationIdentity,
+    materialize_activated_v2_mining_overlay_with_materializer, materialize_authoritative_state_v3,
+    ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
     ProtocolMonetaryActivationRecordV2, PulseError, TRANSACTION_VERSION_V2,
 };
 use pulsedag_p2p::mode_connected_peers_are_real_network;
@@ -737,16 +736,15 @@ pub async fn post_mining_template<S: RpcStateLike>(
                     }
                 }
 
-                let durable_runtime_snapshot =
-                    if let Some(record) = monetary_activation.as_ref() {
-                        storage.load_monetary_v3_p2p_runtime_snapshot(
-                            &identity,
-                            &record.monetary_cadence_segments,
-                            &record.reward_finality_policy_version,
-                        )
-                    } else {
-                        storage.load_activated_v2_p2p_runtime_snapshot(&identity)
-                    };
+                let durable_runtime_snapshot = if let Some(record) = monetary_activation.as_ref() {
+                    storage.load_monetary_v3_p2p_runtime_snapshot(
+                        &identity,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
+                    )
+                } else {
+                    storage.load_activated_v2_p2p_runtime_snapshot(&identity)
+                };
                 let template_chain = match durable_runtime_snapshot {
                     Ok((durable_chain, runtime))
                         if durable_chain.chain_state_generation == chain.chain_state_generation
