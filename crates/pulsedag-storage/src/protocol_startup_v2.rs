@@ -81,8 +81,7 @@ impl Storage {
     ) -> Result<(pulsedag_core::ChainState, ActivatedV2P2pRuntime), PulseError> {
         expected.validate().map_err(storage_error)?;
 
-        let clean_state =
-            init_chain_state_v3(expected.chain_id.clone(), frozen_genesis_timestamp)?;
+        let clean_state = init_chain_state_v3(expected.chain_id.clone(), frozen_genesis_timestamp)?;
         let derived = derived_v2_identity(&clean_state);
         if &derived != expected {
             return Err(storage_error(
@@ -91,7 +90,9 @@ impl Storage {
         }
 
         if let Some(record) = self.protocol_monetary_activation_record()? {
-            record.verify_production_v3(expected).map_err(storage_error)?;
+            record
+                .verify_production_v3(expected)
+                .map_err(storage_error)?;
             return self.load_monetary_v3_p2p_runtime_snapshot(
                 expected,
                 &PRODUCTION_CADENCE_V3,
@@ -124,12 +125,7 @@ impl Storage {
                 storage_error("clean production-v3 genesis block missing from initialized state")
             })?;
         let runtime = ActivatedV2P2pRuntime::default();
-        self.persist_production_v3_genesis_and_runtime(
-            &genesis,
-            expected,
-            &clean_state,
-            &runtime,
-        )?;
+        self.persist_production_v3_genesis_and_runtime(&genesis, expected, &clean_state, &runtime)?;
 
         self.load_monetary_v3_p2p_runtime_snapshot(
             expected,
@@ -143,8 +139,9 @@ impl Storage {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, genesis_v2::init_chain_state_v2, genesis_v3::init_chain_state_v3,
-        BLOCK_HEADER_VERSION_V2, PRODUCTION_CADENCE_FINGERPRINT_V3, TRANSACTION_VERSION_V2,
+        genesis::init_chain_state, genesis_v2::init_chain_state_v2,
+        genesis_v3::init_chain_state_v3, BLOCK_HEADER_VERSION_V2,
+        PRODUCTION_CADENCE_FINGERPRINT_V3, TRANSACTION_VERSION_V2,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -237,10 +234,7 @@ mod tests {
         );
 
         assert!(storage
-            .load_or_init_production_v3_p2p_runtime(
-                &expected,
-                PRODUCTION_V3_TS.saturating_add(1),
-            )
+            .load_or_init_production_v3_p2p_runtime(&expected, PRODUCTION_V3_TS.saturating_add(1),)
             .is_err());
 
         drop(storage);
@@ -254,10 +248,7 @@ mod tests {
         let expected = expected_production_v3_identity("pulsedag-v3-production-timestamp");
 
         assert!(storage
-            .load_or_init_production_v3_p2p_runtime(
-                &expected,
-                PRODUCTION_V3_TS.saturating_add(1),
-            )
+            .load_or_init_production_v3_p2p_runtime(&expected, PRODUCTION_V3_TS.saturating_add(1),)
             .is_err());
         assert!(storage.load_chain_state().unwrap().is_none());
         assert!(storage.protocol_activation_record().unwrap().is_none());
@@ -278,8 +269,7 @@ mod tests {
         let storage = Storage::open(&path).unwrap();
         let legacy = init_chain_state("pulsedag-v3-no-implicit-migration".to_string());
         storage.persist_chain_state(&legacy).unwrap();
-        let expected =
-            expected_production_v3_identity("pulsedag-v3-no-implicit-migration");
+        let expected = expected_production_v3_identity("pulsedag-v3-no-implicit-migration");
 
         let error = storage
             .load_or_init_production_v3_p2p_runtime(&expected, PRODUCTION_V3_TS)
