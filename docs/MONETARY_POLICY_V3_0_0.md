@@ -25,6 +25,8 @@ Authority: #781, #794, #1045. The prior 500M year-one / annual-halving curve, th
 - consensus burn: **0%**
 - programmable resource fees: **consensus-unreachable on v3.0.0 mainnet because smart-contract deployment/execution is INACTIVE**
 - canonical monetary index: deterministic ordered-DAG ordinal, genesis = score 0
+- production monetary cadence: **500 ms / 2 target score transitions per economic second**, active from monetary score 0 on both mainnet and parallel testnet
+- production cadence fingerprint: `6c571a95c57b7987e6a65d744d2abc9ed83c2a064ddb53b42e50cf1d6d03277f`
 - raw block height / raw BPS / header blue score are not monetary authority
 
 The exact integer implementation is `crates/pulsedag-core/src/monetary_v3.rs`.
@@ -99,13 +101,43 @@ Consensus economic time is derived from a versioned list of:
 - `activation_score`
 - `target_interval_ns`
 
-A cadence change must activate at an exact canonical monetary score. Changing from 1 BPS to 2 BPS or 4 BPS changes reward granularity only; equal economic time maps to equal cumulative issuance.
+A cadence change must activate at an exact canonical monetary score. Changing block cadence changes reward granularity only; equal economic time maps to equal cumulative issuance.
 
-The DAG invariant is:
+The v3.0.0 production cadence is frozen for **both mainnet and the parallel testnet** as the same one-segment monetary-time table:
+
+| activation_score | target_interval_ns | target interval |
+|---:|---:|---:|
+| 0 | 500,000,000 | 500 ms |
+
+Canonical cadence fingerprint:
+
+`6c571a95c57b7987e6a65d744d2abc9ed83c2a064ddb53b42e50cf1d6d03277f`
+
+The identical cadence table does **not** make the networks compatible. Mainnet and parallel testnet still require independent chain IDs, deterministic genesis identities, protocol/config fingerprints, persistent P2P identities, signing/application domains, bootnodes and public endpoints under #1049.
+
+### Selection evidence
+
+The selection is based on the Task39 exact-candidate three-point rehearsal on `d69500214889a79ee55390a597a46d539f8b296f` (tree `7288238575c4a76836ce2453010ad5d41fb1399b`), workflow run `37645587124`, artifact `11495507503` / `task39-cadence-d69500214889a79ee55390a597a46d539f8b296f`, artifact ZIP SHA-256 `d5e778eac2a6b73c1bcc00dc5c9283ee5beb773fb9e5dd542f289507cda6762e`.
+
+All 1000/500/250 ms points passed the runtime gate on a real three-node libp2p full mesh with complete convergence and zero observed orphan/stale/rejected submissions. The 500 ms point was selected rather than the fastest tested point:
+
+- **500 ms:** 21 accepted blocks in the measured window, zero stale/rejected/unknown-finality outcomes, Jain miner fairness `1.0`, worst observed template-to-submit p95 below 9 ms, worst-node canonical state-apply p95 below 0.4 ms, and storage-amplification proxy about 24.5 KB per accepted block.
+- **250 ms:** also passed, but worst observed template-to-submit p95 rose to about 603 ms, the storage proxy rose to about 40.0 KB per accepted block, and fairness was slightly below 1.0. That makes it an unnecessarily aggressive v3.0.0 production default despite passing the bounded rehearsal.
+- **1000 ms:** passed cleanly but provides lower throughput without a compensating correctness advantage in this evidence set.
+
+The three per-cadence evidence SHA-256 values are:
+
+- 1000 ms: `8750fb9a37273240eee722e272527384738bd143af3755642962bdf1ed4a9750`
+- 500 ms: `6b50c409d3bba9b557c2bc57d045126184e2beb4e70fd99dcdf1967712e209ba`
+- 250 ms: `ed9aeef7b6eb29d8ee3753d70c538d43a3345beefcfca674a11416e2c90e7d6a`
+
+This freezes the consensus monetary-time table and its fingerprint. It does not by itself activate a network, authorize launch, or freeze #1049 network identities. The freeze PR must pass fresh exact-head monetary/Task39 CI before this selection is treated as integrated evidence.
+
+The DAG invariant remains:
 
 **economic time determines how much PDG may exist; raw block count and DAG width never determine gross issuance.**
 
-The production mainnet/testnet cadence tables are separate network-freeze inputs and remain invalid to invent before #781 freezes them. Until then, RPC policy metadata reports `production_cadence_frozen=false` and no production cadence fingerprint.
+RPC policy metadata reports the frozen cadence fingerprint while the monetary activation state remains explicitly unactivated until the production network identity/activation record is installed.
 
 ## Fair-launch and fee rules
 
@@ -142,9 +174,8 @@ Legacy v2.x subsidy constants remain available for historical compatibility and 
 This implementation does **not** by itself close #1045 or claim #781 launch readiness. The exact v3 candidate must still bind and prove:
 
 - clean exact-head CI for fingerprint `134009249c301682df78d0c950fc1a70604eeddb9396361e9594e6fac121680b` and all golden vectors;
-- exact production mainnet/testnet cadence tables and fingerprints;
 - exact production chain IDs, deterministic genesis timestamps/hashes and zero-allocation genesis identities;
-- final production reward-finality policy;
+- final exact-candidate rebinding of the frozen reward-finality policy `pulsedag-reward-finality-v3.0.0-mature-prefix-v1`;
 - downstream explorer consumption of the monetary/denomination contract;
 - exact-candidate reachability evidence demonstrating that no legacy or alternate issuance path is reachable;
 - artifact/evidence digests tied to the exact #781 source/tree and network identities.

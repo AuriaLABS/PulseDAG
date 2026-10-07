@@ -88,6 +88,25 @@ pub struct MonetaryCadenceSegment {
     pub target_interval_ns: u64,
 }
 
+/// Frozen production cadence selected from Task39 exact-candidate evidence.
+///
+/// Mainnet and the parallel testnet intentionally share the same monetary-time
+/// schedule. Their network, genesis, signing and P2P identities remain
+/// independent and are frozen separately by the v3 launch identity gate.
+pub const PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3: u64 = 500_000_000;
+pub const PRODUCTION_CADENCE_V3: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
+    activation_score: 0,
+    target_interval_ns: PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3,
+}];
+pub const PRODUCTION_MAINNET_CADENCE_V3: [MonetaryCadenceSegment; 1] = PRODUCTION_CADENCE_V3;
+pub const PRODUCTION_PARALLEL_TESTNET_CADENCE_V3: [MonetaryCadenceSegment; 1] =
+    PRODUCTION_CADENCE_V3;
+pub const PRODUCTION_CADENCE_FINGERPRINT_V3: &str =
+    "6c571a95c57b7987e6a65d744d2abc9ed83c2a064ddb53b42e50cf1d6d03277f";
+pub const PRODUCTION_MAINNET_CADENCE_FINGERPRINT_V3: &str = PRODUCTION_CADENCE_FINGERPRINT_V3;
+pub const PRODUCTION_PARALLEL_TESTNET_CADENCE_FINGERPRINT_V3: &str =
+    PRODUCTION_CADENCE_FINGERPRINT_V3;
+
 pub fn canonical_monetary_cadence_bytes_v3(
     segments: &[MonetaryCadenceSegment],
 ) -> Result<Vec<u8>, MonetaryV3Error> {
@@ -406,6 +425,35 @@ mod tests {
         assert_eq!(q64_pow(HALF_LIFE_QUANTA).unwrap(), HALF_LIFE_END_FACTOR_Q64);
         assert_eq!(HALF_LIFE_QUANTA, 4_380);
         assert_eq!(TERMINAL_EMISSION_QUANTUM, 249_660);
+    }
+
+    #[test]
+    fn production_cadence_and_fingerprint_are_frozen() {
+        assert_eq!(
+            PRODUCTION_MAINNET_CADENCE_V3,
+            PRODUCTION_PARALLEL_TESTNET_CADENCE_V3
+        );
+        assert_eq!(PRODUCTION_CADENCE_V3[0].activation_score, 0);
+        assert_eq!(
+            PRODUCTION_CADENCE_V3[0].target_interval_ns,
+            PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3
+        );
+        assert_eq!(
+            monetary_cadence_fingerprint_v3(&PRODUCTION_CADENCE_V3).unwrap(),
+            PRODUCTION_CADENCE_FINGERPRINT_V3
+        );
+        assert_eq!(
+            PRODUCTION_MAINNET_CADENCE_FINGERPRINT_V3,
+            PRODUCTION_CADENCE_FINGERPRINT_V3
+        );
+        assert_eq!(
+            PRODUCTION_PARALLEL_TESTNET_CADENCE_FINGERPRINT_V3,
+            PRODUCTION_CADENCE_FINGERPRINT_V3
+        );
+        assert_eq!(
+            economic_time_ns_for_score(43_200, &PRODUCTION_CADENCE_V3).unwrap(),
+            EMISSION_QUANTUM_NS
+        );
     }
 
     #[test]
