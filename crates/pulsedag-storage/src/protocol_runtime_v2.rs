@@ -439,9 +439,13 @@ impl Storage {
                 "production-v3 bootstrap block is not the state genesis",
             ));
         }
-        let state_genesis = state.dag.blocks.get(&state.dag.genesis_hash).ok_or_else(|| {
-            storage_error("production-v3 bootstrap state is missing its genesis block")
-        })?;
+        let state_genesis = state
+            .dag
+            .blocks
+            .get(&state.dag.genesis_hash)
+            .ok_or_else(|| {
+                storage_error("production-v3 bootstrap state is missing its genesis block")
+            })?;
         if serde_json::to_vec(state_genesis).map_err(|error| storage_error(error.to_string()))?
             != serde_json::to_vec(genesis).map_err(|error| storage_error(error.to_string()))?
         {
@@ -457,18 +461,16 @@ impl Storage {
             .verify_production_v3(expected)
             .map_err(storage_error)?;
         if monetary_record.monetary_cadence_segments != PRODUCTION_CADENCE_V3
-            || monetary_record.reward_finality_policy_version
-                != REWARD_FINALITY_POLICY_VERSION_V3
+            || monetary_record.reward_finality_policy_version != REWARD_FINALITY_POLICY_VERSION_V3
         {
             return Err(storage_error(
                 "production-v3 bootstrap monetary contract is not canonical",
             ));
         }
 
-        let runtime_record =
-            ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
-                expected, state, runtime,
-            )?;
+        let runtime_record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
+            expected, state, runtime,
+        )?;
 
         let blocks_cf = self
             .db
