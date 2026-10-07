@@ -29,6 +29,13 @@ on:
       - scripts/private_testnet/task39_cadence_strict.py
       - .github/workflows/task39-cadence-evidence.yml
 
+concurrency:
+  # Supersede only first-attempt heads from the same pull request. A manual
+  # re-run keeps its original run_id and must never cancel the current PR head.
+  # Push/workflow_dispatch runs are isolated for the same retained-evidence reason.
+  group: pr-supersession-v2-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 permissions:
   contents: read
 
