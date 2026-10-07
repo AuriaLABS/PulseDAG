@@ -399,6 +399,18 @@ impl Storage {
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<(), PulseError> {
         require_canonical_activated_v2_identity(expected)?;
+
+        if self.load_chain_state()?.is_some()
+            || !self.list_blocks()?.is_empty()
+            || self.protocol_activation_record()?.is_some()
+            || self.protocol_monetary_activation_record()?.is_some()
+            || self.activated_v2_p2p_runtime_record()?.is_some()
+            || self.accepted_storage_generation()? != 0
+        {
+            return Err(storage_error(
+                "production-v3 atomic bootstrap requires completely empty storage",
+            ));
+        }
         if state.chain_id != expected.chain_id {
             return Err(storage_error(format!(
                 "production-v3 bootstrap state chain_id={} does not match expected {}",
