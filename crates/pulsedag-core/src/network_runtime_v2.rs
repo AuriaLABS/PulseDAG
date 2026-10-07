@@ -300,8 +300,7 @@ fn process_one_with_runtime_persistence<
         FPersistOne,
         FPersistBundle,
     >,
-    materialize: &FMaterialize,
-    materialize_pre_candidate: &FPreCandidate,
+    replay_materializers: (&FMaterialize, &FPreCandidate),
     broadcast: &mut FBroadcast,
 ) -> Result<ActivatedV2P2pRuntimeOutcome, PulseError>
 where
@@ -312,6 +311,7 @@ where
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
     FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
+    let (materialize, materialize_pre_candidate) = replay_materializers;
     let block_hash = block.hash.clone();
     let runtime_before = runtime.clone();
     let stage = stage_activated_v2_p2p_block_with_materializer(
@@ -428,8 +428,7 @@ where
                 state,
                 &mut runtime.staging,
                 identity,
-                materialize,
-                materialize_pre_candidate,
+                (materialize, materialize_pre_candidate),
                 |bundle, prepared| (persistence.persist_bundle)(bundle, prepared, &runtime_after),
                 |candidate| broadcast(candidate),
             ) {
@@ -565,8 +564,7 @@ pub fn drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer<
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
     mut persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
-    materialize: &FMaterialize,
-    materialize_pre_candidate: &FPreCandidate,
+    replay_materializers: (&FMaterialize, &FPreCandidate),
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
@@ -577,6 +575,7 @@ where
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
     FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
+    let (materialize, materialize_pre_candidate) = replay_materializers;
     // RPC mining and the live P2P loop serialize on ChainState but hold
     // separate in-memory runtime copies. Reconcile any transient hashes that a
     // parallel authoritative acceptance already committed before constructing
@@ -599,8 +598,7 @@ where
         runtime,
         identity,
         &mut persistence,
-        materialize,
-        materialize_pre_candidate,
+        (materialize, materialize_pre_candidate),
         &mut broadcast,
     )?;
 
@@ -663,8 +661,10 @@ where
         runtime,
         identity,
         persistence,
-        &materialize_authoritative_state_v2,
-        &replay_pre_candidate_state_v2,
+        (
+            &materialize_authoritative_state_v2,
+            &replay_pre_candidate_state_v2,
+        ),
         broadcast,
     )
 }
