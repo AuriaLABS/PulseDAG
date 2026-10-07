@@ -379,6 +379,7 @@ where
         &augmented,
         identity,
         materialize,
+        materialize_pre_candidate,
     )?;
     if closure.ordered.is_empty()
         && validation.disposition == ActivatedV2P2pContextDisposition::ImmediatelyFinalizable
