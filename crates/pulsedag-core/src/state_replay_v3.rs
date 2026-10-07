@@ -343,6 +343,11 @@ pub fn verify_authoritative_state_snapshot_v3(
     let replay = rebuild_authoritative_state_v3(state, cadence_segments)?;
     let observed_state_root = state.utxo.compute_state_root()?;
 
+    if state.dag.ordering_version != replay.ordered_dag.ordering_version {
+        return Err(PulseError::NonDeterministicState(
+            "v3 snapshot ordering version does not match authoritative monetary replay".to_string(),
+        ));
+    }
     if state.dag.ordered_dag != replay.ordered_dag.blocks {
         return Err(PulseError::NonDeterministicState(
             "v3 snapshot ordered DAG does not match authoritative monetary replay".to_string(),
