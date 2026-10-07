@@ -12,11 +12,11 @@ use pulsedag_core::{
     drive_activated_v2_p2p_block_with_runtime_persistence,
     drive_monetary_v3_p2p_block_with_runtime_persistence, evaluate_pow_for_protocol,
     materialize_activated_v2_mining_overlay,
-    materialize_activated_v2_mining_overlay_with_materializer,
-    materialize_authoritative_state_v3, pow_validation_result, preferred_tip_hash,
-    resolve_pow_validation_path, AcceptSource, ActivatedV2P2pRuntimeOutcome,
-    ActivatedV2P2pRuntimePersistence, AtomicBlockAcceptance, Block, BlockAcceptanceResult,
-    ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError, BLOCK_HEADER_VERSION_V1,
+    materialize_activated_v2_mining_overlay_with_materializer, materialize_authoritative_state_v3,
+    pow_validation_result, preferred_tip_hash, resolve_pow_validation_path, AcceptSource,
+    ActivatedV2P2pRuntimeOutcome, ActivatedV2P2pRuntimePersistence, AtomicBlockAcceptance, Block,
+    BlockAcceptanceResult, ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError,
+    BLOCK_HEADER_VERSION_V1,
 };
 use tokio::time::timeout;
 
@@ -535,10 +535,7 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 activated_v2_runtime.staging(),
                 &local_identity,
                 &|prepared: &ChainState| {
-                    materialize_authoritative_state_v3(
-                        prepared,
-                        &record.monetary_cadence_segments,
-                    )
+                    materialize_authoritative_state_v3(prepared, &record.monetary_cadence_segments)
                 },
             )
         } else {
