@@ -388,11 +388,7 @@ pub(crate) fn eligible_block_fees_atoms_v3(
         .iter()
         .skip(1)
         .filter(|tx| {
-            !transaction_was_skipped_by_authoritative_v3_replay(
-                state,
-                &block.hash,
-                &tx.txid,
-            )
+            !transaction_was_skipped_by_authoritative_v3_replay(state, &block.hash, &tx.txid)
         })
         .try_fold(0_u64, |acc, tx| {
             acc.checked_add(tx.fee)
@@ -811,9 +807,10 @@ mod tests {
             .unwrap()
             .transactions
             .push(skipped);
-        state.dag.ordered_dag_conflict_diagnostics.push(
-            "ordered_pos=1 block=a tx=skipped-fee-tx skipped_conflict_atomic".into(),
-        );
+        state
+            .dag
+            .ordered_dag_conflict_diagnostics
+            .push("ordered_pos=1 block=a tx=skipped-fee-tx skipped_conflict_atomic".into());
 
         let snapshot =
             derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, FINALITY_TEST_POLICY, None)
