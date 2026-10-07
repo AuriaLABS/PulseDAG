@@ -416,12 +416,16 @@ fn remove_promoted_transactions_from_mempool(
     Ok(())
 }
 
-fn prepare_anchor_promotion(
+fn prepare_anchor_promotion_with_materializer<FMaterialize>(
     anchor_hash: &Hash,
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<(ChainState, PreparedPromotion), PulseError> {
+    materialize: &FMaterialize,
+) -> Result<(ChainState, PreparedPromotion), PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     if state.dag.blocks.contains_key(anchor_hash) {
         return Err(PulseError::BlockAlreadyExists);
     }
@@ -453,7 +457,7 @@ fn prepare_anchor_promotion(
         bundle.push(block.clone());
     }
 
-    let mut materialized = materialize_authoritative_state_v2(&working).map_err(|error| {
+    let mut materialized = materialize(&working).map_err(|error| {
         invalid_staging(format!(
             "anchor {anchor_hash} does not yet close the authoritative DAG: {error}"
         ))
@@ -482,17 +486,23 @@ fn prepare_anchor_promotion(
     ))
 }
 
-pub fn promote_activated_v2_p2p_anchor_atomically<FPersist, FBroadcast>(
+pub(crate) fn promote_activated_v2_p2p_anchor_atomically_with_materializer<
+    FPersist,
+    FBroadcast,
+    FMaterialize,
+>(
     anchor_hash: &Hash,
     state: &mut ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
+    materialize: &FMaterialize,
     mut persist: FPersist,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pPromotion, PulseError>
 where
     FPersist: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
 {
     let persist_bundle = RefCell::new(Vec::<Block>::new());
     let mutation = mutate_chain_state_serialized(
@@ -500,7 +510,13 @@ where
         "p2p_v2_staged_promotion",
         |base| {
             let (prepared, details) =
-                prepare_anchor_promotion(anchor_hash, base, staging, identity)?;
+                prepare_anchor_promotion_with_materializer(
+                    anchor_hash,
+                    base,
+                    staging,
+                    identity,
+                    materialize,
+                )?;
             *persist_bundle.borrow_mut() = details.bundle.clone();
             Ok((prepared, details))
         },
@@ -533,6 +549,29 @@ where
         committed: true,
         broadcast_count,
     })
+}
+
+pub fn promote_activated_v2_p2p_anchor_atomically<FPersist, FBroadcast>(
+    anchor_hash: &Hash,
+    state: &mut ChainState,
+    staging: &mut ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+    persist: FPersist,
+    broadcast: FBroadcast,
+) -> Result<ActivatedV2P2pPromotion, PulseError>
+where
+    FPersist: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+{
+    promote_activated_v2_p2p_anchor_atomically_with_materializer(
+        anchor_hash,
+        state,
+        staging,
+        identity,
+        &materialize_authoritative_state_v2,
+        persist,
+        broadcast,
+    )
 }
 
 #[cfg(test)]
