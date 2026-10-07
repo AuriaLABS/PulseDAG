@@ -467,18 +467,26 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         }
     }
 
-    let (durable_chain, mut activated_v2_runtime) =
-        match storage.load_activated_v2_p2p_runtime_snapshot(&local_identity) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return rejected_response(
-                    &req,
-                    "storage_rejected",
-                    format!("activated-v2 runtime sidecar is unavailable or invalid: {error}"),
-                    None,
-                );
-            }
-        };
+    let durable_runtime_snapshot = if let Some(record) = monetary_activation.as_ref() {
+        storage.load_monetary_v3_p2p_runtime_snapshot(
+            &local_identity,
+            &record.monetary_cadence_segments,
+            &record.reward_finality_policy_version,
+        )
+    } else {
+        storage.load_activated_v2_p2p_runtime_snapshot(&local_identity)
+    };
+    let (durable_chain, mut activated_v2_runtime) = match durable_runtime_snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return rejected_response(
+                &req,
+                "storage_rejected",
+                format!("activated runtime sidecar is unavailable or invalid: {error}"),
+                None,
+            );
+        }
+    };
     if durable_chain.chain_state_generation != chain.chain_state_generation
         || durable_chain.dag.best_height != chain.dag.best_height
         || preferred_tip_hash(&durable_chain) != preferred_tip_hash(&chain)
@@ -570,24 +578,30 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 &local_identity,
                 &record.monetary_cadence_segments,
                 |state, durable_runtime| {
-                    storage.persist_activated_v2_p2p_runtime_snapshot(
+                    storage.persist_monetary_v3_p2p_runtime_snapshot(
                         &local_identity,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
                         state,
                         durable_runtime,
                     )
                 },
                 |candidate, committed_chain, durable_runtime| {
-                    storage.persist_activated_v2_p2p_block_and_runtime(
+                    storage.persist_monetary_v3_p2p_block_and_runtime(
                         candidate,
                         &local_identity,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
                         committed_chain,
                         durable_runtime,
                     )
                 },
                 |bundle, committed_chain, durable_runtime| {
-                    storage.persist_activated_v2_p2p_blocks_and_runtime(
+                    storage.persist_monetary_v3_p2p_blocks_and_runtime(
                         bundle,
                         &local_identity,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
                         committed_chain,
                         durable_runtime,
                     )
@@ -682,9 +696,11 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
             &local_identity,
             &record.monetary_cadence_segments,
             |block, committed_chain| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
+                storage.persist_monetary_v3_p2p_block_and_runtime(
                     block,
                     &local_identity,
+                    &record.monetary_cadence_segments,
+                    &record.reward_finality_policy_version,
                     committed_chain,
                     &activated_v2_runtime,
                 )
