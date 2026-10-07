@@ -331,6 +331,7 @@ mod tests {
     use super::*;
     use crate::{
         genesis::init_chain_state,
+        genesis_v3::init_chain_state_v3,
         ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
         types::{OutPoint, TxInput, TxOutput},
     };
@@ -414,7 +415,8 @@ mod tests {
 
     #[test]
     fn finalizer_binds_state_root_without_embedding_issuance() {
-        let state = init_chain_state("monetary-mining-v3-finalize".into());
+        let state =
+            init_chain_state_v3("monetary-mining-v3-finalize".into(), 1_800_000_000).unwrap();
         let identity = identity(&state);
         let parent_ts = state.dag.blocks[&state.dag.genesis_hash].header.timestamp;
         let template = build_monetary_mining_template_v3(
