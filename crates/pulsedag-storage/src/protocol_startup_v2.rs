@@ -295,6 +295,38 @@ mod tests {
     }
 
     #[test]
+    fn direct_production_v3_atomic_bootstrap_refuses_nonempty_storage() {
+        let path = temp_db_path("production-v3-direct-writer-nonempty");
+        let storage = Storage::open(&path).unwrap();
+        let legacy = init_chain_state("preexisting-state".to_string());
+        let legacy_genesis = legacy.dag.genesis_hash.clone();
+        storage.persist_chain_state(&legacy).unwrap();
+
+        let state =
+            init_chain_state_v3("pulsedag-v3-direct-writer".to_string(), PRODUCTION_V3_TS).unwrap();
+        let expected = derived_v2_identity(&state);
+        let genesis = state.dag.blocks.get(&state.dag.genesis_hash).unwrap();
+        let runtime = ActivatedV2P2pRuntime::default();
+
+        let error = storage
+            .persist_production_v3_genesis_and_runtime(genesis, &expected, &state, &runtime)
+            .expect_err("direct production bootstrap must reject nonempty storage");
+        assert!(error.to_string().contains("completely empty storage"));
+
+        let preserved = storage.load_chain_state().unwrap().unwrap();
+        assert_eq!(preserved.dag.genesis_hash, legacy_genesis);
+        assert!(storage.protocol_activation_record().unwrap().is_none());
+        assert!(storage
+            .protocol_monetary_activation_record()
+            .unwrap()
+            .is_none());
+        assert!(storage.activated_v2_p2p_runtime_record().unwrap().is_none());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn empty_database_bootstraps_exact_chain_bound_v2_genesis() {
         let path = temp_db_path("clean-bootstrap");
         let storage = Storage::open(&path).unwrap();
