@@ -305,6 +305,8 @@ fn validate_candidate_transactions(
     // an otherwise valid inbound block look like a double spend.
     transaction_context.mempool.transactions.clear();
     transaction_context.mempool.spent_outpoints.clear();
+    transaction_context.mempool.first_seen.clear();
+    transaction_context.mempool.admission_height.clear();
     validate_created_utxo_outpoints(block, &transaction_context)?;
     let coinbase = block
         .transactions
