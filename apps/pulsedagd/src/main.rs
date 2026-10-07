@@ -2422,7 +2422,32 @@ async fn main() -> Result<()> {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
         })?;
-        storage.load_or_init_activated_v2_p2p_runtime(expected)?.0
+        match storage.protocol_monetary_activation_record()? {
+            Some(record) => {
+                if record.identity != *expected {
+                    return Err(anyhow::anyhow!(
+                        "v3 monetary activation identity does not match activated-v2 startup identity"
+                    ));
+                }
+                if record.reward_finality_policy_version
+                    != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
+                {
+                    return Err(anyhow::anyhow!(
+                        "unsupported v3 reward-finality policy {}; implemented live policy is {}",
+                        record.reward_finality_policy_version,
+                        pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
+                    ));
+                }
+                storage
+                    .load_monetary_v3_p2p_runtime_snapshot(
+                        expected,
+                        &record.monetary_cadence_segments,
+                        &record.reward_finality_policy_version,
+                    )?
+                    .0
+            }
+            None => storage.load_or_init_activated_v2_p2p_runtime(expected)?.0,
+        }
     } else {
         match startup_protocol.restore_identity.as_ref() {
             Some(expected) => storage.load_or_init_genesis_for_protocol(expected)?,
