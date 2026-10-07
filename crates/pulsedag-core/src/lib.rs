@@ -349,7 +349,8 @@ pub use state_replay_v2::{
     verify_authoritative_state_snapshot_v2, StateReplayV2, StateReplayV2Diagnostics,
 };
 pub use state_replay_v3::{
-    mature_reward_prefix_score_v3, rebuild_authoritative_state_v3, StateReplayV3,
+    materialize_authoritative_state_v3, mature_reward_prefix_score_v3,
+    rebuild_authoritative_state_v3, verify_authoritative_state_snapshot_v3, StateReplayV3,
     StateReplayV3Diagnostics, REWARD_FINALITY_POLICY_VERSION_V3,
 };
 
