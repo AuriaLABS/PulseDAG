@@ -734,7 +734,20 @@ def _split_top_level_args(text: str) -> list:
     return args
 
 
-def _cfg_call_parts(expr: str):
+def _split_rust_top_level_args(text: str) -> list:
+    """Split Rust call/tuple arguments while keeping closure parameter lists intact."""
+    lexed = code_source(text)
+    args = []
+    start = 0
+    stack = []
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closers = set(pairs.values())
+    in_closure_params = False
+    i = 0
+    while i < len(lexed):
+        ch = lexed[i]
+        if ch == "|" and not stack:
+            # At top level, a pipe opens/closes closure parameters. def _cfg_call_parts(expr: str):
     stripped = expr.strip()
     match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
     if not match:
@@ -1604,7 +1617,7 @@ def required_authority_argument_call_hits(
     end = _skip_matching_delimiter(source, open_i)
     if end <= open_i:
         return result
-    args = _split_top_level_args(source[open_i + 1 : end - 1])
+    args = _split_rust_top_level_args(source[open_i + 1 : end - 1])
     result["argument_count"] = len(args)
     if argument_index >= len(args):
         return result
@@ -1619,7 +1632,7 @@ def required_authority_argument_call_hits(
         tuple_end = _skip_matching_delimiter(lexed, 0)
         if tuple_end <= 0 or stripped[tuple_end:].strip():
             return result
-        tuple_args = _split_top_level_args(stripped[1 : tuple_end - 1])
+        tuple_args = _split_rust_top_level_args(stripped[1 : tuple_end - 1])
         if tuple_index >= len(tuple_args):
             return result
         target = tuple_args[tuple_index]
@@ -2749,6 +2762,8 @@ def self_test() -> None:
         1,
     )
     assert authority_ok["required_call_present"]
+    assert authority_ok["argument_count"] == 7
+    assert not authority_ok["missing_tuple_element"]
 
     wrong_pre_candidate_fixture = authority_fixture.replace(
         "crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence)",
