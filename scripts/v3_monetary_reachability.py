@@ -201,6 +201,33 @@ REQUIRED_LOCAL_CALLS = {
     },
 }
 
+REQUIRED_AUTHORITY_ARGUMENT_CALLS = [
+    {
+        "path": "crates/pulsedag-core/src/network_runtime_v3.rs",
+        "function": "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "outer_call": "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        "argument_index": 5,
+        "tuple_index": 1,
+        "required_call": "crate::materialize_authoritative_pre_candidate_state_v3",
+    },
+    {
+        "path": "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs",
+        "function": "post_mining_template",
+        "outer_call": "materialize_activated_v2_mining_overlay_with_materializer",
+        "argument_index": 4,
+        "tuple_index": None,
+        "required_call": "materialize_authoritative_pre_candidate_state_v3",
+    },
+    {
+        "path": "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs",
+        "function": "post_activated_v2_mining_submit",
+        "outer_call": "materialize_activated_v2_mining_overlay_with_materializer",
+        "argument_index": 4,
+        "tuple_index": None,
+        "required_call": "materialize_authoritative_pre_candidate_state_v3",
+    },
+]
+
 REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS = {
     "crates/pulsedag-core/src/network_runtime_v3.rs": {
         "function": "drive_monetary_v3_p2p_block_with_runtime_persistence",
@@ -1535,6 +1562,77 @@ def required_local_call_hits(text: str, function_name: str, callees: list) -> di
     }
 
 
+def required_authority_argument_call_hits(
+    text: str,
+    function_name: str,
+    outer_call: str,
+    argument_index: int,
+    required_call: str,
+    tuple_index=None,
+) -> dict:
+    """Pin one required call to an exact argument of an exact call in one function."""
+    body = _local_function_body(text, function_name)
+    result = {
+        "function": function_name,
+        "outer_call": outer_call,
+        "argument_index": argument_index,
+        "tuple_index": tuple_index,
+        "required_call": required_call,
+        "missing_definition": body is None,
+        "outer_call_count": 0,
+        "argument_count": 0,
+        "missing_argument": True,
+        "missing_tuple_element": tuple_index is not None,
+        "required_call_present": False,
+    }
+    if body is None:
+        return result
+
+    source = executable_source(body)
+    parts = outer_call.split("::")
+    if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
+        return result
+    qualified = r"\s*::\s*".join(re.escape(part) for part in parts)
+    call_re = re.compile(rf"(?<![A-Za-z0-9_]){qualified}\s*\(")
+    matches = list(call_re.finditer(source))
+    result["outer_call_count"] = len(matches)
+    if len(matches) != 1:
+        return result
+
+    match = matches[0]
+    open_i = source.find("(", match.start(), match.end())
+    end = _skip_matching_delimiter(source, open_i)
+    if end <= open_i:
+        return result
+    args = _split_top_level_args(source[open_i + 1 : end - 1])
+    result["argument_count"] = len(args)
+    if argument_index >= len(args):
+        return result
+
+    target = args[argument_index]
+    result["missing_argument"] = False
+    if tuple_index is not None:
+        stripped = target.strip()
+        lexed = code_source(stripped)
+        if not stripped.startswith("("):
+            return result
+        tuple_end = _skip_matching_delimiter(lexed, 0)
+        if tuple_end <= 0 or stripped[tuple_end:].strip():
+            return result
+        tuple_args = _split_top_level_args(stripped[1 : tuple_end - 1])
+        if tuple_index >= len(tuple_args):
+            return result
+        target = tuple_args[tuple_index]
+        result["missing_tuple_element"] = False
+
+    result["required_call_present"] = (
+        has_live_qualified_call(target, required_call)
+        if "::" in required_call
+        else has_live_call(target, required_call)
+    )
+    return result
+
+
 def _braced_closure_bodies(payload: str):
     """Parse braced closure expressions while retaining attributes for auditing."""
     source = macro_opaque_source(payload)
@@ -1816,6 +1914,31 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
                     f"{path}::{function_name}: {check!r}"
                 )
 
+    authority_argument_checks = []
+    for contract in REQUIRED_AUTHORITY_ARGUMENT_CALLS:
+        text = production_source(read_required(root, contract["path"]))
+        check = required_authority_argument_call_hits(
+            text,
+            contract["function"],
+            contract["outer_call"],
+            contract["argument_index"],
+            contract["required_call"],
+            contract["tuple_index"],
+        )
+        check["path"] = contract["path"]
+        authority_argument_checks.append(check)
+        if (
+            check["missing_definition"]
+            or check["outer_call_count"] != 1
+            or check["missing_argument"]
+            or check["missing_tuple_element"]
+            or not check["required_call_present"]
+        ):
+            errors.append(
+                "required monetary replay authority is not bound to the expected call argument in "
+                f"{contract['path']}::{contract['function']}: {check!r}"
+            )
+
     runtime_persistence_callback_checks = []
     for path, contract in REQUIRED_RUNTIME_PERSISTENCE_CALLBACKS.items():
         text = production_source(read_required(root, path))
@@ -1896,6 +2019,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
         "required_live_call_checks": call_checks,
         "required_symbol_shadow_checks": shadow_checks,
         "required_local_call_checks": local_call_checks,
+        "required_authority_argument_call_checks": authority_argument_checks,
         "required_runtime_persistence_callback_checks": runtime_persistence_callback_checks,
         "required_regression_checks": regression_checks,
         "static_scan_scope": ["crates/*/src/**/*.rs", "apps/*/src/**/*.rs"],
@@ -2605,6 +2729,44 @@ def self_test() -> None:
     )
     assert helper_bypass_check["callbacks"][0]["macro_invocation_count"] == 0
     assert not helper_bypass_check["callbacks"][0]["execution_shape_matches"]
+
+    authority_fixture = (
+        "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+        "  drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer(\n"
+        "    block, state, runtime, identity, persistence,\n"
+        "    (&|prepared| crate::materialize_authoritative_state_v3(prepared, cadence),\n"
+        "     &|context, hash| crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence)),\n"
+        "    broadcast,\n"
+        "  );\n"
+        "}\n"
+    )
+    authority_ok = required_authority_argument_call_hits(
+        authority_fixture,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        5,
+        "crate::materialize_authoritative_pre_candidate_state_v3",
+        1,
+    )
+    assert authority_ok["required_call_present"]
+
+    wrong_pre_candidate_fixture = authority_fixture.replace(
+        "crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence)",
+        "crate::replay_pre_candidate_state_v2(context, hash)",
+    ) + (
+        "fn unrelated() { "
+        "crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence); "
+        "}\n"
+    )
+    authority_bad = required_authority_argument_call_hits(
+        wrong_pre_candidate_fixture,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        5,
+        "crate::materialize_authoritative_pre_candidate_state_v3",
+        1,
+    )
+    assert not authority_bad["required_call_present"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
