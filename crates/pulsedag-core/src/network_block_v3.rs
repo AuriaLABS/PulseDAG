@@ -239,7 +239,7 @@ mod tests {
         block_subsidy, build_activated_v2_mining_template, build_monetary_mining_template_v3,
         compute_block_hash_v2, compute_txid_v2, current_ts, finalize_monetary_mining_template_v3,
         genesis_v3::init_chain_state_v3, mining_template_v2::ActivatedV2MiningTemplateSpec,
-        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION, prepare_activated_v2_p2p_block_state,
+        ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
         validate_pow_for_protocol, Transaction, TRANSACTION_VERSION_V2,
     };
 
