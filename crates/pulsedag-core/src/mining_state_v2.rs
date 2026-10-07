@@ -31,7 +31,7 @@ fn invalid_state(message: impl Into<String>) -> PulseError {
     PulseError::InvalidBlock(format!("activated-v2 mining state: {}", message.into()))
 }
 
-fn validate_candidate_envelope(
+pub(crate) fn validate_candidate_envelope(
     block: &mut Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
