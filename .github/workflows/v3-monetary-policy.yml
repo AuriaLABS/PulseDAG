@@ -83,6 +83,7 @@ jobs:
           import hashlib
           import json
           import re
+          import struct
           from pathlib import Path
           import os
 
@@ -102,8 +103,22 @@ jobs:
               r'MONETARY_POLICY_VERSION_V3: &str = "([^"]+)";',
               src,
           )
-          if not canonical_match or not fingerprint_match or not version_match:
-              raise SystemExit("unable to parse frozen monetary policy identity")
+          cadence_interval_match = re.search(
+              r'PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3: u64 = ([0-9_]+);',
+              src,
+          )
+          cadence_fingerprint_match = re.search(
+              r'PRODUCTION_CADENCE_FINGERPRINT_V3: &str =\s*"([0-9a-f]{64})";',
+              src,
+          )
+          if not all([
+              canonical_match,
+              fingerprint_match,
+              version_match,
+              cadence_interval_match,
+              cadence_fingerprint_match,
+          ]):
+              raise SystemExit("unable to parse frozen monetary policy/cadence identity")
 
           canonical = canonical_match.group(1).encode("utf-8")
           expected = fingerprint_match.group(1)
@@ -113,6 +128,25 @@ jobs:
           if expected not in docs:
               raise SystemExit("policy documentation does not carry the exact frozen fingerprint")
 
+          cadence_interval_ns = int(cadence_interval_match.group(1).replace("_", ""))
+          cadence_domain = b"PulseDAG:monetary-cadence:v3.0.0"
+          cadence_canonical = (
+              cadence_domain
+              + struct.pack("<I", 1)
+              + struct.pack("<Q", 0)
+              + struct.pack("<Q", cadence_interval_ns)
+          )
+          cadence_expected = cadence_fingerprint_match.group(1)
+          cadence_observed = hashlib.sha256(cadence_canonical).hexdigest()
+          if cadence_interval_ns != 500_000_000:
+              raise SystemExit(f"unexpected production cadence interval: {cadence_interval_ns}")
+          if cadence_observed != cadence_expected:
+              raise SystemExit(
+                  f"cadence fingerprint mismatch: expected={cadence_expected} observed={cadence_observed}"
+              )
+          if cadence_expected not in docs:
+              raise SystemExit("policy documentation does not carry the frozen cadence fingerprint")
+
           evidence = {
               "schema": "pulsedag.v3-monetary-policy-evidence.v1",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
@@ -120,6 +154,13 @@ jobs:
               "policy_version": version_match.group(1),
               "policy_fingerprint": expected,
               "canonical_sha256": observed,
+              "production_cadence_activation_score": 0,
+              "production_cadence_target_interval_ns": cadence_interval_ns,
+              "production_cadence_fingerprint": cadence_expected,
+              "production_cadence_canonical_sha256": cadence_observed,
+              "production_mainnet_and_parallel_testnet_same_cadence": True,
+              "production_network_identities_frozen": False,
+              "smart_contract_activation_authorized": False,
           }
           Path("ci-evidence/v3-monetary-policy/identity.json").write_text(
               json.dumps(evidence, indent=2, sort_keys=True) + "\n",
