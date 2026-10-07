@@ -239,10 +239,7 @@ where
 /// materialized only in memory so mining parent selection can see validated
 /// parallel tips and produce a merge anchor that can later promote the staged
 /// closure atomically.
-pub fn materialize_activated_v2_mining_overlay_with_materializer<
-    FMaterialize,
-    FPreCandidate,
->(
+pub fn materialize_activated_v2_mining_overlay_with_materializer<FMaterialize, FPreCandidate>(
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
@@ -314,10 +311,7 @@ pub fn materialize_activated_v2_mining_overlay(
     )
 }
 
-pub(crate) fn stage_activated_v2_p2p_block_with_materializer<
-    FMaterialize,
-    FPreCandidate,
->(
+pub(crate) fn stage_activated_v2_p2p_block_with_materializer<FMaterialize, FPreCandidate>(
     block: Block,
     state: &ChainState,
     staging: &mut ActivatedV2P2pStaging,
@@ -333,16 +327,14 @@ where
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
     }
     if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
-        let Ok((augmented, closure)) =
-            augment_with_staged_parents(
-                &staged_block,
-                state,
-                staging,
-                identity,
-                materialize,
-                materialize_pre_candidate,
-            )
-        else {
+        let Ok((augmented, closure)) = augment_with_staged_parents(
+            &staged_block,
+            state,
+            staging,
+            identity,
+            materialize,
+            materialize_pre_candidate,
+        ) else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
         if !closure.missing.is_empty() {
