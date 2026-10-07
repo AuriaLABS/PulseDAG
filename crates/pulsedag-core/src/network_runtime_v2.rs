@@ -5,13 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::{
     accept::{AcceptSource, BlockAcceptanceResult},
     errors::PulseError,
-    network_block_v2::accept_activated_v2_p2p_block_atomically,
+    network_block_v2::accept_activated_v2_p2p_block_atomically_with_materializer,
     network_staging_v2::{
-        promote_activated_v2_p2p_anchor_atomically, stage_activated_v2_p2p_block,
-        ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
+        promote_activated_v2_p2p_anchor_atomically_with_materializer,
+        stage_activated_v2_p2p_block, ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
+    state_replay_v2::materialize_authoritative_state_v2,
     types::{Block, Hash},
 };
 
@@ -280,7 +281,13 @@ where
     Ok(())
 }
 
-fn process_one_with_runtime_persistence<FPersistRuntime, FPersistOne, FPersistBundle, FBroadcast>(
+fn process_one_with_runtime_persistence<
+    FPersistRuntime,
+    FPersistOne,
+    FPersistBundle,
+    FBroadcast,
+    FMaterialize,
+>(
     block: Block,
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
@@ -290,6 +297,7 @@ fn process_one_with_runtime_persistence<FPersistRuntime, FPersistOne, FPersistBu
         FPersistOne,
         FPersistBundle,
     >,
+    materialize: &FMaterialize,
     broadcast: &mut FBroadcast,
 ) -> Result<ActivatedV2P2pRuntimeOutcome, PulseError>
 where
@@ -297,6 +305,7 @@ where
     FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
 {
     let block_hash = block.hash.clone();
     let runtime_before = runtime.clone();
@@ -327,11 +336,12 @@ where
             let mut runtime_after = runtime.clone();
             runtime_after.pending_missing.remove(&block_hash);
 
-            let acceptance = match accept_activated_v2_p2p_block_atomically(
+            let acceptance = match accept_activated_v2_p2p_block_atomically_with_materializer(
                 block,
                 state,
                 AcceptSource::P2p,
                 identity,
+                materialize,
                 |candidate, prepared| {
                     (persistence.persist_one)(candidate, prepared, &runtime_after)
                 },
@@ -401,11 +411,12 @@ where
             };
             runtime_after.pending_missing.remove(&block_hash);
 
-            let promotion = match promote_activated_v2_p2p_anchor_atomically(
+            let promotion = match promote_activated_v2_p2p_anchor_atomically_with_materializer(
                 &block_hash,
                 state,
                 &mut runtime.staging,
                 identity,
+                materialize,
                 |bundle, prepared| (persistence.persist_bundle)(bundle, prepared, &runtime_after),
                 |candidate| broadcast(candidate),
             ) {
@@ -434,6 +445,7 @@ fn retry_pending_until_stable_with_runtime_persistence<
     FPersistOne,
     FPersistBundle,
     FBroadcast,
+    FMaterialize,
 >(
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
@@ -443,6 +455,7 @@ fn retry_pending_until_stable_with_runtime_persistence<
         FPersistOne,
         FPersistBundle,
     >,
+    materialize: &FMaterialize,
     broadcast: &mut FBroadcast,
 ) -> Result<Vec<ActivatedV2P2pRuntimeOutcome>, PulseError>
 where
@@ -450,6 +463,7 @@ where
     FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
 {
     let mut outcomes = Vec::new();
     let max_passes = runtime.pending_missing.len().max(1);
@@ -471,6 +485,7 @@ where
                 runtime,
                 identity,
                 persistence,
+                materialize,
                 broadcast,
             ) {
                 Ok(ActivatedV2P2pRuntimeOutcome::MissingParents { .. }) => {}
@@ -520,17 +535,19 @@ where
 /// boundary and receive a runtime snapshot with the accepted/promoted hashes
 /// already removed from transient queues. This lets storage commit chain state
 /// and runtime in one batch without persisting a pre-transition sidecar.
-pub fn drive_activated_v2_p2p_block_with_runtime_persistence<
+pub fn drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer<
     FPersistRuntime,
     FPersistOne,
     FPersistBundle,
     FBroadcast,
+    FMaterialize,
 >(
     block: Block,
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
     mut persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
+    materialize: &FMaterialize,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
@@ -538,6 +555,7 @@ where
     FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
 {
     // RPC mining and the live P2P loop serialize on ChainState but hold
     // separate in-memory runtime copies. Reconcile any transient hashes that a
@@ -561,6 +579,7 @@ where
         runtime,
         identity,
         &mut persistence,
+        materialize,
         &mut broadcast,
     )?;
 
@@ -582,6 +601,7 @@ where
             runtime,
             identity,
             &mut persistence,
+            materialize,
             &mut broadcast,
         )?
     } else {
@@ -594,6 +614,36 @@ where
         pending_count: runtime.pending_missing.len(),
         staged_count: runtime.staging.len(),
     })
+}
+
+pub fn drive_activated_v2_p2p_block_with_runtime_persistence<
+    FPersistRuntime,
+    FPersistOne,
+    FPersistBundle,
+    FBroadcast,
+>(
+    block: Block,
+    state: &mut ChainState,
+    runtime: &mut ActivatedV2P2pRuntime,
+    identity: &ProtocolActivationIdentity,
+    persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
+    broadcast: FBroadcast,
+) -> Result<ActivatedV2P2pDriveResult, PulseError>
+where
+    FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+{
+    drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer(
+        block,
+        state,
+        runtime,
+        identity,
+        persistence,
+        &materialize_authoritative_state_v2,
+        broadcast,
+    )
 }
 
 /// Backward-compatible in-memory runtime driver used by callers that have not
