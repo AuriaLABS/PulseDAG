@@ -353,9 +353,7 @@ pub fn verify_authoritative_state_snapshot_v3(
             "v3 snapshot ordered DAG tip does not match authoritative monetary replay".to_string(),
         ));
     }
-    if state.dag.ordered_dag_state_root.as_deref()
-        != Some(replay.diagnostics.state_root.as_str())
-    {
+    if state.dag.ordered_dag_state_root.as_deref() != Some(replay.diagnostics.state_root.as_str()) {
         return Err(PulseError::NonDeterministicState(
             "v3 snapshot recorded state root does not match authoritative monetary replay"
                 .to_string(),
