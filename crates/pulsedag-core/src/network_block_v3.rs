@@ -84,13 +84,12 @@ pub fn prepare_monetary_v3_p2p_block_state(
 
     let mut working = state.clone();
     commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
-    let mut prepared = materialize_authoritative_state_v3(&working, cadence_segments).map_err(
-        |error| {
+    let mut prepared =
+        materialize_authoritative_state_v3(&working, cadence_segments).map_err(|error| {
             invalid_monetary_network_block(format!(
                 "candidate is not finalizable under authoritative v3 replay: {error}"
             ))
-        },
-    )?;
+        })?;
 
     let observed_state_root = prepared.utxo.compute_state_root()?;
     if observed_state_root != block.header.state_root {
@@ -199,9 +198,9 @@ where
     if let Err(error) =
         prepare_monetary_v3_p2p_block_state(&block, state, identity, cadence_segments)
     {
-        return Ok(AtomicBlockAcceptance::rejected(classify_network_block_error(
-            &error,
-        )));
+        return Ok(AtomicBlockAcceptance::rejected(
+            classify_network_block_error(&error),
+        ));
     }
 
     let mutation = match mutate_chain_state_serialized(
@@ -217,9 +216,9 @@ where
         Ok(mutation) => mutation,
         Err(error @ PulseError::StorageError(_)) => return Err(error),
         Err(error) => {
-            return Ok(AtomicBlockAcceptance::rejected(classify_network_block_error(
-                &error,
-            )))
+            return Ok(AtomicBlockAcceptance::rejected(
+                classify_network_block_error(&error),
+            ))
         }
     };
     debug_assert_eq!(state.chain_state_generation, mutation.generation);
