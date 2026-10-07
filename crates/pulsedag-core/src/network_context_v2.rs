@@ -295,7 +295,7 @@ fn validate_context_envelope(
     Ok(selected_parent)
 }
 
-fn replay_pre_candidate_state_v2(
+pub(crate) fn replay_pre_candidate_state_v2(
     context: &ChainState,
     candidate_hash: &Hash,
 ) -> Result<ChainState, PulseError> {
