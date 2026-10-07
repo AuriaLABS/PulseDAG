@@ -6,6 +6,7 @@ use crate::{
     accept::{AcceptSource, BlockAcceptanceResult},
     errors::PulseError,
     network_block_v2::accept_activated_v2_p2p_block_atomically_with_materializer,
+    network_context_v2::replay_pre_candidate_state_v2,
     network_staging_v2::{
         promote_activated_v2_p2p_anchor_atomically_with_materializer,
         stage_activated_v2_p2p_block_with_materializer, ActivatedV2P2pStageOutcome,
@@ -288,6 +289,7 @@ fn process_one_with_runtime_persistence<
     FPersistBundle,
     FBroadcast,
     FMaterialize,
+    FPreCandidate,
 >(
     block: Block,
     state: &mut ChainState,
@@ -299,6 +301,7 @@ fn process_one_with_runtime_persistence<
         FPersistBundle,
     >,
     materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
     broadcast: &mut FBroadcast,
 ) -> Result<ActivatedV2P2pRuntimeOutcome, PulseError>
 where
@@ -307,6 +310,7 @@ where
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
     let block_hash = block.hash.clone();
     let runtime_before = runtime.clone();
@@ -316,6 +320,7 @@ where
         &mut runtime.staging,
         identity,
         materialize,
+        materialize_pre_candidate,
     )?;
 
     match stage {
@@ -424,6 +429,7 @@ where
                 &mut runtime.staging,
                 identity,
                 materialize,
+                materialize_pre_candidate,
                 |bundle, prepared| (persistence.persist_bundle)(bundle, prepared, &runtime_after),
                 |candidate| broadcast(candidate),
             ) {
@@ -453,6 +459,7 @@ fn retry_pending_until_stable_with_runtime_persistence<
     FPersistBundle,
     FBroadcast,
     FMaterialize,
+    FPreCandidate,
 >(
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
@@ -463,6 +470,7 @@ fn retry_pending_until_stable_with_runtime_persistence<
         FPersistBundle,
     >,
     materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
     broadcast: &mut FBroadcast,
 ) -> Result<Vec<ActivatedV2P2pRuntimeOutcome>, PulseError>
 where
@@ -471,6 +479,7 @@ where
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
     let mut outcomes = Vec::new();
     let max_passes = runtime.pending_missing.len().max(1);
@@ -493,6 +502,7 @@ where
                 identity,
                 persistence,
                 materialize,
+                materialize_pre_candidate,
                 broadcast,
             ) {
                 Ok(ActivatedV2P2pRuntimeOutcome::MissingParents { .. }) => {}
@@ -548,6 +558,7 @@ pub fn drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer<
     FPersistBundle,
     FBroadcast,
     FMaterialize,
+    FPreCandidate,
 >(
     block: Block,
     state: &mut ChainState,
@@ -555,6 +566,7 @@ pub fn drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer<
     identity: &ProtocolActivationIdentity,
     mut persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
     materialize: &FMaterialize,
+    materialize_pre_candidate: &FPreCandidate,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
@@ -563,6 +575,7 @@ where
     FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+    FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
     // RPC mining and the live P2P loop serialize on ChainState but hold
     // separate in-memory runtime copies. Reconcile any transient hashes that a
@@ -587,6 +600,7 @@ where
         identity,
         &mut persistence,
         materialize,
+        materialize_pre_candidate,
         &mut broadcast,
     )?;
 
@@ -609,6 +623,7 @@ where
             identity,
             &mut persistence,
             materialize,
+            materialize_pre_candidate,
             &mut broadcast,
         )?
     } else {
@@ -649,6 +664,7 @@ where
         identity,
         persistence,
         &materialize_authoritative_state_v2,
+        &replay_pre_candidate_state_v2,
         broadcast,
     )
 }
