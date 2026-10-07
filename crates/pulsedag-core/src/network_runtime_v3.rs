@@ -290,14 +290,15 @@ mod tests {
             .transactions
             .push(forbidden);
 
-        // Reward settlement deliberately ignores genesis issuance, so this proves
-        // the rejection below comes from the whole-history monetary supply audit.
-        crate::validate_live_reward_settlement_v3(
+        // Live reward settlement now verifies the authoritative v3 snapshot too,
+        // so the malformed genesis must fail closed there as well as in the
+        // explicit whole-history supply audit below.
+        assert!(crate::validate_live_reward_settlement_v3(
             &state,
             &ONE_SECOND,
             REWARD_FINALITY_POLICY_VERSION_V3,
         )
-        .unwrap();
+        .is_err());
 
         let error = audit_authoritative_monetary_state(&state, &ONE_SECOND).unwrap_err();
         assert!(error
