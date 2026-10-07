@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 16
+AUDITOR_VERSION = 17
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -122,7 +122,7 @@ REQUIRED_LIVE_CALLS = {
     "crates/pulsedag-core/src/mined_block_v3.rs": [
         "validate_ordered_monetary_reward_v3",
         "audit_monetary_state_v3",
-        "accept_activated_v2_mined_block_atomically",
+        "materialize_authoritative_state_v3",
     ],
     "crates/pulsedag-core/src/network_block_v3.rs": [
         "validate_monetary_v3_p2p_staging_envelope",
@@ -133,7 +133,7 @@ REQUIRED_LIVE_CALLS = {
     "crates/pulsedag-core/src/network_runtime_v3.rs": [
         "validate_monetary_v3_p2p_staging_envelope",
         "audit_authoritative_monetary_state",
-        "drive_activated_v2_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
     ],
     "crates/pulsedag-rpc/src/handlers/monetary_activation_guard.rs": [
         "protocol_monetary_activation_record",
