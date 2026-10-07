@@ -735,8 +735,17 @@ pub async fn post_mining_template<S: RpcStateLike>(
                     }
                 }
 
-                let template_chain = match storage.load_activated_v2_p2p_runtime_snapshot(&identity)
-                {
+                let durable_runtime_snapshot =
+                    if let Some(record) = monetary_activation.as_ref() {
+                        storage.load_monetary_v3_p2p_runtime_snapshot(
+                            &identity,
+                            &record.monetary_cadence_segments,
+                            &record.reward_finality_policy_version,
+                        )
+                    } else {
+                        storage.load_activated_v2_p2p_runtime_snapshot(&identity)
+                    };
+                let template_chain = match durable_runtime_snapshot {
                     Ok((durable_chain, runtime))
                         if durable_chain.chain_state_generation == chain.chain_state_generation
                             && durable_chain.dag.best_height == chain.dag.best_height
