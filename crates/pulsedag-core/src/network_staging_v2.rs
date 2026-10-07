@@ -509,14 +509,13 @@ where
         state,
         "p2p_v2_staged_promotion",
         |base| {
-            let (prepared, details) =
-                prepare_anchor_promotion_with_materializer(
-                    anchor_hash,
-                    base,
-                    staging,
-                    identity,
-                    materialize,
-                )?;
+            let (prepared, details) = prepare_anchor_promotion_with_materializer(
+                anchor_hash,
+                base,
+                staging,
+                identity,
+                materialize,
+            )?;
             *persist_bundle.borrow_mut() = details.bundle.clone();
             Ok((prepared, details))
         },
