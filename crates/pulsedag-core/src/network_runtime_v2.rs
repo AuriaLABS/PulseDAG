@@ -7,8 +7,8 @@ use crate::{
     errors::PulseError,
     network_block_v2::accept_activated_v2_p2p_block_atomically_with_materializer,
     network_staging_v2::{
-        promote_activated_v2_p2p_anchor_atomically_with_materializer,
-        stage_activated_v2_p2p_block, ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
+        promote_activated_v2_p2p_anchor_atomically_with_materializer, stage_activated_v2_p2p_block,
+        ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
