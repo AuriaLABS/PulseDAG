@@ -423,10 +423,9 @@ mod tests {
             .transactions
             .push(hidden);
 
-        // The hidden historical no-op leaves the activated-v2 compatibility
-        // projection unchanged, so the underlying v2 preparation still succeeds.
-        // The authoritative v3 replay must reject it before persistence.
-        prepare_activated_v2_p2p_block_state(&second_block, &state, &identity).unwrap();
+        // The second block was built against authoritative v3 state. After
+        // mutating accepted history, monetary preflight must fail closed before
+        // persistence; no activated-v2 compatibility replay is authoritative here.
         match preflight_monetary_v3_p2p_block(&second_block, &state, &identity, &ONE_SECOND) {
             ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(reason)) => {
                 assert!(reason.contains("additional inputless transaction"));
