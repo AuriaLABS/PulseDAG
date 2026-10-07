@@ -45,13 +45,12 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
         }
     };
 
-    let (restored_state, restored_runtime) =
-        storage.load_activated_v2_p2p_runtime_snapshot(&identity)?;
-
     // A monetary sidecar is never sufficient to activate this path: reaching
     // here already required explicit matching P2P capabilities. Once present,
-    // however, it becomes an additional fail-closed restore constraint.
-    if let Some(monetary) = storage.protocol_monetary_activation_record()? {
+    // however, it selects the v3-aware snapshot verifier and there is no v2
+    // replay fallback for that durable monetary identity.
+    let monetary = storage.protocol_monetary_activation_record()?;
+    let (restored_state, restored_runtime) = if let Some(monetary) = monetary.as_ref() {
         if monetary.identity != identity {
             anyhow::bail!(
                 "v3 monetary activation identity does not match activated-v2 startup identity"
@@ -66,11 +65,16 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
                 pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
             );
         }
-        storage.verify_persisted_monetary_identity(
+        storage.load_monetary_v3_p2p_runtime_snapshot(
             &identity,
             &monetary.monetary_cadence_segments,
             &monetary.reward_finality_policy_version,
-        )?;
+        )?
+    } else {
+        storage.load_activated_v2_p2p_runtime_snapshot(&identity)?
+    };
+
+    if let Some(monetary) = monetary.as_ref() {
         validate_monetary_v3_p2p_runtime_snapshot(
             &restored_state,
             &restored_runtime,
