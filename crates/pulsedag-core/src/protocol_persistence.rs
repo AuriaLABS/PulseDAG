@@ -587,18 +587,17 @@ mod tests {
             consensus_mode: ProtocolConsensusMode::Legacy,
             dag_ordering_version: GHOSTDAG_V1_ORDERING_VERSION.to_string(),
         };
-        assert!(ProtocolMonetaryActivationRecordV2::from_production_v3_identity(
-            non_activated.clone()
-        )
-        .is_err());
+        assert!(
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(non_activated.clone())
+                .is_err()
+        );
 
-        let non_activated_record =
-            ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
-                non_activated.clone(),
-                &PRODUCTION_CADENCE_V3,
-                REWARD_FINALITY_POLICY_VERSION_V3,
-            )
-            .unwrap();
+        let non_activated_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            non_activated.clone(),
+            &PRODUCTION_CADENCE_V3,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
         assert!(non_activated_record
             .verify_production_v3(&non_activated)
             .is_err());
@@ -608,10 +607,10 @@ mod tests {
             expected.genesis_hash.clone(),
             "not-production-ordering",
         );
-        assert!(ProtocolMonetaryActivationRecordV2::from_production_v3_identity(
-            wrong_ordering
-        )
-        .is_err());
+        assert!(
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(wrong_ordering)
+                .is_err()
+        );
     }
 
     #[test]
