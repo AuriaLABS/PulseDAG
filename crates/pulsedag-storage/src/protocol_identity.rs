@@ -403,11 +403,9 @@ mod tests {
     fn production_v3_validation_fails_before_any_atomic_state_write() {
         let path = temp_db_path("production-v3-prewrite-rejection");
         let storage = Storage::open(&path).unwrap();
-        let state = init_chain_state_v3(
-            "pulsedag-v3-production-prewrite".to_string(),
-            1_800_000_124,
-        )
-        .unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-production-prewrite".to_string(), 1_800_000_124)
+                .unwrap();
         let non_activated = ProtocolActivationIdentity {
             chain_id: state.chain_id.clone(),
             genesis_hash: state.dag.genesis_hash.clone(),
