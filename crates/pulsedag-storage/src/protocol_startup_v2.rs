@@ -193,6 +193,7 @@ mod tests {
             .unwrap());
         assert!(storage.activated_v2_p2p_runtime_record().unwrap().is_some());
         assert_eq!(storage.list_blocks().unwrap().len(), 1);
+        assert_eq!(storage.accepted_storage_generation().unwrap(), 1);
 
         let monetary = storage
             .protocol_monetary_activation_record()
