@@ -12,8 +12,8 @@ use crate::{
     ghostdag_v1::GHOSTDAG_V1_MAX_ANCESTOR_VISITS,
     mempool_protocol::reconcile_mempool_for_protocol,
     network_context_v2::{
-        validate_activated_v2_p2p_block_context, ActivatedV2P2pContextDisposition,
-        ActivatedV2P2pContextValidation,
+        validate_activated_v2_p2p_block_context_with_materializer,
+        ActivatedV2P2pContextDisposition, ActivatedV2P2pContextValidation,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
@@ -196,12 +196,16 @@ fn collect_staged_closure(
     })
 }
 
-fn augment_with_staged_parents(
+fn augment_with_staged_parents<FMaterialize>(
     block: &Block,
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<(ChainState, StagedClosure), PulseError> {
+    materialize: &FMaterialize,
+) -> Result<(ChainState, StagedClosure), PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     let closure = collect_staged_closure(&block.header.parents, state, staging)?;
     if !closure.missing.is_empty() {
         return Ok((state.clone(), closure));
@@ -213,7 +217,12 @@ fn augment_with_staged_parents(
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            staged,
+            &working,
+            identity,
+            materialize,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
     }
     Ok((working, closure))
@@ -227,11 +236,15 @@ fn augment_with_staged_parents(
 /// materialized only in memory so mining parent selection can see validated
 /// parallel tips and produce a merge anchor that can later promote the staged
 /// closure atomically.
-pub fn materialize_activated_v2_mining_overlay(
+pub fn materialize_activated_v2_mining_overlay_with_materializer<FMaterialize>(
     state: &ChainState,
     staging: &ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<ChainState, PulseError> {
+    materialize: &FMaterialize,
+) -> Result<ChainState, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     if staging.is_empty() {
         return Ok(state.clone());
     }
@@ -252,7 +265,12 @@ pub fn materialize_activated_v2_mining_overlay(
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(staged, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            staged,
+            &working,
+            identity,
+            materialize,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(staged, &mut working, identity)?;
         staged_blocks.push(staged.clone());
     }
@@ -273,18 +291,35 @@ pub fn materialize_activated_v2_mining_overlay(
     Ok(working)
 }
 
-pub fn stage_activated_v2_p2p_block(
+pub fn materialize_activated_v2_mining_overlay(
+    state: &ChainState,
+    staging: &ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ChainState, PulseError> {
+    materialize_activated_v2_mining_overlay_with_materializer(
+        state,
+        staging,
+        identity,
+        &materialize_authoritative_state_v2,
+    )
+}
+
+pub(crate) fn stage_activated_v2_p2p_block_with_materializer<FMaterialize>(
     block: Block,
     state: &ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
+    materialize: &FMaterialize,
+) -> Result<ActivatedV2P2pStageOutcome, PulseError>
+where
+    FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
+{
     if state.dag.blocks.contains_key(&block.hash) {
         return Ok(ActivatedV2P2pStageOutcome::Duplicate);
     }
     if let Some(staged_block) = staging.blocks.get(&block.hash).cloned() {
         let Ok((augmented, closure)) =
-            augment_with_staged_parents(&staged_block, state, staging, identity)
+            augment_with_staged_parents(&staged_block, state, staging, identity, materialize)
         else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
@@ -292,7 +327,12 @@ pub fn stage_activated_v2_p2p_block(
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         }
         let Ok(validation) =
-            validate_activated_v2_p2p_block_context(&staged_block, &augmented, identity)
+            validate_activated_v2_p2p_block_context_with_materializer(
+                &staged_block,
+                &augmented,
+                identity,
+                materialize,
+            )
         else {
             return Ok(ActivatedV2P2pStageOutcome::Duplicate);
         };
@@ -306,7 +346,7 @@ pub fn stage_activated_v2_p2p_block(
         });
     }
 
-    let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity)?;
+    let (augmented, closure) = augment_with_staged_parents(&block, state, staging, identity, materialize)?;
     if !closure.missing.is_empty() {
         return Ok(ActivatedV2P2pStageOutcome::MissingParents {
             block_hash: block.hash,
@@ -314,7 +354,12 @@ pub fn stage_activated_v2_p2p_block(
         });
     }
 
-    let validation = validate_activated_v2_p2p_block_context(&block, &augmented, identity)?;
+    let validation = validate_activated_v2_p2p_block_context_with_materializer(
+        &block,
+        &augmented,
+        identity,
+        materialize,
+    )?;
     if closure.ordered.is_empty()
         && validation.disposition == ActivatedV2P2pContextDisposition::ImmediatelyFinalizable
     {
@@ -346,6 +391,21 @@ pub fn stage_activated_v2_p2p_block(
             staged_count,
         })
     }
+}
+
+pub fn stage_activated_v2_p2p_block(
+    block: Block,
+    state: &ChainState,
+    staging: &mut ActivatedV2P2pStaging,
+    identity: &ProtocolActivationIdentity,
+) -> Result<ActivatedV2P2pStageOutcome, PulseError> {
+    stage_activated_v2_p2p_block_with_materializer(
+        block,
+        state,
+        staging,
+        identity,
+        &materialize_authoritative_state_v2,
+    )
 }
 
 fn remove_staged_transactions_from_mempool(state: &mut ChainState, blocks: &[Block]) {
@@ -452,7 +512,12 @@ where
             .blocks
             .get(hash)
             .ok_or_else(|| invalid_staging(format!("staged block {hash} disappeared")))?;
-        validate_activated_v2_p2p_block_context(block, &working, identity)?;
+        validate_activated_v2_p2p_block_context_with_materializer(
+            block,
+            &working,
+            identity,
+            materialize,
+        )?;
         commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)?;
         bundle.push(block.clone());
     }
