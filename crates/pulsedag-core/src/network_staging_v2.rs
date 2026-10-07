@@ -586,8 +586,7 @@ pub(crate) fn promote_activated_v2_p2p_anchor_atomically_with_materializer<
     state: &mut ChainState,
     staging: &mut ActivatedV2P2pStaging,
     identity: &ProtocolActivationIdentity,
-    materialize: &FMaterialize,
-    materialize_pre_candidate: &FPreCandidate,
+    replay_materializers: (&FMaterialize, &FPreCandidate),
     mut persist: FPersist,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pPromotion, PulseError>
@@ -597,6 +596,7 @@ where
     FMaterialize: Fn(&ChainState) -> Result<ChainState, PulseError>,
     FPreCandidate: Fn(&ChainState, &Hash) -> Result<ChainState, PulseError>,
 {
+    let (materialize, materialize_pre_candidate) = replay_materializers;
     let persist_bundle = RefCell::new(Vec::<Block>::new());
     let mutation = mutate_chain_state_serialized(
         state,
@@ -661,8 +661,10 @@ where
         state,
         staging,
         identity,
-        &materialize_authoritative_state_v2,
-        &replay_pre_candidate_state_v2,
+        (
+            &materialize_authoritative_state_v2,
+            &replay_pre_candidate_state_v2,
+        ),
         persist,
         broadcast,
     )
