@@ -99,7 +99,7 @@ pub fn audit_monetary_state_v3(
             .get(block_hash)
             .ok_or_else(|| MonetaryStateAuditV3Error::MissingBlock(block_hash.clone()))?;
         let validated = validate_monetary_reward_at_canonical_score_v3(
-            &state.chain_id,
+            state,
             block,
             score,
             cadence_segments,
@@ -211,6 +211,36 @@ mod tests {
             audit.scheduled_supply_atoms,
             total_supply_atoms_for_score(3, &ONE_SECOND).unwrap()
         );
+    }
+
+    #[test]
+    fn audit_excludes_replay_skipped_conflict_fees() {
+        let mut state = linear_reward_state();
+        let block = state.dag.blocks.get_mut("reward-1").unwrap();
+        block.transactions.push(crate::types::Transaction {
+            txid: "audit-skipped-fee".into(),
+            version: 2,
+            inputs: vec![crate::types::TxInput {
+                previous_output: crate::types::OutPoint {
+                    txid: "source".into(),
+                    index: 0,
+                },
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![crate::types::TxOutput {
+                address: "pulse1recipient".into(),
+                amount: 1,
+            }],
+            fee: 13,
+            nonce: 1,
+        });
+        state.dag.ordered_dag_conflict_diagnostics.push(
+            "ordered_pos=1 block=reward-1 tx=audit-skipped-fee skipped_conflict_atomic".into(),
+        );
+
+        let audit = audit_monetary_state_v3(&state, &ONE_SECOND).unwrap();
+        assert_eq!(audit.eligible_fee_transfers_atoms, 0);
     }
 
     #[test]
