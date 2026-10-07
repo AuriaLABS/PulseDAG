@@ -500,8 +500,7 @@ where
                 runtime,
                 identity,
                 persistence,
-                materialize,
-                materialize_pre_candidate,
+                (materialize, materialize_pre_candidate),
                 broadcast,
             ) {
                 Ok(ActivatedV2P2pRuntimeOutcome::MissingParents { .. }) => {}
