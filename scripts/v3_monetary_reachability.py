@@ -769,7 +769,7 @@ def _split_rust_top_level_args(text: str) -> list:
 
 def _cfg_call_parts(expr: str):
     stripped = expr.strip()
-    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", stripped)
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
     if not match:
         return None
     lexed = code_source(stripped)
