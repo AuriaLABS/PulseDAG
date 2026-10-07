@@ -169,19 +169,10 @@ impl Storage {
         Ok(record)
     }
 
-    /// Atomically persist a candidate v3 chain snapshot together with both the
-    /// historical protocol sidecar and the policy+cadence monetary sidecar.
-    ///
-    /// The supplied identity must already match the state's chain/genesis/DAG
-    /// ordering. This helper does not activate consensus; it only makes a future
-    /// v3 restore fail closed on identity, policy, or cadence substitution.
-    pub fn persist_chain_state_with_monetary_protocol_record(
-        &self,
+    fn validate_v3_monetary_state_binding(
         state: &pulsedag_core::ChainState,
         identity: &ProtocolActivationIdentity,
-        cadence_segments: &[MonetaryCadenceSegment],
-        reward_finality_policy_version: &str,
-    ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
+    ) -> Result<(), PulseError> {
         identity.validate().map_err(storage_error)?;
         if identity.chain_id != state.chain_id {
             return Err(PulseError::ChainIdMismatch);
@@ -201,15 +192,23 @@ impl Storage {
                 "v3.0.0 monetary activation requires smart-contract execution to remain inactive",
             ));
         }
+        Ok(())
+    }
 
-        let protocol_record =
-            ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
-        let monetary_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
-            identity.clone(),
-            cadence_segments,
-            reward_finality_policy_version,
-        )
-        .map_err(storage_error)?;
+    fn persist_prevalidated_monetary_records(
+        &self,
+        state: &pulsedag_core::ChainState,
+        protocol_record: &ProtocolActivationRecordV1,
+        monetary_record: &ProtocolMonetaryActivationRecordV2,
+    ) -> Result<(), PulseError> {
+        protocol_record.validate_internal().map_err(storage_error)?;
+        monetary_record.validate_internal().map_err(storage_error)?;
+        if protocol_record.identity != monetary_record.identity {
+            return Err(storage_error(
+                "protocol and monetary activation sidecar identities do not match",
+            ));
+        }
+
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -220,39 +219,72 @@ impl Storage {
         batch.put_cf(
             &meta_cf,
             PROTOCOL_ACTIVATION_STORAGE_KEY,
-            serde_json::to_vec(&protocol_record)
+            serde_json::to_vec(protocol_record)
                 .map_err(|error| storage_error(error.to_string()))?,
         );
         batch.put_cf(
             &meta_cf,
             PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
-            serde_json::to_vec(&monetary_record)
+            serde_json::to_vec(monetary_record)
                 .map_err(|error| storage_error(error.to_string()))?,
         );
         self.db
             .write(batch)
-            .map_err(|error| storage_error(error.to_string()))?;
+            .map_err(|error| storage_error(error.to_string()))
+    }
+
+    /// Atomically persist a candidate v3 chain snapshot together with both the
+    /// historical protocol sidecar and the policy+cadence monetary sidecar.
+    ///
+    /// The supplied identity must already match the state's chain/genesis/DAG
+    /// ordering. This helper does not activate consensus; it only makes a future
+    /// v3 restore fail closed on identity, policy, or cadence substitution.
+    pub fn persist_chain_state_with_monetary_protocol_record(
+        &self,
+        state: &pulsedag_core::ChainState,
+        identity: &ProtocolActivationIdentity,
+        cadence_segments: &[MonetaryCadenceSegment],
+        reward_finality_policy_version: &str,
+    ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
+        Self::validate_v3_monetary_state_binding(state, identity)?;
+
+        let protocol_record =
+            ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
+        let monetary_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            identity.clone(),
+            cadence_segments,
+            reward_finality_policy_version,
+        )
+        .map_err(storage_error)?;
+
+        self.persist_prevalidated_monetary_records(state, &protocol_record, &monetary_record)?;
         Ok(monetary_record)
     }
 
     /// Atomically persist a v3 chain snapshot using the canonical production
-    /// monetary cadence and reward-finality identities.
+    /// protocol, monetary cadence and reward-finality identities.
     ///
-    /// The caller still supplies the exact protocol identity; this does not
-    /// choose mainnet/testnet chain IDs or genesis values.
+    /// Chain ID and genesis remain explicit #1049 inputs. The production record
+    /// is fully constructed and verified before the atomic RocksDB batch is
+    /// staged, so validation failure cannot leave partially replaced state.
     pub fn persist_chain_state_with_production_v3_protocol_record(
         &self,
         state: &pulsedag_core::ChainState,
         identity: &ProtocolActivationIdentity,
     ) -> Result<ProtocolMonetaryActivationRecordV2, PulseError> {
-        let record = self.persist_chain_state_with_monetary_protocol_record(
-            state,
-            identity,
-            &PRODUCTION_CADENCE_V3,
-            REWARD_FINALITY_POLICY_VERSION_V3,
-        )?;
-        record.verify_production_v3(identity).map_err(storage_error)?;
-        Ok(record)
+        Self::validate_v3_monetary_state_binding(state, identity)?;
+
+        let protocol_record =
+            ProtocolActivationRecordV1::from_identity(identity.clone()).map_err(storage_error)?;
+        let monetary_record =
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(identity.clone())
+                .map_err(storage_error)?;
+        monetary_record
+            .verify_production_v3(identity)
+            .map_err(storage_error)?;
+
+        self.persist_prevalidated_monetary_records(state, &protocol_record, &monetary_record)?;
+        Ok(monetary_record)
     }
 
     /// Return whether snapshot + protocol sidecar + monetary sidecar are
@@ -308,7 +340,8 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         genesis::init_chain_state, init_chain_state_v3, ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
-        MonetaryCadenceSegment, ProtocolActivationIdentity, PRODUCTION_CADENCE_FINGERPRINT_V3,
+        MonetaryCadenceSegment, ProtocolActivationIdentity, ProtocolConsensusMode,
+        BLOCK_HEADER_VERSION_V1, PRODUCTION_CADENCE_FINGERPRINT_V3, TRANSACTION_VERSION_V1,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -326,9 +359,11 @@ mod tests {
     fn production_v3_storage_wrapper_binds_frozen_monetary_contract() {
         let path = temp_db_path("production-v3-contract");
         let storage = Storage::open(&path).unwrap();
-        let state =
-            init_chain_state_v3("pulsedag-v3-production-candidate".to_string(), 1_800_000_123)
-                .unwrap();
+        let state = init_chain_state_v3(
+            "pulsedag-v3-production-candidate".to_string(),
+            1_800_000_123,
+        )
+        .unwrap();
         let identity = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
             state.dag.genesis_hash.clone(),
@@ -359,6 +394,41 @@ mod tests {
         assert!(storage
             .verify_persisted_production_v3_identity(&alternate_identity)
             .is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn production_v3_validation_fails_before_any_atomic_state_write() {
+        let path = temp_db_path("production-v3-prewrite-rejection");
+        let storage = Storage::open(&path).unwrap();
+        let state = init_chain_state_v3(
+            "pulsedag-v3-production-prewrite".to_string(),
+            1_800_000_124,
+        )
+        .unwrap();
+        let non_activated = ProtocolActivationIdentity {
+            chain_id: state.chain_id.clone(),
+            genesis_hash: state.dag.genesis_hash.clone(),
+            transaction_protocol_version: TRANSACTION_VERSION_V1,
+            block_header_protocol_version: BLOCK_HEADER_VERSION_V1,
+            consensus_mode: ProtocolConsensusMode::Legacy,
+            dag_ordering_version: state.dag.ordering_version.clone(),
+        };
+
+        assert!(storage
+            .persist_chain_state_with_production_v3_protocol_record(&state, &non_activated)
+            .is_err());
+        assert!(!storage
+            .monetary_protocol_snapshot_sidecar_complete()
+            .unwrap());
+        assert!(storage.protocol_activation_record().unwrap().is_none());
+        assert!(storage
+            .protocol_monetary_activation_record()
+            .unwrap()
+            .is_none());
+        assert!(storage.load_chain_state().unwrap().is_none());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
