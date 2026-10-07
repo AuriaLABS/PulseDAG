@@ -58,12 +58,12 @@ pub fn restore_activated_v2_p2p_runtime_for_startup(
             );
         }
         if monetary.reward_finality_policy_version
-            != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+            != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         {
             anyhow::bail!(
                 "unsupported v3 reward-finality policy {}; implemented live policy is {}",
                 monetary.reward_finality_policy_version,
-                pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
             );
         }
         storage.verify_persisted_monetary_identity(
@@ -88,7 +88,8 @@ mod tests {
     use pulsedag_core::{
         finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
         init_chain_state_v3, materialize_authoritative_state_v2, MonetaryCadenceSegment,
-        CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
+        REWARD_FINALITY_POLICY_VERSION_V3, CONSENSUS_METADATA_SCHEMA_VERSION,
+        GHOSTDAG_V1_ORDERING_VERSION,
     };
     use pulsedag_p2p::messages::P2P_PROTOCOL_CAPABILITIES_VERSION;
 
@@ -169,7 +170,7 @@ mod tests {
                 &state,
                 &identity,
                 &cadence,
-                GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+                REWARD_FINALITY_POLICY_VERSION_V3,
             )
             .unwrap();
 
