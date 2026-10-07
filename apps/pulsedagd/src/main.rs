@@ -5333,13 +5333,13 @@ async fn main() -> Result<()> {
 
                             if let Some(monetary) = monetary_activation.as_ref() {
                                 if monetary.reward_finality_policy_version
-                                    != pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                                    != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
                                 {
                                     let reason = format!(
                                         "unsupported v3 reward-finality policy {} for inbound block {}; implemented live policy is {}",
                                         monetary.reward_finality_policy_version,
                                         block.hash,
-                                        pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION
+                                        pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
                                     );
                                     warn!(
                                         block_hash = %block.hash,
