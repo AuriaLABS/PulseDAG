@@ -275,7 +275,7 @@ pub(crate) fn validate_network_block_envelope(
 /// economics for an unabsorbed side tip because validating those against the
 /// receiver's competing live branch can reject a block that is valid in its own
 /// past-subDAG context.
-pub fn preflight_activated_v2_p2p_block(
+pub(crate) fn preflight_activated_v2_p2p_block_context(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
@@ -306,9 +306,22 @@ pub fn preflight_activated_v2_p2p_block(
         return ActivatedV2P2pDisposition::DeferredContext;
     }
 
-    match prepare_activated_v2_p2p_block_state(block, state, identity) {
-        Ok(_) => ActivatedV2P2pDisposition::Finalizable,
-        Err(error) => preflight_disposition_from_error(&error),
+    ActivatedV2P2pDisposition::Finalizable
+}
+
+pub fn preflight_activated_v2_p2p_block(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> ActivatedV2P2pDisposition {
+    match preflight_activated_v2_p2p_block_context(block, state, identity) {
+        ActivatedV2P2pDisposition::Finalizable => {
+            match prepare_activated_v2_p2p_block_state(block, state, identity) {
+                Ok(_) => ActivatedV2P2pDisposition::Finalizable,
+                Err(error) => preflight_disposition_from_error(&error),
+            }
+        }
+        disposition => disposition,
     }
 }
 
