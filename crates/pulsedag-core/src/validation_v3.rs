@@ -4,7 +4,9 @@ use thiserror::Error;
 use crate::{
     monetary_v3::{max_coinbase_claim_atoms, MonetaryCadenceSegment, MonetaryV3Error},
     ordering_v2::derive_ordered_dag_v2,
-    reward_settlement_v3::{validate_reward_claim_transaction_v3, RewardSettlementV3Error},
+    reward_settlement_v3::{
+        eligible_block_fees_atoms_v3, validate_reward_claim_transaction_v3, RewardSettlementV3Error,
+    },
     state::ChainState,
     types::{Block, Hash},
 };
@@ -41,7 +43,7 @@ pub enum MonetaryValidationV3Error {
 }
 
 pub(crate) fn validate_monetary_reward_at_canonical_score_v3(
-    chain_id: &str,
+    state: &ChainState,
     block: &Block,
     monetary_score: u64,
     cadence_segments: &[MonetaryCadenceSegment],
@@ -57,9 +59,8 @@ pub(crate) fn validate_monetary_reward_at_canonical_score_v3(
             .ok_or_else(|| RewardSettlementV3Error::MissingRewardClaim {
                 block_hash: block.hash.clone(),
             })?;
-    validate_reward_claim_transaction_v3(claim, chain_id)?;
+    validate_reward_claim_transaction_v3(claim, &state.chain_id)?;
 
-    let mut eligible_fees_atoms = 0u64;
     for transaction in block.transactions.iter().skip(1) {
         if transaction.inputs.is_empty() {
             return Err(MonetaryValidationV3Error::HiddenIssuancePath {
@@ -67,10 +68,8 @@ pub(crate) fn validate_monetary_reward_at_canonical_score_v3(
                 txid: transaction.txid.clone(),
             });
         }
-        eligible_fees_atoms = eligible_fees_atoms
-            .checked_add(transaction.fee)
-            .ok_or(MonetaryValidationV3Error::FeeOverflow)?;
     }
+    let eligible_fees_atoms = eligible_block_fees_atoms_v3(state, block)?;
 
     let authorized_settlement_atoms =
         max_coinbase_claim_atoms(monetary_score, eligible_fees_atoms, cadence_segments)?;
@@ -118,7 +117,7 @@ pub fn validate_ordered_monetary_reward_v3(
         u64::try_from(position).map_err(|_| MonetaryValidationV3Error::FeeOverflow)?;
 
     validate_monetary_reward_at_canonical_score_v3(
-        &state.chain_id,
+        state,
         block,
         monetary_score,
         cadence_segments,
@@ -228,6 +227,40 @@ mod tests {
         assert_eq!(
             validated.authorized_settlement_atoms,
             validated.authorized_subsidy_atoms + 7
+        );
+    }
+
+    #[test]
+    fn replay_skipped_conflict_fee_is_not_authorized() {
+        let fee_tx = Transaction {
+            txid: "skipped-fee".into(),
+            version: 2,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "source".into(),
+                    index: 0,
+                },
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1recipient".into(),
+                amount: 1,
+            }],
+            fee: 11,
+            nonce: 1,
+        };
+        let mut state = accepted_state_with_reward(Some(fee_tx));
+        state.dag.ordered_dag_conflict_diagnostics.push(
+            "ordered_pos=1 block=reward-block tx=skipped-fee skipped_conflict_atomic".into(),
+        );
+
+        let validated =
+            validate_ordered_monetary_reward_v3(&state, "reward-block", &ONE_SECOND).unwrap();
+        assert_eq!(validated.eligible_fees_atoms, 0);
+        assert_eq!(
+            validated.authorized_settlement_atoms,
+            validated.authorized_subsidy_atoms
         );
     }
 
