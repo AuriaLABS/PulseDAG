@@ -276,7 +276,7 @@ pub fn finalize_monetary_mining_template_v3(
         transactions: template.transactions.clone(),
     };
 
-    validate_candidate_envelope(&block, state, identity)?;
+    validate_candidate_envelope(&mut block, state, identity)?;
 
     let replay_candidate = |candidate: &Block| -> Result<crate::StateReplayV3, PulseError> {
         let mut working = state.clone();
