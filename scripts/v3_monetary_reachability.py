@@ -763,7 +763,9 @@ def _split_rust_top_level_args(text: str) -> list:
                 args.append(text[start:i].strip())
                 start = i + 1
         i += 1
-    args.append(text[start:].strip())
+    tail = text[start:].strip()
+    if tail:
+        args.append(tail)
     return args
 
 
