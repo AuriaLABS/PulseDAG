@@ -12,7 +12,9 @@ use pulsedag_core::{
     build_activated_v2_mining_template, build_monetary_mining_template_v3,
     consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
     finalize_monetary_mining_template_v3, materialize_activated_v2_mining_overlay,
-    ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
+    materialize_activated_v2_mining_overlay_with_materializer,
+    materialize_authoritative_state_v3, ActivatedV2MiningTemplateSpec, ChainState,
+    PowValidationPath, ProtocolActivationIdentity,
     ProtocolMonetaryActivationRecordV2, PulseError, TRANSACTION_VERSION_V2,
 };
 use pulsedag_p2p::mode_connected_peers_are_real_network;
@@ -755,11 +757,26 @@ pub async fn post_mining_template<S: RpcStateLike>(
                         if runtime.staging().is_empty() {
                             chain.clone()
                         } else {
-                            match materialize_activated_v2_mining_overlay(
-                                &chain,
-                                runtime.staging(),
-                                &identity,
-                            ) {
+                            let overlay = if let Some(record) = monetary_activation.as_ref() {
+                                materialize_activated_v2_mining_overlay_with_materializer(
+                                    &chain,
+                                    runtime.staging(),
+                                    &identity,
+                                    &|prepared: &ChainState| {
+                                        materialize_authoritative_state_v3(
+                                            prepared,
+                                            &record.monetary_cadence_segments,
+                                        )
+                                    },
+                                )
+                            } else {
+                                materialize_activated_v2_mining_overlay(
+                                    &chain,
+                                    runtime.staging(),
+                                    &identity,
+                                )
+                            };
+                            match overlay {
                                 Ok(overlay) => overlay,
                                 Err(error) => {
                                     return Json(ApiResponse::err(
