@@ -300,6 +300,11 @@ fn validate_candidate_transactions(
     identity: &ProtocolActivationIdentity,
 ) -> Result<(), PulseError> {
     let mut transaction_context = pre_candidate_state.clone();
+    // Candidate transactions may already be present in the local mempool.
+    // Their reservation markers are not consensus spends and must not make
+    // an otherwise valid inbound block look like a double spend.
+    transaction_context.mempool.transactions.clear();
+    transaction_context.mempool.spent_outpoints.clear();
     validate_created_utxo_outpoints(block, &transaction_context)?;
     let coinbase = block
         .transactions
