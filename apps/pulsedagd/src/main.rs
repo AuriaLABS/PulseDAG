@@ -2672,11 +2672,21 @@ async fn main() -> Result<()> {
             );
         }
         if cfg.persist_snapshot_on_start {
-            storage.persist_activated_v2_p2p_runtime_snapshot(
-                identity,
-                &chain_state,
-                &startup_activated_v2_p2p_runtime,
-            )?;
+            if let Some(monetary) = storage.protocol_monetary_activation_record()? {
+                storage.persist_monetary_v3_p2p_runtime_snapshot(
+                    identity,
+                    &monetary.monetary_cadence_segments,
+                    &monetary.reward_finality_policy_version,
+                    &chain_state,
+                    &startup_activated_v2_p2p_runtime,
+                )?;
+            } else {
+                storage.persist_activated_v2_p2p_runtime_snapshot(
+                    identity,
+                    &chain_state,
+                    &startup_activated_v2_p2p_runtime,
+                )?;
+            }
         }
         info!(
             protocol_fingerprint = %identity
@@ -2965,8 +2975,10 @@ async fn main() -> Result<()> {
                                                         &monetary.monetary_cadence_segments,
                                                         |state: &pulsedag_core::ChainState,
                                                          durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                                            storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                            storage.persist_monetary_v3_p2p_runtime_snapshot(
                                                                 identity,
+                                                                &monetary.monetary_cadence_segments,
+                                                                &monetary.reward_finality_policy_version,
                                                                 state,
                                                                 durable_runtime,
                                                             )
@@ -2974,9 +2986,11 @@ async fn main() -> Result<()> {
                                                         |candidate: &pulsedag_core::Block,
                                                          prepared: &pulsedag_core::ChainState,
                                                          durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                                            storage.persist_activated_v2_p2p_block_and_runtime(
+                                                            storage.persist_monetary_v3_p2p_block_and_runtime(
                                                                 candidate,
                                                                 identity,
+                                                                &monetary.monetary_cadence_segments,
+                                                                &monetary.reward_finality_policy_version,
                                                                 prepared,
                                                                 durable_runtime,
                                                             )
@@ -2984,9 +2998,11 @@ async fn main() -> Result<()> {
                                                         |bundle: &[pulsedag_core::Block],
                                                          prepared: &pulsedag_core::ChainState,
                                                          durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                                            storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                            storage.persist_monetary_v3_p2p_blocks_and_runtime(
                                                                 bundle,
                                                                 identity,
+                                                                &monetary.monetary_cadence_segments,
+                                                                &monetary.reward_finality_policy_version,
                                                                 prepared,
                                                                 durable_runtime,
                                                             )
@@ -5388,8 +5404,10 @@ async fn main() -> Result<()> {
                                     &monetary.monetary_cadence_segments,
                                     |state: &pulsedag_core::ChainState,
                                      durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                        storage.persist_activated_v2_p2p_runtime_snapshot(
+                                        storage.persist_monetary_v3_p2p_runtime_snapshot(
                                             &identity,
+                                            &monetary.monetary_cadence_segments,
+                                            &monetary.reward_finality_policy_version,
                                             state,
                                             durable_runtime,
                                         )
@@ -5397,9 +5415,11 @@ async fn main() -> Result<()> {
                                     |candidate: &pulsedag_core::Block,
                                      prepared: &pulsedag_core::ChainState,
                                      durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                        storage.persist_activated_v2_p2p_block_and_runtime(
+                                        storage.persist_monetary_v3_p2p_block_and_runtime(
                                             candidate,
                                             &identity,
+                                            &monetary.monetary_cadence_segments,
+                                            &monetary.reward_finality_policy_version,
                                             prepared,
                                             durable_runtime,
                                         )
@@ -5407,9 +5427,11 @@ async fn main() -> Result<()> {
                                     |bundle: &[pulsedag_core::Block],
                                      prepared: &pulsedag_core::ChainState,
                                      durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                        storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                        storage.persist_monetary_v3_p2p_blocks_and_runtime(
                                             bundle,
                                             &identity,
+                                            &monetary.monetary_cadence_segments,
+                                            &monetary.reward_finality_policy_version,
                                             prepared,
                                             durable_runtime,
                                         )
