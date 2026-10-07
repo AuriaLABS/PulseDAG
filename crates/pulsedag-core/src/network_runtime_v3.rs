@@ -179,16 +179,18 @@ where
                 persist_bundle(bundle, prepared_state, prepared_runtime)
             },
         ),
-        &|prepared: &ChainState| {
-            crate::materialize_authoritative_state_v3(prepared, cadence_segments)
-        },
-        &|context: &ChainState, candidate_hash: &crate::Hash| {
-            crate::materialize_authoritative_pre_candidate_state_v3(
-                context,
-                candidate_hash,
-                cadence_segments,
-            )
-        },
+        (
+            &|prepared: &ChainState| {
+                crate::materialize_authoritative_state_v3(prepared, cadence_segments)
+            },
+            &|context: &ChainState, candidate_hash: &crate::Hash| {
+                crate::materialize_authoritative_pre_candidate_state_v3(
+                    context,
+                    candidate_hash,
+                    cadence_segments,
+                )
+            },
+        ),
         broadcast,
     )
 }
