@@ -366,11 +366,34 @@ pub fn validate_reward_finality_boundary_v3(
     Ok(())
 }
 
-fn block_fees_atoms(block: &crate::types::Block) -> Result<u64, RewardSettlementV3Error> {
+fn transaction_was_skipped_by_authoritative_v3_replay(
+    state: &ChainState,
+    block_hash: &str,
+    txid: &str,
+) -> bool {
+    let marker = format!(" block={block_hash} tx={txid} skipped_conflict_atomic");
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .iter()
+        .any(|entry| entry.contains(&marker))
+}
+
+pub(crate) fn eligible_block_fees_atoms_v3(
+    state: &ChainState,
+    block: &crate::types::Block,
+) -> Result<u64, RewardSettlementV3Error> {
     block
         .transactions
         .iter()
         .skip(1)
+        .filter(|tx| {
+            !transaction_was_skipped_by_authoritative_v3_replay(
+                state,
+                &block.hash,
+                &tx.txid,
+            )
+        })
         .try_fold(0_u64, |acc, tx| {
             acc.checked_add(tx.fee)
                 .ok_or(RewardSettlementV3Error::RewardOverflow)
@@ -433,7 +456,7 @@ pub fn derive_reward_settlement_snapshot_v3(
         }
 
         let subsidy_atoms = subsidy_atoms_for_score(monetary_score, cadence_segments)?;
-        let fees_atoms = block_fees_atoms(block)?;
+        let fees_atoms = eligible_block_fees_atoms_v3(state, block)?;
         let settlement_amount_atoms = subsidy_atoms
             .checked_add(fees_atoms)
             .ok_or(RewardSettlementV3Error::RewardOverflow)?;
@@ -758,6 +781,48 @@ mod tests {
             derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, FINALITY_TEST_POLICY, None,),
             Err(RewardSettlementV3Error::MultipleRewardClaims { .. })
         ));
+    }
+
+    #[test]
+    fn replay_skipped_conflict_fee_is_excluded_from_settlement() {
+        let mut state = diamond_state("reward-conflict-fee", true);
+        let skipped = Transaction {
+            txid: "skipped-fee-tx".into(),
+            version: 2,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "source".into(),
+                    index: 0,
+                },
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1recipient".into(),
+                amount: 1,
+            }],
+            fee: 9,
+            nonce: 1,
+        };
+        state
+            .dag
+            .blocks
+            .get_mut("a")
+            .unwrap()
+            .transactions
+            .push(skipped);
+        state.dag.ordered_dag_conflict_diagnostics.push(
+            "ordered_pos=1 block=a tx=skipped-fee-tx skipped_conflict_atomic".into(),
+        );
+
+        let snapshot =
+            derive_reward_settlement_snapshot_v3(&state, &ONE_SECOND, FINALITY_TEST_POLICY, None)
+                .unwrap();
+        assert_eq!(snapshot.claims[0].fees_atoms, 0);
+        assert_eq!(
+            snapshot.claims[0].settlement_amount_atoms,
+            snapshot.claims[0].subsidy_atoms
+        );
     }
 
     #[test]
