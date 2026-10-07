@@ -747,9 +747,29 @@ def _split_rust_top_level_args(text: str) -> list:
     while i < len(lexed):
         ch = lexed[i]
         if ch == "|" and not stack:
-            # At top level, a pipe opens/closes closure parameters. def _cfg_call_parts(expr: str):
+            # A top-level pipe opens or closes closure parameters.
+            # Double-pipe is a zero-argument closure delimiter.
+            if i + 1 < len(lexed) and lexed[i + 1] == "|":
+                i += 2
+                continue
+            in_closure_params = not in_closure_params
+        elif not in_closure_params:
+            if ch in pairs:
+                stack.append(ch)
+            elif ch in closers:
+                if stack and pairs[stack[-1]] == ch:
+                    stack.pop()
+            elif ch == "," and not stack:
+                args.append(text[start:i].strip())
+                start = i + 1
+        i += 1
+    args.append(text[start:].strip())
+    return args
+
+
+def _cfg_call_parts(expr: str):
     stripped = expr.strip()
-    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", stripped)
     if not match:
         return None
     lexed = code_source(stripped)
@@ -758,7 +778,6 @@ def _split_rust_top_level_args(text: str) -> list:
     if end <= open_i or stripped[end:].strip():
         return None
     return (match.group(1), stripped[open_i + 1 : end - 1])
-
 
 def _cfg_literal_signature(expr: str):
     parts = _cfg_call_parts(expr)
