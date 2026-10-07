@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "pulsedag.v3-monetary-reachability-evidence.v1"
-AUDITOR_VERSION = 16
+AUDITOR_VERSION = 17
 
 EXPECTED_LEGACY_DEFINITION = "crates/pulsedag-core/src/validation.rs"
 EXPECTED_LEGACY_CALLS = {
@@ -207,8 +207,24 @@ REQUIRED_AUTHORITY_ARGUMENT_CALLS = [
         "function": "drive_monetary_v3_p2p_block_with_runtime_persistence",
         "outer_call": "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
         "argument_index": 5,
+        "tuple_index": 0,
+        "required_call": "crate::materialize_authoritative_state_v3",
+    },
+    {
+        "path": "crates/pulsedag-core/src/network_runtime_v3.rs",
+        "function": "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "outer_call": "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        "argument_index": 5,
         "tuple_index": 1,
         "required_call": "crate::materialize_authoritative_pre_candidate_state_v3",
+    },
+    {
+        "path": "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs",
+        "function": "post_mining_template",
+        "outer_call": "materialize_activated_v2_mining_overlay_with_materializer",
+        "argument_index": 3,
+        "tuple_index": None,
+        "required_call": "materialize_authoritative_state_v3",
     },
     {
         "path": "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs",
@@ -217,6 +233,14 @@ REQUIRED_AUTHORITY_ARGUMENT_CALLS = [
         "argument_index": 4,
         "tuple_index": None,
         "required_call": "materialize_authoritative_pre_candidate_state_v3",
+    },
+    {
+        "path": "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs",
+        "function": "post_activated_v2_mining_submit",
+        "outer_call": "materialize_activated_v2_mining_overlay_with_materializer",
+        "argument_index": 3,
+        "tuple_index": None,
+        "required_call": "materialize_authoritative_state_v3",
     },
     {
         "path": "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs",
@@ -1596,6 +1620,44 @@ def required_local_call_hits(text: str, function_name: str, callees: list) -> di
     }
 
 
+def _expression_is_exact_required_call(expr: str, required_call: str) -> bool:
+    """Return true only when the whole expression is the required call."""
+    source = executable_source(expr).strip()
+    parts = required_call.split("::")
+    if not parts or any(not IDENT_RE.fullmatch(part) for part in parts):
+        return False
+    qualified = r"\s*::\s*".join(re.escape(part) for part in parts)
+    match = re.match(rf"{qualified}\s*\(", source)
+    if not match:
+        return False
+    open_i = source.find("(", match.start(), match.end())
+    end = _skip_matching_delimiter(source, open_i)
+    return end > open_i and not source[end:].strip()
+
+
+def _closure_returns_required_call(expr: str, required_call: str) -> bool:
+    """Require the selected callback itself to return the v3 authority call."""
+    source = executable_source(expr).strip()
+    if source.startswith("&"):
+        source = source[1:].lstrip()
+    if source.startswith("move "):
+        source = source[len("move "):].lstrip()
+    if not source.startswith("|"):
+        return False
+
+    close_pipe = source.find("|", 1)
+    if close_pipe < 0:
+        return False
+    body = source[close_pipe + 1:].strip()
+    if body.startswith("{"):
+        end = _skip_matching_delimiter(body, 0)
+        if end <= 0 or body[end:].strip():
+            return False
+        body = body[1:end - 1].strip()
+
+    return _expression_is_exact_required_call(body, required_call)
+
+
 def required_authority_argument_call_hits(
     text: str,
     function_name: str,
@@ -1618,6 +1680,7 @@ def required_authority_argument_call_hits(
         "missing_argument": True,
         "missing_tuple_element": tuple_index is not None,
         "required_call_present": False,
+        "required_call_is_return_value": False,
     }
     if body is None:
         return result
@@ -1663,6 +1726,9 @@ def required_authority_argument_call_hits(
         has_live_qualified_call(target, required_call)
         if "::" in required_call
         else has_live_call(target, required_call)
+    )
+    result["required_call_is_return_value"] = _closure_returns_required_call(
+        target, required_call
     )
     return result
 
@@ -1967,6 +2033,7 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             or check["missing_argument"]
             or check["missing_tuple_element"]
             or not check["required_call_present"]
+            or not check["required_call_is_return_value"]
         ):
             errors.append(
                 "required monetary replay authority is not bound to the expected call argument in "
@@ -2087,6 +2154,8 @@ def audit(root: Path, candidate_sha: str, candidate_tree: str) -> dict:
             "verifies_live_call_expressions": True,
             "pins_underlying_calls_to_required_local_authority_helpers": True,
             "pins_required_local_callees_to_crate_paths": True,
+            "pins_full_state_and_pre_candidate_replay_callbacks": True,
+            "requires_authority_callback_return_value": True,
             "requires_direct_top_level_local_authority_calls": True,
             "resets_direct_statement_boundary_after_top_level_braces": True,
             "requires_runtime_authority_dynamic_regression": True,
@@ -2783,8 +2852,20 @@ def self_test() -> None:
         1,
     )
     assert authority_ok["required_call_present"]
+    assert authority_ok["required_call_is_return_value"]
     assert authority_ok["argument_count"] == 7
     assert not authority_ok["missing_tuple_element"]
+
+    full_state_ok = required_authority_argument_call_hits(
+        authority_fixture,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        5,
+        "crate::materialize_authoritative_state_v3",
+        0,
+    )
+    assert full_state_ok["required_call_present"]
+    assert full_state_ok["required_call_is_return_value"]
 
     wrong_pre_candidate_fixture = authority_fixture.replace(
         "crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence)",
@@ -2803,6 +2884,48 @@ def self_test() -> None:
         1,
     )
     assert not authority_bad["required_call_present"]
+
+    wrong_full_state_fixture = authority_fixture.replace(
+        "crate::materialize_authoritative_state_v3(prepared, cadence)",
+        "crate::materialize_authoritative_state_v2(prepared)",
+    ) + (
+        "fn unrelated_full_state() { "
+        "crate::materialize_authoritative_state_v3(prepared, cadence); "
+        "}\n"
+    )
+    full_state_bad = required_authority_argument_call_hits(
+        wrong_full_state_fixture,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        5,
+        "crate::materialize_authoritative_state_v3",
+        0,
+    )
+    assert not full_state_bad["required_call_present"]
+
+    dead_v3_return_bypass_fixture = (
+        "fn drive_monetary_v3_p2p_block_with_runtime_persistence() {\n"
+        "  drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer(\n"
+        "    block, state, runtime, identity, persistence,\n"
+        "    (&|prepared| crate::materialize_authoritative_state_v3(prepared, cadence),\n"
+        "     &|context, hash| {\n"
+        "       let _ = crate::materialize_authoritative_pre_candidate_state_v3(context, hash, cadence);\n"
+        "       crate::replay_pre_candidate_state_v2(context, hash)\n"
+        "     }),\n"
+        "    broadcast,\n"
+        "  );\n"
+        "}\n"
+    )
+    dead_v3_return_bypass = required_authority_argument_call_hits(
+        dead_v3_return_bypass_fixture,
+        "drive_monetary_v3_p2p_block_with_runtime_persistence",
+        "drive_activated_v2_p2p_block_with_runtime_persistence_and_materializer",
+        5,
+        "crate::materialize_authoritative_pre_candidate_state_v3",
+        1,
+    )
+    assert dead_v3_return_bypass["required_call_present"]
+    assert not dead_v3_return_bypass["required_call_is_return_value"]
 
     print("v3 monetary reachability auditor self-test: PASS")
 
