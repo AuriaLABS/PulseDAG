@@ -40,7 +40,7 @@ fn invalid_network_block(message: impl Into<String>) -> PulseError {
     ))
 }
 
-fn classify_network_block_error(error: &PulseError) -> BlockAcceptanceResult {
+pub(crate) fn classify_network_block_error(error: &PulseError) -> BlockAcceptanceResult {
     match error {
         PulseError::BlockAlreadyExists => BlockAcceptanceResult::Duplicate,
         PulseError::InvalidBlock(message) => {
@@ -257,7 +257,7 @@ fn validate_finalizable_network_block_transactions(
     Ok(())
 }
 
-fn validate_network_block_envelope(
+pub(crate) fn validate_network_block_envelope(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
