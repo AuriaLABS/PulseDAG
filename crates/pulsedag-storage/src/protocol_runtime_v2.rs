@@ -4,13 +4,19 @@ use pulsedag_core::{
     errors::PulseError, verify_authoritative_state_snapshot_v2,
     verify_authoritative_state_snapshot_v3, ActivatedV2P2pRuntime, Block, ChainState,
     MonetaryCadenceSegment, ProtocolActivationIdentity, ProtocolActivationRecordV1,
-    ProtocolRestoreIdentityGate, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
-    ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS, GHOSTDAG_V1_ORDERING_VERSION,
+    ProtocolMonetaryActivationRecordV2, ProtocolRestoreIdentityGate,
+    ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS, ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS,
+    GHOSTDAG_V1_ORDERING_VERSION, PRODUCTION_CADENCE_V3, REWARD_FINALITY_POLICY_VERSION_V3,
 };
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 
-use super::{protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY, Storage, ACCEPTED_BLOCKS_CF};
+use super::{
+    protocol_identity::{
+        PROTOCOL_ACTIVATION_STORAGE_KEY, PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+    },
+    Storage, ACCEPTED_BLOCKS_CF,
+};
 
 pub const ACTIVATED_V2_P2P_RUNTIME_RECORD_FORMAT_VERSION: u32 = 1;
 pub const ACTIVATED_V2_P2P_RUNTIME_STORAGE_KEY: &[u8] = b"activated_v2_p2p_runtime_v1";
@@ -379,6 +385,107 @@ impl Storage {
             ))
         })?;
         Ok(())
+    }
+
+    /// Atomically bootstrap a completely new production-v3 database with the
+    /// zero-allocation genesis, canonical production monetary sidecar and P2P
+    /// runtime. All consensus-relevant records are validated before the batch is
+    /// committed; this method never performs a partial production activation.
+    pub fn persist_production_v3_genesis_and_runtime(
+        &self,
+        genesis: &Block,
+        expected: &ProtocolActivationIdentity,
+        state: &ChainState,
+        runtime: &ActivatedV2P2pRuntime,
+    ) -> Result<(), PulseError> {
+        require_canonical_activated_v2_identity(expected)?;
+        if state.chain_id != expected.chain_id {
+            return Err(storage_error(format!(
+                "production-v3 bootstrap state chain_id={} does not match expected {}",
+                state.chain_id, expected.chain_id
+            )));
+        }
+        if state.dag.genesis_hash != expected.genesis_hash {
+            return Err(storage_error(format!(
+                "production-v3 bootstrap state genesis={} does not match expected {}",
+                state.dag.genesis_hash, expected.genesis_hash
+            )));
+        }
+        if state.contracts.config.enabled {
+            return Err(storage_error(
+                "v3.0.0 production bootstrap requires smart contracts to remain inactive",
+            ));
+        }
+        verify_authoritative_state_snapshot_v3(state, &PRODUCTION_CADENCE_V3).map_err(|error| {
+            storage_error(format!(
+                "production-v3 bootstrap state is not an authoritative v3 snapshot: {error:?}"
+            ))
+        })?;
+
+        if genesis.hash != state.dag.genesis_hash {
+            return Err(storage_error(
+                "production-v3 bootstrap block is not the state genesis",
+            ));
+        }
+        let state_genesis = state.dag.blocks.get(&state.dag.genesis_hash).ok_or_else(|| {
+            storage_error("production-v3 bootstrap state is missing its genesis block")
+        })?;
+        if serde_json::to_vec(state_genesis).map_err(|error| storage_error(error.to_string()))?
+            != serde_json::to_vec(genesis).map_err(|error| storage_error(error.to_string()))?
+        {
+            return Err(storage_error(
+                "production-v3 bootstrap genesis differs from committed chain state",
+            ));
+        }
+
+        let monetary_record =
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(expected.clone())
+                .map_err(storage_error)?;
+        monetary_record
+            .verify_production_v3(expected)
+            .map_err(storage_error)?;
+        if monetary_record.monetary_cadence_segments != PRODUCTION_CADENCE_V3
+            || monetary_record.reward_finality_policy_version
+                != REWARD_FINALITY_POLICY_VERSION_V3
+        {
+            return Err(storage_error(
+                "production-v3 bootstrap monetary contract is not canonical",
+            ));
+        }
+
+        let runtime_record =
+            ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
+                expected, state, runtime,
+            )?;
+
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| storage_error("missing cf accepted blocks"))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let mut batch = WriteBatch::default();
+
+        batch.put_cf(
+            &blocks_cf,
+            genesis.hash.as_bytes(),
+            serde_json::to_vec(genesis).map_err(|error| storage_error(error.to_string()))?,
+        );
+        self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        self.stage_activated_v2_runtime_sidecars(&mut batch, &meta_cf, &runtime_record)?;
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_MONETARY_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&monetary_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))
     }
 
     /// Persist a monetary-v3 authoritative chain snapshot and the existing
