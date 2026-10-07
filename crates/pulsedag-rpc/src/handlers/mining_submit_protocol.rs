@@ -444,8 +444,7 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
                 None,
             );
         }
-        if record.reward_finality_policy_version
-            != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
+        if record.reward_finality_policy_version != pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3
         {
             return rejected_response(
                 &req,
