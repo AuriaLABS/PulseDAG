@@ -121,9 +121,7 @@ pub fn select_startup_protocol(
     let mode = StartupProtocolMode::from_env()?;
     let production_v3_genesis_timestamp = if mode == StartupProtocolMode::MonetaryV3 {
         if env_flag_truthy(CONTRACTS_ENABLED_ENV) {
-            bail!(
-                "{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires {CONTRACTS_ENABLED_ENV}=false"
-            );
+            bail!("{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires {CONTRACTS_ENABLED_ENV}=false");
         }
         Some(production_v3_genesis_timestamp_from_env()?)
     } else {
