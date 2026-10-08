@@ -717,8 +717,11 @@ mod tests {
             vout: 0,
         };
         let utxo = pulsedag_core::types::Utxo {
-            value: 1,
-            script_pubkey: "fixture".to_string(),
+            outpoint: outpoint.clone(),
+            address: "fixture".to_string(),
+            amount: 1,
+            coinbase: false,
+            height: 0,
         };
         storage.persist_utxo(&outpoint, &utxo).unwrap();
         let error = storage
