@@ -215,6 +215,9 @@ impl Storage {
         plan.verify_chunk(chunk_index, chunk)?;
         let key = resume_chunk_key(&plan.transfer_id, chunk_index);
         let _write_guard = self.storage_write_guard()?;
+        // A concurrent clear may have deleted the plan after ensure() returned.
+        // Check again while holding the very same lock as clear() and bootstrap().
+        self.require_matching_fast_sync_resume_plan_v1(plan, expected)?;
 
         if let Some(existing) = self
             .db
@@ -308,6 +311,21 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chunk_write_revalidates_plan_under_shared_storage_mutex() {
+        let source = include_str!("fast_sync_resume.rs");
+        let start = source
+            .find("pub fn persist_fast_sync_resume_chunk_v1(")
+            .expect("public chunk writer");
+        let body = &source[start..source[start..].find("\n    }").expect("chunk writer end") + start];
+        let lock = body.find("let _write_guard = self.storage_write_guard()?;").expect("shared guard");
+        let recheck = body
+            .find("self.require_matching_fast_sync_resume_plan_v1(plan, expected)?;")
+            .expect("matching plan must be checked again under guard");
+        let write = body.find(".put_opt(key, chunk").expect("chunk write");
+        assert!(lock < recheck && recheck < write);
+    }
+
     use crate::{FastSyncSnapshotBundleV1, PreparedFastSyncSnapshotTransferV1};
     use pulsedag_core::genesis::init_chain_state;
 
