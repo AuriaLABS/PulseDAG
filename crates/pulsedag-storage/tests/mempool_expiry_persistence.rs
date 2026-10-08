@@ -159,15 +159,8 @@ fn exact_pre_expiry_chain_state_bytes_load_at_real_rocksdb_boundary() {
         "serde-skipped admission metadata must not change the pre-expiry bincode layout"
     );
 
-    let meta_cf = storage.db.cf_handle("meta").unwrap();
-    storage
-        .db
-        .put_cf(&meta_cf, CHAIN_STATE_KEY, legacy)
-        .unwrap();
-    storage
-        .db
-        .delete_cf(&meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
-        .unwrap();
+    storage.write_legacy_chain_state_fixture(&legacy).unwrap();
+    storage.write_mempool_admission_fixture(None).unwrap();
 
     let loaded = storage.load_chain_state().unwrap().unwrap();
     assert!(loaded.mempool.transactions.contains_key("legacy-live"));
@@ -213,14 +206,8 @@ fn admission_height_sidecar_survives_real_restart_and_filters_stale_txids() {
         let mut raw_sidecar = BTreeMap::new();
         raw_sidecar.insert("live".to_string(), 0_u64);
         raw_sidecar.insert("stale".to_string(), 0_u64);
-        let meta_cf = storage.db.cf_handle("meta").unwrap();
         storage
-            .db
-            .put_cf(
-                &meta_cf,
-                MEMPOOL_ADMISSION_HEIGHT_V1_KEY,
-                bincode::serialize(&raw_sidecar).unwrap(),
-            )
+            .write_mempool_admission_fixture(Some(&bincode::serialize(&raw_sidecar).unwrap()))
             .unwrap();
     }
 
@@ -266,14 +253,8 @@ fn orphan_admission_height_sidecar_survives_restart_and_filters_stale_txids() {
         let mut raw = BTreeMap::new();
         raw.insert("orphan-live".to_string(), 5_u64);
         raw.insert("stale-orphan".to_string(), 1_u64);
-        let meta_cf = storage.db.cf_handle("meta").unwrap();
         storage
-            .db
-            .put_cf(
-                &meta_cf,
-                MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
-                bincode::serialize(&raw).unwrap(),
-            )
+            .write_mempool_orphan_admission_fixture(&bincode::serialize(&raw).unwrap())
             .unwrap();
     }
 
@@ -315,18 +296,11 @@ fn corrupt_optional_age_sidecars_recover_valid_chain_state_and_surface_events() 
         storage.persist_block(block).unwrap();
     }
     storage.persist_chain_state(&state).unwrap();
-    let meta_cf = storage.db.cf_handle("meta").unwrap();
     storage
-        .db
-        .put_cf(&meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY, b"corrupt")
+        .write_mempool_admission_fixture(Some(b"corrupt"))
         .unwrap();
     storage
-        .db
-        .put_cf(
-            &meta_cf,
-            MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
-            b"corrupt-orphan",
-        )
+        .write_mempool_orphan_admission_fixture(b"corrupt-orphan")
         .unwrap();
 
     let loaded = storage.load_chain_state().unwrap().unwrap();
