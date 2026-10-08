@@ -70,7 +70,7 @@ pub struct RuntimeEvent {
 }
 
 pub struct Storage {
-    pub db: Arc<DB>,
+    db: Arc<DB>,
     write_mutex: Mutex<()>,
 }
 
@@ -524,6 +524,119 @@ impl Storage {
         self.write_mutex.lock().map_err(|_| {
             PulseError::StorageError("storage write serialization lock poisoned".into())
         })
+    }
+
+    pub(crate) fn ensure_production_v3_storage_empty_locked(
+        &self,
+        _write_guard: &MutexGuard<'_, ()>,
+    ) -> Result<(), PulseError> {
+        if self
+            .db
+            .iterator(rocksdb::IteratorMode::Start)
+            .next()
+            .transpose()
+            .map_err(|error| PulseError::StorageError(error.to_string()))?
+            .is_some()
+        {
+            return Err(PulseError::StorageError(
+                "production-v3 atomic bootstrap requires empty default storage namespace".into(),
+            ));
+        }
+
+        for cf_name in [
+            ACCEPTED_BLOCKS_CF,
+            ORPHAN_STAGED_BLOCKS_CF,
+            TERMINAL_MISSING_PARENT_CF,
+            REJECTED_BLOCK_DIAGNOSTICS_CF,
+            "utxos",
+            "contracts_meta",
+            "contracts_storage",
+            "contracts_receipts",
+        ] {
+            let cf = self
+                .db
+                .cf_handle(cf_name)
+                .ok_or_else(|| PulseError::StorageError(format!("missing cf {cf_name}")))?;
+            if self
+                .db
+                .iterator_cf(cf, rocksdb::IteratorMode::Start)
+                .next()
+                .transpose()
+                .map_err(|error| PulseError::StorageError(error.to_string()))?
+                .is_some()
+            {
+                return Err(PulseError::StorageError(format!(
+                    "production-v3 atomic bootstrap requires empty {cf_name} storage namespace"
+                )));
+            }
+        }
+
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        for item in self.db.iterator_cf(meta_cf, rocksdb::IteratorMode::Start) {
+            let (key, _) = item.map_err(|error| PulseError::StorageError(error.to_string()))?;
+            if key.as_ref() != STORAGE_SCHEMA_VERSION_KEY {
+                return Err(PulseError::StorageError(format!(
+                    "production-v3 atomic bootstrap found preexisting meta key {}",
+                    String::from_utf8_lossy(key.as_ref())
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn write_legacy_chain_state_fixture(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        self.db
+            .put_cf(meta_cf, CHAIN_STATE_KEY, bytes)
+            .map_err(|error| PulseError::StorageError(error.to_string()))
+    }
+
+    #[doc(hidden)]
+    pub fn write_mempool_admission_fixture(
+        &self,
+        bytes: Option<&[u8]>,
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        match bytes {
+            Some(bytes) => self
+                .db
+                .put_cf(meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY, bytes)
+                .map_err(|error| PulseError::StorageError(error.to_string())),
+            None => self
+                .db
+                .delete_cf(meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
+                .map_err(|error| PulseError::StorageError(error.to_string())),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn write_mempool_orphan_admission_fixture(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        self.db
+            .put_cf(meta_cf, MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY, bytes)
+            .map_err(|error| PulseError::StorageError(error.to_string()))
     }
 
     pub fn storage_schema_metadata(&self) -> Result<StorageSchemaMetadata, PulseError> {
