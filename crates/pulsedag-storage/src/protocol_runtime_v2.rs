@@ -714,7 +714,7 @@ mod tests {
         storage.delete_staged_orphan_block(&orphan.hash).unwrap();
         let outpoint = pulsedag_core::types::OutPoint {
             txid: "fixture".to_string(),
-            vout: 0,
+            index: 0,
         };
         let utxo = pulsedag_core::types::Utxo {
             outpoint: outpoint.clone(),
