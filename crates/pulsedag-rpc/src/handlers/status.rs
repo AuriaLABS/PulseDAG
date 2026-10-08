@@ -549,10 +549,9 @@ pub async fn get_status<S: RpcStateLike>(
         protocol_consensus_mode,
         protocol_identity,
         protocol_identity_fingerprint,
-        ghostdag_metadata_active:
-            runtime_ghostdag_metadata_active || chain_snapshot.ghostdag_metadata_active,
-        high_cadence_allowed:
-            runtime_high_cadence_allowed || chain_snapshot.high_cadence_allowed,
+        ghostdag_metadata_active: runtime_ghostdag_metadata_active
+            || chain_snapshot.ghostdag_metadata_active,
+        high_cadence_allowed: runtime_high_cadence_allowed || chain_snapshot.high_cadence_allowed,
         tip_count: chain_snapshot.tip_count,
         orphan_count: chain_snapshot.orphan_count,
         mempool_size: chain_snapshot.mempool_size,
