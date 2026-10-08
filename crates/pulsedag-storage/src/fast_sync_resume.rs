@@ -317,8 +317,11 @@ mod tests {
         let start = source
             .find("pub fn persist_fast_sync_resume_chunk_v1(")
             .expect("public chunk writer");
-        let body = &source[start..source[start..].find("\n    }").expect("chunk writer end") + start];
-        let lock = body.find("let _write_guard = self.storage_write_guard()?;").expect("shared guard");
+        let body =
+            &source[start..source[start..].find("\n    }").expect("chunk writer end") + start];
+        let lock = body
+            .find("let _write_guard = self.storage_write_guard()?;")
+            .expect("shared guard");
         let recheck = body
             .find("self.require_matching_fast_sync_resume_plan_v1(plan, expected)?;")
             .expect("matching plan must be checked again under guard");
