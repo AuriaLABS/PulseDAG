@@ -150,6 +150,7 @@ impl Storage {
             observed
         };
         let record = ProtocolActivationRecordV1::from_identity(identity).map_err(storage_error)?;
+        let _write_guard = self.storage_write_guard()?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -208,6 +209,7 @@ impl Storage {
             ));
         }
 
+        let _write_guard = self.storage_write_guard()?;
         let meta_cf = self
             .db
             .cf_handle("meta")
