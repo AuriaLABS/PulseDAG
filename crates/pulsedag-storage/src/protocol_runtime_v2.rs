@@ -401,19 +401,8 @@ impl Storage {
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<(), PulseError> {
         require_canonical_activated_v2_identity(expected)?;
-        let _write_guard = self.storage_write_guard()?;
-
-        if self.load_chain_state()?.is_some()
-            || !self.list_blocks()?.is_empty()
-            || self.protocol_activation_record()?.is_some()
-            || self.protocol_monetary_activation_record()?.is_some()
-            || self.activated_v2_p2p_runtime_record()?.is_some()
-            || self.accepted_storage_generation()? != 0
-        {
-            return Err(storage_error(
-                "production-v3 atomic bootstrap requires completely empty storage",
-            ));
-        }
+        let write_guard = self.storage_write_guard()?;
+        self.ensure_production_v3_storage_empty_locked(&write_guard)?;
         if state.chain_id != expected.chain_id {
             return Err(storage_error(format!(
                 "production-v3 bootstrap state chain_id={} does not match expected {}",
@@ -697,6 +686,49 @@ mod tests {
     use pulsedag_core::{
         genesis::init_chain_state, materialize_authoritative_state_v2, ProtocolActivationIdentity,
     };
+
+    #[test]
+    fn production_v3_empty_storage_gate_rejects_non_consensus_namespaces() {
+        let path = temp_db_path("production-v3-non-consensus-empty-gate");
+        let storage = Storage::open(&path).unwrap();
+        let state = pulsedag_core::genesis_v3::init_chain_state_v3(
+            "pulsedag-v3-non-consensus-empty-gate".to_string(),
+            1_800_000_777,
+        )
+        .unwrap();
+        let expected = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let genesis = state.dag.blocks.get(&state.dag.genesis_hash).unwrap();
+        let runtime = ActivatedV2P2pRuntime::default();
+
+        let orphan = genesis.clone();
+        storage.persist_staged_orphan_block(&orphan).unwrap();
+        let error = storage
+            .persist_production_v3_genesis_and_runtime(genesis, &expected, &state, &runtime)
+            .expect_err("orphan namespace must make storage nonempty");
+        assert!(error.to_string().contains("orphan_staged_blocks"));
+
+        storage.delete_staged_orphan_block(&orphan.hash).unwrap();
+        let outpoint = pulsedag_core::types::OutPoint {
+            txid: "fixture".to_string(),
+            vout: 0,
+        };
+        let utxo = pulsedag_core::types::Utxo {
+            value: 1,
+            script_pubkey: "fixture".to_string(),
+        };
+        storage.persist_utxo(&outpoint, &utxo).unwrap();
+        let error = storage
+            .persist_production_v3_genesis_and_runtime(genesis, &expected, &state, &runtime)
+            .expect_err("utxo namespace must make storage nonempty");
+        assert!(error.to_string().contains("utxos"));
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
 
     #[test]
     fn production_v3_empty_storage_gate_is_inside_write_serialization() {
