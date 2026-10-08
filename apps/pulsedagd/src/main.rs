@@ -2418,7 +2418,21 @@ async fn main() -> Result<()> {
                     &persisted_blocks,
                 )
             });
-    let mut chain_state = if startup_protocol.activated_v2() {
+    let mut chain_state = if startup_protocol.production_v3() {
+        let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("production-v3 startup selection is missing its protocol identity")
+        })?;
+        let frozen_timestamp = startup_protocol
+            .production_v3_genesis_timestamp
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "production-v3 startup selection is missing its frozen genesis timestamp"
+                )
+            })?;
+        storage
+            .load_or_init_production_v3_p2p_runtime(expected, frozen_timestamp)?
+            .0
+    } else if startup_protocol.activated_v2() {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
         })?;
@@ -2465,11 +2479,12 @@ async fn main() -> Result<()> {
         }
     }
     chain_state.dag.consensus_mode = cfg.consensus_mode;
-    chain_state.dag.selected_parent_policy = if cfg.consensus_mode.ghostdag_metadata_active() {
-        pulsedag_core::SelectedParentPolicy::GhostdagInspired
-    } else {
-        pulsedag_core::SelectedParentPolicy::LegacyTip
-    };
+    chain_state.dag.selected_parent_policy =
+        if startup_protocol.production_v3() || cfg.consensus_mode.ghostdag_metadata_active() {
+            pulsedag_core::SelectedParentPolicy::GhostdagInspired
+        } else {
+            pulsedag_core::SelectedParentPolicy::LegacyTip
+        };
     let startup_persisted_max_height = persisted_blocks
         .iter()
         .map(|b| b.header.height)
@@ -2773,9 +2788,12 @@ async fn main() -> Result<()> {
     runtime_stats.prune_require_snapshot = cfg.prune_require_snapshot;
     runtime_stats.experimental_ghostdag_selection = cfg.experimental_ghostdag_selection;
     runtime_stats.experimental_fast_cadence = cfg.experimental_fast_cadence;
+    runtime_stats.production_v3_active = startup_protocol.production_v3();
     runtime_stats.consensus_mode = cfg.consensus_mode.to_string();
-    runtime_stats.ghostdag_metadata_active = cfg.consensus_mode.ghostdag_metadata_active();
-    runtime_stats.high_cadence_allowed = cfg.consensus_mode.high_cadence_allowed();
+    runtime_stats.ghostdag_metadata_active =
+        startup_protocol.production_v3() || cfg.consensus_mode.ghostdag_metadata_active();
+    runtime_stats.high_cadence_allowed =
+        startup_protocol.production_v3() || cfg.consensus_mode.high_cadence_allowed();
     runtime_stats.target_block_interval_ms = cfg.target_block_interval_ms;
     runtime_stats.max_parallel_tips = cfg.max_parallel_tips;
     runtime_stats.max_merge_set_size = cfg.max_merge_set_size;
