@@ -689,6 +689,8 @@ pub struct NodeRuntimeStats {
     pub high_cadence_allowed: bool,
     pub experimental_ghostdag_selection: bool,
     pub experimental_fast_cadence: bool,
+    #[serde(default)]
+    pub production_v3_active: bool,
     pub target_block_interval_ms: u64,
     pub max_parallel_tips: usize,
     pub max_merge_set_size: usize,
