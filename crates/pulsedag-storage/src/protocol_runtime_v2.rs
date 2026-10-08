@@ -741,7 +741,9 @@ mod tests {
                 &ActivatedV2P2pRuntime::default(),
             )
             .expect_err("transiently dirty v3 snapshot is not an exact clean genesis");
-        assert!(error.to_string().contains("exact clean single-genesis state"));
+        assert!(error
+            .to_string()
+            .contains("exact clean single-genesis state"));
         assert_eq!(storage.block_count().unwrap(), 0);
         assert!(storage.load_chain_state().unwrap().is_none());
         drop(storage);
