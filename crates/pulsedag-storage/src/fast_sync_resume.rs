@@ -117,6 +117,7 @@ impl Storage {
         expected: &ProtocolActivationIdentity,
     ) -> Result<(), PulseError> {
         plan.validate_for_expected(expected)?;
+        let _write_guard = self.storage_write_guard()?;
         if let Some(persisted) =
             self.persisted_fast_sync_resume_plan_v1(&plan.transfer_id, expected)?
         {
@@ -213,6 +214,7 @@ impl Storage {
         self.ensure_fast_sync_resume_plan_v1(plan, expected)?;
         plan.verify_chunk(chunk_index, chunk)?;
         let key = resume_chunk_key(&plan.transfer_id, chunk_index);
+        let _write_guard = self.storage_write_guard()?;
 
         if let Some(existing) = self
             .db
@@ -290,6 +292,7 @@ impl Storage {
         plan: &FastSyncSnapshotTransferPlanV1,
         expected: &ProtocolActivationIdentity,
     ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         self.require_matching_fast_sync_resume_plan_v1(plan, expected)?;
         let mut batch = WriteBatch::default();
         for chunk_index in 0..plan.chunk_count {
