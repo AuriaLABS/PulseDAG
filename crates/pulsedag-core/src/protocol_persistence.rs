@@ -4,10 +4,12 @@ use sha2::{Digest, Sha256};
 use crate::{
     monetary_v3::{
         monetary_cadence_fingerprint_v3, monetary_policy_fingerprint_v3, MonetaryCadenceSegment,
-        MONETARY_POLICY_FINGERPRINT_V3,
+        MONETARY_POLICY_FINGERPRINT_V3, PRODUCTION_CADENCE_FINGERPRINT_V3, PRODUCTION_CADENCE_V3,
     },
+    ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
     protocol::{ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1},
     state::ChainState,
+    state_replay_v3::REWARD_FINALITY_POLICY_VERSION_V3,
     tx::TRANSACTION_VERSION_V1,
 };
 
@@ -154,6 +156,60 @@ impl ProtocolMonetaryActivationRecordV2 {
             reward_finality_policy_version: reward_finality_policy_version.to_string(),
             binding_fingerprint,
         })
+    }
+
+    fn validate_production_v3_protocol_identity(
+        identity: &ProtocolActivationIdentity,
+    ) -> Result<(), String> {
+        identity.validate()?;
+        let canonical = ProtocolActivationIdentity::activated_v2(
+            identity.chain_id.clone(),
+            identity.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        if identity != &canonical {
+            return Err(
+                "production v3 protocol identity must use the canonical activated-v2 transaction/header/consensus/ordering tuple"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Construct the canonical v3.0.0 production monetary sidecar contract.
+    ///
+    /// This helper deliberately leaves chain ID and genesis identity as explicit
+    /// caller inputs for #1049, while requiring every other protocol field to
+    /// match the canonical activated-v2 production tuple.
+    pub fn from_production_v3_identity(
+        identity: ProtocolActivationIdentity,
+    ) -> Result<Self, String> {
+        Self::validate_production_v3_protocol_identity(&identity)?;
+        let record = Self::from_identity_and_cadence(
+            identity,
+            &PRODUCTION_CADENCE_V3,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )?;
+        record.verify_production_v3(&record.identity)?;
+        Ok(record)
+    }
+
+    /// Require an activation record to match the canonical v3.0.0 production
+    /// protocol + monetary contract.
+    pub fn verify_production_v3(
+        &self,
+        expected: &ProtocolActivationIdentity,
+    ) -> Result<(), String> {
+        Self::validate_production_v3_protocol_identity(expected)?;
+        self.verify_expected(
+            expected,
+            &PRODUCTION_CADENCE_V3,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )?;
+        if self.monetary_cadence_fingerprint != PRODUCTION_CADENCE_FINGERPRINT_V3 {
+            return Err("production v3 monetary cadence fingerprint mismatch".into());
+        }
+        Ok(())
     }
 
     fn compute_binding_fingerprint(
@@ -476,6 +532,85 @@ mod tests {
         assert!(record
             .verify_expected(&expected, &MONETARY_TEST_CADENCE, MONETARY_TEST_FINALITY)
             .is_ok());
+    }
+
+    #[test]
+    fn production_v3_record_binds_frozen_cadence_and_reward_finality() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-production-candidate",
+            "genesis-v3-production-candidate",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let record =
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(expected.clone())
+                .unwrap();
+
+        assert_eq!(record.monetary_cadence_segments, PRODUCTION_CADENCE_V3);
+        assert_eq!(
+            record.monetary_cadence_fingerprint,
+            PRODUCTION_CADENCE_FINGERPRINT_V3
+        );
+        assert_eq!(
+            record.reward_finality_policy_version,
+            REWARD_FINALITY_POLICY_VERSION_V3
+        );
+        record.verify_production_v3(&expected).unwrap();
+
+        let alternate = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &MONETARY_TEST_CADENCE,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+        assert!(alternate.verify_production_v3(&expected).is_err());
+
+        let wrong_finality = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            expected.clone(),
+            &PRODUCTION_CADENCE_V3,
+            MONETARY_TEST_FINALITY,
+        )
+        .unwrap();
+        assert!(wrong_finality.verify_production_v3(&expected).is_err());
+
+        let other_identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-v3-production-other",
+            "genesis-v3-production-other",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        assert!(record.verify_production_v3(&other_identity).is_err());
+
+        let non_activated = ProtocolActivationIdentity {
+            chain_id: expected.chain_id.clone(),
+            genesis_hash: expected.genesis_hash.clone(),
+            transaction_protocol_version: TRANSACTION_VERSION_V1,
+            block_header_protocol_version: BLOCK_HEADER_VERSION_V1,
+            consensus_mode: ProtocolConsensusMode::Legacy,
+            dag_ordering_version: GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+        };
+        assert!(
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(non_activated.clone())
+                .is_err()
+        );
+
+        let non_activated_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            non_activated.clone(),
+            &PRODUCTION_CADENCE_V3,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+        assert!(non_activated_record
+            .verify_production_v3(&non_activated)
+            .is_err());
+
+        let wrong_ordering = ProtocolActivationIdentity::activated_v2(
+            expected.chain_id.clone(),
+            expected.genesis_hash.clone(),
+            "not-production-ordering",
+        );
+        assert!(
+            ProtocolMonetaryActivationRecordV2::from_production_v3_identity(wrong_ordering)
+                .is_err()
+        );
     }
 
     #[test]
