@@ -89,6 +89,12 @@ pub struct NodeRpcSnapshot {
     pub last_consistency_audit_unix: Option<u64>,
     #[serde(default)]
     pub active_alert_count: usize,
+    #[serde(default)]
+    pub production_v3_active: bool,
+    #[serde(default)]
+    pub ghostdag_metadata_active: bool,
+    #[serde(default)]
+    pub high_cadence_allowed: bool,
 }
 
 fn default_storage_mode() -> String {
@@ -143,6 +149,9 @@ impl Default for NodeRpcSnapshot {
             last_consistency_audit_issue_count: 0,
             last_consistency_audit_unix: None,
             active_alert_count: 0,
+            production_v3_active: false,
+            ghostdag_metadata_active: false,
+            high_cadence_allowed: false,
         }
     }
 }
@@ -535,6 +544,9 @@ pub fn build_node_rpc_snapshot(
         last_consistency_audit_issue_count: runtime.last_self_audit_issue_count,
         last_consistency_audit_unix: Some(runtime.started_at_unix),
         active_alert_count: runtime.active_alerts.len(),
+        production_v3_active: runtime.production_v3_active,
+        ghostdag_metadata_active: runtime.ghostdag_metadata_active,
+        high_cadence_allowed: runtime.high_cadence_allowed,
     }
 }
 
