@@ -425,6 +425,22 @@ impl Storage {
                 "production-v3 bootstrap state is not an authoritative v3 snapshot: {error:?}"
             ))
         })?;
+        // A valid multi-block v3 snapshot is not an empty genesis. The batch
+        // below writes only the genesis accepted-block row; match the complete
+        // deterministic clean state, including transient and orphan state.
+        let clean_state = pulsedag_core::genesis_v3::init_chain_state_v3(
+            expected.chain_id.clone(),
+            genesis.header.timestamp,
+        )
+        .map_err(|error| storage_error(format!("production-v3 clean genesis: {error:?}")))?;
+        if serde_json::to_value(state).map_err(|error| storage_error(error.to_string()))?
+            != serde_json::to_value(&clean_state)
+                .map_err(|error| storage_error(error.to_string()))?
+        {
+            return Err(storage_error(
+                "production-v3 bootstrap requires the exact clean single-genesis state and empty transient state",
+            ));
+        }
 
         if genesis.hash != state.dag.genesis_hash {
             return Err(storage_error(
@@ -514,6 +530,13 @@ impl Storage {
             expected, state, runtime,
         )?;
         let _write_guard = self.storage_write_guard()?;
+        // The monetary sidecar can change between preliminary validation and
+        // acquiring this guard. Recheck it before writing the durable bundle.
+        self.verify_persisted_monetary_identity(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+        )?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -564,6 +587,13 @@ impl Storage {
             expected, state, runtime,
         )?;
         let _write_guard = self.storage_write_guard()?;
+        // The monetary sidecar can change between preliminary validation and
+        // acquiring this guard. Recheck it before writing the durable bundle.
+        self.verify_persisted_monetary_identity(
+            expected,
+            cadence_segments,
+            reward_finality_policy_version,
+        )?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -686,6 +716,37 @@ mod tests {
     use pulsedag_core::{
         genesis::init_chain_state, materialize_authoritative_state_v2, ProtocolActivationIdentity,
     };
+
+    #[test]
+    fn production_v3_bootstrap_rejects_dirty_transient_state_without_storage_writes() {
+        let path = temp_db_path("production-v3-must-be-exact-clean-state");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = pulsedag_core::genesis_v3::init_chain_state_v3(
+            "pulsedag-v3-exact-clean-state".to_string(),
+            1_800_000_888,
+        )
+        .unwrap();
+        let expected = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let genesis = state.dag.blocks[&state.dag.genesis_hash].clone();
+        state.accepted_commit_serialized_total = 1;
+        let error = storage
+            .persist_production_v3_genesis_and_runtime(
+                &genesis,
+                &expected,
+                &state,
+                &ActivatedV2P2pRuntime::default(),
+            )
+            .expect_err("transiently dirty v3 snapshot is not an exact clean genesis");
+        assert!(error.to_string().contains("exact clean single-genesis state"));
+        assert_eq!(storage.block_count().unwrap(), 0);
+        assert!(storage.load_chain_state().unwrap().is_none());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
 
     #[test]
     fn production_v3_empty_storage_gate_rejects_non_consensus_namespaces() {
