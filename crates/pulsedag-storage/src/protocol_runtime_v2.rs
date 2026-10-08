@@ -698,6 +698,38 @@ mod tests {
         genesis::init_chain_state, materialize_authoritative_state_v2, ProtocolActivationIdentity,
     };
 
+    #[test]
+    fn production_v3_empty_storage_gate_is_inside_write_serialization() {
+        let source = include_str!("protocol_runtime_v2.rs");
+        let start = source
+            .find("pub fn persist_production_v3_genesis_and_runtime")
+            .expect("production-v3 bootstrap writer");
+        let tail = &source[start..];
+        let end = tail
+            .find("/// Persist a monetary-v3 authoritative chain snapshot")
+            .expect("next production-v3 writer boundary");
+        let body = &tail[..end];
+
+        let lock = body
+            .find("storage_write_guard")
+            .expect("bootstrap write serialization guard");
+        let empty_check = body
+            .find("load_chain_state")
+            .expect("bootstrap empty-storage precheck");
+        let commit = body
+            .rfind(".write(batch)")
+            .expect("bootstrap atomic RocksDB commit");
+
+        assert!(
+            lock < empty_check,
+            "write serialization must be acquired before any empty-storage read"
+        );
+        assert!(
+            empty_check < commit,
+            "empty-storage precheck and final batch commit must remain in one serialized section"
+        );
+    }
+
     fn temp_db_path(test_name: &str) -> String {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
