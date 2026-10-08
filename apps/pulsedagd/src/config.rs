@@ -1351,7 +1351,9 @@ mod tests {
         );
         std::env::set_var("PULSEDAG_CONSENSUS_MODE", "ghostdag_dev");
         let error = Config::from_env().expect_err("ghostdag_dev runtime must be rejected");
-        assert!(error.to_string().contains("requires PULSEDAG_CONSENSUS_MODE=legacy"));
+        assert!(error
+            .to_string()
+            .contains("requires PULSEDAG_CONSENSUS_MODE=legacy"));
         clear_test_env();
     }
 
