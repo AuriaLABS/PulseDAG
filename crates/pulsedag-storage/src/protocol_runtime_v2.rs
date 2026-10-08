@@ -259,6 +259,7 @@ impl Storage {
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<(), PulseError> {
         let record = ActivatedV2P2pRuntimeRecordV1::from_runtime(expected, state, runtime)?;
+        let _write_guard = self.storage_write_guard()?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -300,6 +301,7 @@ impl Storage {
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<(), PulseError> {
         let record = ActivatedV2P2pRuntimeRecordV1::from_runtime(expected, state, runtime)?;
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -399,6 +401,7 @@ impl Storage {
         runtime: &ActivatedV2P2pRuntime,
     ) -> Result<(), PulseError> {
         require_canonical_activated_v2_identity(expected)?;
+        let _write_guard = self.storage_write_guard()?;
 
         if self.load_chain_state()?.is_some()
             || !self.list_blocks()?.is_empty()
@@ -521,6 +524,7 @@ impl Storage {
         let record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
             expected, state, runtime,
         )?;
+        let _write_guard = self.storage_write_guard()?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -570,6 +574,7 @@ impl Storage {
         let record = ActivatedV2P2pRuntimeRecordV1::from_runtime_after_state_verification(
             expected, state, runtime,
         )?;
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
