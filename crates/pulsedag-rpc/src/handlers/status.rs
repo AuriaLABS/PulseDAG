@@ -483,7 +483,13 @@ pub async fn get_status<S: RpcStateLike>(
         snapshot_chain(&chain)
     };
     let runtime_handle = state.runtime();
-    let (keep_recent, uptime_secs, sync_state) = {
+    let (
+        keep_recent,
+        uptime_secs,
+        sync_state,
+        runtime_ghostdag_metadata_active,
+        runtime_high_cadence_allowed,
+    ) = {
         let runtime = match read_runtime_for_rpc(&runtime_handle, "/status").await {
             Ok(runtime) => runtime,
             Err(e) => {
@@ -499,7 +505,13 @@ pub async fn get_status<S: RpcStateLike>(
             .map(|d| d.as_secs())
             .unwrap_or(0)
             .saturating_sub(runtime.started_at_unix);
-        (keep_recent, uptime_secs, runtime.sync_state.clone())
+        (
+            keep_recent,
+            uptime_secs,
+            runtime.sync_state.clone(),
+            runtime.ghostdag_metadata_active,
+            runtime.high_cadence_allowed,
+        )
     };
     let recommended_keep_from_height = chain_snapshot
         .best_height
@@ -537,8 +549,10 @@ pub async fn get_status<S: RpcStateLike>(
         protocol_consensus_mode,
         protocol_identity,
         protocol_identity_fingerprint,
-        ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active,
-        high_cadence_allowed: chain_snapshot.high_cadence_allowed,
+        ghostdag_metadata_active:
+            runtime_ghostdag_metadata_active || chain_snapshot.ghostdag_metadata_active,
+        high_cadence_allowed:
+            runtime_high_cadence_allowed || chain_snapshot.high_cadence_allowed,
         tip_count: chain_snapshot.tip_count,
         orphan_count: chain_snapshot.orphan_count,
         mempool_size: chain_snapshot.mempool_size,
@@ -962,6 +976,25 @@ mod tests {
             data.ordered_dag_digest.as_deref(),
             Some(expected_ordered.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn status_reports_runtime_authorized_production_cadence_on_legacy_chain() {
+        let state = mk_state(base_status(P2P_MODE_MEMORY_SIMULATED));
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.production_v3_active = true;
+            runtime.ghostdag_metadata_active = true;
+            runtime.high_cadence_allowed = true;
+        }
+
+        let Json(resp) = get_status(State(state)).await;
+        let data = resp.data.expect("production-v3 status data should exist");
+
+        assert!(resp.ok);
+        assert_eq!(data.consensus_mode, "legacy");
+        assert!(data.ghostdag_metadata_active);
+        assert!(data.high_cadence_allowed);
     }
 
     #[test]
