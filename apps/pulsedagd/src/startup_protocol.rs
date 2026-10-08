@@ -104,6 +104,13 @@ impl StartupProtocolSelection {
     pub fn production_v3(&self) -> bool {
         self.mode == StartupProtocolMode::MonetaryV3
     }
+
+    /// Generic v2 FastSync imports validate only the v2 authoritative state
+    /// contract. Production monetary-v3 must stay off that path until a
+    /// monetary-v3-specific verifier/importer exists.
+    pub fn generic_v2_fast_sync_allowed(&self) -> bool {
+        self.mode == StartupProtocolMode::GhostdagV1
+    }
 }
 
 pub fn select_startup_protocol(
@@ -261,6 +268,7 @@ mod tests {
         )
         .unwrap();
         assert!(selected.activated_v2());
+        assert!(selected.generic_v2_fast_sync_allowed());
         let identity = selected.restore_identity.as_ref().unwrap();
         let capabilities = selected.local_capabilities.as_ref().unwrap();
 
@@ -291,6 +299,7 @@ mod tests {
         .unwrap();
         assert!(selected.activated_v2());
         assert!(selected.production_v3());
+        assert!(!selected.generic_v2_fast_sync_allowed());
         assert_eq!(selected.production_v3_genesis_timestamp, Some(timestamp));
 
         let identity = selected.restore_identity.as_ref().unwrap();
