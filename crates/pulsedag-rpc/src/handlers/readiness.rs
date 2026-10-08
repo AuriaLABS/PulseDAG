@@ -222,7 +222,10 @@ fn high_cadence_status_category_with_production(
         if experimental_fast_cadence {
             return category(
                 ReadinessStatus::Fail,
-                vec!["production-v3 cadence must not use the experimental fast-cadence gate".to_string()],
+                vec![
+                    "production-v3 cadence must not use the experimental fast-cadence gate"
+                        .to_string(),
+                ],
             );
         }
         if target_block_interval_ms != production_interval_ms {
