@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use pulsedag_core::ConsensusMode;
+use pulsedag_core::{ConsensusMode, PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3};
 use std::{net::SocketAddr, path::Path};
 
 #[derive(Debug, Clone)]
@@ -104,6 +104,16 @@ impl ConfigProfile {
             ),
         }
     }
+}
+
+fn production_v3_protocol_selected() -> bool {
+    std::env::var("PULSEDAG_PROTOCOL_CONSENSUS_MODE")
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("monetary_v3"))
+}
+
+fn production_v3_target_interval_ms() -> u64 {
+    PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000
 }
 
 impl Config {
@@ -745,6 +755,30 @@ impl Config {
 
     fn apply_experimental_guards(&mut self, fast_cadence_profile: &str) -> Result<()> {
         self.experimental_ghostdag_selection = self.consensus_mode == ConsensusMode::GhostdagDev;
+
+        if production_v3_protocol_selected() {
+            if self.consensus_mode != ConsensusMode::Legacy {
+                bail!(
+                    "PULSEDAG_PROTOCOL_CONSENSUS_MODE=monetary_v3 requires PULSEDAG_CONSENSUS_MODE=legacy"
+                );
+            }
+            if self.experimental_fast_cadence || self.experimental_ghostdag_selection {
+                bail!(
+                    "PULSEDAG_PROTOCOL_CONSENSUS_MODE=monetary_v3 is production cadence, not experimental ghostdag/fast-cadence mode"
+                );
+            }
+            let expected_ms = production_v3_target_interval_ms();
+            if self.target_block_interval_ms != expected_ms {
+                bail!(
+                    "PULSEDAG_PROTOCOL_CONSENSUS_MODE=monetary_v3 requires the frozen production interval {expected_ms}ms; configured {}ms",
+                    self.target_block_interval_ms
+                );
+            }
+            self.target_block_interval_secs = self.target_block_interval_ms.div_ceil(1_000).max(1);
+            self.max_parallel_tips = 1;
+            return Ok(());
+        }
+
         if self.experimental_fast_cadence && !self.experimental_ghostdag_selection {
             bail!("--experimental-fast-cadence requires --experimental-ghostdag-selection");
         }
@@ -1184,6 +1218,7 @@ mod tests {
             "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
             "PULSEDAG_CONSENSUS_MODE",
             "PULSEDAG_PROTOCOL_CONSENSUS_MODE",
+            "PULSEDAG_V3_GENESIS_TIMESTAMP",
             "PULSEDAG_MAX_PARALLEL_TIPS",
             "PULSEDAG_MAX_MERGE_SET_SIZE",
             "PULSEDAG_MAX_ORPHAN_COUNT",
@@ -1267,6 +1302,57 @@ mod tests {
             cfg.target_block_interval_secs,
             pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
         );
+    }
+
+    #[test]
+    fn monetary_v3_requires_exact_frozen_production_interval() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_PROTOCOL_CONSENSUS_MODE", "monetary_v3");
+        std::env::set_var(
+            "PULSEDAG_TARGET_BLOCK_INTERVAL_MS",
+            production_v3_target_interval_ms().to_string(),
+        );
+        let cfg = Config::from_env().expect("production v3 config");
+        assert_eq!(
+            cfg.target_block_interval_ms,
+            production_v3_target_interval_ms()
+        );
+        assert_eq!(cfg.consensus_mode, ConsensusMode::Legacy);
+        assert!(!cfg.experimental_fast_cadence);
+        assert!(!cfg.experimental_ghostdag_selection);
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_PROTOCOL_CONSENSUS_MODE", "monetary_v3");
+        std::env::set_var("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", "250");
+        let error = Config::from_env().expect_err("alternate production cadence must fail");
+        assert!(error.to_string().contains("frozen production interval"));
+        clear_test_env();
+    }
+
+    #[test]
+    fn monetary_v3_rejects_experimental_runtime_flags() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_PROTOCOL_CONSENSUS_MODE", "monetary_v3");
+        std::env::set_var(
+            "PULSEDAG_TARGET_BLOCK_INTERVAL_MS",
+            production_v3_target_interval_ms().to_string(),
+        );
+        std::env::set_var("PULSEDAG_EXPERIMENTAL_FAST_CADENCE", "true");
+        let error = Config::from_env().expect_err("experimental fast cadence must be rejected");
+        assert!(error.to_string().contains("production cadence"));
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_PROTOCOL_CONSENSUS_MODE", "monetary_v3");
+        std::env::set_var(
+            "PULSEDAG_TARGET_BLOCK_INTERVAL_MS",
+            production_v3_target_interval_ms().to_string(),
+        );
+        std::env::set_var("PULSEDAG_CONSENSUS_MODE", "ghostdag_dev");
+        let error = Config::from_env().expect_err("ghostdag_dev runtime must be rejected");
+        assert!(error.to_string().contains("requires PULSEDAG_CONSENSUS_MODE=legacy"));
+        clear_test_env();
     }
 
     #[test]
