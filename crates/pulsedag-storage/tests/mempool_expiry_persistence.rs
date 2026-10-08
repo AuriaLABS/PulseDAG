@@ -15,9 +15,6 @@ use pulsedag_core::{
 use pulsedag_storage::{Storage, STORAGE_SCHEMA_VERSION};
 use serde::Serialize;
 
-const CHAIN_STATE_KEY: &[u8] = b"chain_state";
-const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
-const MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_orphan_admission_height_v1";
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
