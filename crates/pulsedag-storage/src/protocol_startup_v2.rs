@@ -301,7 +301,9 @@ mod tests {
         let error = storage
             .persist_production_v3_genesis_and_runtime(genesis, &expected, &state, &runtime)
             .expect_err("direct production bootstrap must reject nonempty storage");
-        assert!(error.to_string().contains("completely empty storage"));
+        assert!(error
+            .to_string()
+            .contains("production-v3 atomic bootstrap"));
 
         let preserved = storage.load_chain_state().unwrap().unwrap();
         assert_eq!(preserved.dag.genesis_hash, legacy_genesis);
