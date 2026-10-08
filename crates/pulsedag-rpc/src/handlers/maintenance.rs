@@ -153,11 +153,9 @@ mod tests {
             .expect("best-height block")
             .clone();
         storage.persist_block(&genesis).expect("persist block");
-        let mut corrupt_snapshot = chain.clone();
-        corrupt_snapshot.dag.best_height = 99;
         storage
-            .persist_chain_state(&corrupt_snapshot)
-            .expect("persist corrupt semantic snapshot");
+            .write_legacy_chain_state_fixture(b"corrupt-snapshot")
+            .expect("persist corrupt snapshot fixture");
 
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
