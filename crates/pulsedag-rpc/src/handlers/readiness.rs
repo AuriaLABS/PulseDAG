@@ -388,6 +388,26 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         "rpc_snapshot".to_string(),
         category(ReadinessStatus::Warn, vec![reason.clone()]),
     );
+    if snapshot.production_v3_active {
+        categories.insert(
+            "production_v3_launch_authorization".to_string(),
+            category(
+                ReadinessStatus::Warn,
+                vec![
+                    "production-v3 runtime is active, but exact #1049 network identity and #781 launch authorization remain pending"
+                        .to_string(),
+                ],
+            ),
+        );
+    }
+    let mut release_blockers =
+        vec!["fresh liveness state unavailable; serving degraded snapshot".to_string()];
+    if snapshot.production_v3_active {
+        release_blockers.push(
+            "production_v3_launch_authorization: exact #1049 network identity and #781 launch authorization remain pending"
+                .to_string(),
+        );
+    }
     ReadinessData {
         effective_rpc_bind: std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
             .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
@@ -427,12 +447,10 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
             storage_last_commit_height: None,
             state_root: None,
             consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
-            ghostdag_metadata_active: false,
-            high_cadence_allowed: false,
+            ghostdag_metadata_active: snapshot.ghostdag_metadata_active,
+            high_cadence_allowed: snapshot.high_cadence_allowed,
         },
-        release_blockers: vec![
-            "fresh liveness state unavailable; serving degraded snapshot".to_string(),
-        ],
+        release_blockers,
         warnings: vec![format!("rpc_degraded_response: {reason}")],
     }
 }
@@ -1036,6 +1054,32 @@ pub async fn get_readiness<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn degraded_snapshot_preserves_production_authority_and_launch_blocker() {
+        let snapshot = NodeRpcSnapshot {
+            chain_id: "pulsedag-v3-candidate".to_string(),
+            production_v3_active: true,
+            ghostdag_metadata_active: true,
+            high_cadence_allowed: true,
+            degraded: true,
+            stale: true,
+            degraded_reason: Some("fixture degraded".to_string()),
+            ..NodeRpcSnapshot::default()
+        };
+
+        let data = readiness_from_rpc_snapshot(snapshot);
+        assert!(data.metrics.ghostdag_metadata_active);
+        assert!(data.metrics.high_cadence_allowed);
+        assert!(!data.ready_for_release);
+        assert!(data
+            .categories
+            .contains_key("production_v3_launch_authorization"));
+        assert!(data
+            .release_blockers
+            .iter()
+            .any(|blocker| blocker.contains("production_v3_launch_authorization")));
+    }
 
     #[test]
     fn readiness_status_serializes_lowercase_values() {
