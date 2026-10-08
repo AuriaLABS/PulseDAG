@@ -2640,9 +2640,7 @@ async fn main() -> Result<()> {
         }
         if startup_protocol.generic_v2_fast_sync_allowed() {
             let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "generic-v2 fast-sync selection is missing its protocol identity"
-                )
+                anyhow::anyhow!("generic-v2 fast-sync selection is missing its protocol identity")
             })?;
             stack.handle.configure_fast_sync_capabilities_v1(
                 fast_sync_bootstrap::local_fast_sync_capabilities_v1(expected)?,
