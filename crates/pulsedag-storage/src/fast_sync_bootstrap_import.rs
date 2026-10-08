@@ -63,6 +63,7 @@ impl Storage {
         };
         runtime_record.verify_expected(expected, &imported_state)?;
 
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
