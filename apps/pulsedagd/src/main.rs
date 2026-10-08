@@ -2408,7 +2408,7 @@ async fn main() -> Result<()> {
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
-    let clean_fast_sync_bootstrap = startup_protocol.activated_v2()
+    let clean_fast_sync_bootstrap = startup_protocol.generic_v2_fast_sync_allowed()
         && startup_protocol
             .restore_identity
             .as_ref()
@@ -2638,15 +2638,17 @@ async fn main() -> Result<()> {
                 .handle
                 .configure_protocol_capabilities_v1(capabilities)?;
         }
-        if startup_protocol.activated_v2() {
+        if startup_protocol.generic_v2_fast_sync_allowed() {
             let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "activated-v2 startup selection is missing fast-sync protocol identity"
+                    "generic-v2 fast-sync selection is missing its protocol identity"
                 )
             })?;
             stack.handle.configure_fast_sync_capabilities_v1(
                 fast_sync_bootstrap::local_fast_sync_capabilities_v1(expected)?,
             )?;
+        }
+        if startup_protocol.activated_v2() {
             stack.handle.configure_compact_relay_capabilities_v1(
                 CompactRelayCapabilitiesV1::canonical(cfg.chain_id.as_str()),
             )?;
@@ -2884,7 +2886,7 @@ async fn main() -> Result<()> {
     }));
     let task27_recovery_active = Arc::new(AtomicBool::new(false));
 
-    let fast_sync_daemon_runtime = if startup_protocol.activated_v2() {
+    let fast_sync_daemon_runtime = if startup_protocol.generic_v2_fast_sync_allowed() {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing fast-sync identity")
         })?;
