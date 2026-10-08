@@ -749,20 +749,50 @@ mod tests {
             .find("storage_write_guard")
             .expect("bootstrap write serialization guard");
         let empty_check = body
-            .find("load_chain_state")
-            .expect("bootstrap empty-storage precheck");
+            .find("ensure_production_v3_storage_empty_locked")
+            .expect("centralized bootstrap empty-storage precheck");
         let commit = body
             .rfind(".write(batch)")
             .expect("bootstrap atomic RocksDB commit");
 
         assert!(
             lock < empty_check,
-            "write serialization must be acquired before any empty-storage read"
+            "write serialization must be acquired before the centralized empty-storage gate"
         );
         assert!(
             empty_check < commit,
-            "empty-storage precheck and final batch commit must remain in one serialized section"
+            "empty-storage gate and final batch commit must remain in one serialized section"
         );
+
+        let storage_source = include_str!("lib.rs");
+        let helper_start = storage_source
+            .find("pub(crate) fn ensure_production_v3_storage_empty_locked")
+            .expect("centralized production-v3 empty-storage helper");
+        let helper_tail = &storage_source[helper_start..];
+        let helper_end = helper_tail
+            .find("#[doc(hidden)]")
+            .expect("fixture helper boundary");
+        let helper = &helper_tail[..helper_end];
+        assert!(
+            helper.contains("_write_guard: &MutexGuard"),
+            "empty-storage helper must require the caller-held write guard"
+        );
+        for namespace in [
+            "ACCEPTED_BLOCKS_CF",
+            "ORPHAN_STAGED_BLOCKS_CF",
+            "TERMINAL_MISSING_PARENT_CF",
+            "REJECTED_BLOCK_DIAGNOSTICS_CF",
+            "\"utxos\"",
+            "\"contracts_meta\"",
+            "\"contracts_storage\"",
+            "\"contracts_receipts\"",
+            "\"meta\"",
+        ] {
+            assert!(
+                helper.contains(namespace),
+                "empty-storage helper must inspect namespace {namespace}"
+            );
+        }
     }
 
     fn temp_db_path(test_name: &str) -> String {
