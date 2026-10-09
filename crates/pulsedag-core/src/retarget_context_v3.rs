@@ -13,6 +13,8 @@ use thiserror::Error;
 
 use crate::{
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
+    pow::{bits_from_target, target_from_bits},
+    retarget::{consensus_min_target, consensus_pow_limit_target},
     retarget_v3::{
         expected_difficulty_for_v3_window_ns, V3RetargetDecision, V3RetargetSample,
         V3SubsecondConsensusError, PRODUCTION_V3_RETARGET_WINDOW,
@@ -34,6 +36,8 @@ pub enum V3SelectedParentWindowError {
     HeaderHashMismatch { hash: BlockId, computed: BlockId },
     #[error("v3 non-genesis header {0} has no selected-parent identity")]
     MissingNonGenesisSelection(BlockId),
+    #[error("v3 header {hash} has invalid/noncanonical compact difficulty {bits:#010x}")]
+    InvalidTargetBits { hash: BlockId, bits: u32 },
     #[error("v3 selected parent {parent} is not listed by header {hash}")]
     ParentNotListed { hash: BlockId, parent: BlockId },
     #[error("v3 selected parent height is not lower: header {hash}, parent {parent}")]
@@ -92,6 +96,17 @@ pub fn selected_parent_retarget_window_v3_ns(
                     parent: current,
                 });
             }
+        }
+
+        let target = target_from_bits(header.difficulty);
+        if header.difficulty != bits_from_target(&target)
+            || target < consensus_min_target()
+            || target > consensus_pow_limit_target()
+        {
+            return Err(V3SelectedParentWindowError::InvalidTargetBits {
+                hash: current,
+                bits: header.difficulty,
+            });
         }
 
         samples.push(V3RetargetSample {
@@ -271,6 +286,22 @@ mod tests {
             selected_parent_retarget_window_v3_ns(CHAIN, &tip, &headers, &selected),
             Err(V3SelectedParentWindowError::HeaderHashMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn authenticated_header_with_noncanonical_pow_bits_cannot_feed_retarget() {
+        let mut headers = BTreeMap::new();
+        let mut selected = BTreeMap::new();
+        let mut invalid = header(vec![], 0, BASE);
+        // Hash commitment alone does not imply a canonical compact PoW target.
+        invalid.difficulty = 0;
+        let hash = compute_block_hash_v3(&invalid, CHAIN).unwrap();
+        headers.insert(hash.clone(), invalid);
+        selected.insert(hash.clone(), None);
+        assert_eq!(
+            selected_parent_retarget_window_v3_ns(CHAIN, &hash, &headers, &selected),
+            Err(V3SelectedParentWindowError::InvalidTargetBits { hash, bits: 0 })
+        );
     }
 
     #[test]
