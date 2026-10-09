@@ -81,6 +81,14 @@ pub struct NodeRpcSnapshot {
     pub storage_mode: String,
     #[serde(default = "default_startup_mode")]
     pub startup_mode: String,
+    // Retain production authority in stale/degraded responses. Without these,
+    // status/readiness can silently forget the v3 launch blocker.
+    #[serde(default)]
+    pub production_v3_active: bool,
+    #[serde(default)]
+    pub ghostdag_metadata_active: bool,
+    #[serde(default)]
+    pub high_cadence_allowed: bool,
     #[serde(default)]
     pub last_consistency_audit_ok: bool,
     #[serde(default)]
@@ -139,6 +147,9 @@ impl Default for NodeRpcSnapshot {
             sync_state: "unknown".to_string(),
             storage_mode: default_storage_mode(),
             startup_mode: default_startup_mode(),
+            production_v3_active: false,
+            ghostdag_metadata_active: false,
+            high_cadence_allowed: false,
             last_consistency_audit_ok: false,
             last_consistency_audit_issue_count: 0,
             last_consistency_audit_unix: None,
@@ -531,6 +542,9 @@ pub fn build_node_rpc_snapshot(
         sync_state: runtime.sync_state.clone(),
         storage_mode: default_storage_mode(),
         startup_mode: runtime.startup_recovery_mode.clone(),
+        production_v3_active: runtime.production_v3_active,
+        ghostdag_metadata_active: runtime.ghostdag_metadata_active,
+        high_cadence_allowed: runtime.high_cadence_allowed,
         last_consistency_audit_ok: runtime.last_self_audit_ok,
         last_consistency_audit_issue_count: runtime.last_self_audit_issue_count,
         last_consistency_audit_unix: Some(runtime.started_at_unix),
@@ -689,6 +703,8 @@ pub struct NodeRuntimeStats {
     pub high_cadence_allowed: bool,
     pub experimental_ghostdag_selection: bool,
     pub experimental_fast_cadence: bool,
+    #[serde(default)]
+    pub production_v3_active: bool,
     pub target_block_interval_ms: u64,
     pub max_parallel_tips: usize,
     pub max_merge_set_size: usize,
