@@ -8,9 +8,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::{
-    errors::PulseError,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    selection_v2::GHOSTDAG_V1_MAX_PARENTS,
+    errors::PulseError, protocol::BLOCK_HEADER_VERSION_V3, selection_v2::GHOSTDAG_V1_MAX_PARENTS,
     types::BlockId,
 };
 
@@ -143,8 +141,7 @@ pub fn compute_block_hash_v3(
 mod tests {
     use super::*;
     use crate::{
-        header_v2::canonical_block_header_bytes_v2,
-        protocol::BLOCK_HEADER_VERSION_V2,
+        header_v2::canonical_block_header_bytes_v2, protocol::BLOCK_HEADER_VERSION_V2,
         types::BlockHeader,
     };
 
@@ -168,7 +165,10 @@ mod tests {
     fn v3_commits_independent_nanosecond_precision_and_chain_domain() {
         let a = header(BASE_NS + 100_000_000);
         let b = header(BASE_NS + 600_000_000);
-        assert_eq!(a.timestamp_ns / 1_000_000_000, b.timestamp_ns / 1_000_000_000);
+        assert_eq!(
+            a.timestamp_ns / 1_000_000_000,
+            b.timestamp_ns / 1_000_000_000
+        );
         assert_ne!(
             canonical_block_header_bytes_v3(&a, "pulsedag-v3-testnet").unwrap(),
             canonical_block_header_bytes_v3(&b, "pulsedag-v3-testnet").unwrap()
@@ -244,6 +244,9 @@ mod tests {
             bytes,
             canonical_block_header_bytes_v3(&candidate, "pulsedag-test").unwrap()
         );
-        assert_eq!(bytes, canonical_block_header_bytes_v3(&candidate, "pulsedag-test").unwrap());
+        assert_eq!(
+            bytes,
+            canonical_block_header_bytes_v3(&candidate, "pulsedag-test").unwrap()
+        );
     }
 }
