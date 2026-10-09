@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock, RwLock as StdRwLock,
     },
 };
@@ -215,8 +215,8 @@ impl NodeRpcSnapshotStore {
                             .to_string(),
                     ),
                     production_v3_active: self.production_v3_seen.load(Ordering::Acquire),
-                    ghostdag_metadata_active:
-                        capability_bits & RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT != 0,
+                    ghostdag_metadata_active: capability_bits & RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT
+                        != 0,
                     high_cadence_allowed: capability_bits & RPC_SNAPSHOT_HIGH_CADENCE_BIT != 0,
                     ..NodeRpcSnapshot::default()
                 }
