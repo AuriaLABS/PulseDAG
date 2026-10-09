@@ -114,6 +114,13 @@ pub fn selected_parent_retarget_window_v3_ns(
             bits: header.difficulty,
         });
 
+        // A fully authenticated 20-sample window is self-contained. Its
+        // oldest member may be a retained/pruned boundary without any older
+        // selected-parent metadata; do not demand the 21st ancestor.
+        if samples.len() == PRODUCTION_V3_RETARGET_WINDOW {
+            break;
+        }
+
         let selected = selected_parents
             .get(&current)
             .ok_or_else(|| V3SelectedParentWindowError::MissingSelection(current.clone()))?;
@@ -135,9 +142,6 @@ pub fn selected_parent_retarget_window_v3_ns(
             }
         };
 
-        if samples.len() == PRODUCTION_V3_RETARGET_WINDOW {
-            break;
-        }
         previous_child = Some((current, header.height));
         current = selected_parent;
     }
@@ -361,6 +365,52 @@ mod tests {
                 V3SubsecondConsensusError::NonMonotonicWindow
             ))
         );
+    }
+
+    #[test]
+    fn fully_retained_twenty_samples_do_not_require_pruned_parent_metadata() {
+        let mut headers = BTreeMap::new();
+        let mut selected = BTreeMap::new();
+        let mut tip = insert(&mut headers, &mut selected, vec![], None, 0, BASE);
+        let mut hashes = vec![tip.clone()];
+        for height in 1..=24u64 {
+            tip = insert(
+                &mut headers,
+                &mut selected,
+                vec![tip.clone()],
+                Some(tip),
+                height,
+                BASE + height * 500_000_000,
+            );
+            hashes.push(tip.clone());
+        }
+
+        // Height 5 is the oldest of the 20 retained headers [5..=24].
+        // Pruned snapshots may clear that selected-parent edge and remove
+        // every predecessor. None of these older records is required for
+        // difficulty computation from the complete retained window.
+        for removed in hashes.iter().take(5) {
+            headers.remove(removed);
+            selected.remove(removed);
+        }
+        selected.remove(&hashes[5]);
+
+        let window =
+            selected_parent_retarget_window_v3_ns(CHAIN, &tip, &headers, &selected).unwrap();
+        assert_eq!(window.len(), PRODUCTION_V3_RETARGET_WINDOW);
+        assert_eq!(window[0].timestamp_ns, BASE + 24 * 500_000_000);
+        assert_eq!(window[19].timestamp_ns, BASE + 5 * 500_000_000);
+        let decision =
+            expected_difficulty_for_selected_parent_v3_ns(CHAIN, &tip, &headers, &selected)
+                .unwrap();
+        assert_eq!(decision.average_interval_ns, 500_000_000);
+
+        // Pruning inside the required 20-sample boundary still fails closed.
+        headers.remove(&hashes[6]);
+        assert!(matches!(
+            selected_parent_retarget_window_v3_ns(CHAIN, &tip, &headers, &selected),
+            Err(V3SelectedParentWindowError::MissingHeader(_))
+        ));
     }
 
     #[test]
