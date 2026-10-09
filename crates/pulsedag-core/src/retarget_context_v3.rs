@@ -113,7 +113,11 @@ pub fn selected_parent_retarget_window_v3_ns(
                 parent.clone()
             }
             None if header.height == 0 => break,
-            None => return Err(V3SelectedParentWindowError::MissingNonGenesisSelection(current)),
+            None => {
+                return Err(V3SelectedParentWindowError::MissingNonGenesisSelection(
+                    current,
+                ))
+            }
         };
 
         if samples.len() == PRODUCTION_V3_RETARGET_WINDOW {
@@ -293,7 +297,9 @@ mod tests {
         selected.insert(first.clone(), None);
         assert_eq!(
             selected_parent_retarget_window_v3_ns(CHAIN, &first, &headers, &selected),
-            Err(V3SelectedParentWindowError::MissingNonGenesisSelection(first))
+            Err(V3SelectedParentWindowError::MissingNonGenesisSelection(
+                first
+            ))
         );
     }
 
