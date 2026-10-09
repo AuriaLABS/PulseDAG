@@ -5,6 +5,7 @@ pub mod apply;
 pub mod based_app_state_v0;
 pub mod based_app_v0;
 pub mod block_envelope_v3;
+pub mod candidate_context_v3;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
 pub mod consensus_metadata;
