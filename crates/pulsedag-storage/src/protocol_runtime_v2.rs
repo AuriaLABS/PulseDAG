@@ -440,8 +440,7 @@ impl Storage {
             != serde_json::to_value(&clean_state)
                 .map_err(|error| storage_error(error.to_string()))?
             || state.mempool.admission_height != clean_state.mempool.admission_height
-            || state.mempool.orphan_admission_height
-                != clean_state.mempool.orphan_admission_height
+            || state.mempool.orphan_admission_height != clean_state.mempool.orphan_admission_height
         {
             return Err(storage_error(
                 "production-v3 bootstrap requires the exact clean single-genesis state and empty transient state",
@@ -786,12 +785,7 @@ mod tests {
                     .insert("admission-fixture".to_string(), 1);
             }
             let error = storage
-                .persist_production_v3_genesis_and_runtime(
-                    &genesis,
-                    &expected,
-                    &state,
-                    &runtime,
-                )
+                .persist_production_v3_genesis_and_runtime(&genesis, &expected, &state, &runtime)
                 .expect_err("serde-skipped admission data must prevent production bootstrap");
             assert!(error
                 .to_string()
