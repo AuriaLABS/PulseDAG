@@ -56,7 +56,9 @@ pub fn preflight_v3_candidate_context(
         ));
     }
     if !candidate.header.parents.contains(selected_parent) {
-        return Err(invalid("v3 selected parent is not listed in candidate header"));
+        return Err(invalid(
+            "v3 selected parent is not listed in candidate header",
+        ));
     }
 
     let mut greatest_parent_height = 0u64;
@@ -119,10 +121,8 @@ pub fn preflight_v3_candidate_context(
 mod tests {
     use super::*;
     use crate::{
-        block_envelope_v3::build_block_envelope_v3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        types::compute_merkle_root,
+        block_envelope_v3::build_block_envelope_v3, pow_v3::evaluate_v3_header_pow,
+        protocol::BLOCK_HEADER_VERSION_V3, types::compute_merkle_root,
     };
 
     const CHAIN: &str = "pulsedag-v3-context-candidate";
@@ -214,12 +214,7 @@ mod tests {
         .is_err());
         headers.remove(&genesis);
         assert!(preflight_v3_candidate_context(
-            &candidate,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
     }
@@ -230,12 +225,7 @@ mod tests {
         let candidate = mine_candidate(&genesis, BASE_NS + 500_000_000);
         headers.get_mut(&genesis).unwrap().nonce += 1;
         assert!(preflight_v3_candidate_context(
-            &candidate,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
 
@@ -257,12 +247,7 @@ mod tests {
         stale.header.timestamp_ns = BASE_NS;
         stale.hash = compute_block_hash_v3(&stale.header, CHAIN).unwrap();
         assert!(preflight_v3_candidate_context(
-            &stale,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &stale, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
 
@@ -270,12 +255,7 @@ mod tests {
         future.header.timestamp_ns = BASE_NS + 2_000_000_000;
         future.hash = compute_block_hash_v3(&future.header, CHAIN).unwrap();
         assert!(preflight_v3_candidate_context(
-            &future,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &future, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
     }
@@ -287,12 +267,7 @@ mod tests {
         candidate.header.difficulty = 0x1e0f_ffff;
         candidate.hash = compute_block_hash_v3(&candidate.header, CHAIN).unwrap();
         assert!(preflight_v3_candidate_context(
-            &candidate,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
 
@@ -309,12 +284,7 @@ mod tests {
         }
         assert!(found_rejected);
         assert!(preflight_v3_candidate_context(
-            &candidate,
-            CHAIN,
-            &genesis,
-            &headers,
-            &selected,
-            BASE_NS,
+            &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
     }
