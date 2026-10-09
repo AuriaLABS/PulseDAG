@@ -10,14 +10,13 @@ use crate::{
     monetary_v3::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3,
     pow::{bits_from_target, target_from_bits},
     retarget::{
-        consensus_min_target, consensus_pow_limit_target, consensus_target_multiplier_bps_from_work_multiplier,
-        scale_target_ratio,
+        consensus_min_target, consensus_pow_limit_target,
+        consensus_target_multiplier_bps_from_work_multiplier, scale_target_ratio,
     },
 };
 
 pub const PRODUCTION_V3_RETARGET_WINDOW: usize = 20;
-pub const PRODUCTION_V3_MAX_FUTURE_DRIFT_NS: u64 =
-    PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 * 2;
+pub const PRODUCTION_V3_MAX_FUTURE_DRIFT_NS: u64 = PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 * 2;
 const BASIS_POINTS: u64 = 10_000;
 const DEADBAND_BPS: u64 = 800;
 const MIN_WORK_MULTIPLIER_BPS: u64 = 8_000;
@@ -61,16 +60,15 @@ pub enum V3SubsecondConsensusError {
 fn retarget_work_multiplier_bps(average_interval_ns: u64) -> u64 {
     // The nonzero average is checked in the caller. u128 intermediate keeps
     // every u64 nanosecond input deterministic without saturating products.
-    let raw = u128::from(PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3)
-        * u128::from(BASIS_POINTS)
+    let raw = u128::from(PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3) * u128::from(BASIS_POINTS)
         / u128::from(average_interval_ns.max(1));
     let lower = u128::from(BASIS_POINTS - DEADBAND_BPS);
     let upper = u128::from(BASIS_POINTS + DEADBAND_BPS);
     if (lower..=upper).contains(&raw) {
         return BASIS_POINTS;
     }
-    let damped = i128::from(BASIS_POINTS) +
-        ((raw as i128 - i128::from(BASIS_POINTS)) / DAMPING_DIVISOR);
+    let damped =
+        i128::from(BASIS_POINTS) + ((raw as i128 - i128::from(BASIS_POINTS)) / DAMPING_DIVISOR);
     (damped as u64).clamp(MIN_WORK_MULTIPLIER_BPS, MAX_WORK_MULTIPLIER_BPS)
 }
 
@@ -166,7 +164,10 @@ mod tests {
     const FIXED_BITS: u32 = 0x1e0f_ffff;
 
     fn sample(timestamp_ns: u64) -> V3RetargetSample {
-        V3RetargetSample { timestamp_ns, bits: FIXED_BITS }
+        V3RetargetSample {
+            timestamp_ns,
+            bits: FIXED_BITS,
+        }
     }
 
     #[test]
@@ -175,7 +176,8 @@ mod tests {
             sample(BASE + 1_000_000_000),
             sample(BASE + 500_000_000),
             sample(BASE),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(decision.observed_intervals, 2);
         assert_eq!(decision.average_interval_ns, 500_000_000);
         assert_eq!(decision.work_multiplier_bps, BASIS_POINTS);
@@ -185,11 +187,17 @@ mod tests {
     #[test]
     fn twice_as_fast_hardens_and_twice_as_slow_relaxes_work() {
         let fast = expected_difficulty_for_v3_window_ns(&[
-            sample(BASE + 500_000_000), sample(BASE + 250_000_000), sample(BASE),
-        ]).unwrap();
+            sample(BASE + 500_000_000),
+            sample(BASE + 250_000_000),
+            sample(BASE),
+        ])
+        .unwrap();
         let slow = expected_difficulty_for_v3_window_ns(&[
-            sample(BASE + 2_000_000_000), sample(BASE + 1_000_000_000), sample(BASE),
-        ]).unwrap();
+            sample(BASE + 2_000_000_000),
+            sample(BASE + 1_000_000_000),
+            sample(BASE),
+        ])
+        .unwrap();
         let original_target = target_from_bits(FIXED_BITS);
         assert_eq!(fast.average_interval_ns, 250_000_000);
         assert_eq!(slow.average_interval_ns, 1_000_000_000);
@@ -205,13 +213,17 @@ mod tests {
             sample(BASE + 850_000_000),
             sample(BASE + 600_000_000),
             sample(BASE + 100_000_000),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(decision.average_interval_ns, 375_000_000);
         assert!(decision.work_multiplier_bps > BASIS_POINTS);
         assert_eq!(
             expected_difficulty_for_v3_window_ns(&[
-                sample(BASE + 850_000_000), sample(BASE + 600_000_000), sample(BASE + 100_000_000)
-            ]).unwrap(),
+                sample(BASE + 850_000_000),
+                sample(BASE + 600_000_000),
+                sample(BASE + 100_000_000)
+            ])
+            .unwrap(),
             decision
         );
     }
@@ -219,18 +231,22 @@ mod tests {
     #[test]
     fn crossing_unix_second_boundary_preserves_exact_500ms() {
         let decision = expected_difficulty_for_v3_window_ns(&[
-            sample(BASE + 1_250_000_000), sample(BASE + 750_000_000),
+            sample(BASE + 1_250_000_000),
+            sample(BASE + 750_000_000),
             sample(BASE + 250_000_000),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(decision.average_interval_ns, 500_000_000);
         assert_eq!(decision.work_multiplier_bps, BASIS_POINTS);
     }
 
     #[test]
     fn first_sample_uses_frozen_cadence_not_legacy_sixty_seconds() {
-        let initial = expected_difficulty_for_v3_window_ns(&[
-            V3RetargetSample { timestamp_ns: BASE, bits: CONSENSUS_POW_LIMIT_BITS }
-        ]).unwrap();
+        let initial = expected_difficulty_for_v3_window_ns(&[V3RetargetSample {
+            timestamp_ns: BASE,
+            bits: CONSENSUS_POW_LIMIT_BITS,
+        }])
+        .unwrap();
         assert_eq!(initial.observed_intervals, 0);
         assert_eq!(initial.average_interval_ns, 500_000_000);
         assert_eq!(initial.expected_bits, CONSENSUS_POW_LIMIT_BITS);
@@ -256,7 +272,10 @@ mod tests {
             Err(V3SubsecondConsensusError::ZeroTimestamp)
         );
         assert_eq!(
-            expected_difficulty_for_v3_window_ns(&vec![sample(BASE); PRODUCTION_V3_RETARGET_WINDOW + 1]),
+            expected_difficulty_for_v3_window_ns(&vec![
+                sample(BASE);
+                PRODUCTION_V3_RETARGET_WINDOW + 1
+            ]),
             Err(V3SubsecondConsensusError::WindowTooLarge)
         );
     }
