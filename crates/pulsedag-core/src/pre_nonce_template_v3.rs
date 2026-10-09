@@ -196,12 +196,26 @@ mod tests {
                        parents: Vec<BlockId>,
                        chosen: &BlockId| {
             build_dormant_v3_pre_nonce_template(
-                CHAIN, parents, chosen, headers, selected, timestamp, timestamp, 1, vec![],
+                CHAIN,
+                parents,
+                chosen,
+                headers,
+                selected,
+                timestamp,
+                timestamp,
+                1,
+                vec![],
             )
         };
         assert!(prepare(&headers, &selected, vec![], &genesis).is_err());
         assert!(prepare(&headers, &selected, vec![genesis.clone()], &"ff".repeat(32)).is_err());
-        assert!(prepare(&headers, &selected, vec![genesis.clone(), genesis.clone()], &genesis).is_err());
+        assert!(prepare(
+            &headers,
+            &selected,
+            vec![genesis.clone(), genesis.clone()],
+            &genesis
+        )
+        .is_err());
         let old = headers.get_mut(&genesis).unwrap();
         old.nonce += 1;
         assert!(prepare(&headers, &selected, vec![genesis.clone()], &genesis).is_err());
