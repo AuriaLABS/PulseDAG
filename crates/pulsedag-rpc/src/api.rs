@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         Arc, Mutex, OnceLock, RwLock as StdRwLock,
     },
 };
@@ -158,9 +158,30 @@ impl Default for NodeRpcSnapshot {
     }
 }
 
+// A stale fallback must never silently forget v3 authority when try_read()
+// races the short-lived snapshot writer. Capability bits are observations;
+// the v3 authority bit is latched for the lifetime of this process so a
+// transient stale read cannot downgrade the launch safety gate.
+const RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT: u8 = 0b01;
+const RPC_SNAPSHOT_HIGH_CADENCE_BIT: u8 = 0b10;
+
+fn rpc_snapshot_capability_bits(snapshot: &NodeRpcSnapshot) -> u8 {
+    (if snapshot.ghostdag_metadata_active {
+        RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT
+    } else {
+        0
+    }) | (if snapshot.high_cadence_allowed {
+        RPC_SNAPSHOT_HIGH_CADENCE_BIT
+    } else {
+        0
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeRpcSnapshotStore {
     inner: Arc<StdRwLock<NodeRpcSnapshot>>,
+    production_v3_seen: Arc<AtomicBool>,
+    capability_bits: Arc<AtomicU8>,
 }
 
 impl Default for NodeRpcSnapshotStore {
@@ -171,8 +192,12 @@ impl Default for NodeRpcSnapshotStore {
 
 impl NodeRpcSnapshotStore {
     pub fn new(snapshot: NodeRpcSnapshot) -> Self {
+        let production_v3_seen = snapshot.production_v3_active;
+        let capability_bits = rpc_snapshot_capability_bits(&snapshot);
         Self {
             inner: Arc::new(StdRwLock::new(snapshot)),
+            production_v3_seen: Arc::new(AtomicBool::new(production_v3_seen)),
+            capability_bits: Arc::new(AtomicU8::new(capability_bits)),
         }
     }
 
@@ -183,11 +208,16 @@ impl NodeRpcSnapshotStore {
             .map(|snapshot| snapshot.clone())
             .unwrap_or_else(|_| {
                 record_rpc_snapshot_stale();
+                let capability_bits = self.capability_bits.load(Ordering::Acquire);
                 NodeRpcSnapshot {
                     degraded_reason: Some(
                         "node RPC snapshot read lock was busy; synthesized degraded snapshot"
                             .to_string(),
                     ),
+                    production_v3_active: self.production_v3_seen.load(Ordering::Acquire),
+                    ghostdag_metadata_active:
+                        capability_bits & RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT != 0,
+                    high_cadence_allowed: capability_bits & RPC_SNAPSHOT_HIGH_CADENCE_BIT != 0,
                     ..NodeRpcSnapshot::default()
                 }
             });
@@ -196,6 +226,14 @@ impl NodeRpcSnapshotStore {
     }
 
     pub fn store(&self, snapshot: NodeRpcSnapshot) {
+        // Publish the authority signals before attempting the fallible write.
+        // Even when the snapshot writer is busy, a v3 observation MUST NOT be
+        // lost on subsequent degraded /status or /readiness responses.
+        if snapshot.production_v3_active {
+            self.production_v3_seen.store(true, Ordering::Release);
+        }
+        self.capability_bits
+            .store(rpc_snapshot_capability_bits(&snapshot), Ordering::Release);
         if let Ok(mut guard) = self.inner.try_write() {
             *guard = snapshot;
         }
@@ -212,6 +250,73 @@ impl NodeRpcSnapshotStore {
         snapshot.stale = true;
         snapshot.degraded_reason = Some(reason);
         snapshot
+    }
+}
+
+#[cfg(test)]
+mod snapshot_authority_lock_regressions {
+    use super::{NodeRpcSnapshot, NodeRpcSnapshotStore};
+
+    fn v3_snapshot() -> NodeRpcSnapshot {
+        NodeRpcSnapshot {
+            chain_id: "v3-candidate".to_string(),
+            production_v3_active: true,
+            ghostdag_metadata_active: true,
+            high_cadence_allowed: true,
+            ..NodeRpcSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn contested_read_preserves_production_v3_authority_and_both_capabilities() {
+        let store = NodeRpcSnapshotStore::new(v3_snapshot());
+        let clone = store.clone();
+        let _writer = store.inner.write().unwrap();
+        let stale = clone.load();
+        assert!(stale.degraded);
+        assert!(stale.stale);
+        assert!(stale.production_v3_active);
+        assert!(stale.ghostdag_metadata_active);
+        assert!(stale.high_cadence_allowed);
+        assert!(stale
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("read lock was busy"));
+    }
+
+    #[test]
+    fn contested_write_cannot_erase_observed_production_v3_authority() {
+        let store = NodeRpcSnapshotStore::default();
+        let writer = store.inner.write().unwrap();
+        store.store(v3_snapshot()); // try_write fails, but the safety latch is set.
+        let stale = store.load();
+        assert!(stale.production_v3_active);
+        assert!(stale.ghostdag_metadata_active);
+        assert!(stale.high_cadence_allowed);
+        drop(writer);
+
+        // A subsequent non-v3 observation cannot downgrade historical v3
+        // authority in a degraded fallback. An uncontended fresh read still
+        // returns the exact latest published snapshot.
+        store.store(NodeRpcSnapshot::default());
+        let fresh = store.load();
+        assert!(!fresh.production_v3_active);
+        let _writer = store.inner.write().unwrap();
+        let stale = store.load();
+        assert!(stale.production_v3_active);
+        assert!(!stale.ghostdag_metadata_active);
+        assert!(!stale.high_cadence_allowed);
+    }
+
+    #[test]
+    fn contested_legacy_snapshot_does_not_invent_v3_authority() {
+        let store = NodeRpcSnapshotStore::default();
+        let _writer = store.inner.write().unwrap();
+        let stale = store.load();
+        assert!(!stale.production_v3_active);
+        assert!(!stale.ghostdag_metadata_active);
+        assert!(!stale.high_cadence_allowed);
     }
 }
 
