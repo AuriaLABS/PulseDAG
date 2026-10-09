@@ -277,8 +277,7 @@ mod tests {
         ];
         let relaxed_again = expected_difficulty_for_v3_window_ns(&next_samples).unwrap();
         assert!(
-            target_from_bits(relaxed_again.expected_bits)
-                > target_from_bits(relaxed.expected_bits),
+            target_from_bits(relaxed_again.expected_bits) > target_from_bits(relaxed.expected_bits),
             "slow-block recovery must continue rather than stall near the minimum",
         );
         // Fast blocks from the minimum must not relax difficulty.
