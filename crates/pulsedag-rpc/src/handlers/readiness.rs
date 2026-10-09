@@ -402,9 +402,17 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         release_blockers.push(blocker.to_string());
         categories.insert(
             "production_v3_launch_authorization".to_string(),
-            category(ReadinessStatus::Warn, vec![blocker.to_string()]),
+            category(ReadinessStatus::Fail, vec![blocker.to_string()]),
+        );
+        let consensus_blocker =
+            "production-v3 500ms retarget and nanosecond consensus admission remain inactive; stale readiness must fail closed";
+        release_blockers.push(consensus_blocker.to_string());
+        categories.insert(
+            "high_cadence".to_string(),
+            category(ReadinessStatus::Fail, vec![consensus_blocker.to_string()]),
         );
     }
+    let degraded_status = overall_status(&categories);
     ReadinessData {
         effective_rpc_bind: std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
             .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
@@ -425,7 +433,7 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         fast_cadence_ready: false,
         public_testnet_ready: false,
         ready_for_release: false,
-        overall_status: ReadinessStatus::Warn,
+        overall_status: degraded_status,
         categories,
         metrics: ReadinessMetrics {
             accepted_blocks: 0,
@@ -459,7 +467,8 @@ fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
         .ok()
         .and_then(|cache| cache.clone())
         .map(|mut data| {
-            data.overall_status = ReadinessStatus::Warn;
+            // Degraded cached data may not downgrade an existing consensus FAIL.
+            let previously_failed = data.overall_status == ReadinessStatus::Fail;
             data.node_ready = false;
             data.node_operational_ready = false;
             data.private_testnet_ready = false;
@@ -477,6 +486,11 @@ fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
                     vec![format!("stale degraded readiness fallback: {reason}")],
                 ),
             );
+            data.overall_status = if previously_failed {
+                ReadinessStatus::Fail
+            } else {
+                overall_status(&data.categories)
+            };
             data
         })
 }
@@ -1282,6 +1296,15 @@ mod tests {
             ..NodeRpcSnapshot::default()
         };
         let readiness = readiness_from_rpc_snapshot(snapshot);
+        assert_eq!(readiness.overall_status, ReadinessStatus::Fail);
+        assert_eq!(
+            readiness.categories["production_v3_launch_authorization"].status,
+            ReadinessStatus::Fail
+        );
+        assert_eq!(
+            readiness.categories["high_cadence"].status,
+            ReadinessStatus::Fail
+        );
         assert!(!readiness.node_operational_ready);
         assert!(!readiness.ready_for_release);
         assert!(readiness.metrics.ghostdag_metadata_active);
@@ -1293,6 +1316,14 @@ mod tests {
         assert!(readiness
             .categories
             .contains_key("production_v3_launch_authorization"));
+    }
+
+    #[test]
+    fn degraded_legacy_snapshot_keeps_warning_without_v3_authority() {
+        let readiness = readiness_from_rpc_snapshot(NodeRpcSnapshot::default());
+        assert_eq!(readiness.overall_status, ReadinessStatus::Warn);
+        assert!(!readiness.categories.contains_key("high_cadence"));
+        assert!(!readiness.ready_for_release);
     }
 
     #[test]
