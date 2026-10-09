@@ -72,6 +72,37 @@ fn retarget_work_multiplier_bps(average_interval_ns: u64) -> u64 {
     (damped as u64).clamp(MIN_WORK_MULTIPLIER_BPS, MAX_WORK_MULTIPLIER_BPS)
 }
 
+// Apply ceiling division only when making PoW easier. The existing shared
+// scale_target_ratio() floors its result (and must remain unchanged for v1/v2).
+// At the minimum compact target of 1, floor(1 * 12_500 / 10_000) == 1
+// forever; round-up instead allows the difficulty to recover under slow blocks.
+//
+// Compute the exact division remainder using 32-byte modular reduction, so we
+// never need a 256-bit intermediate or a floating-point conversion. Numerator
+// and denominator are frozen v3 basis-point multipliers (< 2^16).
+fn scale_target_ratio_ceil_v3(
+    target: &crate::pow::PowTarget,
+    numerator: u64,
+    denominator: u64,
+) -> (crate::pow::PowTarget, bool) {
+    let (mut quotient, mut overflow) = scale_target_ratio(target, numerator, denominator);
+    let modulus = u128::from(denominator);
+    let target_remainder = target.iter().fold(0u128, |remainder, byte| {
+        (remainder * 256 + u128::from(*byte)) % modulus
+    });
+    if (target_remainder * u128::from(numerator)) % modulus != 0 {
+        for byte in quotient.iter_mut().rev() {
+            let (next, carry) = byte.overflowing_add(1);
+            *byte = next;
+            if !carry {
+                return (quotient, overflow);
+            }
+        }
+        overflow = true;
+    }
+    (quotient, overflow)
+}
+
 /// Determine compact PoW bits from a newest-first v3 parent-chain window.
 ///
 /// This function has no access to ChainState, protocol activation or wall time:
@@ -113,8 +144,11 @@ pub fn expected_difficulty_for_v3_window_ns(
     let bounded_current = current_target.clamp(min_target, pow_limit);
     let target_multiplier_bps =
         consensus_target_multiplier_bps_from_work_multiplier(work_multiplier_bps);
-    let (scaled, overflow) =
-        scale_target_ratio(&bounded_current, target_multiplier_bps, BASIS_POINTS);
+    let (scaled, overflow) = if target_multiplier_bps > BASIS_POINTS {
+        scale_target_ratio_ceil_v3(&bounded_current, target_multiplier_bps, BASIS_POINTS)
+    } else {
+        scale_target_ratio(&bounded_current, target_multiplier_bps, BASIS_POINTS)
+    };
     let bounded_target = if overflow || scaled > pow_limit {
         pow_limit
     } else if scaled < min_target {
@@ -205,6 +239,65 @@ mod tests {
         assert_eq!(slow.work_multiplier_bps, MIN_WORK_MULTIPLIER_BPS);
         assert!(target_from_bits(fast.expected_bits) < original_target);
         assert!(target_from_bits(slow.expected_bits) > original_target);
+    }
+
+    #[test]
+    fn minimum_target_can_relax_after_slow_blocks() {
+        let minimum_bits = crate::retarget::CONSENSUS_MIN_TARGET_BITS;
+        let minimum_target = target_from_bits(minimum_bits);
+        assert_eq!(minimum_target[31], 1);
+        let slow_samples = [
+            V3RetargetSample {
+                timestamp_ns: BASE + 2_000_000_000,
+                bits: minimum_bits,
+            },
+            V3RetargetSample {
+                timestamp_ns: BASE + 1_000_000_000,
+                bits: minimum_bits,
+            },
+            V3RetargetSample {
+                timestamp_ns: BASE,
+                bits: minimum_bits,
+            },
+        ];
+        let relaxed = expected_difficulty_for_v3_window_ns(&slow_samples).unwrap();
+        assert_eq!(relaxed.work_multiplier_bps, MIN_WORK_MULTIPLIER_BPS);
+        assert_eq!(
+            target_from_bits(relaxed.expected_bits)[31],
+            2,
+            "ceiling division must escape the compact minimum target",
+        );
+        let next_samples = [
+            V3RetargetSample {
+                bits: relaxed.expected_bits,
+                ..slow_samples[0]
+            },
+            slow_samples[1],
+            slow_samples[2],
+        ];
+        let relaxed_again = expected_difficulty_for_v3_window_ns(&next_samples).unwrap();
+        assert!(
+            target_from_bits(relaxed_again.expected_bits)
+                > target_from_bits(relaxed.expected_bits),
+            "slow-block recovery must continue rather than stall near the minimum",
+        );
+        // Fast blocks from the minimum must not relax difficulty.
+        let fast = expected_difficulty_for_v3_window_ns(&[
+            V3RetargetSample {
+                timestamp_ns: BASE + 500_000_000,
+                bits: minimum_bits,
+            },
+            V3RetargetSample {
+                timestamp_ns: BASE + 250_000_000,
+                bits: minimum_bits,
+            },
+            V3RetargetSample {
+                timestamp_ns: BASE,
+                bits: minimum_bits,
+            },
+        ])
+        .unwrap();
+        assert_eq!(fast.expected_bits, minimum_bits);
     }
 
     #[test]
