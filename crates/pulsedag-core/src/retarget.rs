@@ -254,7 +254,9 @@ fn consensus_retarget_multiplier_bps(avg_block_interval_secs: u64) -> u64 {
     (damped as u64).clamp(CONSENSUS_RETARGET_MIN_BPS, CONSENSUS_RETARGET_MAX_BPS)
 }
 
-pub(crate) fn consensus_target_multiplier_bps_from_work_multiplier(work_multiplier_bps: u64) -> u64 {
+pub(crate) fn consensus_target_multiplier_bps_from_work_multiplier(
+    work_multiplier_bps: u64,
+) -> u64 {
     BPS_RECIPROCAL_NUMERATOR
         .saturating_add(work_multiplier_bps / 2)
         .checked_div(work_multiplier_bps.max(1))
@@ -281,7 +283,11 @@ fn limbs_to_target(limbs: &[u64; 4]) -> PowTarget {
     target
 }
 
-pub(crate) fn scale_target_ratio(target: &PowTarget, numerator: u64, denominator: u64) -> (PowTarget, bool) {
+pub(crate) fn scale_target_ratio(
+    target: &PowTarget,
+    numerator: u64,
+    denominator: u64,
+) -> (PowTarget, bool) {
     let limbs = target_to_limbs(target);
     let mut product = [0u64; 5];
     let mut carry = 0u128;
