@@ -11,7 +11,7 @@ use crate::{
     pow::{bits_from_target, target_from_bits},
     retarget::{
         consensus_min_target, consensus_pow_limit_target, consensus_target_multiplier_bps_from_work_multiplier,
-        scale_target_ratio, CONSENSUS_POW_LIMIT_BITS,
+        scale_target_ratio,
     },
 };
 
@@ -44,7 +44,7 @@ pub struct V3RetargetDecision {
 pub enum V3SubsecondConsensusError {
     #[error("v3 retarget requires at least one parent-chain sample")]
     EmptyWindow,
-    #[error("v3 retarget window exceeds the frozen limit of {PRODUCTION_V3_RETARGET_WINDOW}")]
+    #[error("v3 retarget window exceeds the frozen limit of 20 samples")]
     WindowTooLarge,
     #[error("v3 nanosecond timestamp must be non-zero")]
     ZeroTimestamp,
@@ -160,6 +160,7 @@ pub fn validate_candidate_timestamp_v3_ns(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retarget::CONSENSUS_POW_LIMIT_BITS;
 
     const BASE: u64 = 1_800_000_000_000_000_000;
     const FIXED_BITS: u32 = 0x1e0f_ffff;
