@@ -9,6 +9,9 @@ use crate::{
 
 pub const BLOCK_HEADER_VERSION_V1: u32 = 1;
 pub const BLOCK_HEADER_VERSION_V2: u32 = 2;
+/// Reserved for a distinct, currently unactivated nanosecond header and PoW domain.
+/// Does not change activated-v2 protocol identity or accepted header versions.
+pub const BLOCK_HEADER_VERSION_V3: u32 = 3;
 pub const PROTOCOL_ACTIVATION_IDENTITY_FINGERPRINT_DOMAIN: &[u8] =
     b"PulseDAG:protocol-activation-identity:v1";
 
