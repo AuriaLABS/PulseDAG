@@ -13,6 +13,10 @@ use crate::{
 };
 
 const BLOCK_HEADER_V3_DOMAIN: &[u8] = b"PulseDAG:block-header:v3:nanoseconds";
+// Bound header serialization *before* allocating/copying untrusted strings.
+const V3_MAX_CHAIN_ID_BYTES: usize = 128;
+const V3_HEX_HASH_BYTES: usize = 64;
+const V3_MAX_CANONICAL_HEADER_BYTES: usize = 8_192;
 
 /// Distinct from the seconds-based v1/v2 BlockHeader. Do not deserialize
 /// existing v2 blocks into this type or reinterpret their timestamp units.
@@ -32,6 +36,13 @@ pub struct BlockHeaderV3 {
 
 fn invalid_v3(message: impl Into<String>) -> PulseError {
     PulseError::InvalidBlock(message.into())
+}
+
+fn canonical_v3_hash(value: &str) -> bool {
+    value.len() == V3_HEX_HASH_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn encode_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), PulseError> {
@@ -56,7 +67,10 @@ pub fn validate_block_header_v3_shape(
             BLOCK_HEADER_VERSION_V3, header.version
         )));
     }
-    if chain_id.is_empty() {
+    if chain_id.is_empty()
+        || chain_id.len() > V3_MAX_CHAIN_ID_BYTES
+        || !chain_id.bytes().all(|byte| byte.is_ascii_graphic())
+    {
         return Err(PulseError::ChainIdMismatch);
     }
     if header.timestamp_ns == 0 {
@@ -69,11 +83,17 @@ pub fn validate_block_header_v3_shape(
             GHOSTDAG_V1_MAX_PARENTS
         )));
     }
+    if header.height == 0 && !header.parents.is_empty() {
+        return Err(invalid_v3("header v3 genesis height must not reference parents"));
+    }
     if header.height > 0 && header.parents.is_empty() {
         return Err(invalid_v3("header v3 non-genesis block requires a parent"));
     }
-    if header.parents.iter().any(String::is_empty) {
-        return Err(invalid_v3("header v3 parents cannot be empty hashes"));
+    if header.parents.iter().any(|hash| !canonical_v3_hash(hash)) {
+        return Err(invalid_v3("header v3 parents require 64 lowercase hex digits"));
+    }
+    if !canonical_v3_hash(&header.merkle_root) || !canonical_v3_hash(&header.state_root) {
+        return Err(invalid_v3("header v3 commitment roots require 64 lowercase hex digits"));
     }
     if header
         .parents
@@ -110,6 +130,9 @@ fn canonical_header_material_v3(
     encode_string(&mut out, &header.state_root)?;
     out.extend_from_slice(&header.blue_score.to_le_bytes());
     out.extend_from_slice(&header.height.to_le_bytes());
+    if out.len() > V3_MAX_CANONICAL_HEADER_BYTES {
+        return Err(invalid_v3("header v3 canonical bytes exceed the fixed limit"));
+    }
     Ok(out)
 }
 
@@ -233,6 +256,62 @@ mod tests {
         candidate.parents = vec!["11".repeat(32), "11".repeat(32)];
         assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
         candidate.parents.clear();
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+    }
+
+    #[test]
+    fn height_zero_requires_parentless_genesis_and_non_genesis_requires_parents() {
+        let mut candidate = header(BASE_NS);
+        candidate.height = 0;
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+        candidate.parents.clear();
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_ok());
+        candidate.height = 1;
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+    }
+
+    #[test]
+    fn oversized_and_noncanonical_fields_reject_before_encoding() {
+        let mut candidate = header(BASE_NS);
+        assert!(canonical_block_header_bytes_v3(
+            &candidate,
+            &"x".repeat(V3_MAX_CHAIN_ID_BYTES + 1),
+        )
+        .is_err());
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3\ninvalid").is_err());
+        candidate.parents = vec!["11".repeat(32) + "00"];
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+        candidate.parents = vec!["GG".repeat(32)];
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+        candidate.parents = vec!["AA".repeat(32)];
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+        candidate.parents = vec!["11".repeat(32)];
+        candidate.merkle_root = "22".repeat(33);
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+        candidate.merkle_root = "22".repeat(32);
+        candidate.state_root = "3".repeat(63);
+        assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
+    }
+
+    #[test]
+    fn maximum_parent_window_has_a_bounded_canonical_envelope() {
+        let mut candidate = header(BASE_NS);
+        candidate.parents = (0..GHOSTDAG_V1_MAX_PARENTS)
+            .map(|i| format!("{i:064x}"))
+            .collect();
+        let full = canonical_block_header_bytes_v3(
+            &candidate,
+            &"n".repeat(V3_MAX_CHAIN_ID_BYTES),
+        )
+        .unwrap();
+        let mining = canonical_mining_preimage_bytes_v3(
+            &candidate,
+            &"n".repeat(V3_MAX_CHAIN_ID_BYTES),
+        )
+        .unwrap();
+        assert!(full.len() <= V3_MAX_CANONICAL_HEADER_BYTES);
+        assert!(mining.len() < full.len());
+        candidate.parents.push(format!("{:064x}", GHOSTDAG_V1_MAX_PARENTS));
         assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
     }
 
