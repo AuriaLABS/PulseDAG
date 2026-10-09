@@ -3,7 +3,7 @@ use std::{
     hash::{Hash as StdHash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex, MutexGuard,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -70,7 +70,8 @@ pub struct RuntimeEvent {
 }
 
 pub struct Storage {
-    pub db: Arc<DB>,
+    db: Arc<DB>,
+    write_mutex: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -512,10 +513,130 @@ impl Storage {
                 DB::open_cf_descriptors(&opts, path, cfs)
                     .map_err(|e| PulseError::StorageError(e.to_string()))?,
             ),
+            write_mutex: Mutex::new(()),
         };
         storage.ensure_schema_compatible()?;
         storage.reconcile_accepted_storage_at_startup()?;
         Ok(storage)
+    }
+
+    pub(crate) fn storage_write_guard(&self) -> Result<MutexGuard<'_, ()>, PulseError> {
+        self.write_mutex.lock().map_err(|_| {
+            PulseError::StorageError("storage write serialization lock poisoned".into())
+        })
+    }
+
+    pub(crate) fn ensure_production_v3_storage_empty_locked(
+        &self,
+        _write_guard: &MutexGuard<'_, ()>,
+    ) -> Result<(), PulseError> {
+        if self
+            .db
+            .iterator(rocksdb::IteratorMode::Start)
+            .next()
+            .transpose()
+            .map_err(|error| PulseError::StorageError(error.to_string()))?
+            .is_some()
+        {
+            return Err(PulseError::StorageError(
+                "production-v3 atomic bootstrap requires empty default storage namespace".into(),
+            ));
+        }
+
+        for cf_name in [
+            ACCEPTED_BLOCKS_CF,
+            ORPHAN_STAGED_BLOCKS_CF,
+            TERMINAL_MISSING_PARENT_CF,
+            REJECTED_BLOCK_DIAGNOSTICS_CF,
+            "utxos",
+            "contracts_meta",
+            "contracts_storage",
+            "contracts_receipts",
+        ] {
+            let cf = self
+                .db
+                .cf_handle(cf_name)
+                .ok_or_else(|| PulseError::StorageError(format!("missing cf {cf_name}")))?;
+            if self
+                .db
+                .iterator_cf(cf, rocksdb::IteratorMode::Start)
+                .next()
+                .transpose()
+                .map_err(|error| PulseError::StorageError(error.to_string()))?
+                .is_some()
+            {
+                return Err(PulseError::StorageError(format!(
+                    "production-v3 atomic bootstrap requires empty {cf_name} storage namespace"
+                )));
+            }
+        }
+
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        for item in self.db.iterator_cf(meta_cf, rocksdb::IteratorMode::Start) {
+            let (key, _) = item.map_err(|error| PulseError::StorageError(error.to_string()))?;
+            if key.as_ref() != STORAGE_SCHEMA_VERSION_KEY {
+                return Err(PulseError::StorageError(format!(
+                    "production-v3 atomic bootstrap found preexisting meta key {}",
+                    String::from_utf8_lossy(key.as_ref())
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn write_legacy_chain_state_fixture(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        self.db
+            .put_cf(meta_cf, CHAIN_STATE_KEY, bytes)
+            .map_err(|error| PulseError::StorageError(error.to_string()))
+    }
+
+    #[doc(hidden)]
+    pub fn write_mempool_admission_fixture(
+        &self,
+        bytes: Option<&[u8]>,
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        match bytes {
+            Some(bytes) => self
+                .db
+                .put_cf(meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY, bytes)
+                .map_err(|error| PulseError::StorageError(error.to_string())),
+            None => self
+                .db
+                .delete_cf(meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
+                .map_err(|error| PulseError::StorageError(error.to_string())),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn write_mempool_orphan_admission_fixture(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        self.db
+            .put_cf(meta_cf, MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY, bytes)
+            .map_err(|error| PulseError::StorageError(error.to_string()))
     }
 
     pub fn storage_schema_metadata(&self) -> Result<StorageSchemaMetadata, PulseError> {
@@ -549,6 +670,7 @@ impl Storage {
     }
 
     pub fn ensure_schema_compatible(&self) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle("meta")
@@ -670,9 +792,11 @@ impl Storage {
         }
         if !quarantined.is_empty() {
             STARTUP_STORAGE_RECONCILIATION_TOTAL.fetch_add(1, Ordering::Relaxed);
+            let write_guard = self.storage_write_guard()?;
             self.db
                 .write(batch)
                 .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            drop(write_guard);
             let _ = self.append_runtime_event(
                 "warn",
                 "startup_storage_reconciliation",
@@ -690,6 +814,7 @@ impl Storage {
     }
 
     pub fn persist_block(&self, block: &Block) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -778,6 +903,7 @@ impl Storage {
     }
 
     pub fn persist_staged_orphan_block(&self, block: &Block) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle(ORPHAN_STAGED_BLOCKS_CF)
@@ -793,6 +919,7 @@ impl Storage {
     }
 
     pub fn delete_staged_orphan_block(&self, hash: &Hash) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle(ORPHAN_STAGED_BLOCKS_CF)
@@ -881,6 +1008,7 @@ impl Storage {
     }
 
     pub fn persist_utxo(&self, outpoint: &OutPoint, utxo: &Utxo) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle("utxos")
@@ -895,6 +1023,7 @@ impl Storage {
     }
 
     pub fn delete_utxo(&self, outpoint: &OutPoint) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle("utxos")
@@ -937,6 +1066,7 @@ impl Storage {
         state: &ChainState,
         captured_at_unix: u64,
     ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle("meta")
@@ -982,6 +1112,7 @@ impl Storage {
     where
         F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
     {
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -1042,6 +1173,7 @@ impl Storage {
     where
         F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
     {
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -1749,6 +1881,7 @@ impl Storage {
             )));
         }
 
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -2080,6 +2213,7 @@ impl Storage {
     where
         F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
     {
+        let _write_guard = self.storage_write_guard()?;
         let current_generation = self.accepted_storage_generation()?;
         if current_generation != expected_generation {
             return Err(PulseError::StorageError(format!(
@@ -2140,6 +2274,7 @@ impl Storage {
     }
 
     pub fn prune_blocks_below_height(&self, keep_from_height: u64) -> Result<usize, PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -2250,6 +2385,7 @@ impl Storage {
         state: &ChainState,
         prune_boundary_height: u64,
     ) -> Result<RetainedSetReport, PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let before = self.retained_set_report(state, prune_boundary_height)?;
         let cf = self
             .db
@@ -2296,14 +2432,17 @@ impl Storage {
         let key = format!("{}{:020}", RUNTIME_EVENT_PREFIX, unique_nanos);
         let value =
             serde_json::to_vec(&event).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let write_guard = self.storage_write_guard()?;
         self.db
             .put_cf(cf, key.as_bytes(), value)
             .map_err(|e| PulseError::StorageError(e.to_string()))?;
+        drop(write_guard);
         let _ = self.prune_runtime_events(2_000);
         Ok(event)
     }
 
     pub fn prune_runtime_events(&self, max_events: usize) -> Result<usize, PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         let cf = self
             .db
             .cf_handle("meta")

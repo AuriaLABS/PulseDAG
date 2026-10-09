@@ -450,6 +450,7 @@ impl Storage {
         expected: &ProtocolActivationIdentity,
     ) -> Result<(), PulseError> {
         plan.validate_for_expected(expected)?;
+        let _write_guard = self.storage_write_guard()?;
         if let Some(persisted) =
             self.persisted_fast_sync_network_resume_plan_v1(&plan.transfer_id, expected)?
         {
@@ -543,6 +544,10 @@ impl Storage {
         self.ensure_fast_sync_network_resume_plan_v1(plan, expected)?;
         plan.verify_chunk(chunk_index, chunk)?;
         let key = network_resume_chunk_key(&plan.transfer_id, chunk_index);
+        let _write_guard = self.storage_write_guard()?;
+        // A concurrent clear may remove the plan after ensure() returns.
+        // Recheck it under the same lock that protects clear() and bootstrap().
+        self.require_matching_fast_sync_network_resume_plan_v1(plan, expected)?;
 
         if let Some(existing) = self
             .db
@@ -677,6 +682,7 @@ impl Storage {
         plan: &FastSyncNetworkTransferPlanV1,
         expected: &ProtocolActivationIdentity,
     ) -> Result<(), PulseError> {
+        let _write_guard = self.storage_write_guard()?;
         self.require_matching_fast_sync_network_resume_plan_v1(plan, expected)?;
         let mut batch = WriteBatch::default();
         for chunk_index in 0..plan.chunk_count {
@@ -692,6 +698,26 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn network_chunk_write_revalidates_plan_under_shared_storage_mutex() {
+        let source = include_str!("fast_sync_network_resume.rs");
+        let start = source
+            .find("pub fn persist_fast_sync_network_resume_chunk_v1(")
+            .expect("public network chunk writer");
+        let body =
+            &source[start..source[start..].find("\n    }").expect("chunk writer end") + start];
+        let lock = body
+            .find("let _write_guard = self.storage_write_guard()?;")
+            .expect("shared guard");
+        let recheck = body
+            .find("self.require_matching_fast_sync_network_resume_plan_v1(plan, expected)?;")
+            .expect("matching network plan must be checked again under guard");
+        let write = body
+            .find(".put_opt(key, chunk")
+            .expect("network chunk write");
+        assert!(lock < recheck && recheck < write);
+    }
+
     use crate::PreparedFastSyncSnapshotTransferV1;
     use pulsedag_core::genesis::init_chain_state;
 

@@ -153,11 +153,9 @@ mod tests {
             .expect("best-height block")
             .clone();
         storage.persist_block(&genesis).expect("persist block");
-        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
         storage
-            .db
-            .put_cf(&meta_cf, b"chain_state", b"corrupt-snapshot")
-            .expect("corrupt snapshot");
+            .write_legacy_chain_state_fixture(b"corrupt-snapshot")
+            .expect("persist corrupt snapshot fixture");
 
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),

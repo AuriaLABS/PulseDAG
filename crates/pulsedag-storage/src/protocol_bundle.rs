@@ -179,6 +179,7 @@ impl Storage {
         expected: &ProtocolActivationIdentity,
     ) -> Result<SnapshotVerificationReport, PulseError> {
         let report = self.verify_protocol_snapshot_bundle_v2(&bundle, expected)?;
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
@@ -315,6 +316,7 @@ impl Storage {
             expected_cadence,
             expected_reward_finality_policy_version,
         )?;
+        let _write_guard = self.storage_write_guard()?;
         let blocks_cf = self
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
