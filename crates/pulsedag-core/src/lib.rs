@@ -65,6 +65,7 @@ pub mod pulseclock_v1;
 pub mod pulsescript_vm_v1;
 pub mod replay;
 pub mod retarget;
+pub mod retarget_context_v3;
 pub mod retarget_v3;
 pub mod reward_settlement_v3;
 pub mod selection;
