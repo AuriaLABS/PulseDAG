@@ -25,6 +25,7 @@ pub mod genesis_v3;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
+pub mod header_v3;
 pub mod htlc_v1;
 pub mod live_reward_settlement_v3;
 pub mod mempool;
