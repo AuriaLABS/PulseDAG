@@ -433,9 +433,15 @@ impl Storage {
             genesis.header.timestamp,
         )
         .map_err(|error| storage_error(format!("production-v3 clean genesis: {error:?}")))?;
+        // The two admission maps are intentionally skipped by serde, so a
+        // JSON snapshot comparison alone cannot detect a dirty in-memory
+        // mempool. An atomic genesis bootstrap requires these to be clean too.
         if serde_json::to_value(state).map_err(|error| storage_error(error.to_string()))?
             != serde_json::to_value(&clean_state)
                 .map_err(|error| storage_error(error.to_string()))?
+            || state.mempool.admission_height != clean_state.mempool.admission_height
+            || state.mempool.orphan_admission_height
+                != clean_state.mempool.orphan_admission_height
         {
             return Err(storage_error(
                 "production-v3 bootstrap requires the exact clean single-genesis state and empty transient state",
@@ -746,6 +752,56 @@ mod tests {
             .contains("exact clean single-genesis state"));
         assert_eq!(storage.block_count().unwrap(), 0);
         assert!(storage.load_chain_state().unwrap().is_none());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn production_v3_bootstrap_rejects_both_serde_skipped_admission_maps() {
+        let path = temp_db_path("production-v3-serde-skipped-admission");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = pulsedag_core::genesis_v3::init_chain_state_v3(
+            "pulsedag-v3-serde-skipped-admission".to_string(),
+            1_800_000_889,
+        )
+        .unwrap();
+        let expected = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let genesis = state.dag.blocks[&state.dag.genesis_hash].clone();
+        let runtime = ActivatedV2P2pRuntime::default();
+
+        for orphan in [false, true] {
+            if orphan {
+                state
+                    .mempool
+                    .orphan_admission_height
+                    .insert("orphan-fixture".to_string(), 1);
+            } else {
+                state
+                    .mempool
+                    .admission_height
+                    .insert("admission-fixture".to_string(), 1);
+            }
+            let error = storage
+                .persist_production_v3_genesis_and_runtime(
+                    &genesis,
+                    &expected,
+                    &state,
+                    &runtime,
+                )
+                .expect_err("serde-skipped admission data must prevent production bootstrap");
+            assert!(error
+                .to_string()
+                .contains("exact clean single-genesis state"));
+            assert_eq!(storage.block_count().unwrap(), 0);
+            assert!(storage.load_chain_state().unwrap().is_none());
+            state.mempool.admission_height.clear();
+            state.mempool.orphan_admission_height.clear();
+        }
+
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
