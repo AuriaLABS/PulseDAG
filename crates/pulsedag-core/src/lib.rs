@@ -61,6 +61,7 @@ pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
 pub mod pow_v3;
+pub mod pre_nonce_template_v3;
 pub mod pqc;
 pub mod protocol;
 pub mod protocol_persistence;
