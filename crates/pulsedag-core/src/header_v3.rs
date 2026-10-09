@@ -84,16 +84,22 @@ pub fn validate_block_header_v3_shape(
         )));
     }
     if header.height == 0 && !header.parents.is_empty() {
-        return Err(invalid_v3("header v3 genesis height must not reference parents"));
+        return Err(invalid_v3(
+            "header v3 genesis height must not reference parents",
+        ));
     }
     if header.height > 0 && header.parents.is_empty() {
         return Err(invalid_v3("header v3 non-genesis block requires a parent"));
     }
     if header.parents.iter().any(|hash| !canonical_v3_hash(hash)) {
-        return Err(invalid_v3("header v3 parents require 64 lowercase hex digits"));
+        return Err(invalid_v3(
+            "header v3 parents require 64 lowercase hex digits",
+        ));
     }
     if !canonical_v3_hash(&header.merkle_root) || !canonical_v3_hash(&header.state_root) {
-        return Err(invalid_v3("header v3 commitment roots require 64 lowercase hex digits"));
+        return Err(invalid_v3(
+            "header v3 commitment roots require 64 lowercase hex digits",
+        ));
     }
     if header
         .parents
@@ -131,7 +137,9 @@ fn canonical_header_material_v3(
     out.extend_from_slice(&header.blue_score.to_le_bytes());
     out.extend_from_slice(&header.height.to_le_bytes());
     if out.len() > V3_MAX_CANONICAL_HEADER_BYTES {
-        return Err(invalid_v3("header v3 canonical bytes exceed the fixed limit"));
+        return Err(invalid_v3(
+            "header v3 canonical bytes exceed the fixed limit",
+        ));
     }
     Ok(out)
 }
@@ -299,19 +307,16 @@ mod tests {
         candidate.parents = (0..GHOSTDAG_V1_MAX_PARENTS)
             .map(|i| format!("{i:064x}"))
             .collect();
-        let full = canonical_block_header_bytes_v3(
-            &candidate,
-            &"n".repeat(V3_MAX_CHAIN_ID_BYTES),
-        )
-        .unwrap();
-        let mining = canonical_mining_preimage_bytes_v3(
-            &candidate,
-            &"n".repeat(V3_MAX_CHAIN_ID_BYTES),
-        )
-        .unwrap();
+        let full = canonical_block_header_bytes_v3(&candidate, &"n".repeat(V3_MAX_CHAIN_ID_BYTES))
+            .unwrap();
+        let mining =
+            canonical_mining_preimage_bytes_v3(&candidate, &"n".repeat(V3_MAX_CHAIN_ID_BYTES))
+                .unwrap();
         assert!(full.len() <= V3_MAX_CANONICAL_HEADER_BYTES);
         assert!(mining.len() < full.len());
-        candidate.parents.push(format!("{:064x}", GHOSTDAG_V1_MAX_PARENTS));
+        candidate
+            .parents
+            .push(format!("{:064x}", GHOSTDAG_V1_MAX_PARENTS));
         assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
     }
 
