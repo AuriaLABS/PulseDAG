@@ -50,13 +50,17 @@ pub fn validate_block_envelope_v3(
 
     let expected_hash = compute_block_hash_v3(&candidate.header, expected_chain_id)?;
     if candidate.hash != expected_hash {
-        return Err(invalid("v3 envelope hash does not match chain-bound v3 header"));
+        return Err(invalid(
+            "v3 envelope hash does not match chain-bound v3 header",
+        ));
     }
 
     // Genesis in v3.0 is strictly zero-allocation. This guard does not
     // replace verification against the frozen genesis identity/timestamp.
     if candidate.header.height == 0 && !candidate.transactions.is_empty() {
-        return Err(invalid("v3 zero-allocation genesis cannot contain transactions"));
+        return Err(invalid(
+            "v3 zero-allocation genesis cannot contain transactions",
+        ));
     }
 
     let mut seen_txids = BTreeSet::new();
@@ -70,7 +74,9 @@ pub fn validate_block_envelope_v3(
             )));
         }
         if tx.txid != compute_txid_v2(tx, expected_chain_id)? {
-            return Err(invalid("v3 envelope transaction has invalid chain-bound v2 txid"));
+            return Err(invalid(
+                "v3 envelope transaction has invalid chain-bound v2 txid",
+            ));
         }
         if !seen_txids.insert(tx.txid.as_str()) {
             return Err(invalid("v3 envelope contains duplicate transaction IDs"));
@@ -186,14 +192,10 @@ mod tests {
             },
             transactions: vec![],
         };
-        assert!(serde_json::from_value::<BlockEnvelopeV3>(
-            serde_json::to_value(v2).unwrap()
-        )
-        .is_err());
-        assert!(serde_json::from_value::<Block>(
-            serde_json::to_value(decoded).unwrap()
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<BlockEnvelopeV3>(serde_json::to_value(v2).unwrap()).is_err()
+        );
+        assert!(serde_json::from_value::<Block>(serde_json::to_value(decoded).unwrap()).is_err());
     }
 
     #[test]
