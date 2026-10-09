@@ -339,6 +339,38 @@ mod tests {
     }
 
     #[test]
+    fn selected_parent_with_equal_or_greater_height_fails_closed() {
+        for (child_height, parent_height) in [(3, 3), (3, 4)] {
+            let mut headers = BTreeMap::new();
+            let mut selected = BTreeMap::new();
+            let genesis = insert(&mut headers, &mut selected, vec![], None, 0, BASE);
+            let parent = insert(
+                &mut headers,
+                &mut selected,
+                vec![genesis.clone()],
+                Some(genesis),
+                parent_height,
+                BASE + 500_000_000,
+            );
+            let child = insert(
+                &mut headers,
+                &mut selected,
+                vec![parent.clone()],
+                Some(parent.clone()),
+                child_height,
+                BASE + 1_000_000_000,
+            );
+            assert_eq!(
+                selected_parent_retarget_window_v3_ns(CHAIN, &child, &headers, &selected),
+                Err(V3SelectedParentWindowError::NonIncreasingHeight {
+                    hash: child,
+                    parent,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn reordering_nanosecond_time_is_rejected() {
         let mut headers = BTreeMap::new();
         let mut selected = BTreeMap::new();
