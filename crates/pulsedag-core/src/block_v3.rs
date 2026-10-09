@@ -53,7 +53,9 @@ fn verify_v3_body_commitments(
     }
 
     if header.merkle_root != compute_merkle_root(transactions) {
-        return Err(invalid("v3 block header Merkle root differs from transactions"));
+        return Err(invalid(
+            "v3 block header Merkle root differs from transactions",
+        ));
     }
     Ok(())
 }
@@ -80,7 +82,9 @@ pub fn build_block_v3_envelope(
 pub fn verify_block_v3_envelope(block: &BlockV3, chain_id: &str) -> Result<(), PulseError> {
     let expected = compute_block_hash_v3(&block.header, chain_id)?;
     if block.hash != expected {
-        return Err(invalid("v3 block hash is not the chain-bound header commitment"));
+        return Err(invalid(
+            "v3 block hash is not the chain-bound header commitment",
+        ));
     }
     verify_v3_body_commitments(&block.header, &block.transactions, chain_id)
 }
@@ -202,28 +206,19 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("Merkle"));
 
-        wrong_root.merkle_root = compute_merkle_root(&[
-            transaction.clone(),
-            transaction.clone(),
-        ]);
-        let error = build_block_v3_envelope(
-            wrong_root,
-            vec![transaction.clone(), transaction],
-            CHAIN,
-        )
-        .unwrap_err();
+        wrong_root.merkle_root = compute_merkle_root(&[transaction.clone(), transaction.clone()]);
+        let error =
+            build_block_v3_envelope(wrong_root, vec![transaction.clone(), transaction], CHAIN)
+                .unwrap_err();
         assert!(error.to_string().contains("duplicate"));
     }
 
     #[test]
     fn zero_allocation_v3_genesis_rejects_transaction_even_with_valid_merkle() {
         let transaction = tx();
-        let error = build_block_v3_envelope(
-            header(0, &[transaction.clone()]),
-            vec![transaction],
-            CHAIN,
-        )
-        .unwrap_err();
+        let error =
+            build_block_v3_envelope(header(0, &[transaction.clone()]), vec![transaction], CHAIN)
+                .unwrap_err();
         assert!(error.to_string().contains("zero transactions"));
     }
 
@@ -231,12 +226,9 @@ mod tests {
     fn wrong_transaction_version_cannot_enter_envelope() {
         let mut transaction = tx();
         transaction.version = 1;
-        let error = build_block_v3_envelope(
-            header(1, &[transaction.clone()]),
-            vec![transaction],
-            CHAIN,
-        )
-        .unwrap_err();
+        let error =
+            build_block_v3_envelope(header(1, &[transaction.clone()]), vec![transaction], CHAIN)
+                .unwrap_err();
         assert!(error.to_string().contains("transaction"));
     }
 }
