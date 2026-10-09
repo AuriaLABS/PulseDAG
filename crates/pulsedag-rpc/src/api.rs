@@ -204,6 +204,20 @@ impl NodeRpcSnapshotStore {
         }
     }
 
+    // Both contended reads and successfully cloned stale snapshots must
+    // retain a production-v3 authority observation that a failed try_write()
+    // could not persist in the main snapshot. Decode all three signals from
+    // one atomic load, never from separately published atomics.
+    fn preserve_degraded_authority(&self, snapshot: &mut NodeRpcSnapshot) {
+        if !snapshot.degraded && !snapshot.stale {
+            return;
+        }
+        let bits = self.authority_bits.load(Ordering::Acquire);
+        snapshot.production_v3_active |= bits & RPC_SNAPSHOT_V3_AUTHORITY_BIT != 0;
+        snapshot.ghostdag_metadata_active |= bits & RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT != 0;
+        snapshot.high_cadence_allowed |= bits & RPC_SNAPSHOT_HIGH_CADENCE_BIT != 0;
+    }
+
     pub fn load(&self) -> NodeRpcSnapshot {
         let mut snapshot = self
             .inner
@@ -211,39 +225,44 @@ impl NodeRpcSnapshotStore {
             .map(|snapshot| snapshot.clone())
             .unwrap_or_else(|_| {
                 record_rpc_snapshot_stale();
-                let authority_bits = self.authority_bits.load(Ordering::Acquire);
                 NodeRpcSnapshot {
                     degraded_reason: Some(
                         "node RPC snapshot read lock was busy; synthesized degraded snapshot"
                             .to_string(),
                     ),
-                    production_v3_active: authority_bits & RPC_SNAPSHOT_V3_AUTHORITY_BIT != 0,
-                    ghostdag_metadata_active: authority_bits & RPC_SNAPSHOT_GHOSTDAG_METADATA_BIT
-                        != 0,
-                    high_cadence_allowed: authority_bits & RPC_SNAPSHOT_HIGH_CADENCE_BIT != 0,
                     ..NodeRpcSnapshot::default()
                 }
             });
         mark_node_rpc_snapshot_stale_if_needed(&mut snapshot);
+        self.preserve_degraded_authority(&mut snapshot);
         snapshot
     }
 
-    pub fn store(&self, snapshot: NodeRpcSnapshot) {
-        // Publish the authority signals before attempting the fallible write.
-        // Even when the snapshot writer is busy, a v3 observation MUST NOT be
-        // lost on subsequent degraded /status or /readiness responses.
+    // The publication hook allows tests to stop EXACTLY after the atomic
+    // word is visible but before the fallible snapshot write, avoiding
+    // nondeterministic scheduling assumptions in the concurrency regression.
+    fn store_with_publication_hook<F: FnOnce()>(
+        &self,
+        snapshot: NodeRpcSnapshot,
+        after_publication: F,
+    ) {
         let next_bits = rpc_snapshot_authority_bits(&snapshot);
-        // A single atomic RMW prevents a degraded reader from observing the
-        // new v3 latch with capability bits from an older snapshot. Keep the
-        // v3 bit latched even if later snapshots are legacy or unavailable.
+        // Publish the full tuple in one atomic operation. Only production-v3
+        // authority is monotonic, so a later legacy snapshot cannot erase
+        // the safety latch on a degraded fallback.
         self.authority_bits
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
                 Some(next_bits | (previous & RPC_SNAPSHOT_V3_AUTHORITY_BIT))
             })
             .expect("authority publication always supplies a next value");
+        after_publication();
         if let Ok(mut guard) = self.inner.try_write() {
             *guard = snapshot;
         }
+    }
+
+    pub fn store(&self, snapshot: NodeRpcSnapshot) {
+        self.store_with_publication_hook(snapshot, || {});
     }
 
     pub fn degraded_snapshot(&self, reason: impl Into<String>) -> NodeRpcSnapshot {
@@ -256,6 +275,7 @@ impl NodeRpcSnapshotStore {
         snapshot.degraded = true;
         snapshot.stale = true;
         snapshot.degraded_reason = Some(reason);
+        self.preserve_degraded_authority(&mut snapshot);
         snapshot
     }
 }
@@ -303,10 +323,17 @@ mod snapshot_authority_lock_regressions {
         assert!(stale.high_cadence_allowed);
         drop(writer);
 
-        // A subsequent non-v3 observation cannot downgrade historical v3
-        // authority in a degraded fallback. An uncontended fresh read still
-        // returns the exact latest published snapshot.
+        // A subsequent non-v3 observation cannot downgrade the latched v3
+        // authority in a degraded fallback. A genuinely fresh non-degraded
+        // snapshot may still report its actual currently selected mode.
         store.store(NodeRpcSnapshot::default());
+        let degraded = store.load();
+        assert!(degraded.production_v3_active);
+        let mut live = NodeRpcSnapshot::default();
+        live.degraded = false;
+        live.stale = false;
+        live.degraded_reason = None;
+        store.store(live);
         let fresh = store.load();
         assert!(!fresh.production_v3_active);
         let _writer = store.inner.write().unwrap();
@@ -321,31 +348,62 @@ mod snapshot_authority_lock_regressions {
         use std::sync::{Arc, Barrier};
 
         let store = NodeRpcSnapshotStore::default();
-        // Keep the store lock busy to force every concurrent read through
-        // the exact degraded snapshot path that previously split two atomics.
         let _guard = store.inner.write().unwrap();
-        let ready = Arc::new(Barrier::new(2));
+        let published = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
         let worker = store.clone();
-        let writer_ready = Arc::clone(&ready);
+        let writer_published = Arc::clone(&published);
+        let writer_resume = Arc::clone(&resume);
         std::thread::scope(|scope| {
             let handle = scope.spawn(move || {
-                writer_ready.wait();
-                worker.store(v3_snapshot());
+                worker.store_with_publication_hook(v3_snapshot(), || {
+                    writer_published.wait();
+                    writer_resume.wait();
+                });
             });
-            ready.wait();
-            for _ in 0..10_000 {
-                let snapshot = store.load();
-                // A reader may observe the legacy tuple or the entire v3
-                // tuple; an intermediate mix must be impossible.
-                assert_eq!(snapshot.production_v3_active, snapshot.ghostdag_metadata_active);
-                assert_eq!(snapshot.production_v3_active, snapshot.high_cadence_allowed);
-            }
+            // The writer is now paused at the exact authority-publication
+            // point, BEFORE the snapshot write. There is no scheduling race.
+            published.wait();
+            let snapshot = store.load();
+            assert!(snapshot.degraded);
+            assert!(snapshot.production_v3_active);
+            assert!(snapshot.ghostdag_metadata_active);
+            assert!(snapshot.high_cadence_allowed);
+            writer_resume.wait();
             handle.join().unwrap();
         });
-        let snapshot = store.load();
-        assert!(snapshot.production_v3_active);
-        assert!(snapshot.ghostdag_metadata_active);
-        assert!(snapshot.high_cadence_allowed);
+    }
+
+    #[test]
+    fn successful_read_of_old_degraded_snapshot_merges_a_lost_v3_store() {
+        let store = NodeRpcSnapshotStore::default();
+        let old_reader = store.inner.read().unwrap();
+        store.store(v3_snapshot()); // Publication succeeds; try_write fails.
+        drop(old_reader);
+        let stale = store.load(); // try_read succeeds on old degraded snapshot.
+        assert!(stale.degraded);
+        assert!(stale.production_v3_active);
+        assert!(stale.ghostdag_metadata_active);
+        assert!(stale.high_cadence_allowed);
+    }
+
+    #[test]
+    fn explicitly_degraded_healthy_snapshot_preserves_latched_v3_authority() {
+        let store = NodeRpcSnapshotStore::default();
+        let mut live = NodeRpcSnapshot::default();
+        live.degraded = false;
+        live.stale = false;
+        live.degraded_reason = None;
+        store.store(live);
+        let guard = store.inner.read().unwrap();
+        store.store(v3_snapshot()); // Records v3 but cannot overwrite healthy snapshot.
+        drop(guard);
+        let degraded = store.degraded_snapshot("forced RPC fallback");
+        assert!(degraded.production_v3_active);
+        assert!(degraded.ghostdag_metadata_active);
+        assert!(degraded.high_cadence_allowed);
+        assert!(degraded.degraded);
+        assert!(degraded.stale);
     }
 
     #[test]
