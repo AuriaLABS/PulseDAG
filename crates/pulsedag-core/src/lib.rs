@@ -4,6 +4,7 @@ pub mod access_set_v1;
 pub mod apply;
 pub mod based_app_state_v0;
 pub mod based_app_v0;
+pub mod block_v3;
 pub mod channel_v1;
 pub mod colored_utxo_v1;
 pub mod consensus_metadata;
