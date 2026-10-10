@@ -312,7 +312,10 @@ mod tests {
                 break;
             }
         }
-        assert!(found_pow, "fixture must reach a valid PoW despite the placeholder");
+        assert!(
+            found_pow,
+            "fixture must reach a valid PoW despite the placeholder"
+        );
         let error = preflight_v3_candidate_context(
             &candidate,
             CHAIN,
