@@ -396,7 +396,7 @@ mod tests {
         // This test root is NOT an authoritative state replay proof.
         let mut tampered = unsealed.clone();
         tampered.header.state_root = "44".repeat(32);
-        assert!(preflight_v3_candidate_context(
+        let tampered_error = preflight_v3_candidate_context(
             &tampered,
             CHAIN,
             &genesis,
@@ -404,7 +404,13 @@ mod tests {
             &selected,
             timestamp_ns,
         )
-        .is_err());
+        .unwrap_err();
+        assert!(
+            tampered_error
+                .to_string()
+                .contains("v3 envelope hash does not match chain-bound v3 header"),
+            "root mutation must fail at the envelope hash gate, not a later PoW check"
+        );
 
         let mut sealed_header = tampered.header;
         let mut sealed_pow_found = false;
