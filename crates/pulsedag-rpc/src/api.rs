@@ -365,12 +365,15 @@ mod snapshot_authority_lock_regressions {
             // point, BEFORE the snapshot write. There is no scheduling race.
             published.wait();
             let snapshot = store.load();
+            // Always release the worker before asserting: otherwise a failed
+            // regression assertion would strand the worker on its barrier and
+            // std::thread::scope would hang instead of reporting a failure.
+            resume.wait();
+            handle.join().unwrap();
             assert!(snapshot.degraded);
             assert!(snapshot.production_v3_active);
             assert!(snapshot.ghostdag_metadata_active);
             assert!(snapshot.high_cadence_allowed);
-            writer_resume.wait();
-            handle.join().unwrap();
         });
     }
 
