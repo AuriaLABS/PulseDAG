@@ -182,9 +182,24 @@ fn consensus_status_category(
     )
 }
 
+#[cfg(test)]
 fn high_cadence_status_category(
     consensus_mode: pulsedag_core::ConsensusMode,
     experimental_fast_cadence: bool,
+    target_block_interval_ms: u64,
+) -> ReadinessCategory {
+    high_cadence_status_category_with_production(
+        consensus_mode,
+        experimental_fast_cadence,
+        false,
+        target_block_interval_ms,
+    )
+}
+
+fn high_cadence_status_category_with_production(
+    consensus_mode: pulsedag_core::ConsensusMode,
+    experimental_fast_cadence: bool,
+    production_v3_active: bool,
     target_block_interval_ms: u64,
 ) -> ReadinessCategory {
     let high_cadence_allowed = consensus_mode.high_cadence_allowed();
@@ -192,6 +207,46 @@ fn high_cadence_status_category(
         return category(
             ReadinessStatus::Fail,
             vec!["target block interval is 0ms; high-cadence readiness requires a positive effective interval".to_string()],
+        );
+    }
+    if production_v3_active {
+        let production_interval_ms =
+            pulsedag_core::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000;
+        if consensus_mode != pulsedag_core::ConsensusMode::Legacy {
+            return category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "production-v3 cadence requires legacy runtime consensus; observed {consensus_mode}"
+                )],
+            );
+        }
+        if experimental_fast_cadence {
+            return category(
+                ReadinessStatus::Fail,
+                vec![
+                    "production-v3 cadence must not use the experimental fast-cadence gate"
+                        .to_string(),
+                ],
+            );
+        }
+        if target_block_interval_ms != production_interval_ms {
+            return category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "production-v3 cadence requires frozen interval {production_interval_ms}ms; observed {target_block_interval_ms}ms"
+                )],
+            );
+        }
+        // A configured 500ms daemon interval does not make the consensus
+        // retarget/timestamp policy 500ms. Monetary-v3 mining templates still
+        // use expected_difficulty_for_parent with the legacy 60s policy.
+        // Fail closed until the v3 consensus path enforces the frozen cadence.
+        return category(
+            ReadinessStatus::Fail,
+            vec![format!(
+                "production-v3 {production_interval_ms}ms cadence is not consensus-enforced: difficulty retarget still targets {}s; v3-specific retarget and timestamp validation are required",
+                pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
+            )],
         );
     }
     let effective_fast_cadence = target_block_interval_ms < CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS;
@@ -247,13 +302,30 @@ struct ReadinessDimensions {
     release_blockers: Vec<String>,
 }
 
+#[cfg(test)]
 fn compute_readiness_dimensions_with_fast_cadence(
     categories: &BTreeMap<String, ReadinessCategory>,
     consensus_mode: pulsedag_core::ConsensusMode,
     experimental_fast_cadence: bool,
     target_block_interval_ms: u64,
 ) -> ReadinessDimensions {
-    let release_blockers = categories
+    compute_readiness_dimensions_with_production_v3(
+        categories,
+        consensus_mode,
+        experimental_fast_cadence,
+        false,
+        target_block_interval_ms,
+    )
+}
+
+fn compute_readiness_dimensions_with_production_v3(
+    categories: &BTreeMap<String, ReadinessCategory>,
+    consensus_mode: pulsedag_core::ConsensusMode,
+    experimental_fast_cadence: bool,
+    production_v3_active: bool,
+    target_block_interval_ms: u64,
+) -> ReadinessDimensions {
+    let mut release_blockers = categories
         .iter()
         .filter(|(_, category)| category.status == ReadinessStatus::Fail)
         .flat_map(|(name, category)| {
@@ -263,6 +335,12 @@ fn compute_readiness_dimensions_with_fast_cadence(
                 .map(move |reason| format!("{name}: {reason}"))
         })
         .collect::<Vec<_>>();
+    if production_v3_active {
+        release_blockers.push(
+            "production_v3_launch_authorization: exact #1049 network identity and #781 launch authorization remain pending"
+                .to_string(),
+        );
+    }
     let operational_blocker_categories = [
         "api_profile_safety",
         "admin_exposure",
@@ -284,8 +362,9 @@ fn compute_readiness_dimensions_with_fast_cadence(
         category.status == ReadinessStatus::Fail
             && operational_blocker_categories.contains(&name.as_str())
     });
-    let private_conservative_ready =
-        node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::Legacy;
+    let private_conservative_ready = node_operational_ready
+        && consensus_mode == pulsedag_core::ConsensusMode::Legacy
+        && !production_v3_active;
     let ghostdag_dev_ready =
         node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev;
     let fast_cadence_ready = node_operational_ready
@@ -316,6 +395,24 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         "rpc_snapshot".to_string(),
         category(ReadinessStatus::Warn, vec![reason.clone()]),
     );
+    let mut release_blockers =
+        vec!["fresh liveness state unavailable; serving degraded snapshot".to_string()];
+    if snapshot.production_v3_active {
+        let blocker = "production_v3_launch_authorization: exact #1049 network identity and #781 launch authorization remain pending";
+        release_blockers.push(blocker.to_string());
+        categories.insert(
+            "production_v3_launch_authorization".to_string(),
+            category(ReadinessStatus::Fail, vec![blocker.to_string()]),
+        );
+        let consensus_blocker =
+            "production-v3 500ms retarget and nanosecond consensus admission remain inactive; stale readiness must fail closed";
+        release_blockers.push(consensus_blocker.to_string());
+        categories.insert(
+            "high_cadence".to_string(),
+            category(ReadinessStatus::Fail, vec![consensus_blocker.to_string()]),
+        );
+    }
+    let degraded_status = overall_status(&categories);
     ReadinessData {
         effective_rpc_bind: std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
             .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
@@ -336,7 +433,7 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         fast_cadence_ready: false,
         public_testnet_ready: false,
         ready_for_release: false,
-        overall_status: ReadinessStatus::Warn,
+        overall_status: degraded_status,
         categories,
         metrics: ReadinessMetrics {
             accepted_blocks: 0,
@@ -355,12 +452,10 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
             storage_last_commit_height: None,
             state_root: None,
             consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
-            ghostdag_metadata_active: false,
-            high_cadence_allowed: false,
+            ghostdag_metadata_active: snapshot.ghostdag_metadata_active,
+            high_cadence_allowed: snapshot.high_cadence_allowed,
         },
-        release_blockers: vec![
-            "fresh liveness state unavailable; serving degraded snapshot".to_string(),
-        ],
+        release_blockers,
         warnings: vec![format!("rpc_degraded_response: {reason}")],
     }
 }
@@ -372,7 +467,8 @@ fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
         .ok()
         .and_then(|cache| cache.clone())
         .map(|mut data| {
-            data.overall_status = ReadinessStatus::Warn;
+            // Degraded cached data may not downgrade an existing consensus FAIL.
+            let previously_failed = data.overall_status == ReadinessStatus::Fail;
             data.node_ready = false;
             data.node_operational_ready = false;
             data.private_testnet_ready = false;
@@ -390,6 +486,11 @@ fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
                     vec![format!("stale degraded readiness fallback: {reason}")],
                 ),
             );
+            data.overall_status = if previously_failed {
+                ReadinessStatus::Fail
+            } else {
+                overall_status(&data.categories)
+            };
             data
         })
 }
@@ -538,8 +639,8 @@ pub async fn get_readiness<S: RpcStateLike>(
         storage_last_commit_height,
         state_root: state_root.clone(),
         consensus_mode: chain.dag.consensus_mode.to_string(),
-        ghostdag_metadata_active: chain.dag.consensus_mode.ghostdag_metadata_active(),
-        high_cadence_allowed: chain.dag.consensus_mode.high_cadence_allowed(),
+        ghostdag_metadata_active: runtime.ghostdag_metadata_active,
+        high_cadence_allowed: runtime.high_cadence_allowed,
     };
 
     let mut categories = BTreeMap::new();
@@ -569,12 +670,25 @@ pub async fn get_readiness<S: RpcStateLike>(
     }
     categories.insert(
         "high_cadence".to_string(),
-        high_cadence_status_category(
+        high_cadence_status_category_with_production(
             chain.dag.consensus_mode,
             runtime.experimental_fast_cadence,
+            runtime.production_v3_active,
             runtime.target_block_interval_ms,
         ),
     );
+    if runtime.production_v3_active {
+        categories.insert(
+            "production_v3_launch_authorization".to_string(),
+            category(
+                ReadinessStatus::Warn,
+                vec![
+                    "production-v3 runtime is active, but exact #1049 network identity and #781 launch authorization remain pending"
+                        .to_string(),
+                ],
+            ),
+        );
+    }
 
     let mut dag_fail = Vec::new();
     let mut dag_warn = Vec::new();
@@ -883,10 +997,11 @@ pub async fn get_readiness<S: RpcStateLike>(
         ),
     );
 
-    let dimensions = compute_readiness_dimensions_with_fast_cadence(
+    let dimensions = compute_readiness_dimensions_with_production_v3(
         &categories,
         chain.dag.consensus_mode,
         runtime.experimental_fast_cadence,
+        runtime.production_v3_active,
         runtime.target_block_interval_ms,
     );
     let node_operational_ready = dimensions.node_operational_ready;
@@ -1169,6 +1284,112 @@ mod tests {
         assert!(!source.contains(&v230_phrase));
         assert!(!source.contains(&v300_phrase));
         assert!(!source.contains(&public_testnet_live_phrase));
+    }
+
+    #[test]
+    fn degraded_snapshot_preserves_v3_launch_authorization_blocker() {
+        let snapshot = NodeRpcSnapshot {
+            chain_id: "v3-candidate".to_string(),
+            production_v3_active: true,
+            ghostdag_metadata_active: true,
+            high_cadence_allowed: true,
+            ..NodeRpcSnapshot::default()
+        };
+        let readiness = readiness_from_rpc_snapshot(snapshot);
+        assert_eq!(readiness.overall_status, ReadinessStatus::Fail);
+        assert_eq!(
+            readiness.categories["production_v3_launch_authorization"].status,
+            ReadinessStatus::Fail
+        );
+        assert_eq!(
+            readiness.categories["high_cadence"].status,
+            ReadinessStatus::Fail
+        );
+        assert!(!readiness.node_operational_ready);
+        assert!(!readiness.ready_for_release);
+        assert!(readiness.metrics.ghostdag_metadata_active);
+        assert!(readiness.metrics.high_cadence_allowed);
+        assert!(readiness
+            .release_blockers
+            .iter()
+            .any(|blocker| blocker.contains("production_v3_launch_authorization")));
+        assert!(readiness
+            .categories
+            .contains_key("production_v3_launch_authorization"));
+    }
+
+    #[test]
+    fn degraded_legacy_snapshot_keeps_warning_without_v3_authority() {
+        let readiness = readiness_from_rpc_snapshot(NodeRpcSnapshot::default());
+        assert_eq!(readiness.overall_status, ReadinessStatus::Warn);
+        assert!(!readiness.categories.contains_key("high_cadence"));
+        assert!(!readiness.ready_for_release);
+    }
+
+    #[test]
+    fn production_v3_frozen_cadence_fails_closed_until_retarget_is_enforced() {
+        let cadence = high_cadence_status_category_with_production(
+            pulsedag_core::ConsensusMode::Legacy,
+            false,
+            true,
+            pulsedag_core::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000,
+        );
+        assert_eq!(cadence.status, ReadinessStatus::Fail);
+        assert!(cadence.reasons[0].contains("not consensus-enforced"));
+
+        let mut categories = BTreeMap::new();
+        categories.insert("high_cadence".to_string(), cadence);
+        let dimensions = compute_readiness_dimensions_with_production_v3(
+            &categories,
+            pulsedag_core::ConsensusMode::Legacy,
+            false,
+            true,
+            pulsedag_core::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000,
+        );
+        assert!(!dimensions.node_operational_ready);
+        assert!(!dimensions.private_conservative_ready);
+        assert!(!dimensions.fast_cadence_ready);
+        assert!(!dimensions.public_testnet_ready);
+        assert!(!dimensions.ready_for_release);
+        assert!(dimensions
+            .release_blockers
+            .iter()
+            .any(|blocker| blocker.contains("production_v3_launch_authorization")));
+        assert!(dimensions
+            .release_blockers
+            .iter()
+            .any(|blocker| blocker.contains("high_cadence:")
+                && blocker.contains("not consensus-enforced")));
+    }
+
+    #[test]
+    fn production_v3_rejects_cadence_or_experimental_drift() {
+        let wrong_interval = high_cadence_status_category_with_production(
+            pulsedag_core::ConsensusMode::Legacy,
+            false,
+            true,
+            250,
+        );
+        assert_eq!(wrong_interval.status, ReadinessStatus::Fail);
+        assert!(wrong_interval.reasons[0].contains("frozen interval"));
+
+        let experimental = high_cadence_status_category_with_production(
+            pulsedag_core::ConsensusMode::Legacy,
+            true,
+            true,
+            pulsedag_core::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000,
+        );
+        assert_eq!(experimental.status, ReadinessStatus::Fail);
+        assert!(experimental.reasons[0].contains("must not use the experimental"));
+
+        let wrong_runtime = high_cadence_status_category_with_production(
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            false,
+            true,
+            pulsedag_core::PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3 / 1_000_000,
+        );
+        assert_eq!(wrong_runtime.status, ReadinessStatus::Fail);
+        assert!(wrong_runtime.reasons[0].contains("requires legacy runtime"));
     }
 
     #[test]

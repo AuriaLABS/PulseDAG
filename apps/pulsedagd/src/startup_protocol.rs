@@ -2,18 +2,20 @@ use anyhow::{bail, Result};
 use pulsedag_core::{
     contracts_compile_identity, contracts_compile_time_executable,
     finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
-    genesis_v2::init_chain_state_v2, ConsensusMode, ProtocolActivationIdentity,
-    CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
+    genesis_v2::init_chain_state_v2, genesis_v3::init_chain_state_v3, ConsensusMode,
+    ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use pulsedag_p2p::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
 
 pub const STARTUP_PROTOCOL_MODE_ENV: &str = "PULSEDAG_PROTOCOL_CONSENSUS_MODE";
+pub const PRODUCTION_V3_GENESIS_TIMESTAMP_ENV: &str = "PULSEDAG_V3_GENESIS_TIMESTAMP";
 pub const CONTRACTS_ENABLED_ENV: &str = "PULSEDAG_CONTRACTS_ENABLED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupProtocolMode {
     Legacy,
     GhostdagV1,
+    MonetaryV3,
 }
 
 impl StartupProtocolMode {
@@ -21,8 +23,9 @@ impl StartupProtocolMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "legacy" => Ok(Self::Legacy),
             "ghostdag_v1" => Ok(Self::GhostdagV1),
+            "monetary_v3" => Ok(Self::MonetaryV3),
             other => bail!(
-                "invalid {STARTUP_PROTOCOL_MODE_ENV} value '{other}'. Supported values: legacy, ghostdag_v1"
+                "invalid {STARTUP_PROTOCOL_MODE_ENV} value '{other}'. Supported values: legacy, ghostdag_v1, monetary_v3"
             ),
         }
     }
@@ -34,6 +37,28 @@ impl StartupProtocolMode {
             .transpose()
             .map(|mode| mode.unwrap_or(Self::Legacy))
     }
+}
+
+fn parse_production_v3_genesis_timestamp(raw: &str) -> Result<u64> {
+    let timestamp = raw.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!(
+            "invalid {PRODUCTION_V3_GENESIS_TIMESTAMP_ENV} value '{}': {error}",
+            raw.trim()
+        )
+    })?;
+    if timestamp == 0 {
+        bail!("{PRODUCTION_V3_GENESIS_TIMESTAMP_ENV} must be greater than zero");
+    }
+    Ok(timestamp)
+}
+
+fn production_v3_genesis_timestamp_from_env() -> Result<u64> {
+    let raw = std::env::var(PRODUCTION_V3_GENESIS_TIMESTAMP_ENV).map_err(|_| {
+        anyhow::anyhow!(
+            "{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires {PRODUCTION_V3_GENESIS_TIMESTAMP_ENV}"
+        )
+    })?;
+    parse_production_v3_genesis_timestamp(&raw)
 }
 
 fn env_flag_truthy(name: &str) -> bool {
@@ -65,12 +90,41 @@ pub struct StartupProtocolSelection {
     pub mode: StartupProtocolMode,
     pub restore_identity: Option<ProtocolActivationIdentity>,
     pub local_capabilities: Option<ProtocolCapabilitiesV1>,
+    pub production_v3_genesis_timestamp: Option<u64>,
 }
 
 impl StartupProtocolSelection {
     pub fn activated_v2(&self) -> bool {
+        matches!(
+            self.mode,
+            StartupProtocolMode::GhostdagV1 | StartupProtocolMode::MonetaryV3
+        )
+    }
+
+    pub fn production_v3(&self) -> bool {
+        self.mode == StartupProtocolMode::MonetaryV3
+    }
+
+    /// The generic activated-v2 fast-sync importer validates v2 snapshots and
+    /// must never run against a v3 monetary sidecar.
+    pub fn generic_v2_fast_sync_enabled(&self) -> bool {
         self.mode == StartupProtocolMode::GhostdagV1
     }
+}
+
+// Production v3 must not open storage, mine or join P2P with the inherited
+// 60-second difficulty policy. The 500ms cadence configuration/readiness
+// flags alone do not enforce subsecond consensus timestamps or retargeting.
+// Remove this fail-closed gate only together with consensus-level v3 policy
+// enforcement in template construction and both mined/P2P validation paths.
+fn enforce_monetary_v3_consensus_startup_gate(mode: StartupProtocolMode) -> Result<()> {
+    if mode == StartupProtocolMode::MonetaryV3 {
+        bail!(
+            "monetary_v3 startup blocked before storage open: frozen 500ms consensus retarget and subsecond timestamp validation are not implemented; legacy target remains {}s",
+            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+        );
+    }
+    Ok(())
 }
 
 pub fn select_startup_protocol(
@@ -78,10 +132,21 @@ pub fn select_startup_protocol(
     runtime_consensus_mode: ConsensusMode,
 ) -> Result<StartupProtocolSelection> {
     enforce_inactive_contracts_for_task31()?;
+    let mode = StartupProtocolMode::from_env()?;
+    enforce_monetary_v3_consensus_startup_gate(mode)?;
+    let production_v3_genesis_timestamp = if mode == StartupProtocolMode::MonetaryV3 {
+        if env_flag_truthy(CONTRACTS_ENABLED_ENV) {
+            bail!("{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires {CONTRACTS_ENABLED_ENV}=false");
+        }
+        Some(production_v3_genesis_timestamp_from_env()?)
+    } else {
+        None
+    };
     select_startup_protocol_for_mode(
         chain_id,
         runtime_consensus_mode,
-        StartupProtocolMode::from_env()?,
+        mode,
+        production_v3_genesis_timestamp,
     )
 }
 
@@ -89,6 +154,7 @@ fn select_startup_protocol_for_mode(
     chain_id: &str,
     runtime_consensus_mode: ConsensusMode,
     mode: StartupProtocolMode,
+    production_v3_genesis_timestamp: Option<u64>,
 ) -> Result<StartupProtocolSelection> {
     match mode {
         StartupProtocolMode::Legacy => {
@@ -102,6 +168,7 @@ fn select_startup_protocol_for_mode(
                 mode,
                 restore_identity,
                 local_capabilities: None,
+                production_v3_genesis_timestamp: None,
             })
         }
         StartupProtocolMode::GhostdagV1 => {
@@ -132,6 +199,43 @@ fn select_startup_protocol_for_mode(
                 mode,
                 restore_identity: Some(identity),
                 local_capabilities: Some(capabilities),
+                production_v3_genesis_timestamp: None,
+            })
+        }
+        StartupProtocolMode::MonetaryV3 => {
+            if runtime_consensus_mode != ConsensusMode::Legacy {
+                bail!(
+                    "{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires PULSEDAG_CONSENSUS_MODE=legacy"
+                );
+            }
+            let frozen_timestamp = production_v3_genesis_timestamp.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{STARTUP_PROTOCOL_MODE_ENV}=monetary_v3 requires a frozen v3 genesis timestamp"
+                )
+            })?;
+            let state = init_chain_state_v3(chain_id.to_string(), frozen_timestamp)?;
+            let identity = ProtocolActivationIdentity::activated_v2(
+                state.chain_id.clone(),
+                state.dag.genesis_hash.clone(),
+                GHOSTDAG_V1_ORDERING_VERSION,
+            );
+            let capabilities = ProtocolCapabilitiesV1 {
+                capabilities_version: P2P_PROTOCOL_CAPABILITIES_VERSION,
+                protocol_identity: identity.clone(),
+                consensus_metadata_schema_version: CONSENSUS_METADATA_SCHEMA_VERSION,
+                finality_policy_version: GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+                supports_dag_frontier: true,
+                supports_consensus_metadata: true,
+                high_cadence_allowed: true,
+            };
+            capabilities.validate_shape().map_err(|error| {
+                anyhow::anyhow!("invalid production-v3 startup capabilities: {error:?}")
+            })?;
+            Ok(StartupProtocolSelection {
+                mode,
+                restore_identity: Some(identity),
+                local_capabilities: Some(capabilities),
+                production_v3_genesis_timestamp: Some(frozen_timestamp),
             })
         }
     }
@@ -148,6 +252,7 @@ mod tests {
             "pulsedag-testnet",
             ConsensusMode::Legacy,
             StartupProtocolMode::Legacy,
+            None,
         )
         .unwrap();
         let identity = selected.restore_identity.unwrap();
@@ -159,6 +264,7 @@ mod tests {
             "pulsedag-testnet",
             ConsensusMode::GhostdagDev,
             StartupProtocolMode::Legacy,
+            None,
         )
         .unwrap();
         assert!(ghostdag_dev.restore_identity.is_none());
@@ -171,6 +277,7 @@ mod tests {
             "pulsedag-private-v2.4.0",
             ConsensusMode::Legacy,
             StartupProtocolMode::GhostdagV1,
+            None,
         )
         .unwrap();
         assert!(selected.activated_v2());
@@ -193,11 +300,74 @@ mod tests {
     }
 
     #[test]
+    fn monetary_v3_startup_fails_closed_before_storage_until_consensus_cadence_exists() {
+        let error = enforce_monetary_v3_consensus_startup_gate(StartupProtocolMode::MonetaryV3)
+            .expect_err("v3 consensus remains on the 60s retarget");
+        assert!(error.to_string().contains("blocked before storage open"));
+        assert!(error.to_string().contains("subsecond timestamp validation"));
+        assert!(enforce_monetary_v3_consensus_startup_gate(StartupProtocolMode::Legacy).is_ok());
+        assert!(
+            enforce_monetary_v3_consensus_startup_gate(StartupProtocolMode::GhostdagV1).is_ok()
+        );
+    }
+
+    #[test]
+    fn monetary_v3_selection_is_chain_timestamp_bound_and_high_cadence_enabled() {
+        let timestamp = 1_800_000_456;
+        let selected = select_startup_protocol_for_mode(
+            "pulsedag-v3-production-candidate",
+            ConsensusMode::Legacy,
+            StartupProtocolMode::MonetaryV3,
+            Some(timestamp),
+        )
+        .unwrap();
+        assert!(selected.activated_v2());
+        assert!(selected.production_v3());
+        assert!(!selected.generic_v2_fast_sync_enabled());
+        assert_eq!(selected.production_v3_genesis_timestamp, Some(timestamp));
+
+        let identity = selected.restore_identity.as_ref().unwrap();
+        let capabilities = selected.local_capabilities.as_ref().unwrap();
+        let state =
+            init_chain_state_v3("pulsedag-v3-production-candidate".to_string(), timestamp).unwrap();
+
+        assert_eq!(identity.chain_id, state.chain_id);
+        assert_eq!(identity.genesis_hash, state.dag.genesis_hash);
+        assert_eq!(identity.consensus_mode, ProtocolConsensusMode::GhostdagV1);
+        assert_eq!(capabilities.protocol_identity, *identity);
+        assert!(capabilities.high_cadence_allowed);
+    }
+
+    #[test]
+    fn monetary_v3_requires_timestamp_and_legacy_runtime() {
+        assert!(select_startup_protocol_for_mode(
+            "pulsedag-v3-production-candidate",
+            ConsensusMode::Legacy,
+            StartupProtocolMode::MonetaryV3,
+            None,
+        )
+        .is_err());
+        assert!(select_startup_protocol_for_mode(
+            "pulsedag-v3-production-candidate",
+            ConsensusMode::GhostdagDev,
+            StartupProtocolMode::MonetaryV3,
+            Some(1_800_000_456),
+        )
+        .is_err());
+        assert!(parse_production_v3_genesis_timestamp("0").is_err());
+        assert_eq!(
+            parse_production_v3_genesis_timestamp("1800000456").unwrap(),
+            1_800_000_456
+        );
+    }
+
+    #[test]
     fn ghostdag_v1_rejects_ghostdag_dev_runtime() {
         assert!(select_startup_protocol_for_mode(
             "pulsedag-private-v2.4.0",
             ConsensusMode::GhostdagDev,
             StartupProtocolMode::GhostdagV1,
+            None,
         )
         .is_err());
     }
@@ -211,6 +381,10 @@ mod tests {
         assert_eq!(
             StartupProtocolMode::parse("ghostdag_v1").unwrap(),
             StartupProtocolMode::GhostdagV1
+        );
+        assert_eq!(
+            StartupProtocolMode::parse("monetary_v3").unwrap(),
+            StartupProtocolMode::MonetaryV3
         );
         assert!(StartupProtocolMode::parse("ghostdag-v1").is_err());
         assert!(StartupProtocolMode::parse("").is_err());

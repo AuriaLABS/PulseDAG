@@ -49,6 +49,7 @@ pub struct NodeStatusData {
     pub protocol_consensus_mode: String,
     pub protocol_identity: Option<ProtocolActivationIdentity>,
     pub protocol_identity_fingerprint: Option<String>,
+    pub production_v3_active: bool,
     pub ghostdag_metadata_active: bool,
     pub high_cadence_allowed: bool,
     pub tip_count: usize,
@@ -206,8 +207,9 @@ fn status_from_rpc_snapshot(
         protocol_consensus_mode,
         protocol_identity,
         protocol_identity_fingerprint,
-        ghostdag_metadata_active: false,
-        high_cadence_allowed: false,
+        production_v3_active: snapshot.production_v3_active,
+        ghostdag_metadata_active: snapshot.ghostdag_metadata_active,
+        high_cadence_allowed: snapshot.high_cadence_allowed,
         tip_count: snapshot.tip.as_ref().map(|_| 1).unwrap_or(0),
         orphan_count: snapshot.orphan_count,
         mempool_size: 0,
@@ -483,7 +485,7 @@ pub async fn get_status<S: RpcStateLike>(
         snapshot_chain(&chain)
     };
     let runtime_handle = state.runtime();
-    let (keep_recent, uptime_secs, sync_state) = {
+    let (keep_recent, uptime_secs, sync_state, production_v3_active) = {
         let runtime = match read_runtime_for_rpc(&runtime_handle, "/status").await {
             Ok(runtime) => runtime,
             Err(e) => {
@@ -499,7 +501,12 @@ pub async fn get_status<S: RpcStateLike>(
             .map(|d| d.as_secs())
             .unwrap_or(0)
             .saturating_sub(runtime.started_at_unix);
-        (keep_recent, uptime_secs, runtime.sync_state.clone())
+        (
+            keep_recent,
+            uptime_secs,
+            runtime.sync_state.clone(),
+            runtime.production_v3_active,
+        )
     };
     let recommended_keep_from_height = chain_snapshot
         .best_height
@@ -537,8 +544,9 @@ pub async fn get_status<S: RpcStateLike>(
         protocol_consensus_mode,
         protocol_identity,
         protocol_identity_fingerprint,
-        ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active,
-        high_cadence_allowed: chain_snapshot.high_cadence_allowed,
+        production_v3_active,
+        ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active || production_v3_active,
+        high_cadence_allowed: chain_snapshot.high_cadence_allowed || production_v3_active,
         tip_count: chain_snapshot.tip_count,
         orphan_count: chain_snapshot.orphan_count,
         mempool_size: chain_snapshot.mempool_size,
@@ -604,7 +612,7 @@ pub async fn get_status<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_digests_for_chain, get_status};
+    use super::{canonical_digests_for_chain, get_status, status_from_rpc_snapshot};
     use crate::{
         api::{
             build_node_rpc_snapshot, NodeRpcSnapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -964,6 +972,24 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn production_v3_status_matches_runtime_high_cadence_capabilities() {
+        let state = mk_activated_v2_state();
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.production_v3_active = true;
+            runtime.high_cadence_allowed = true;
+            runtime.ghostdag_metadata_active = true;
+        }
+        let Json(response) = get_status(State(state)).await;
+        let status = response.data.expect("production-v3 status data");
+        assert!(response.ok);
+        assert_eq!(status.consensus_mode, "legacy");
+        assert!(status.high_cadence_allowed);
+        assert!(status.ghostdag_metadata_active);
+        assert!(status.production_v3_active);
+    }
+
     #[test]
     fn canonical_digest_cache_reuses_generation_and_invalidates_on_generation_change() {
         let mut chain =
@@ -1022,6 +1048,25 @@ mod tests {
             .any(|warning| warning.contains("rpc_degraded_response")));
     }
 
+    #[test]
+    fn degraded_status_keeps_production_v3_authority() {
+        let snapshot = NodeRpcSnapshot {
+            chain_id: "v3-candidate".to_string(),
+            production_v3_active: true,
+            ghostdag_metadata_active: true,
+            high_cadence_allowed: true,
+            ..NodeRpcSnapshot::default()
+        };
+        // Production v3 reuses activated-v2 protocol identity, whose mode
+        // reports ghostdag_v1. The explicit authority flag must survive.
+        let status = status_from_rpc_snapshot(snapshot, "ghostdag_v1".to_string(), None, None);
+        assert!(status.rpc_response_degraded);
+        assert!(status.production_v3_active);
+        assert!(status.ghostdag_metadata_active);
+        assert!(status.high_cadence_allowed);
+        assert_eq!(status.protocol_consensus_mode, "ghostdag_v1");
+    }
+
     #[tokio::test]
     async fn stale_snapshot_is_marked_stale() {
         let state = mk_state(base_status(P2P_MODE_MEMORY_SIMULATED));
@@ -1045,6 +1090,9 @@ mod tests {
             sync_state: "degraded".to_string(),
             storage_mode: "rocksdb".to_string(),
             startup_mode: "unknown".to_string(),
+            production_v3_active: false,
+            ghostdag_metadata_active: false,
+            high_cadence_allowed: false,
             last_consistency_audit_ok: true,
             last_consistency_audit_issue_count: 0,
             last_consistency_audit_unix: None,

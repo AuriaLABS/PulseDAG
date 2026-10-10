@@ -79,6 +79,31 @@ fn select_live_getblock_response_block<'a>(
 }
 
 #[cfg(test)]
+mod production_v3_fast_sync_gating_tests {
+    use super::startup_protocol::{StartupProtocolMode, StartupProtocolSelection};
+
+    #[test]
+    fn generic_v2_fast_sync_is_disabled_for_production_v3() {
+        let production = StartupProtocolSelection {
+            mode: StartupProtocolMode::MonetaryV3,
+            restore_identity: None,
+            local_capabilities: None,
+            production_v3_genesis_timestamp: Some(1_800_000_456),
+        };
+        assert!(production.activated_v2());
+        assert!(!production.generic_v2_fast_sync_enabled());
+
+        let v2 = StartupProtocolSelection {
+            mode: StartupProtocolMode::GhostdagV1,
+            restore_identity: None,
+            local_capabilities: None,
+            production_v3_genesis_timestamp: None,
+        };
+        assert!(v2.generic_v2_fast_sync_enabled());
+    }
+}
+
+#[cfg(test)]
 mod compact_relay_fast_sync_handoff_tests {
     use super::{
         fast_sync_authority_release_requires_tip_refresh, fast_sync_authority_requires_tip_probe,
@@ -2035,6 +2060,23 @@ fn parse_snapshot_bundle_command(args: &[String]) -> Result<Option<SnapshotBundl
     Ok(command)
 }
 
+fn reject_legacy_snapshot_import_for_production_v3(
+    production_v3: bool,
+    command: &SnapshotBundleCommand,
+) -> Result<()> {
+    if production_v3
+        && matches!(
+            command,
+            SnapshotBundleCommand::Import(_) | SnapshotBundleCommand::ImportProtocolV2(_)
+        )
+    {
+        anyhow::bail!(
+            "production-v3 refuses legacy/protocol-v2 snapshot import; a monetary-v3-specific verified import path is required"
+        );
+    }
+    Ok(())
+}
+
 fn run_snapshot_bundle_command(
     storage: &Storage,
     chain_id: &str,
@@ -2169,6 +2211,24 @@ mod snapshot_bundle_cli_tests {
                 "protocol-v2.bin"
             )))
         );
+    }
+
+    #[test]
+    fn production_v3_rejects_legacy_snapshot_import_before_storage_open() {
+        for command in [
+            SnapshotBundleCommand::Import(PathBuf::from("legacy.bin")),
+            SnapshotBundleCommand::ImportProtocolV2(PathBuf::from("v2.bin")),
+        ] {
+            let error = reject_legacy_snapshot_import_for_production_v3(true, &command)
+                .expect_err("v3 import requires monetary-v3 verifier");
+            assert!(error.to_string().contains("monetary-v3-specific"));
+            reject_legacy_snapshot_import_for_production_v3(false, &command).unwrap();
+        }
+        reject_legacy_snapshot_import_for_production_v3(
+            true,
+            &SnapshotBundleCommand::Export(PathBuf::from("export.bin")),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2395,6 +2455,9 @@ async fn main() -> Result<()> {
         info!(summary = %config_safety_summary, "config safety summary");
     }
     let startup_protocol = select_startup_protocol(&cfg.chain_id, cfg.consensus_mode)?;
+    if let Some(command) = snapshot_bundle_command.as_ref() {
+        reject_legacy_snapshot_import_for_production_v3(startup_protocol.production_v3(), command)?;
+    }
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
     if let Some(command) = snapshot_bundle_command {
         run_snapshot_bundle_command(
@@ -2408,7 +2471,7 @@ async fn main() -> Result<()> {
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
-    let clean_fast_sync_bootstrap = startup_protocol.activated_v2()
+    let clean_fast_sync_bootstrap = startup_protocol.generic_v2_fast_sync_enabled()
         && startup_protocol
             .restore_identity
             .as_ref()
@@ -2418,7 +2481,21 @@ async fn main() -> Result<()> {
                     &persisted_blocks,
                 )
             });
-    let mut chain_state = if startup_protocol.activated_v2() {
+    let mut chain_state = if startup_protocol.production_v3() {
+        let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("production-v3 startup selection is missing its protocol identity")
+        })?;
+        let frozen_timestamp = startup_protocol
+            .production_v3_genesis_timestamp
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "production-v3 startup selection is missing its frozen genesis timestamp"
+                )
+            })?;
+        storage
+            .load_or_init_production_v3_p2p_runtime(expected, frozen_timestamp)?
+            .0
+    } else if startup_protocol.activated_v2() {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
         })?;
@@ -2465,11 +2542,12 @@ async fn main() -> Result<()> {
         }
     }
     chain_state.dag.consensus_mode = cfg.consensus_mode;
-    chain_state.dag.selected_parent_policy = if cfg.consensus_mode.ghostdag_metadata_active() {
-        pulsedag_core::SelectedParentPolicy::GhostdagInspired
-    } else {
-        pulsedag_core::SelectedParentPolicy::LegacyTip
-    };
+    chain_state.dag.selected_parent_policy =
+        if startup_protocol.production_v3() || cfg.consensus_mode.ghostdag_metadata_active() {
+            pulsedag_core::SelectedParentPolicy::GhostdagInspired
+        } else {
+            pulsedag_core::SelectedParentPolicy::LegacyTip
+        };
     let startup_persisted_max_height = persisted_blocks
         .iter()
         .map(|b| b.header.height)
@@ -2623,7 +2701,7 @@ async fn main() -> Result<()> {
                 .handle
                 .configure_protocol_capabilities_v1(capabilities)?;
         }
-        if startup_protocol.activated_v2() {
+        if startup_protocol.generic_v2_fast_sync_enabled() {
             let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "activated-v2 startup selection is missing fast-sync protocol identity"
@@ -2632,6 +2710,8 @@ async fn main() -> Result<()> {
             stack.handle.configure_fast_sync_capabilities_v1(
                 fast_sync_bootstrap::local_fast_sync_capabilities_v1(expected)?,
             )?;
+        }
+        if startup_protocol.activated_v2() {
             stack.handle.configure_compact_relay_capabilities_v1(
                 CompactRelayCapabilitiesV1::canonical(cfg.chain_id.as_str()),
             )?;
@@ -2773,9 +2853,12 @@ async fn main() -> Result<()> {
     runtime_stats.prune_require_snapshot = cfg.prune_require_snapshot;
     runtime_stats.experimental_ghostdag_selection = cfg.experimental_ghostdag_selection;
     runtime_stats.experimental_fast_cadence = cfg.experimental_fast_cadence;
+    runtime_stats.production_v3_active = startup_protocol.production_v3();
     runtime_stats.consensus_mode = cfg.consensus_mode.to_string();
-    runtime_stats.ghostdag_metadata_active = cfg.consensus_mode.ghostdag_metadata_active();
-    runtime_stats.high_cadence_allowed = cfg.consensus_mode.high_cadence_allowed();
+    runtime_stats.ghostdag_metadata_active =
+        startup_protocol.production_v3() || cfg.consensus_mode.ghostdag_metadata_active();
+    runtime_stats.high_cadence_allowed =
+        startup_protocol.production_v3() || cfg.consensus_mode.high_cadence_allowed();
     runtime_stats.target_block_interval_ms = cfg.target_block_interval_ms;
     runtime_stats.max_parallel_tips = cfg.max_parallel_tips;
     runtime_stats.max_merge_set_size = cfg.max_merge_set_size;
@@ -2866,7 +2949,7 @@ async fn main() -> Result<()> {
     }));
     let task27_recovery_active = Arc::new(AtomicBool::new(false));
 
-    let fast_sync_daemon_runtime = if startup_protocol.activated_v2() {
+    let fast_sync_daemon_runtime = if startup_protocol.generic_v2_fast_sync_enabled() {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing fast-sync identity")
         })?;
