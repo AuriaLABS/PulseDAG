@@ -55,6 +55,14 @@ pub fn preflight_v3_candidate_context(
             "v3 genesis requires a separately frozen genesis identity, not candidate preflight",
         ));
     }
+    // The dormant v3 pre-nonce builder deliberately sets an all-zero state
+    // root. This placeholder is not an authoritative replay commitment:
+    // never let an otherwise valid PoW/header make it look admission-ready.
+    if candidate.header.state_root == "00".repeat(32) {
+        return Err(invalid(
+            "v3 candidate state root is unsealed; authoritative replay is required",
+        ));
+    }
     if !candidate.header.parents.contains(selected_parent) {
         return Err(invalid(
             "v3 selected parent is not listed in candidate header",
@@ -287,6 +295,48 @@ mod tests {
             &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
+    }
+
+    #[test]
+    fn dormant_zero_state_root_is_rejected_even_with_valid_v3_pow() {
+        let (headers, selected, genesis) = single_genesis();
+        let mut candidate = mine_candidate(&genesis, BASE_NS + 500_000_000);
+        candidate.header.state_root = "00".repeat(32);
+        let mut found_pow = false;
+        for nonce in 0..512 {
+            candidate.header.nonce = nonce;
+            let evaluation = evaluate_v3_header_pow(&candidate.header, CHAIN).unwrap();
+            if evaluation.pow.accepted {
+                candidate.hash = evaluation.block_hash;
+                found_pow = true;
+                break;
+            }
+        }
+        assert!(
+            found_pow,
+            "fixture must reach a valid PoW despite the placeholder"
+        );
+        let error = preflight_v3_candidate_context(
+            &candidate,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            BASE_NS + 500_000_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("state root is unsealed"));
+        // This guard does not reject a correctly sealed ordinary candidate.
+        let sealed = mine_candidate(&genesis, BASE_NS + 500_000_000);
+        assert!(preflight_v3_candidate_context(
+            &sealed,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            BASE_NS + 500_000_000,
+        )
+        .is_ok());
     }
 
     #[test]
