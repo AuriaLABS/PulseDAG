@@ -419,7 +419,10 @@ mod tests {
                 break;
             }
         }
-        assert!(sealed_pow_found, "changed-root PoW fixture must be mineable");
+        assert!(
+            sealed_pow_found,
+            "changed-root PoW fixture must be mineable"
+        );
         let sealed = build_block_envelope_v3(CHAIN, sealed_header, vec![]).unwrap();
         assert_ne!(unsealed.hash, sealed.hash);
         let checked = preflight_v3_candidate_context(
