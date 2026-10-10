@@ -329,10 +329,12 @@ mod snapshot_authority_lock_regressions {
         store.store(NodeRpcSnapshot::default());
         let degraded = store.load();
         assert!(degraded.production_v3_active);
-        let mut live = NodeRpcSnapshot::default();
-        live.degraded = false;
-        live.stale = false;
-        live.degraded_reason = None;
+        let live = NodeRpcSnapshot {
+            degraded: false,
+            stale: false,
+            degraded_reason: None,
+            ..NodeRpcSnapshot::default()
+        };
         store.store(live);
         let fresh = store.load();
         assert!(!fresh.production_v3_active);
@@ -393,10 +395,12 @@ mod snapshot_authority_lock_regressions {
     #[test]
     fn explicitly_degraded_healthy_snapshot_preserves_latched_v3_authority() {
         let store = NodeRpcSnapshotStore::default();
-        let mut live = NodeRpcSnapshot::default();
-        live.degraded = false;
-        live.stale = false;
-        live.degraded_reason = None;
+        let live = NodeRpcSnapshot {
+            degraded: false,
+            stale: false,
+            degraded_reason: None,
+            ..NodeRpcSnapshot::default()
+        };
         store.store(live);
         let guard = store.inner.read().unwrap();
         store.store(v3_snapshot()); // Records v3 but cannot overwrite healthy snapshot.
