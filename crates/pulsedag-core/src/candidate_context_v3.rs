@@ -340,6 +340,104 @@ mod tests {
     }
 
     #[test]
+    fn dormant_pre_nonce_handoff_requires_state_root_change_and_fresh_v3_pow() {
+        use crate::pre_nonce_template_v3::build_dormant_v3_pre_nonce_template;
+
+        let (headers, selected, genesis) = single_genesis();
+        let timestamp_ns = BASE_NS + 500_000_000;
+        let dormant = build_dormant_v3_pre_nonce_template(
+            CHAIN,
+            vec![genesis.clone()],
+            &genesis,
+            &headers,
+            &selected,
+            timestamp_ns,
+            timestamp_ns,
+            1,
+            vec![],
+        )
+        .unwrap();
+
+        assert!(!dormant.ready_for_nonce_search());
+        assert_eq!(dormant.envelope().header.timestamp_ns, timestamp_ns);
+        assert_eq!(dormant.envelope().header.difficulty, TARGET_BITS);
+        assert_eq!(dormant.envelope().header.state_root, "00".repeat(32));
+
+        // Even a real v3 PoW nonce cannot turn an unsealed pre-state
+        // template into a candidate eligible for the dormant preflight.
+        let mut unsealed_header = dormant.envelope().header.clone();
+        let mut unsealed_pow_found = false;
+        for nonce in 0..512 {
+            unsealed_header.nonce = nonce;
+            if evaluate_v3_header_pow(&unsealed_header, CHAIN)
+                .unwrap()
+                .pow
+                .accepted
+            {
+                unsealed_pow_found = true;
+                break;
+            }
+        }
+        assert!(unsealed_pow_found, "unsealed PoW fixture must be mineable");
+        let unsealed = build_block_envelope_v3(CHAIN, unsealed_header, vec![]).unwrap();
+        let error = preflight_v3_candidate_context(
+            &unsealed,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            timestamp_ns,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("state root is unsealed"));
+
+        // Changing the committed root invalidates the original envelope
+        // identity; a new root requires its own correctly bound hash/PoW.
+        // This test root is NOT an authoritative state replay proof.
+        let mut tampered = unsealed.clone();
+        tampered.header.state_root = "44".repeat(32);
+        assert!(preflight_v3_candidate_context(
+            &tampered,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            timestamp_ns,
+        )
+        .is_err());
+
+        let mut sealed_header = tampered.header;
+        let mut sealed_pow_found = false;
+        for nonce in 0..512 {
+            sealed_header.nonce = nonce;
+            if evaluate_v3_header_pow(&sealed_header, CHAIN)
+                .unwrap()
+                .pow
+                .accepted
+            {
+                sealed_pow_found = true;
+                break;
+            }
+        }
+        assert!(sealed_pow_found, "changed-root PoW fixture must be mineable");
+        let sealed = build_block_envelope_v3(CHAIN, sealed_header, vec![]).unwrap();
+        assert_ne!(unsealed.hash, sealed.hash);
+        let checked = preflight_v3_candidate_context(
+            &sealed,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            timestamp_ns,
+        )
+        .unwrap();
+        assert_eq!(checked.block_hash, sealed.hash);
+        assert_eq!(checked.timestamp_ns, timestamp_ns);
+        assert_eq!(checked.expected_difficulty_bits, TARGET_BITS);
+        assert!(!dormant.ready_for_nonce_search());
+    }
+
+    #[test]
     fn genesis_is_outside_candidate_acceptance_preflight() {
         let (headers, selected, genesis) = single_genesis();
         let genesis_candidate =
