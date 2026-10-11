@@ -229,7 +229,10 @@ mod tests {
 
         assert_eq!(first.hash, again.hash);
         assert_eq!(first.header, again.header);
-        assert_eq!(first.header.timestamp_ns / 1_000_000_000, later.header.timestamp_ns / 1_000_000_000);
+        assert_eq!(
+            first.header.timestamp_ns / 1_000_000_000,
+            later.header.timestamp_ns / 1_000_000_000
+        );
         assert_ne!(first.hash, later.hash);
         assert_ne!(first.hash, other_network.hash);
         assert_ne!(first.hash, old_v2.hash);
