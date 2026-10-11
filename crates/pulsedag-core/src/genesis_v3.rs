@@ -210,6 +210,14 @@ mod tests {
             genesis.hash,
             compute_block_hash_v3(&genesis.header, chain_id).unwrap()
         );
+        // Fixed, independently computed SHA-256 vector of canonical v3
+        // header bytes. Unlike the recomputed assertion above, this detects
+        // changes to the serializer or its chain/nanosecond hash domain.
+        // Test-only candidate identity: NOT the frozen mainnet genesis.
+        assert_eq!(
+            genesis.hash,
+            "0e270106fe8e3a64b65ec84fa188e493c0b2219b98b82bb33a1db8b7bb343557"
+        );
         assert_eq!(GENESIS_ISSUANCE_ATOMS, 0);
     }
 
