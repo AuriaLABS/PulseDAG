@@ -94,7 +94,9 @@ pub fn build_dormant_v3_pre_nonce_template(
         // Genesis is a separately frozen, unmined trust anchor.
         if header.height != 0 {
             verify_v3_header_pow(header, chain_id).map_err(|error| {
-                invalid(format!("parent {parent} has invalid v3 historical PoW: {error}"))
+                invalid(format!(
+                    "parent {parent} has invalid v3 historical PoW: {error}"
+                ))
             })?;
         }
         highest_parent = highest_parent.max(header.height);
