@@ -5,7 +5,8 @@
 //! the integrity of the v3 header/selected-parent linkage before constructing
 //! the bounded newest-first retarget window. The selected-parent map MUST be
 //! produced by independently verified consensus metadata; this adapter does
-//! not select parents, validate DAG blue work, PoW, or activate a protocol.
+//! not select parents, validate DAG blue work, freeze genesis or activate a protocol.
+//! Every retained non-genesis selected ancestor MUST independently satisfy v3 PoW.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -14,6 +15,7 @@ use thiserror::Error;
 use crate::{
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
     pow::{bits_from_target, target_from_bits},
+    pow_v3::verify_v3_header_pow,
     retarget::{consensus_min_target, consensus_pow_limit_target},
     retarget_v3::{
         expected_difficulty_for_v3_window_ns, V3RetargetDecision, V3RetargetSample,
@@ -38,6 +40,8 @@ pub enum V3SelectedParentWindowError {
     MissingNonGenesisSelection(BlockId),
     #[error("v3 header {hash} has invalid/noncanonical compact difficulty {bits:#010x}")]
     InvalidTargetBits { hash: BlockId, bits: u32 },
+    #[error("v3 selected-parent history has invalid proof of work for {hash}: {reason}")]
+    InvalidHistoryPow { hash: BlockId, reason: String },
     #[error("v3 selected parent {parent} is not listed by header {hash}")]
     ParentNotListed { hash: BlockId, parent: BlockId },
     #[error("v3 selected parent height is not lower: header {hash}, parent {parent}")]
@@ -109,6 +113,18 @@ pub fn selected_parent_retarget_window_v3_ns(
             });
         }
 
+        // A valid chain-bound header hash and compact target alone do not
+        // prove that a selected ancestor performed the required work. Verify
+        // every retained non-genesis sample BEFORE it influences difficulty.
+        // Genesis is a separately frozen identity and has no mined PoW.
+        if header.height != 0 {
+            verify_v3_header_pow(header, chain_id).map_err(|error| {
+                V3SelectedParentWindowError::InvalidHistoryPow {
+                    hash: current.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+        }
         samples.push(V3RetargetSample {
             timestamp_ns: header.timestamp_ns,
             bits: header.difficulty,
@@ -168,11 +184,11 @@ pub fn expected_difficulty_for_selected_parent_v3_ns(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::BLOCK_HEADER_VERSION_V3;
+    use crate::{pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3};
 
     const CHAIN: &str = "pulsedag-v3-window-candidate";
     const BASE: u64 = 1_800_000_000_000_000_000;
-    const BITS: u32 = 0x1e0f_ffff;
+    const BITS: u32 = 0x207f_ffff;
 
     fn header(parents: Vec<BlockId>, height: u64, timestamp_ns: u64) -> BlockHeaderV3 {
         BlockHeaderV3 {
@@ -197,7 +213,18 @@ mod tests {
         timestamp_ns: u64,
     ) -> BlockId {
         parents.sort();
-        let item = header(parents, height, timestamp_ns);
+        let mut item = header(parents, height, timestamp_ns);
+        if height != 0 {
+            // Easy compact bits keep fixtures fast while ensuring that each
+            // test ancestor is a genuinely valid v3 PoW header.
+            let nonce = (0..1_024_u64)
+                .find(|nonce| {
+                    item.nonce = *nonce;
+                    evaluate_v3_header_pow(&item, CHAIN).unwrap().pow.accepted
+                })
+                .expect("v3 parent fixture should mine a valid easy-target nonce");
+            item.nonce = nonce;
+        }
         let hash = compute_block_hash_v3(&item, CHAIN).unwrap();
         headers.insert(hash.clone(), item);
         selected.insert(hash.clone(), chosen);
@@ -306,6 +333,38 @@ mod tests {
             selected_parent_retarget_window_v3_ns(CHAIN, &hash, &headers, &selected),
             Err(V3SelectedParentWindowError::InvalidTargetBits { hash, bits: 0 })
         );
+    }
+
+    #[test]
+    fn hash_bound_non_genesis_ancestor_with_insufficient_pow_cannot_set_retarget() {
+        let (mut headers, mut selected, genesis, _, _) = three_block_chain();
+        let mut forged = header(vec![genesis.clone()], 1, BASE + 500_000_000);
+        let bad_nonce = (0..1_024_u64)
+            .find(|nonce| {
+                forged.nonce = *nonce;
+                !evaluate_v3_header_pow(&forged, CHAIN).unwrap().pow.accepted
+            })
+            .expect("easy-target fixture must have an insufficient-PoW nonce");
+        forged.nonce = bad_nonce;
+        let forged_hash = compute_block_hash_v3(&forged, CHAIN).unwrap();
+        headers.insert(forged_hash.clone(), forged);
+        selected.insert(forged_hash.clone(), Some(genesis));
+
+        assert!(matches!(
+            selected_parent_retarget_window_v3_ns(CHAIN, &forged_hash, &headers, &selected),
+            Err(V3SelectedParentWindowError::InvalidHistoryPow { hash, .. })
+                if hash == forged_hash
+        ));
+        assert!(matches!(
+            expected_difficulty_for_selected_parent_v3_ns(
+                CHAIN,
+                &forged_hash,
+                &headers,
+                &selected,
+            ),
+            Err(V3SelectedParentWindowError::InvalidHistoryPow { hash, .. })
+                if hash == forged_hash
+        ));
     }
 
     #[test]
