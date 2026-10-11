@@ -183,8 +183,7 @@ mod tests {
     #[test]
     fn dormant_native_genesis_is_an_unmined_zero_allocation_v3_envelope() {
         use crate::{
-            block_envelope_v3::validate_block_envelope_v3,
-            header_v3::compute_block_hash_v3,
+            block_envelope_v3::validate_block_envelope_v3, header_v3::compute_block_hash_v3,
         };
 
         let frozen_ns = FROZEN_TS * 1_000_000_000 + 500_000_000;
@@ -223,8 +222,7 @@ mod tests {
         let first = dormant_native_genesis_envelope_v3_ns("candidate-a", first_ns).unwrap();
         let again = dormant_native_genesis_envelope_v3_ns("candidate-a", first_ns).unwrap();
         let later = dormant_native_genesis_envelope_v3_ns("candidate-a", second_ns).unwrap();
-        let other_network =
-            dormant_native_genesis_envelope_v3_ns("candidate-b", first_ns).unwrap();
+        let other_network = dormant_native_genesis_envelope_v3_ns("candidate-b", first_ns).unwrap();
         let old_v2 = genesis_block_v3("candidate-a", FROZEN_TS).unwrap();
 
         assert_eq!(first.hash, again.hash);
