@@ -207,7 +207,9 @@ pub use pow_protocol::{
 };
 pub use pow_v2::{canonical_pow_v2_adapter, CanonicalPowV2Adapter};
 
-pub use genesis_v3::{genesis_block_v3, init_chain_state_v3};
+pub use genesis_v3::{
+    dormant_native_genesis_envelope_v3_ns, genesis_block_v3, init_chain_state_v3,
+};
 pub use monetary_v3::{
     authorized_issuance_atoms, canonical_monetary_cadence_bytes_v3, economic_maturity_reached,
     economic_time_ns_for_score, max_coinbase_claim_atoms, monetary_cadence_fingerprint_v3,
