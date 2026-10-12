@@ -12,7 +12,7 @@ use crate::{
     block_envelope_v3::{build_block_envelope_v3, BlockEnvelopeV3},
     errors::PulseError,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
-    pow_v3::validate_v3_pow_target,
+    pow_v3::{validate_v3_pow_target, verify_v3_header_pow},
     protocol::BLOCK_HEADER_VERSION_V3,
     retarget_context_v3::expected_difficulty_for_selected_parent_v3_ns,
     retarget_v3::validate_candidate_timestamp_v3_ns,
@@ -50,9 +50,10 @@ fn invalid(message: impl Into<String>) -> PulseError {
 ///
 /// The parent headers, selected-parent links and blue_score MUST be derived
 /// from independently verified canonical v3 consensus metadata. This helper
-/// checks cryptographic parent linkage and time/difficulty consistency, but
-/// does not authenticate DAG blue work, historical PoW, monetary rewards,
-/// transaction signatures, state replay or frozen network/genesis identity.
+/// checks cryptographic parent linkage, each direct non-genesis parent's v3
+/// PoW, and time/difficulty consistency, but does not independently derive
+/// DAG blue work, verify the frozen genesis, monetary rewards, transaction
+/// signatures, state replay or network/protocol activation identity.
 /// Do not feed this result to active miners or P2P acceptance.
 #[allow(clippy::too_many_arguments)]
 pub fn build_dormant_v3_pre_nonce_template(
@@ -87,6 +88,17 @@ pub fn build_dormant_v3_pre_nonce_template(
             )));
         }
         validate_v3_pow_target(header.difficulty)?;
+        // Each direct side parent must prove work independently. The
+        // selected-parent retarget walk only covers its own ancestry, so
+        // checking canonical hashes alone leaves side parents unverified.
+        // Genesis is a separately frozen, unmined trust anchor.
+        if header.height != 0 {
+            verify_v3_header_pow(header, chain_id).map_err(|error| {
+                invalid(format!(
+                    "parent {parent} has invalid v3 historical PoW: {error}"
+                ))
+            })?;
+        }
         highest_parent = highest_parent.max(header.height);
         newest_timestamp = newest_timestamp.max(header.timestamp_ns);
     }
@@ -127,7 +139,7 @@ pub fn build_dormant_v3_pre_nonce_template(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::compute_merkle_root;
+    use crate::{pow_v3::evaluate_v3_header_pow, types::compute_merkle_root};
 
     const CHAIN: &str = "pulsedag-v3-pre-nonce-test";
     const BASE_NS: u64 = 1_800_000_000_000_000_000;
@@ -224,6 +236,60 @@ mod tests {
         assert!(prepare(&headers, &selected, vec![genesis.clone()], &genesis).is_err());
         headers.remove(&genesis);
         assert!(prepare(&headers, &selected, vec![genesis.clone()], &genesis).is_err());
+    }
+
+    #[test]
+    fn side_parent_must_have_valid_pow_before_pre_nonce_template_is_built() {
+        for valid_pow in [true, false] {
+            let (mut headers, mut selected, genesis) = genesis_context();
+            let mut side = BlockHeaderV3 {
+                version: BLOCK_HEADER_VERSION_V3,
+                parents: vec![genesis.clone()],
+                timestamp_ns: BASE_NS + 250_000_000,
+                difficulty: BITS,
+                nonce: 0,
+                merkle_root: compute_merkle_root(&[]),
+                state_root: "33".repeat(32),
+                blue_score: 1,
+                height: 1,
+            };
+            let nonce = (0..1_024_u64)
+                .find(|nonce| {
+                    side.nonce = *nonce;
+                    evaluate_v3_header_pow(&side, CHAIN).unwrap().pow.accepted == valid_pow
+                })
+                .expect("easy-target side parent fixture has both valid and invalid PoW");
+            side.nonce = nonce;
+            let side_hash = compute_block_hash_v3(&side, CHAIN).unwrap();
+            headers.insert(side_hash.clone(), side);
+            selected.insert(side_hash.clone(), Some(genesis.clone()));
+
+            let mut parents = vec![genesis.clone(), side_hash];
+            parents.sort();
+            let result = build_dormant_v3_pre_nonce_template(
+                CHAIN,
+                parents,
+                &genesis,
+                &headers,
+                &selected,
+                BASE_NS + 500_000_000,
+                BASE_NS + 500_000_000,
+                2,
+                vec![],
+            );
+            if valid_pow {
+                let template = result.expect("genuine side-parent PoW must pass this gate");
+                assert!(!template.ready_for_nonce_search());
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("invalid v3 historical PoW"),
+                    "hash-bound side parent with insufficient PoW must fail before templating"
+                );
+            }
+        }
     }
 
     #[test]
