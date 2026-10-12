@@ -108,10 +108,7 @@ pub fn verify_dormant_native_genesis_freeze_v3_ns(
     frozen_timestamp_ns: u64,
     frozen_genesis_hash: &str,
 ) -> Result<(), PulseError> {
-    let canonical = dormant_native_genesis_envelope_v3_ns(
-        frozen_chain_id,
-        frozen_timestamp_ns,
-    )?;
+    let canonical = dormant_native_genesis_envelope_v3_ns(frozen_chain_id, frozen_timestamp_ns)?;
     if canonical.hash != frozen_genesis_hash {
         return Err(PulseError::InvalidBlock(
             "frozen native v3 genesis hash does not match independently derived identity".into(),
@@ -293,13 +290,8 @@ mod tests {
         let genesis = dormant_native_genesis_envelope_v3_ns(chain, frozen_ns).unwrap();
         let stored = serde_json::to_vec(&genesis).unwrap();
         let restored: BlockEnvelopeV3 = serde_json::from_slice(&stored).unwrap();
-        verify_dormant_native_genesis_freeze_v3_ns(
-            &restored,
-            chain,
-            frozen_ns,
-            &genesis.hash,
-        )
-        .unwrap();
+        verify_dormant_native_genesis_freeze_v3_ns(&restored, chain, frozen_ns, &genesis.hash)
+            .unwrap();
 
         // An incorrect externally supplied freeze must fail even when the
         // untrusted persisted block still carries a valid v3 hash.
