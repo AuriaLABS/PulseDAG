@@ -23,6 +23,13 @@ pub const MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES: usize = 4096;
 /// `BlockEnvelopeV3` would ignore unknown nested header fields, silently
 /// bypassing the strict versioned `decode_verified` schema. Callers must use
 /// `decode_verified` with independently trusted freeze parameters instead.
+///
+/// The negative compile test prevents accidentally restoring the generic
+/// `Deserialize` bypass in a later refactor:
+/// ```compile_fail
+/// use pulsedag_storage::NativeV3GenesisRestoreRecordV1;
+/// let _: NativeV3GenesisRestoreRecordV1 = serde_json::from_slice(b"{}").unwrap();
+/// ```
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeV3GenesisRestoreRecordV1 {
     schema_version: u32,
