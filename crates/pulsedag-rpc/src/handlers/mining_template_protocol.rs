@@ -1015,8 +1015,7 @@ mod tests {
             timestamp,
             0,
         )
-        .err()
-        .expect("monetary-v3 must fail closed before exporting v2 PoW work");
+        .expect_err("monetary-v3 must fail closed before exporting v2 PoW work");
         let message = error.to_string();
         assert!(message.contains("monetary-v3 mining template is inactive"));
         assert!(message.contains("refusing seconds-based v2 PoW template"));
