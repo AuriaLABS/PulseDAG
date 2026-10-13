@@ -199,6 +199,25 @@ mod tests {
     }
 
     #[test]
+    fn envelope_deserialization_rejects_mixed_seconds_and_future_header_fields() {
+        let envelope = build_block_envelope_v3(CHAIN, header(1, &[]), vec![]).unwrap();
+        let canonical = serde_json::to_value(&envelope).unwrap();
+        let decoded: BlockEnvelopeV3 = serde_json::from_value(canonical.clone()).unwrap();
+        validate_block_envelope_v3(&decoded, CHAIN).unwrap();
+        assert_eq!(decoded.hash, envelope.hash);
+
+        // BlockEnvelopeV3 must not silently accept legacy timestamp fields
+        // in its nested BlockHeaderV3 through generic JSON deserialization.
+        let mut mixed = canonical.clone();
+        mixed["header"]["timestamp"] = serde_json::json!(TS_NS / 1_000_000_000);
+        assert!(serde_json::from_value::<BlockEnvelopeV3>(mixed).is_err());
+
+        let mut future = canonical;
+        future["header"]["future_consensus_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BlockEnvelopeV3>(future).is_err());
+    }
+
+    #[test]
     fn wrong_chain_forged_hash_and_tampered_merkle_fail() {
         let txs = vec![transaction(7)];
         let mut block = build_block_envelope_v3(CHAIN, header(1, &txs), txs).unwrap();
