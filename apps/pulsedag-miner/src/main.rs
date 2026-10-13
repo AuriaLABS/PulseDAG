@@ -59,7 +59,9 @@ impl std::fmt::Display for TerminalMiningTemplateError {
 
 impl std::error::Error for TerminalMiningTemplateError {}
 
-fn terminal_mining_template_error<T>(response: &ApiResponse<T>) -> Option<TerminalMiningTemplateError> {
+fn terminal_mining_template_error<T>(
+    response: &ApiResponse<T>,
+) -> Option<TerminalMiningTemplateError> {
     let error = response.error.as_ref()?;
     if matches!(
         error.code.as_str(),
@@ -2162,8 +2164,8 @@ mod tests {
 
     #[test]
     fn ordinary_template_rpc_failure_remains_retryable() {
-        let generic: ApiResponse<u8> =
-            ApiResponse::err("MINING_TEMPLATE_ERROR", "temporary issue");
+        let generic: super::ApiResponse<u8> =
+            super::ApiResponse::err("MINING_TEMPLATE_ERROR", "temporary issue");
         assert!(super::terminal_mining_template_error(&generic).is_none());
     }
 
