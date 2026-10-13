@@ -9,9 +9,8 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    build_activated_v2_mining_template, 
-    consensus_difficulty_snapshot, derive_activated_v2_mining_parent_context,
-     materialize_activated_v2_mining_overlay,
+    build_activated_v2_mining_template, consensus_difficulty_snapshot,
+    derive_activated_v2_mining_parent_context, materialize_activated_v2_mining_overlay,
     materialize_activated_v2_mining_overlay_with_materializer,
     materialize_authoritative_pre_candidate_state_v3, materialize_authoritative_state_v3,
     ActivatedV2MiningTemplateSpec, ChainState, PowValidationPath, ProtocolActivationIdentity,
