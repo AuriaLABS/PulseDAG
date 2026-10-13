@@ -100,7 +100,7 @@ mod tests {
             let error =
                 ensure_storage_has_no_monetary_v3_activation(&storage, surface).expect_err(surface);
             assert!(error.contains("disabled while v3 monetary activation"));
-            assert!(error.contains("native v3 500ms mining is inactive")); 
+            assert!(error.contains("native v3 500ms mining is inactive"));
             assert!(error.contains("do not retry"));
         }
 
