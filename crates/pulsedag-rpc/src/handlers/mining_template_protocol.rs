@@ -660,6 +660,20 @@ pub async fn post_mining_template<S: RpcStateLike>(
                             "v3 monetary activation identity does not match mining protocol identity",
                         ));
                     }
+                    // Reject the persisted v2 monetary sidecar before any
+                    // authoritative replay, durable snapshot load or staged
+                    // overlay. These operations are costly and cannot turn
+                    // the legacy seconds-based header into native 500ms work.
+                    // Retain the later RPC builder/finalizer checks as defense
+                    // in depth even after native-v3 state becomes available.
+                    if record.identity.block_header_protocol_version
+                        != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3
+                    {
+                        return Json(ApiResponse::err(
+                            "MINING_TEMPLATE_ERROR",
+                            "monetary-v3 mining template is inactive: persisted monetary activation uses seconds-based v2 headers; refusing native 500ms mining work",
+                        ));
+                    }
                     if let Err(error) = pulsedag_core::validate_live_reward_settlement_v3(
                         &chain,
                         &record.monetary_cadence_segments,
