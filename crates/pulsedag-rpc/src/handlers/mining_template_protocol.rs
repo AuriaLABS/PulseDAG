@@ -965,7 +965,7 @@ mod tests {
         assert!(check_monetary_v3_mining_template_activation(&identity, None).is_ok());
 
         let wrong_identity = ProtocolActivationIdentity::activated_v2(
-            "another-network".into(),
+            "another-network",
             chain.dag.genesis_hash.clone(),
             GHOSTDAG_V1_ORDERING_VERSION,
         );
