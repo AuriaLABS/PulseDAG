@@ -519,15 +519,14 @@ fn check_monetary_v3_mining_template_activation(
             "v3 monetary activation identity does not match mining protocol identity",
         ));
     }
-    if record.identity.block_header_protocol_version
-        != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3
-    {
-        return Err((
-            MONETARY_V3_MINING_INACTIVE,
-            "monetary-v3 mining template is inactive: persisted monetary activation uses seconds-based v2 headers; refusing native 500ms mining work",
-        ));
-    }
-    Ok(())
+    // This RPC always returns the legacy seconds-based types::Block, even
+    // if a supplied/persisted identity happens to carry numeric header-v3.
+    // No version bit can make the response schema native-nanosecond work.
+    // Reject before peer availability, expensive replay, or staged overlays.
+    Err((
+        MONETARY_V3_MINING_INACTIVE,
+        "monetary-v3 mining template is inactive: the current RPC block schema is seconds-based regardless of the advertised header version; refusing native 500ms mining work",
+    ))
 }
 
 async fn post_legacy_template<S: RpcStateLike>(
@@ -963,6 +962,33 @@ mod tests {
         assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
         assert!(message.contains("refusing native 500ms mining work"));
         assert!(check_monetary_v3_mining_template_activation(&identity, None).is_ok());
+
+        // A future or spoofed numeric header-v3 identity cannot promote
+        // the old seconds-based RPC response into native nanosecond work.
+        // The early gate must remain terminal even before the independent
+        // monetary-record/protocol-identity validator runs.
+        let mut numeric_v3_identity = identity.clone();
+        numeric_v3_identity.block_header_protocol_version =
+            pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3;
+        let numeric_v3_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            numeric_v3_identity.clone(),
+            &cadence,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+        let (code, message) = check_monetary_v3_mining_template_activation(
+            &numeric_v3_identity,
+            Some(&numeric_v3_record),
+        )
+        .expect_err("numeric header-v3 must not bypass native mining inactivity");
+        assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
+        assert!(message.contains("seconds-based"));
+        assert!(message.contains("refusing native 500ms mining work"));
+        assert!(check_monetary_v3_mining_template_activation(
+            &numeric_v3_identity,
+            None,
+        )
+        .is_ok());
 
         let wrong_identity = ProtocolActivationIdentity::activated_v2(
             "another-network",
