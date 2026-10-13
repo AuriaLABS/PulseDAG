@@ -4,6 +4,7 @@ use crate::{
     api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike},
     handlers::monetary_activation_guard::{
         ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+        MONETARY_V3_MINING_INACTIVE,
     },
     handlers::pow_metrics::PowMetricsData,
 };
@@ -670,7 +671,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
                         != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3
                     {
                         return Json(ApiResponse::err(
-                            "MINING_TEMPLATE_ERROR",
+                            MONETARY_V3_MINING_INACTIVE,
                             "monetary-v3 mining template is inactive: persisted monetary activation uses seconds-based v2 headers; refusing native 500ms mining work",
                         ));
                     }
@@ -770,9 +771,16 @@ pub async fn post_mining_template<S: RpcStateLike>(
                 ) {
                     Ok((data, duplicate_tx_filtered)) => (data, duplicate_tx_filtered),
                     Err(error) => {
+                        // A monetary sidecar must never produce retryable
+                        // nonce work errors while the RPC block type is v2.
+                        let code = if monetary_activation.is_some() {
+                            MONETARY_V3_MINING_INACTIVE
+                        } else {
+                            "MINING_TEMPLATE_ERROR"
+                        };
                         return Json(ApiResponse::err(
-                            "MINING_TEMPLATE_ERROR",
-                            format!("cannot build activated-v2 mining template: {error}"),
+                            code,
+                            format!("cannot build mining template: {error}"),
                         ));
                     }
                 }
