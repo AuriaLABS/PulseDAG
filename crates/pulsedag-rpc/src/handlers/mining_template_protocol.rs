@@ -426,7 +426,7 @@ fn activated_monetary_v3_template_data(
     monetary_activation: &ProtocolMonetaryActivationRecordV2,
     miner_address: String,
     created_at_unix: u64,
-    duplicate_tx_filtered_total: u64,
+    _duplicate_tx_filtered_total: u64,
 ) -> Result<(MiningTemplateData, u64), PulseError> {
     if monetary_activation.identity != *identity {
         return Err(PulseError::InvalidBlock(
@@ -459,7 +459,7 @@ fn activated_monetary_v3_template_data(
     }
 
     let parent_context = derive_activated_v2_mining_parent_context(chain, identity)?;
-    let (transactions, duplicate_tx_filtered) =
+    let (transactions, _duplicate_tx_filtered) =
         protocol_ordered_transactions(chain, &parent_context.parents);
     if transactions
         .iter()
@@ -493,103 +493,13 @@ fn activated_monetary_v3_template_data(
             "monetary-v3 mining template refuses a finalized seconds-based v2 header".to_string(),
         ));
     }
-    let block = finalized.block;
-    let adapter = pulsedag_core::canonical_pow_v2_adapter();
-    let material = adapter.pre_pow_material(&block.header, &identity.chain_id)?;
-    let expires_at_unix =
-        created_at_unix.saturating_add(super::mining_template_legacy::TEMPLATE_TTL_SECS);
-    let template_id = format!(
-        "v3m:{}:{}:{}",
-        block.header.height, block.hash, monetary_activation.binding_fingerprint
-    );
-    let pre_pow_hash = hex::encode(Keccak256::digest(&material.pre_pow_bytes));
-    let snapshot = consensus_difficulty_snapshot(chain);
-    let exclusion_reasons = parent_context
-        .excluded_parallel_parents
-        .iter()
-        .map(|excluded| format!("{}:{:?}", excluded.hash, excluded.reason))
-        .collect::<Vec<_>>();
-    let parallel_parents_enabled = !parent_context.included_parallel_parents.is_empty();
-    let mempool_tx_count = block.transactions.len().saturating_sub(1);
-    let header_difficulty = block.header.difficulty;
-    let next_height = block.header.height;
-    let blue_score = block.header.blue_score;
-    let parent_tips = block.header.parents.clone();
-    let selected_tip = Some(parent_context.selected_tip.clone());
-    let selected_parent = Some(parent_context.selected_parent.clone());
-    let template_parent_count = parent_tips.len();
-    let template_merge_set_size = parent_context.merge_set.len();
-
-    Ok((
-        MiningTemplateData {
-            protocol_version: MINING_PROTOCOL_VERSION,
-            mode: "external-miner-template-v3-monetary".to_string(),
-            algorithm: adapter.algorithm_name().to_string(),
-            pow_engine: adapter.engine_name().to_string(),
-            miner_address,
-            template_id,
-            selected_tip,
-            parent_tips,
-            created_at_unix,
-            expires_at_unix,
-            freshness_ttl_secs: super::mining_template_legacy::TEMPLATE_TTL_SECS,
-            freshness_grace_secs: super::mining_template_legacy::TEMPLATE_FRESHNESS_GRACE_SECS,
-            protocol_identity: Some(identity.clone()),
-            protocol_identity_fingerprint: Some(
-                identity
-                    .fingerprint()
-                    .map_err(|error| PulseError::InvalidBlock(error.to_string()))?,
-            ),
-            monetary_policy_fingerprint: Some(finalized.monetary_policy_fingerprint),
-            monetary_cadence_fingerprint: Some(finalized.monetary_cadence_fingerprint),
-            monetary_binding_fingerprint: Some(monetary_activation.binding_fingerprint.clone()),
-            reward_settlement_deferred: finalized.reward_settlement_deferred,
-            block,
-            target_u64: material.target.target_u64,
-            target_hex: material.target.target_hex,
-            bits: material.target.bits,
-            difficulty: header_difficulty,
-            compact_target: material.target.bits,
-            network_id: chain.chain_id.clone(),
-            nonce_range: "0..=18446744073709551615".to_string(),
-            timestamp_min_unix: created_at_unix.saturating_sub(1),
-            timestamp_max_unix: expires_at_unix
-                .saturating_add(super::mining_template_legacy::TEMPLATE_FRESHNESS_GRACE_SECS),
-            next_height,
-            blue_score,
-            mempool_tx_count,
-            metrics_hint: PowMetricsData {
-                algorithm: pulsedag_core::selected_pow_name().to_string(),
-                best_height: chain.dag.best_height,
-                window_size: snapshot.policy.window_size,
-                observed_block_count: snapshot.observed_block_count,
-                avg_block_interval_secs: snapshot.avg_block_interval_secs,
-                suggested_difficulty: u64::from(header_difficulty),
-                target_u64: material.target.target_u64,
-                target_block_interval_secs: snapshot.target_block_interval_secs,
-                retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
-                notes: vec![
-                    "Mining template is bound to the persisted v3 monetary activation".to_string(),
-                    "Reward claim amount is zero until canonical ordered-DAG settlement"
-                        .to_string(),
-                ],
-            },
-            pow_preimage_hex: hex::encode(material.pre_pow_bytes),
-            pre_pow_hash,
-            pow_preimage_nonce_offset: PROTOCOL_V2_NONCE_OFFSET_NOT_APPLICABLE,
-            pow_header_preimage_version: PROTOCOL_V2_PRE_POW_VERSION,
-            mutable_header_fields: vec!["nonce".to_string()],
-            template_selected_parent: selected_parent,
-            template_parent_count,
-            template_blue_score: blue_score,
-            template_merge_set_size,
-            template_parallel_parents_enabled: parallel_parents_enabled,
-            template_parallel_parent_exclusion_reasons: exclusion_reasons,
-            duplicate_tx_filtered,
-            duplicate_tx_filtered_total: duplicate_tx_filtered_total
-                .saturating_add(duplicate_tx_filtered),
-        },
-        duplicate_tx_filtered,
+    // Even a numeric version 3 in the old BlockHeader would remain a
+    // seconds-based v2 data type, not a native nanosecond BlockHeaderV3.
+    // Never fall through to canonical_pow_v2_adapter or issue v3 nonce
+    // work from this RPC response type. A future native-v3 RPC must use a
+    // distinct BlockEnvelopeV3/PoW schema and independent end-to-end tests.
+    Err(PulseError::InvalidBlock(
+        "monetary-v3 mining template remains inactive: legacy BlockHeader cannot represent native v3 nanosecond PoW work".to_string(),
     ))
 }
 
