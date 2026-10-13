@@ -157,17 +157,17 @@ v3.0.0 mainnet keeps smart-contract deployment/execution inactive. Monetary snap
 
 The #1045 integration line enforces the monetary contract at the live boundaries rather than only exposing a policy library:
 
-- `/mining/template` uses the amountless v3 reward claim, rechecks protocol/policy/cadence bindings, finalizes the authoritative state root/hash, and only then exposes nonce-search work when a valid monetary sidecar is present;
+- **Native v3 mining is not active.** When a monetary-v3 sidecar is present, `/mining/template` refuses to issue nonce-search work and returns the terminal `MONETARY_V3_MINING_INACTIVE` error: the current RPC `BlockHeader` and PoW adapter use Unix seconds and v2 retarget, not the required v3 nanosecond header and 500 ms retarget. The external miner stops its loop on this code rather than retrying indefinitely;
 - `/mining/submit` validates the state-derived canonical monetary reward and complete accepted-state supply before persistence/commit;
 - live inbound P2P routes through the monetary runtime when activated-v2 capabilities and the persisted monetary identity agree;
 - incoming, staged and pending P2P blocks must use the amountless reward-claim envelope; legacy amount-bearing coinbases and additional inputless issuance are rejected before they can become authoritative;
 - daemon restore revalidates protocol identity, monetary binding, transient P2P queues, complete accepted-state supply and reward-finality compatibility;
-- sidecar presence never activates v3 by itself, but it makes legacy fallback invalid: startup, inbound P2P, legacy-v1 Mining Protocol fallback, `/mine`, `/mine/preview`, mining jobs, PoW auto-run and PoW mine-capture all fail closed rather than authorizing height-based issuance;
+- sidecar presence never activates v3 by itself. It makes legacy fallback invalid: startup, inbound P2P, legacy-v1 Mining Protocol fallback, `/mine`, `/mine/preview`, mining jobs, PoW auto-run and PoW mine-capture all fail closed rather than authorizing height-based issuance. The legacy error `MONETARY_V3_LEGACY_MINING_DISABLED` is also terminal for external miners and must not direct users to `/mining/template` as a working v3 alternative;
 - `/block/validate` uses the monetary validation path when the monetary sidecar is active;
 - the persisted reward-finality policy must equal a finality engine actually implemented by the daemon;
 - maturity/finality settlement is evaluated on every authoritative monetary state.
 
-Legacy v2.x subsidy constants remain available for historical compatibility and tests, but monetary activation guards make those paths unreachable as v3 issuance authority.
+Legacy v2.x subsidy constants remain available for historical compatibility and tests, but monetary activation guards make those paths unreachable as v3 issuance authority. The previously implemented monetary-v3 builder/finalizer, mined/P2P validations and settlement routines remain present for audit and dormant test coverage, **not authorization to operate a production 500 ms v3 network**. Native v3 headers, selected-parent/blue-work authority, retarget, P2P, replay and durable storage must be integrated and independently reviewed before lifting the mining and startup prohibitions.
 
 ## Remaining #1045 integration gates
 
