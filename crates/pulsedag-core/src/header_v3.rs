@@ -21,6 +21,7 @@ const V3_MAX_CANONICAL_HEADER_BYTES: usize = 8_192;
 /// Distinct from the seconds-based v1/v2 BlockHeader. Do not deserialize
 /// existing v2 blocks into this type or reinterpret their timestamp units.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlockHeaderV3 {
     pub version: u32,
     pub parents: Vec<BlockId>,
@@ -190,6 +191,33 @@ mod tests {
             blue_score: 12,
             height: 5,
         }
+    }
+
+    #[test]
+    fn native_v3_json_header_rejects_legacy_seconds_and_unknown_fields() {
+        let original = header(BASE_NS);
+        let canonical = serde_json::to_value(&original).unwrap();
+        let restored: BlockHeaderV3 = serde_json::from_value(canonical.clone()).unwrap();
+        assert_eq!(restored, original);
+        assert_eq!(
+            compute_block_hash_v3(&restored, "v3").unwrap(),
+            compute_block_hash_v3(&original, "v3").unwrap()
+        );
+
+        // A mixed v2-seconds + v3-nanoseconds header must never discard
+        // the old timestamp silently and then pass later PoW/hash checks.
+        let mut mixed = canonical.clone();
+        mixed["timestamp"] = serde_json::json!(BASE_NS / 1_000_000_000);
+        assert!(serde_json::from_value::<BlockHeaderV3>(mixed).is_err());
+
+        let mut future = canonical.clone();
+        future["future_consensus_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BlockHeaderV3>(future).is_err());
+
+        let mut seconds_only = canonical;
+        seconds_only.as_object_mut().unwrap().remove("timestamp_ns");
+        seconds_only["timestamp"] = serde_json::json!(BASE_NS / 1_000_000_000);
+        assert!(serde_json::from_value::<BlockHeaderV3>(seconds_only).is_err());
     }
 
     #[test]
