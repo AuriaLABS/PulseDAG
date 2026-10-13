@@ -1,5 +1,5 @@
 use crate::{
-    block_envelope_v3::{build_block_envelope_v3, BlockEnvelopeV3},
+    block_envelope_v3::{build_block_envelope_v3, validate_block_envelope_v3, BlockEnvelopeV3},
     errors::PulseError,
     genesis::init_chain_state,
     header_v2::compute_block_hash_v2,
@@ -90,6 +90,40 @@ pub fn dormant_native_genesis_envelope_v3_ns(
         height: 0,
     };
     build_block_envelope_v3(chain_id, header, transactions)
+}
+
+/// Check a restored native-v3 genesis against an externally frozen identity.
+///
+/// The caller MUST source `frozen_chain_id`, `frozen_timestamp_ns` and
+/// `frozen_genesis_hash` from an independent trusted protocol/network freeze,
+/// NOT from the untrusted restored envelope. This is a pure, dormant guard,
+/// not a RocksDB restore hook or an activation/identity freeze policy.
+///
+/// A syntactically valid v3 header can be rehashed after changing its nonce,
+/// state root, difficulty or subsecond timestamp. Recomputing its hash alone
+/// does not authenticate which genesis the network actually froze.
+pub fn verify_dormant_native_genesis_freeze_v3_ns(
+    restored: &BlockEnvelopeV3,
+    frozen_chain_id: &str,
+    frozen_timestamp_ns: u64,
+    frozen_genesis_hash: &str,
+) -> Result<(), PulseError> {
+    let canonical = dormant_native_genesis_envelope_v3_ns(frozen_chain_id, frozen_timestamp_ns)?;
+    if canonical.hash != frozen_genesis_hash {
+        return Err(PulseError::InvalidBlock(
+            "frozen native v3 genesis hash does not match independently derived identity".into(),
+        ));
+    }
+    validate_block_envelope_v3(restored, frozen_chain_id)?;
+    if restored.hash != frozen_genesis_hash
+        || restored.header != canonical.header
+        || !restored.transactions.is_empty()
+    {
+        return Err(PulseError::InvalidBlock(
+            "restored native v3 genesis differs from frozen network identity".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Initialize a clean v3 candidate state whose genesis creates no spendable UTXO.
@@ -245,6 +279,81 @@ mod tests {
         assert!(validate_block_envelope_v3(&first, "candidate-b").is_err());
         assert!(dormant_native_genesis_envelope_v3_ns("", first_ns).is_err());
         assert!(dormant_native_genesis_envelope_v3_ns("candidate-a", 0).is_err());
+    }
+
+    #[test]
+    fn frozen_native_v3_identity_rejects_validly_rehashed_alternative_genesis() {
+        use crate::header_v3::compute_block_hash_v3;
+
+        let chain = "pulsedag-v3-native-freeze-test";
+        let frozen_ns = FROZEN_TS * 1_000_000_000 + 500_000_000;
+        let genesis = dormant_native_genesis_envelope_v3_ns(chain, frozen_ns).unwrap();
+        let stored = serde_json::to_vec(&genesis).unwrap();
+        let restored: BlockEnvelopeV3 = serde_json::from_slice(&stored).unwrap();
+        verify_dormant_native_genesis_freeze_v3_ns(&restored, chain, frozen_ns, &genesis.hash)
+            .unwrap();
+
+        // An incorrect externally supplied freeze must fail even when the
+        // untrusted persisted block still carries a valid v3 hash.
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &restored,
+            chain,
+            frozen_ns + 1,
+            &genesis.hash,
+        )
+        .is_err());
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &restored,
+            chain,
+            frozen_ns,
+            &"11".repeat(32),
+        )
+        .is_err());
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &restored,
+            "another-network",
+            frozen_ns,
+            &genesis.hash,
+        )
+        .is_err());
+
+        // These mutations can be independently rehashed and still pass
+        // ordinary envelope validation, but they MUST NOT redefine genesis.
+        let mut changed_nonce = restored.clone();
+        changed_nonce.header.nonce = 1;
+        changed_nonce.hash = compute_block_hash_v3(&changed_nonce.header, chain).unwrap();
+        validate_block_envelope_v3(&changed_nonce, chain).unwrap();
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &changed_nonce,
+            chain,
+            frozen_ns,
+            &genesis.hash,
+        )
+        .is_err());
+
+        let mut changed_root = restored.clone();
+        changed_root.header.state_root = "aa".repeat(32);
+        changed_root.hash = compute_block_hash_v3(&changed_root.header, chain).unwrap();
+        validate_block_envelope_v3(&changed_root, chain).unwrap();
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &changed_root,
+            chain,
+            frozen_ns,
+            &genesis.hash,
+        )
+        .is_err());
+
+        let mut changed_bits = restored.clone();
+        changed_bits.header.difficulty = 0x207f_fffe;
+        changed_bits.hash = compute_block_hash_v3(&changed_bits.header, chain).unwrap();
+        validate_block_envelope_v3(&changed_bits, chain).unwrap();
+        assert!(verify_dormant_native_genesis_freeze_v3_ns(
+            &changed_bits,
+            chain,
+            frozen_ns,
+            &genesis.hash,
+        )
+        .is_err());
     }
 
     #[test]
