@@ -319,8 +319,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("timestamp");
-        mixed["genesis"]["header"]["future_header_field"] =
-            serde_json::Value::Bool(true);
+        mixed["genesis"]["header"]["future_header_field"] = serde_json::Value::Bool(true);
         assert!(NativeV3GenesisRestoreRecordV1::decode_verified(
             &serde_json::to_vec(&mixed).unwrap(),
             CHAIN,
