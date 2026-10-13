@@ -2,6 +2,8 @@ use crate::api::RpcStateLike;
 use pulsedag_storage::Storage;
 
 pub const MONETARY_V3_LEGACY_MINING_DISABLED: &str = "MONETARY_V3_LEGACY_MINING_DISABLED";
+/// Terminal RPC error: native v3 nanosecond mining is not yet integrated.
+pub const MONETARY_V3_MINING_INACTIVE: &str = "MONETARY_V3_MINING_INACTIVE";
 
 /// Fail closed on every retained height-subsidy mining surface once a v3
 /// monetary activation sidecar is present.
@@ -17,7 +19,7 @@ fn ensure_storage_has_no_monetary_v3_activation(
     match storage.protocol_monetary_activation_record() {
         Ok(None) => Ok(()),
         Ok(Some(record)) => Err(format!(
-            "{surface} is disabled while v3 monetary activation {} is present; use /mining/template and /mining/submit",
+            "{surface} is disabled while v3 monetary activation {} is present; native v3 500ms mining is inactive, and neither legacy mining nor /mining/template can provide valid v3 nonce work; do not retry until native v3 consensus is activated",
             record.binding_fingerprint
         )),
         Err(error) => Err(format!(
@@ -98,7 +100,8 @@ mod tests {
             let error =
                 ensure_storage_has_no_monetary_v3_activation(&storage, surface).expect_err(surface);
             assert!(error.contains("disabled while v3 monetary activation"));
-            assert!(error.contains("/mining/template and /mining/submit"));
+            assert!(error.contains("native v3 500ms mining is inactive"));
+            assert!(error.contains("do not retry"));
         }
 
         drop(storage);

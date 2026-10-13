@@ -4,6 +4,7 @@ use crate::{
     api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike},
     handlers::monetary_activation_guard::{
         ensure_legacy_mining_disabled_when_monetary_v3_active, MONETARY_V3_LEGACY_MINING_DISABLED,
+        MONETARY_V3_MINING_INACTIVE,
     },
     handlers::pow_metrics::PowMetricsData,
 };
@@ -417,13 +418,16 @@ fn activated_v2_template_data(
     ))
 }
 
+/// Fail-closed v3 monetary RPC gate. Its retained monetary builder/finalizer
+/// calls are audited for issuance authority, but their seconds-based Block
+/// output can never be advertised as a native 500ms v3 mining template.
 fn activated_monetary_v3_template_data(
     chain: &ChainState,
     identity: &ProtocolActivationIdentity,
     monetary_activation: &ProtocolMonetaryActivationRecordV2,
     miner_address: String,
     created_at_unix: u64,
-    duplicate_tx_filtered_total: u64,
+    _duplicate_tx_filtered_total: u64,
 ) -> Result<(MiningTemplateData, u64), PulseError> {
     if monetary_activation.identity != *identity {
         return Err(PulseError::InvalidBlock(
@@ -446,8 +450,17 @@ fn activated_monetary_v3_template_data(
         ));
     }
 
+    // A monetary-v3 activation record cannot authorize v2 seconds/60s
+    // PoW as native 500ms mining work. Even if startup gates are bypassed,
+    // reject the current seconds-bound protocol identity before emission.
+    if identity.block_header_protocol_version != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3 {
+        return Err(PulseError::InvalidBlock(
+            "monetary-v3 mining template is inactive: native v3 nanosecond headers, 500ms selected-parent retarget and mined/P2P/replay/storage authority are not integrated; refusing seconds-based v2 PoW template".to_string(),
+        ));
+    }
+
     let parent_context = derive_activated_v2_mining_parent_context(chain, identity)?;
-    let (transactions, duplicate_tx_filtered) =
+    let (transactions, _duplicate_tx_filtered) =
         protocol_ordered_transactions(chain, &parent_context.parents);
     if transactions
         .iter()
@@ -473,104 +486,48 @@ fn activated_monetary_v3_template_data(
         &monetary_activation.monetary_cadence_segments,
         &template,
     )?;
-    let block = finalized.block;
-    let adapter = pulsedag_core::canonical_pow_v2_adapter();
-    let material = adapter.pre_pow_material(&block.header, &identity.chain_id)?;
-    let expires_at_unix =
-        created_at_unix.saturating_add(super::mining_template_legacy::TEMPLATE_TTL_SECS);
-    let template_id = format!(
-        "v3m:{}:{}:{}",
-        block.header.height, block.hash, monetary_activation.binding_fingerprint
-    );
-    let pre_pow_hash = hex::encode(Keccak256::digest(&material.pre_pow_bytes));
-    let snapshot = consensus_difficulty_snapshot(chain);
-    let exclusion_reasons = parent_context
-        .excluded_parallel_parents
-        .iter()
-        .map(|excluded| format!("{}:{:?}", excluded.hash, excluded.reason))
-        .collect::<Vec<_>>();
-    let parallel_parents_enabled = !parent_context.included_parallel_parents.is_empty();
-    let mempool_tx_count = block.transactions.len().saturating_sub(1);
-    let header_difficulty = block.header.difficulty;
-    let next_height = block.header.height;
-    let blue_score = block.header.blue_score;
-    let parent_tips = block.header.parents.clone();
-    let selected_tip = Some(parent_context.selected_tip.clone());
-    let selected_parent = Some(parent_context.selected_parent.clone());
-    let template_parent_count = parent_tips.len();
-    let template_merge_set_size = parent_context.merge_set.len();
-
-    Ok((
-        MiningTemplateData {
-            protocol_version: MINING_PROTOCOL_VERSION,
-            mode: "external-miner-template-v3-monetary".to_string(),
-            algorithm: adapter.algorithm_name().to_string(),
-            pow_engine: adapter.engine_name().to_string(),
-            miner_address,
-            template_id,
-            selected_tip,
-            parent_tips,
-            created_at_unix,
-            expires_at_unix,
-            freshness_ttl_secs: super::mining_template_legacy::TEMPLATE_TTL_SECS,
-            freshness_grace_secs: super::mining_template_legacy::TEMPLATE_FRESHNESS_GRACE_SECS,
-            protocol_identity: Some(identity.clone()),
-            protocol_identity_fingerprint: Some(
-                identity
-                    .fingerprint()
-                    .map_err(|error| PulseError::InvalidBlock(error.to_string()))?,
-            ),
-            monetary_policy_fingerprint: Some(finalized.monetary_policy_fingerprint),
-            monetary_cadence_fingerprint: Some(finalized.monetary_cadence_fingerprint),
-            monetary_binding_fingerprint: Some(monetary_activation.binding_fingerprint.clone()),
-            reward_settlement_deferred: finalized.reward_settlement_deferred,
-            block,
-            target_u64: material.target.target_u64,
-            target_hex: material.target.target_hex,
-            bits: material.target.bits,
-            difficulty: header_difficulty,
-            compact_target: material.target.bits,
-            network_id: chain.chain_id.clone(),
-            nonce_range: "0..=18446744073709551615".to_string(),
-            timestamp_min_unix: created_at_unix.saturating_sub(1),
-            timestamp_max_unix: expires_at_unix
-                .saturating_add(super::mining_template_legacy::TEMPLATE_FRESHNESS_GRACE_SECS),
-            next_height,
-            blue_score,
-            mempool_tx_count,
-            metrics_hint: PowMetricsData {
-                algorithm: pulsedag_core::selected_pow_name().to_string(),
-                best_height: chain.dag.best_height,
-                window_size: snapshot.policy.window_size,
-                observed_block_count: snapshot.observed_block_count,
-                avg_block_interval_secs: snapshot.avg_block_interval_secs,
-                suggested_difficulty: u64::from(header_difficulty),
-                target_u64: material.target.target_u64,
-                target_block_interval_secs: snapshot.target_block_interval_secs,
-                retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
-                notes: vec![
-                    "Mining template is bound to the persisted v3 monetary activation".to_string(),
-                    "Reward claim amount is zero until canonical ordered-DAG settlement"
-                        .to_string(),
-                ],
-            },
-            pow_preimage_hex: hex::encode(material.pre_pow_bytes),
-            pre_pow_hash,
-            pow_preimage_nonce_offset: PROTOCOL_V2_NONCE_OFFSET_NOT_APPLICABLE,
-            pow_header_preimage_version: PROTOCOL_V2_PRE_POW_VERSION,
-            mutable_header_fields: vec!["nonce".to_string()],
-            template_selected_parent: selected_parent,
-            template_parent_count,
-            template_blue_score: blue_score,
-            template_merge_set_size,
-            template_parallel_parents_enabled: parallel_parents_enabled,
-            template_parallel_parent_exclusion_reasons: exclusion_reasons,
-            duplicate_tx_filtered,
-            duplicate_tx_filtered_total: duplicate_tx_filtered_total
-                .saturating_add(duplicate_tx_filtered),
-        },
-        duplicate_tx_filtered,
+    // A claimed v3 identity alone cannot authorize a finalized v2 BlockHeader.
+    // The current finalizer creates version-2 seconds-based headers and must
+    // never supply nonce-search-ready RPC work.
+    if finalized.block.header.version != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3 {
+        return Err(PulseError::InvalidBlock(
+            "monetary-v3 mining template refuses a finalized seconds-based v2 header".to_string(),
+        ));
+    }
+    // Even a numeric version 3 in the old BlockHeader would remain a
+    // seconds-based v2 data type, not a native nanosecond BlockHeaderV3.
+    // Never fall through to canonical_pow_v2_adapter or issue v3 nonce
+    // work from this RPC response type. A future native-v3 RPC must use a
+    // distinct BlockEnvelopeV3/PoW schema and independent end-to-end tests.
+    Err(PulseError::InvalidBlock(
+        "monetary-v3 mining template remains inactive: legacy BlockHeader cannot represent native v3 nanosecond PoW work".to_string(),
     ))
+}
+
+/// Terminal, pre-availability v3 mining gate for the current seconds-based
+/// RPC block schema. This must run before readiness/peer checks or replay.
+fn check_monetary_v3_mining_template_activation(
+    identity: &ProtocolActivationIdentity,
+    monetary_activation: Option<&ProtocolMonetaryActivationRecordV2>,
+) -> Result<(), (&'static str, &'static str)> {
+    let Some(record) = monetary_activation else {
+        return Ok(());
+    };
+    if record.identity != *identity {
+        return Err((
+            "PROTOCOL_MISMATCH",
+            "v3 monetary activation identity does not match mining protocol identity",
+        ));
+    }
+    if record.identity.block_header_protocol_version
+        != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3
+    {
+        return Err((
+            MONETARY_V3_MINING_INACTIVE,
+            "monetary-v3 mining template is inactive: persisted monetary activation uses seconds-based v2 headers; refusing native 500ms mining work",
+        ));
+    }
+    Ok(())
 }
 
 async fn post_legacy_template<S: RpcStateLike>(
@@ -692,9 +649,6 @@ pub async fn post_mining_template<S: RpcStateLike>(
             "legacy mining template path did not resolve a legacy identity",
         )),
         (PowValidationPath::ActivatedV2, _) => {
-            if let Some(reason) = mining_template_unavailable_reason(&state).await {
-                return Json(ApiResponse::err("MINING_TEMPLATE_UNAVAILABLE", reason));
-            }
             let identity = match local_identity {
                 Some(identity) => identity,
                 None => {
@@ -704,6 +658,29 @@ pub async fn post_mining_template<S: RpcStateLike>(
                     ));
                 }
             };
+            // The terminal monetary-v3 sidecar check must precede readiness,
+            // peer availability and any durable replay/snapshot materialization.
+            // Otherwise missing-parent recovery or zero peers masks a permanent
+            // v3 nonce-work denial with retryable MINING_TEMPLATE_UNAVAILABLE.
+            let storage = state.storage();
+            let monetary_activation = match storage.protocol_monetary_activation_record() {
+                Ok(record) => record,
+                Err(error) => {
+                    return Json(ApiResponse::err(
+                        "MINING_TEMPLATE_ERROR",
+                        format!("cannot read v3 monetary activation sidecar: {error}"),
+                    ));
+                }
+            };
+            if let Err((code, message)) = check_monetary_v3_mining_template_activation(
+                &identity,
+                monetary_activation.as_ref(),
+            ) {
+                return Json(ApiResponse::err(code, message));
+            }
+            if let Some(reason) = mining_template_unavailable_reason(&state).await {
+                return Json(ApiResponse::err("MINING_TEMPLATE_UNAVAILABLE", reason));
+            }
             let created_at_unix = pulsedag_core::current_ts();
             let duplicate_tx_filtered_total = {
                 let runtime_handle = state.runtime();
@@ -713,23 +690,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
             let data = {
                 let chain_handle = state.chain();
                 let chain = chain_handle.read().await;
-                let storage = state.storage();
-                let monetary_activation = match storage.protocol_monetary_activation_record() {
-                    Ok(record) => record,
-                    Err(error) => {
-                        return Json(ApiResponse::err(
-                            "MINING_TEMPLATE_ERROR",
-                            format!("cannot read v3 monetary activation sidecar: {error}"),
-                        ));
-                    }
-                };
                 if let Some(record) = monetary_activation.as_ref() {
-                    if record.identity != identity {
-                        return Json(ApiResponse::err(
-                            "PROTOCOL_MISMATCH",
-                            "v3 monetary activation identity does not match mining protocol identity",
-                        ));
-                    }
                     if let Err(error) = pulsedag_core::validate_live_reward_settlement_v3(
                         &chain,
                         &record.monetary_cadence_segments,
@@ -826,9 +787,16 @@ pub async fn post_mining_template<S: RpcStateLike>(
                 ) {
                     Ok((data, duplicate_tx_filtered)) => (data, duplicate_tx_filtered),
                     Err(error) => {
+                        // A monetary sidecar must never produce retryable
+                        // nonce work errors while the RPC block type is v2.
+                        let code = if monetary_activation.is_some() {
+                            MONETARY_V3_MINING_INACTIVE
+                        } else {
+                            "MINING_TEMPLATE_ERROR"
+                        };
                         return Json(ApiResponse::err(
-                            "MINING_TEMPLATE_ERROR",
-                            format!("cannot build activated-v2 mining template: {error}"),
+                            code,
+                            format!("cannot build mining template: {error}"),
                         ));
                     }
                 }
@@ -963,7 +931,52 @@ mod tests {
     }
 
     #[test]
-    fn monetary_activation_builds_amountless_claim_template() {
+    fn monetary_sidecar_denial_is_terminal_before_peer_or_sync_availability() {
+        let chain = init_chain_state_v3(
+            "task1045-rpc-terminal-preavailability".into(),
+            1_800_000_000,
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            chain.chain_id.clone(),
+            chain.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 500_000_000,
+        }];
+        let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            identity.clone(),
+            &cadence,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+
+        // The same permanently disabled monetary sidecar must report the
+        // terminal error regardless of a later readiness/peer precondition.
+        // This helper runs BEFORE mining_template_unavailable_reason; it
+        // cannot be masked by missing-parent recovery or zero peers.
+        let (code, message) =
+            check_monetary_v3_mining_template_activation(&identity, Some(&record))
+                .expect_err("v2 monetary sidecar cannot produce native v3 nonce work");
+        assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
+        assert!(message.contains("refusing native 500ms mining work"));
+        assert!(check_monetary_v3_mining_template_activation(&identity, None).is_ok());
+
+        let wrong_identity = ProtocolActivationIdentity::activated_v2(
+            "another-network",
+            chain.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let (code, _) =
+            check_monetary_v3_mining_template_activation(&wrong_identity, Some(&record))
+                .expect_err("mismatched monetary sidecar must fail before availability");
+        assert_eq!(code, "PROTOCOL_MISMATCH");
+    }
+
+    #[test]
+    fn monetary_activation_must_not_export_seconds_based_pow_as_v3() {
         let frozen_ts = pulsedag_core::current_ts().saturating_sub(10).max(1);
         let state =
             init_chain_state_v3("task1045-rpc-monetary-template".to_string(), frozen_ts).unwrap();
@@ -974,7 +987,7 @@ mod tests {
         );
         let cadence = [MonetaryCadenceSegment {
             activation_score: 0,
-            target_interval_ns: 1_000_000_000,
+            target_interval_ns: 500_000_000,
         }];
         let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
             identity.clone(),
@@ -987,7 +1000,7 @@ mod tests {
             .timestamp
             .saturating_add(1);
 
-        let (data, duplicate_filtered) = activated_v2_template_data(
+        let error = activated_v2_template_data(
             &state,
             &identity,
             Some(&record),
@@ -995,24 +1008,11 @@ mod tests {
             timestamp,
             0,
         )
-        .unwrap();
-
-        assert_eq!(duplicate_filtered, 0);
-        assert_eq!(data.mode, "external-miner-template-v3-monetary");
-        assert_eq!(data.block.transactions[0].outputs[0].amount, 0);
-        assert!(data.reward_settlement_deferred);
-        assert_eq!(
-            data.monetary_policy_fingerprint.as_deref(),
-            Some(pulsedag_core::MONETARY_POLICY_FINGERPRINT_V3)
-        );
-        assert_eq!(
-            data.monetary_cadence_fingerprint.as_deref(),
-            Some(record.monetary_cadence_fingerprint.as_str())
-        );
-        assert_eq!(
-            data.monetary_binding_fingerprint.as_deref(),
-            Some(record.binding_fingerprint.as_str())
-        );
+        .expect_err("monetary-v3 must fail closed before exporting v2 PoW work");
+        let message = error.to_string();
+        assert!(message.contains("monetary-v3 mining template is inactive"));
+        assert!(message.contains("refusing seconds-based v2 PoW template"));
+        assert!(message.contains("500ms selected-parent retarget"));
     }
 
     #[test]
