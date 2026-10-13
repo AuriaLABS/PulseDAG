@@ -41,6 +41,39 @@ use submit_finality::{
 use template_protocol::validated_template_protocol_identity;
 use tokio::time::{sleep, Duration};
 
+const MONETARY_V3_MINING_INACTIVE: &str = "MONETARY_V3_MINING_INACTIVE";
+const MONETARY_V3_LEGACY_MINING_DISABLED: &str = "MONETARY_V3_LEGACY_MINING_DISABLED";
+
+/// A stable RPC response that forbids retrying until native v3 mining exists.
+#[derive(Debug)]
+struct TerminalMiningTemplateError {
+    code: String,
+    message: String,
+}
+
+impl std::fmt::Display for TerminalMiningTemplateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for TerminalMiningTemplateError {}
+
+fn terminal_mining_template_error<T>(response: &ApiResponse<T>) -> Option<TerminalMiningTemplateError> {
+    let error = response.error.as_ref()?;
+    if matches!(
+        error.code.as_str(),
+        MONETARY_V3_MINING_INACTIVE | MONETARY_V3_LEGACY_MINING_DISABLED
+    ) {
+        Some(TerminalMiningTemplateError {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        })
+    } else {
+        None
+    }
+}
+
 trait RuntimeMiningBackend: MiningBackend + ProtocolMiningBackend {}
 impl<T> RuntimeMiningBackend for T where T: MiningBackend + ProtocolMiningBackend {}
 
@@ -530,7 +563,12 @@ async fn main() -> Result<()> {
                 Ok(outcome) => {
                     let _decision = loop_refresh_decision_after_outcome(outcome);
                 }
-                Err(e) => eprintln!("mine loop error: {e}"),
+                Err(error) if error.is::<TerminalMiningTemplateError>() => {
+                    return Err(error).context(
+                        "mining stopped: node reports terminal monetary-v3 mining inactivity",
+                    );
+                }
+                Err(error) => eprintln!("mine loop error: {error}"),
             }
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
@@ -1090,9 +1128,17 @@ async fn acquire_template_and_runtime_job(
             return Err(err).context("template response failed before complete decode");
         }
     };
+    if let Some(terminal) = terminal_mining_template_error(&template_api) {
+        return Err(terminal.into());
+    }
+    let rejection = template_api
+        .error
+        .as_ref()
+        .map(|error| format!(": {}: {}", error.code, error.message))
+        .unwrap_or_default();
     let template = template_api
         .data
-        .ok_or_else(|| anyhow!("template endpoint returned no data"))?;
+        .ok_or_else(|| anyhow!("template endpoint returned no data{rejection}"))?;
 
     let protocol_identity = validated_template_protocol_identity(
         &template.block.header,
@@ -1941,6 +1987,7 @@ mod tests {
         Healthy(&'static str),
         Disconnect,
         HttpStatus(u16),
+        ApiError(&'static str, &'static str),
     }
 
     fn loopback_template_body(template_id: &str) -> String {
@@ -2020,6 +2067,28 @@ mod tests {
                 );
 
                 match step {
+                    TemplateLoopbackStep::ApiError(code, message) => {
+                        let body = serde_json::json!({
+                            "ok": false,
+                            "data": null,
+                            "error": {"code": code, "message": message},
+                            "meta": {}
+                        })
+                        .to_string();
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        socket
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("rejected template loopback response must write");
+                        socket
+                            .shutdown()
+                            .await
+                            .expect("rejected template loopback response must close");
+                    }
                     TemplateLoopbackStep::Healthy(template_id) => {
                         let body = loopback_template_body(template_id);
                         let response = format!(
@@ -2060,6 +2129,42 @@ mod tests {
         });
 
         format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn monetary_v3_mining_inactive_stops_template_acquisition_instead_of_retrying() {
+        for code in [
+            super::MONETARY_V3_MINING_INACTIVE,
+            super::MONETARY_V3_LEGACY_MINING_DISABLED,
+        ] {
+            let node = spawn_template_loopback(vec![TemplateLoopbackStep::ApiError(
+                code,
+                "native v3 500ms mining is not available",
+            )])
+            .await;
+            let cfg = Config {
+                node,
+                heartbeat: false,
+                ..telemetry_test_config()
+            };
+            let client = reqwest::Client::new();
+            let error = acquire_template_and_runtime_job(&client, &cfg, None)
+                .await
+                .expect_err("terminal v3 denial must refuse template acquisition");
+            assert!(
+                error.is::<super::TerminalMiningTemplateError>(),
+                "node denial must propagate as a terminal typed error: {error}"
+            );
+            assert!(error.to_string().contains(code));
+            assert!(error.to_string().contains("native v3 500ms"));
+        }
+    }
+
+    #[test]
+    fn ordinary_template_rpc_failure_remains_retryable() {
+        let generic: ApiResponse<u8> =
+            ApiResponse::err("MINING_TEMPLATE_ERROR", "temporary issue");
+        assert!(super::terminal_mining_template_error(&generic).is_none());
     }
 
     #[tokio::test]
