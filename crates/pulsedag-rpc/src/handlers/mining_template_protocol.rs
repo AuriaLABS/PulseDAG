@@ -984,11 +984,7 @@ mod tests {
         assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
         assert!(message.contains("seconds-based"));
         assert!(message.contains("refusing native 500ms mining work"));
-        assert!(check_monetary_v3_mining_template_activation(
-            &numeric_v3_identity,
-            None,
-        )
-        .is_ok());
+        assert!(check_monetary_v3_mining_template_activation(&numeric_v3_identity, None).is_ok());
 
         let wrong_identity = ProtocolActivationIdentity::activated_v2(
             "another-network",
