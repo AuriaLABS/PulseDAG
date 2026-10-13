@@ -19,10 +19,11 @@ pub const MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES: usize = 4096;
 
 /// Restored v3 genesis record with an authenticated identity.
 ///
-/// Deliberately does NOT implement `Deserialize`. Generic Serde decoding of
-/// `BlockEnvelopeV3` would ignore unknown nested header fields, silently
-/// bypassing the strict versioned `decode_verified` schema. Callers must use
-/// `decode_verified` with independently trusted freeze parameters instead.
+/// Deliberately does NOT implement `Deserialize`. Even though native v3
+/// headers now reject unknown JSON fields, generic envelope deserialization
+/// does not authenticate externally frozen network/genesis identity or this
+/// storage record schema. Callers MUST use `decode_verified` with independent
+/// trusted freeze parameters instead.
 ///
 /// The negative compile test prevents accidentally restoring the generic
 /// `Deserialize` bypass in a later refactor:
@@ -37,10 +38,10 @@ pub struct NativeV3GenesisRestoreRecordV1 {
 }
 
 // Storage v3 schema must stay strict at *every* JSON nesting level.
-/// BlockHeaderV3 intentionally has a general-purpose deserializer, which
-/// ignores unknown members. Never use it directly to decode a persisted
-/// versioned restore record: a mixed `timestamp` + `timestamp_ns` header
-/// could otherwise pass validation while silently losing the old field.
+/// Keep an independent storage-versioned strict header shape as defense in
+/// depth even though generic `BlockHeaderV3` now rejects unknown members.
+/// Neither generic type alone may decode an authoritative restore record:
+/// strict schema version and an externally frozen identity are mandatory.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictRestoreHeaderV3 {
