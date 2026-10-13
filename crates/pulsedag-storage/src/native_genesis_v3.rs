@@ -17,11 +17,16 @@ use serde::{Deserialize, Serialize};
 pub const NATIVE_V3_GENESIS_RESTORE_RECORD_VERSION: u32 = 1;
 pub const MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Restored v3 genesis record with an authenticated identity.
+///
+/// Deliberately does NOT implement `Deserialize`. Generic Serde decoding of
+/// `BlockEnvelopeV3` would ignore unknown nested header fields, silently
+/// bypassing the strict versioned `decode_verified` schema. Callers must use
+/// `decode_verified` with independently trusted freeze parameters instead.
+#[derive(Debug, Clone, Serialize)]
 pub struct NativeV3GenesisRestoreRecordV1 {
-    pub schema_version: u32,
-    pub genesis: BlockEnvelopeV3,
+    schema_version: u32,
+    genesis: BlockEnvelopeV3,
 }
 
 // Storage v3 schema must stay strict at *every* JSON nesting level.
@@ -94,6 +99,15 @@ fn invalid_record(message: impl Into<String>) -> PulseError {
 }
 
 impl NativeV3GenesisRestoreRecordV1 {
+    /// Access only a previously verified genesis; no mutable access is exposed.
+    pub fn genesis(&self) -> &BlockEnvelopeV3 {
+        &self.genesis
+    }
+
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
     /// Construct only from a v3 envelope matching an independent network freeze.
     pub fn from_verified_genesis(
         genesis: BlockEnvelopeV3,
@@ -220,7 +234,8 @@ mod tests {
         assert_eq!(restored.genesis.hash, frozen_hash);
         assert_eq!(restored.genesis.header.timestamp_ns, FROZEN_NS);
         assert!(restored.genesis.transactions.is_empty());
-        assert_eq!(restored.schema_version, 1);
+        assert_eq!(restored.schema_version(), 1);
+        assert_eq!(restored.genesis().hash, frozen_hash);
     }
 
     #[test]
