@@ -452,7 +452,7 @@ fn activated_monetary_v3_template_data(
     // A monetary-v3 activation record cannot authorize v2 seconds/60s
     // PoW as native 500ms mining work. Even if startup gates are bypassed,
     // reject the current seconds-bound protocol identity before emission.
-    if identity.block_header_protocol_version != pulsedag_core::BLOCK_HEADER_VERSION_V3 {
+    if identity.block_header_protocol_version != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3 {
         return Err(PulseError::InvalidBlock(
             "monetary-v3 mining template is inactive: native v3 nanosecond headers, 500ms selected-parent retarget and mined/P2P/replay/storage authority are not integrated; refusing seconds-based v2 PoW template".to_string(),
         ));
@@ -488,7 +488,7 @@ fn activated_monetary_v3_template_data(
     // A claimed v3 identity alone cannot authorize a finalized v2 BlockHeader.
     // The current finalizer creates version-2 seconds-based headers and must
     // never supply nonce-search-ready RPC work.
-    if finalized.block.header.version != pulsedag_core::BLOCK_HEADER_VERSION_V3 {
+    if finalized.block.header.version != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3 {
         return Err(PulseError::InvalidBlock(
             "monetary-v3 mining template refuses a finalized seconds-based v2 header".to_string(),
         ));
