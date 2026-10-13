@@ -9,8 +9,8 @@
 //! configuration, never the untrusted persisted record itself.
 
 use pulsedag_core::{
-    block_envelope_v3::BlockEnvelopeV3, errors::PulseError,
-    verify_dormant_native_genesis_freeze_v3_ns,
+    block_envelope_v3::BlockEnvelopeV3, errors::PulseError, header_v3::BlockHeaderV3,
+    types::Transaction, verify_dormant_native_genesis_freeze_v3_ns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,68 @@ pub const MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES: usize = 4096;
 pub struct NativeV3GenesisRestoreRecordV1 {
     pub schema_version: u32,
     pub genesis: BlockEnvelopeV3,
+}
+
+// Storage v3 schema must stay strict at *every* JSON nesting level.
+/// BlockHeaderV3 intentionally has a general-purpose deserializer, which
+/// ignores unknown members. Never use it directly to decode a persisted
+/// versioned restore record: a mixed `timestamp` + `timestamp_ns` header
+/// could otherwise pass validation while silently losing the old field.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictRestoreHeaderV3 {
+    version: u32,
+    parents: Vec<String>,
+    timestamp_ns: u64,
+    difficulty: u32,
+    nonce: u64,
+    merkle_root: String,
+    state_root: String,
+    blue_score: u64,
+    height: u64,
+}
+
+impl From<StrictRestoreHeaderV3> for BlockHeaderV3 {
+    fn from(header: StrictRestoreHeaderV3) -> Self {
+        Self {
+            version: header.version,
+            parents: header.parents,
+            timestamp_ns: header.timestamp_ns,
+            difficulty: header.difficulty,
+            nonce: header.nonce,
+            merkle_root: header.merkle_root,
+            state_root: header.state_root,
+            blue_score: header.blue_score,
+            height: header.height,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictRestoreEnvelopeV3 {
+    chain_id: String,
+    hash: String,
+    header: StrictRestoreHeaderV3,
+    transactions: Vec<Transaction>,
+}
+
+impl From<StrictRestoreEnvelopeV3> for BlockEnvelopeV3 {
+    fn from(envelope: StrictRestoreEnvelopeV3) -> Self {
+        Self {
+            chain_id: envelope.chain_id,
+            hash: envelope.hash,
+            header: envelope.header.into(),
+            transactions: envelope.transactions,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictRestoreRecordV1 {
+    schema_version: u32,
+    genesis: StrictRestoreEnvelopeV3,
 }
 
 fn invalid_record(message: impl Into<String>) -> PulseError {
@@ -79,8 +141,12 @@ impl NativeV3GenesisRestoreRecordV1 {
         frozen_genesis_hash: &str,
     ) -> Result<Self, PulseError> {
         check_record_size(bytes)?;
-        let record: Self = serde_json::from_slice(bytes)
+        let decoded: StrictRestoreRecordV1 = serde_json::from_slice(bytes)
             .map_err(|error| invalid_record(format!("decode failed: {error}")))?;
+        let record = Self {
+            schema_version: decoded.schema_version,
+            genesis: decoded.genesis.into(),
+        };
         record.verify(frozen_chain_id, frozen_timestamp_ns, frozen_genesis_hash)?;
         Ok(record)
     }
@@ -226,6 +292,53 @@ mod tests {
             CHAIN,
             FROZEN_NS,
             &frozen_hash,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn nested_unknown_header_fields_and_mixed_second_nanosecond_schema_fail_closed() {
+        let original = record();
+        let hash = original.genesis.hash.clone();
+        let canonical = original.encode_verified(CHAIN, FROZEN_NS, &hash).unwrap();
+        let mut mixed: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+
+        // This used to pass: generic BlockHeaderV3 deserialization silently
+        // ignored a legacy whole-second timestamp alongside timestamp_ns.
+        mixed["genesis"]["header"]["timestamp"] =
+            serde_json::Value::Number((FROZEN_NS / 1_000_000_000).into());
+        assert!(NativeV3GenesisRestoreRecordV1::decode_verified(
+            &serde_json::to_vec(&mixed).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &hash,
+        )
+        .is_err());
+
+        mixed["genesis"]["header"]
+            .as_object_mut()
+            .unwrap()
+            .remove("timestamp");
+        mixed["genesis"]["header"]["future_header_field"] =
+            serde_json::Value::Bool(true);
+        assert!(NativeV3GenesisRestoreRecordV1::decode_verified(
+            &serde_json::to_vec(&mixed).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &hash,
+        )
+        .is_err());
+
+        let mut missing: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+        missing["genesis"]["header"]
+            .as_object_mut()
+            .unwrap()
+            .remove("timestamp_ns");
+        assert!(NativeV3GenesisRestoreRecordV1::decode_verified(
+            &serde_json::to_vec(&missing).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &hash,
         )
         .is_err());
     }
