@@ -9,8 +9,7 @@
 //! configuration, never the untrusted persisted record itself.
 
 use pulsedag_core::{
-    block_envelope_v3::BlockEnvelopeV3,
-    errors::PulseError,
+    block_envelope_v3::BlockEnvelopeV3, errors::PulseError,
     verify_dormant_native_genesis_freeze_v3_ns,
 };
 use serde::{Deserialize, Serialize};
@@ -122,8 +121,7 @@ fn check_record_size(bytes: &[u8]) -> Result<(), PulseError> {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        dormant_native_genesis_envelope_v3_ns,
-        genesis_v3::genesis_block_v3,
+        dormant_native_genesis_envelope_v3_ns, genesis_v3::genesis_block_v3,
         header_v3::compute_block_hash_v3,
     };
 
@@ -150,13 +148,9 @@ mod tests {
             .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
             .unwrap();
         assert!(bytes.len() < MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES);
-        let restored = NativeV3GenesisRestoreRecordV1::decode_verified(
-            &bytes,
-            CHAIN,
-            FROZEN_NS,
-            &frozen_hash,
-        )
-        .unwrap();
+        let restored =
+            NativeV3GenesisRestoreRecordV1::decode_verified(&bytes, CHAIN, FROZEN_NS, &frozen_hash)
+                .unwrap();
         assert_eq!(restored.genesis.hash, frozen_hash);
         assert_eq!(restored.genesis.header.timestamp_ns, FROZEN_NS);
         assert!(restored.genesis.transactions.is_empty());
@@ -215,8 +209,7 @@ mod tests {
         let frozen_hash = initial.genesis.hash.clone();
         let mut forged = initial.clone();
         forged.genesis.header.nonce += 1;
-        forged.genesis.hash =
-            compute_block_hash_v3(&forged.genesis.header, CHAIN).unwrap();
+        forged.genesis.hash = compute_block_hash_v3(&forged.genesis.header, CHAIN).unwrap();
         let raw = serde_json::to_vec(&forged).unwrap();
         assert!(NativeV3GenesisRestoreRecordV1::decode_verified(
             &raw,
