@@ -672,9 +672,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
                     ));
                 }
             };
-            if let Err((code, message)) =
-                check_monetary_v3_mining_template_activation(&identity, monetary_activation.as_ref())
-            {
+            if let Err((code, message)) = check_monetary_v3_mining_template_activation(
+                &identity,
+                monetary_activation.as_ref(),
+            ) {
                 return Json(ApiResponse::err(code, message));
             }
             if let Some(reason) = mining_template_unavailable_reason(&state).await {
