@@ -1048,8 +1048,7 @@ mod tests {
             chain.dag.genesis_hash.clone(),
             GHOSTDAG_V1_ORDERING_VERSION,
         );
-        identity.block_header_protocol_version =
-            pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3;
+        identity.block_header_protocol_version = pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3;
         let cadence = [MonetaryCadenceSegment {
             activation_score: 0,
             target_interval_ns: 500_000_000,
@@ -1067,12 +1066,9 @@ mod tests {
 
         // The RPC now checks the sidecar FIRST and yields the typed terminal
         // error consumed by the standalone miner; no availability/replay.
-        let (code, message) = template_protocol_path_with_monetary_guard(
-            &chain,
-            Some(&identity),
-            Some(&record),
-        )
-        .expect_err("sidecar must block before v2-only path routing");
+        let (code, message) =
+            template_protocol_path_with_monetary_guard(&chain, Some(&identity), Some(&record))
+                .expect_err("sidecar must block before v2-only path routing");
         assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
         assert!(message.contains("refusing native 500ms mining work"));
 
