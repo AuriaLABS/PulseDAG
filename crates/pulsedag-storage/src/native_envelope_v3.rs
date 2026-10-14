@@ -188,6 +188,40 @@ impl NativeV3EnvelopeRestoreRecordV1 {
         Ok(())
     }
 
+    /// Independently verify and bind the header-only and transaction-bearing
+    /// restore records to the same frozen genesis and canonical v3 header.
+    ///
+    /// This equality check is not an assertion of canonical DAG membership,
+    /// authenticated blue work, state-root replay, or persisted block authority.
+    pub fn verify_matching_header_record(
+        &self,
+        header_record: &crate::NativeV3HeaderRestoreRecordV1,
+        trusted_chain_id: &str,
+        frozen_genesis_timestamp_ns: u64,
+        frozen_genesis_hash: &str,
+    ) -> Result<(), PulseError> {
+        self.verify(
+            trusted_chain_id,
+            frozen_genesis_timestamp_ns,
+            frozen_genesis_hash,
+        )?;
+        header_record
+            .verify(
+                trusted_chain_id,
+                frozen_genesis_timestamp_ns,
+                frozen_genesis_hash,
+            )
+            .map_err(|error| invalid(format!("companion v3 header record: {error}")))?;
+        if header_record.block_hash() != self.envelope.hash.as_str()
+            || header_record.header() != &self.envelope.header
+        {
+            return Err(invalid(
+                "companion v3 header record does not match full envelope",
+            ));
+        }
+        Ok(())
+    }
+
     /// Encode a validated envelope without writing to the active storage DB.
     pub fn encode_verified(
         &self,
@@ -216,6 +250,11 @@ impl NativeV3EnvelopeRestoreRecordV1 {
         check_size(bytes)?;
         let strict: StrictRecord = serde_json::from_slice(bytes)
             .map_err(|error| invalid(format!("strict JSON decode failed: {error}")))?;
+        // Reject unsupported schemas BEFORE converting transactions or
+        // performing expensive KHeavyHash and frozen-genesis checks.
+        if strict.schema_version != NATIVE_V3_ENVELOPE_RESTORE_RECORD_VERSION {
+            return Err(invalid("unsupported native-v3 envelope schema version"));
+        }
         let envelope = BlockEnvelopeV3 {
             chain_id: strict.envelope.chain_id,
             hash: strict.envelope.hash,
@@ -233,13 +272,6 @@ impl NativeV3EnvelopeRestoreRecordV1 {
             frozen_genesis_timestamp_ns,
             frozen_genesis_hash,
         )
-        .and_then(|record| {
-            if strict.schema_version != NATIVE_V3_ENVELOPE_RESTORE_RECORD_VERSION {
-                Err(invalid("unsupported native-v3 envelope schema version"))
-            } else {
-                Ok(record)
-            }
-        })
     }
 }
 
@@ -368,6 +400,69 @@ mod tests {
             &frozen_hash,
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_schema_before_rehashing_or_pow() {
+        let (record, frozen_hash) = fixture();
+        let raw = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let mut forged: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        forged["schema_version"] = serde_json::json!(9);
+        forged["envelope"]["hash"] = serde_json::json!("aa".repeat(32));
+        let error = NativeV3EnvelopeRestoreRecordV1::decode_verified(
+            &serde_json::to_vec(&forged).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported native-v3 envelope schema version"),
+            "schema check must take priority over cryptographic work: {error}"
+        );
+    }
+
+    #[test]
+    fn matching_header_and_envelope_restore_records_reject_valid_but_different_pow() {
+        let (record, frozen_hash) = fixture();
+        let companion = crate::NativeV3HeaderRestoreRecordV1::from_verified_header(
+            CHAIN,
+            record.envelope().header.clone(),
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .unwrap();
+        record
+            .verify_matching_header_record(&companion, CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
+
+        // A second valid PoW header on the SAME chain is not an acceptable
+        // companion if it commits to a different block hash/timestamp.
+        let mut different = record.envelope().header.clone();
+        different.timestamp_ns += 500_000_000;
+        let mut mined = false;
+        for nonce in 0..4096 {
+            different.nonce = nonce;
+            if evaluate_v3_header_pow(&different, CHAIN).unwrap().pow.accepted {
+                mined = true;
+                break;
+            }
+        }
+        assert!(mined, "valid alternate PoW fixture must exist");
+        let different_companion = crate::NativeV3HeaderRestoreRecordV1::from_verified_header(
+            CHAIN,
+            different,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .unwrap();
+        let error = record
+            .verify_matching_header_record(&different_companion, CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match full envelope"),
+            "two independently valid records must match: {error}"
+        );
     }
 
     #[test]
