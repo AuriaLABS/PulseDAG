@@ -200,8 +200,8 @@ impl NativeV3EnvelopeRestoreRecordV1 {
             frozen_genesis_timestamp_ns,
             frozen_genesis_hash,
         )?;
-        let encoded = serde_json::to_vec(self)
-            .map_err(|error| invalid(format!("encode failed: {error}")))?;
+        let encoded =
+            serde_json::to_vec(self).map_err(|error| invalid(format!("encode failed: {error}")))?;
         check_size(&encoded)?;
         Ok(encoded)
     }
@@ -305,84 +305,137 @@ mod tests {
     #[test]
     fn verified_native_ns_envelope_and_transaction_roundtrip() {
         let (record, frozen_hash) = fixture();
-        let data = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
-        let restored = NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &data, CHAIN, FROZEN_NS, &frozen_hash,
-        )
-        .unwrap();
+        let data = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
+        let restored =
+            NativeV3EnvelopeRestoreRecordV1::decode_verified(&data, CHAIN, FROZEN_NS, &frozen_hash)
+                .unwrap();
         assert_eq!(restored.envelope().hash, record.envelope().hash);
         assert_eq!(restored.envelope().transactions.len(), 1);
-        assert_eq!(restored.envelope().header.timestamp_ns, FROZEN_NS + 500_000_000);
+        assert_eq!(
+            restored.envelope().header.timestamp_ns,
+            FROZEN_NS + 500_000_000
+        );
     }
 
     #[test]
     fn rejects_wrong_freeze_network_schema_genesis_and_unsealed_root() {
         let (record, frozen_hash) = fixture();
-        let raw = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let raw = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &raw, "wrong-network", FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &raw,
+            "wrong-network",
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &raw, CHAIN, FROZEN_NS + 1, &frozen_hash,
-        ).is_err());
+            &raw,
+            CHAIN,
+            FROZEN_NS + 1,
+            &frozen_hash,
+        )
+        .is_err());
         let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         json["schema_version"] = serde_json::json!(2);
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&json).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&json).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         let mut unsealed = record.envelope().clone();
         unsealed.header.state_root = "00".repeat(32);
         assert!(NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            unsealed, CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            unsealed,
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         let mut genesis_frame = record.envelope().clone();
         genesis_frame.header.height = 0;
         assert!(NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            genesis_frame, CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            genesis_frame,
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
     }
 
     #[test]
     fn rejects_legacy_fields_unknown_nested_fields_hash_and_tx_tampering() {
         let (record, frozen_hash) = fixture();
-        let raw = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let raw = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
         let canonical: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         for field in ["timestamp", "future_header_field"] {
             let mut wrong = canonical.clone();
             wrong["envelope"]["header"][field] = serde_json::json!(42);
             assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-                &serde_json::to_vec(&wrong).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-            ).is_err());
+                &serde_json::to_vec(&wrong).unwrap(),
+                CHAIN,
+                FROZEN_NS,
+                &frozen_hash,
+            )
+            .is_err());
         }
-        for pointer in ["/future_record_field", "/envelope/future_field", "/envelope/transactions/0/future_field"] {
+        for pointer in [
+            "/future_record_field",
+            "/envelope/future_field",
+            "/envelope/transactions/0/future_field",
+        ] {
             let mut wrong = canonical.clone();
             let object = if pointer == "/future_record_field" {
                 wrong.as_object_mut().unwrap()
             } else if pointer == "/envelope/future_field" {
                 wrong["envelope"].as_object_mut().unwrap()
             } else {
-                wrong["envelope"]["transactions"][0].as_object_mut().unwrap()
+                wrong["envelope"]["transactions"][0]
+                    .as_object_mut()
+                    .unwrap()
             };
             object.insert("future_field".to_string(), serde_json::json!(true));
             assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-                &serde_json::to_vec(&wrong).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-            ).is_err());
+                &serde_json::to_vec(&wrong).unwrap(),
+                CHAIN,
+                FROZEN_NS,
+                &frozen_hash,
+            )
+            .is_err());
         }
         let mut forged_hash = canonical.clone();
         forged_hash["envelope"]["hash"] = serde_json::json!("aa".repeat(32));
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&forged_hash).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&forged_hash).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
         let mut forged_tx = canonical;
         forged_tx["envelope"]["transactions"][0]["nonce"] = serde_json::json!(99);
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&forged_tx).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&forged_tx).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
         assert!(NativeV3EnvelopeRestoreRecordV1::decode_verified(
             &vec![b' '; MAX_NATIVE_V3_ENVELOPE_RESTORE_RECORD_BYTES + 1],
-            CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
     }
 }
