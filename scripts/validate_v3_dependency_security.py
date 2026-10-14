@@ -41,6 +41,10 @@ FORBIDDEN_LOCKED = {
 # proves this exact package is absent from every packaged launch root.
 REQUIRED_LOCK_ONLY = {
     ("hickory-proto", "0.25.2"),
+    # #1298: development-only disposition requires exact clean-compiler proof
+    # across ALL four launch roots. reqwest also retains the optional quinn
+    # parent path; disabled libp2p QUIC alone is not sufficient.
+    ("quinn-proto", "0.11.16"),
 }
 
 REQUIRED_KASPA = {
@@ -61,7 +65,12 @@ FORBIDDEN_OLD_REACHABLE = {
 
 # These optional transports can remain represented in Cargo.lock by libp2p,
 # but must not be compiler-reachable from PulseDAG's selected feature set.
-FORBIDDEN_COMPILED_NAMES = {"libp2p-dns", "libp2p-mdns", "libp2p-quic", "libp2p-upnp"}
+FORBIDDEN_COMPILED_NAMES = {
+    "libp2p-dns", "libp2p-mdns", "libp2p-quic", "libp2p-upnp",
+    # None of the QUIC stack may compile through libp2p OR reqwest while
+    # quinn-proto 0.11.16 has unpatched RUSTSEC-2026-0338..0342.
+    "quinn", "quinn-proto", "quinn-udp",
+}
 COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd", "pulsedag-miner", "pulsedag-wallet")
 
 # #803 still treats atty as an unresolved launch blocker. This gate records
@@ -333,6 +342,9 @@ def main() -> None:
         "intertrait_0_2_2_present=false",
         "hickory_proto_0_25_2_lock_only=true",
         "hickory_proto_0_25_2_compiled=false",
+        "quinn_proto_0_11_16_lock_only=true",
+        "quinn_proto_0_11_16_compiled=false",
+        "quinn_stack_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "remaining_launch_blockers=atty@0.2.14",
         "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",

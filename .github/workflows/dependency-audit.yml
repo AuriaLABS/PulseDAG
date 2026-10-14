@@ -103,6 +103,13 @@ jobs:
           expected_vulnerabilities = {
               ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
               ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
+              # #1298: exact versions/advisories, still visible in RAW audit.
+              # Any inventory drift must fail; never generalize this set.
+              ('RUSTSEC-2026-0338', 'quinn-proto', '0.11.16'),
+              ('RUSTSEC-2026-0339', 'quinn-proto', '0.11.16'),
+              ('RUSTSEC-2026-0340', 'quinn-proto', '0.11.16'),
+              ('RUSTSEC-2026-0341', 'quinn-proto', '0.11.16'),
+              ('RUSTSEC-2026-0342', 'quinn-proto', '0.11.16'),
           }
 
           expected_advisory_warnings = {
@@ -113,6 +120,7 @@ jobs:
               ('unmaintained', 'RUSTSEC-2024-0384', 'instant', '0.1.13'),
               ('unmaintained', 'RUSTSEC-2024-0388', 'derivative', '2.2.0'),
               ('unmaintained', 'RUSTSEC-2024-0436', 'paste', '1.0.15'),
+              ('unmaintained', 'RUSTSEC-2024-0449', 'unsafe-libyaml', '0.2.11'),
               ('unmaintained', 'RUSTSEC-2024-0370', 'proc-macro-error', '1.0.4'),
               ('unsound', 'RUSTSEC-2026-0306', 'faster-hex', '0.9.0'),
           }
@@ -158,30 +166,46 @@ jobs:
           if observed_yanked != expected_yanked:
               raise SystemExit(f'unexpected raw yanked set: {sorted(observed_yanked)}')
 
-          # The Hickory advisories are tolerated only as a lockfile-only residue.
-          # Exact clean compiler-artifact evidence must prove hickory-proto 0.25.2
-          # is absent from every launch root, including the wallet, before the CLI
-          # audit disposition below is allowed.
-          hickory = 'hickory-proto@0.25.2'
+          # The Hickory and Quinn advisories are conditionally disposed only
+          # as lockfile-only residues. QUIC may also enter through reqwest,
+          # so disabled libp2p QUIC is NOT enough: measure exact clean
+          # compiler-artifact evidence from every production launch root.
+          lock_only = {'hickory-proto@0.25.2', 'quinn-proto@0.11.16'}
+          forbidden_quic = {'libp2p-quic', 'quinn', 'quinn-proto', 'quinn-udp'}
           roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet')
           for root in roots:
               compiled = Path(f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt')
               packages = set(compiled.read_text(encoding='utf-8').splitlines())
-              if hickory in packages:
-                  raise SystemExit(f'{hickory} is compiler-reachable from {root}; lock-only disposition invalid')
-              print('unreachable', root, hickory)
+              forbidden = sorted(
+                  package for package in packages
+                  if package in lock_only or package.split('@', 1)[0] in forbidden_quic
+              )
+              if forbidden:
+                  raise SystemExit(
+                      f'vulnerable/optional QUIC compiler-reachable from {root}: {forbidden}; '
+                      'lock-only disposition invalid'
+                  )
+              for package in sorted(lock_only):
+                  print('unreachable', root, package)
+              print('unreachable', root, 'quinn-stack')
           PY
 
       - name: Enforce configured audit policy
         shell: bash
         run: |
           set -euo pipefail
-          # These two Hickory advisories are explicitly dispositioned above only
-          # after exact-target compiler reachability proves 0.25.2 is lock-only.
-          # Do not move them into .cargo/audit.toml and do not add further ignores.
+          # Only after proving both vulnerable packages compiler-unreachable
+          # from ALL four launch roots, permit explicit per-run ignores. The
+          # raw 7-advisory report is kept intact. No ignores in audit.toml;
+          # any new advisory/version OR compiled QUIC stack still fails closed.
           cargo audit --json \
             --ignore RUSTSEC-2026-0118 \
             --ignore RUSTSEC-2026-0119 \
+            --ignore RUSTSEC-2026-0338 \
+            --ignore RUSTSEC-2026-0339 \
+            --ignore RUSTSEC-2026-0340 \
+            --ignore RUSTSEC-2026-0341 \
+            --ignore RUSTSEC-2026-0342 \
             | tee ci-evidence/dependency-audit/cargo-audit-configured.json
 
       - name: Record exact-candidate audit provenance
