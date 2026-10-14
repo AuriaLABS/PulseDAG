@@ -189,6 +189,12 @@ pub fn build_monetary_mining_template_v3(
 ///
 /// The supplied fingerprints and cadence are re-derived and checked so a caller
 /// cannot finalize a template under a different monetary or protocol identity.
+///
+/// IMPORTANT: this legacy activated-v2 adapter creates a seconds-based
+/// `types::BlockHeader` with version 2. A correctly computed v3 monetary
+/// state root does NOT convert it into the native `BlockHeaderV3` nanosecond
+/// PoW domain or authorize 500ms nonce search. Its readiness flag therefore
+/// remains false, even after the state-root fixed point is verified.
 pub fn finalize_monetary_mining_template_v3(
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
@@ -322,7 +328,9 @@ pub fn finalize_monetary_mining_template_v3(
         monetary_policy_fingerprint: expected_policy_fingerprint,
         monetary_cadence_fingerprint: expected_cadence_fingerprint,
         reward_settlement_deferred: true,
-        ready_for_nonce_search: true,
+        // State-root closure under the old seconds/v2 header is never
+        // sufficient authority to issue native v3 500ms nonce work.
+        ready_for_nonce_search: false,
     })
 }
 
@@ -434,7 +442,14 @@ mod tests {
             finalize_monetary_mining_template_v3(&state, &identity, &ONE_SECOND, &template)
                 .unwrap();
 
-        assert!(finalized.ready_for_nonce_search);
+        // The v3 monetary replay may seal a correct state root while the
+        // adapter still emits a v2-seconds BlockHeader. This object must not
+        // claim to be a native-v3 nonce-search-ready mining candidate.
+        assert!(!finalized.ready_for_nonce_search);
+        assert_eq!(
+            finalized.block.header.version,
+            crate::protocol::BLOCK_HEADER_VERSION_V2
+        );
         assert!(finalized.reward_settlement_deferred);
         assert_ne!(finalized.block.header.state_root, "00".repeat(32));
         assert_eq!(finalized.block.transactions[0].outputs[0].amount, 0);
