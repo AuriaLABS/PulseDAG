@@ -143,6 +143,13 @@ This record keeps the warning **visible**. It is not a public-testnet GO grant a
 
 Other informational warnings likewise remain visible; no warning is hidden merely to obtain a green audit.
 
+The raw `cargo-audit` informational warning inventory additionally includes
+`unsafe-libyaml 0.2.11` (`RUSTSEC-2024-0449`, unmaintained). This
+warning is retained verbatim in the dependency-audit gate's exact expected
+inventory, not suppressed or reclassified as a vulnerability. Its final
+replacement/retirement must be reviewed together with the parent graph
+before any public network launch.
+
 Runtime `bincode 1.3.3` remains a separate tracked item with an explicit plan in `docs/security/V3_BINCODE_MIGRATION_PLAN.md`.
 
 ## Visible informational unsoundness: `faster-hex 0.9.0`
