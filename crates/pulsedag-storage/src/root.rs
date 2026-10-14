@@ -5,6 +5,7 @@ mod fast_sync_manifest;
 mod fast_sync_network_resume;
 mod fast_sync_resume;
 mod fast_sync_transfer;
+mod native_envelope_v3;
 mod native_genesis_v3;
 mod native_header_v3;
 mod protocol_bundle;
@@ -26,6 +27,10 @@ pub use fast_sync_transfer::{
     FAST_SYNC_SNAPSHOT_TRANSFER_VERSION, MAX_FAST_SYNC_SNAPSHOT_CHUNKS,
     MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES, MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES,
     MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES,
+};
+pub use native_envelope_v3::{
+    NativeV3EnvelopeRestoreRecordV1, MAX_NATIVE_V3_ENVELOPE_RESTORE_RECORD_BYTES,
+    NATIVE_V3_ENVELOPE_RESTORE_RECORD_VERSION,
 };
 pub use native_genesis_v3::{
     NativeV3GenesisRestoreRecordV1, MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES,
