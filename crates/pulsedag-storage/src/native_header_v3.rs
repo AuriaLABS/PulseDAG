@@ -101,7 +101,9 @@ impl NativeV3HeaderRestoreRecordV1 {
             return Err(invalid_record("unsupported native-v3 header record schema"));
         }
         if self.chain_id != trusted_chain_id {
-            return Err(invalid_record("native-v3 header record chain identity mismatch"));
+            return Err(invalid_record(
+                "native-v3 header record chain identity mismatch",
+            ));
         }
         let genesis =
             dormant_native_genesis_envelope_v3_ns(trusted_chain_id, frozen_genesis_timestamp_ns)
@@ -175,8 +177,7 @@ impl NativeV3HeaderRestoreRecordV1 {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        header_v3::compute_block_hash_v3,
-        pow_v3::evaluate_v3_header_pow,
+        header_v3::compute_block_hash_v3, pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
     };
 
@@ -218,14 +219,12 @@ mod tests {
     #[test]
     fn strict_header_record_roundtrip_preserves_nanosecond_hash_and_pow() {
         let (record, frozen_hash) = fixture();
-        let bytes = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
-        let decoded = NativeV3HeaderRestoreRecordV1::decode_verified(
-            &bytes,
-            CHAIN,
-            FROZEN_NS,
-            &frozen_hash,
-        )
-        .unwrap();
+        let bytes = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
+        let decoded =
+            NativeV3HeaderRestoreRecordV1::decode_verified(&bytes, CHAIN, FROZEN_NS, &frozen_hash)
+                .unwrap();
         assert_eq!(decoded.block_hash(), record.block_hash());
         assert_eq!(decoded.header(), record.header());
         assert_eq!(decoded.header().timestamp_ns, FROZEN_NS + 500_000_000);
@@ -234,16 +233,18 @@ mod tests {
     #[test]
     fn wrong_network_freeze_schema_and_rehashed_invalid_pow_reject() {
         let (record, frozen_hash) = fixture();
-        let raw = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let raw = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
         for (chain, timestamp, hash) in [
             ("different-network", FROZEN_NS, frozen_hash.as_str()),
             (CHAIN, FROZEN_NS + 1, frozen_hash.as_str()),
             (CHAIN, FROZEN_NS, "00"),
         ] {
-            assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
-                &raw, chain, timestamp, hash,
-            )
-            .is_err());
+            assert!(
+                NativeV3HeaderRestoreRecordV1::decode_verified(&raw, chain, timestamp, hash,)
+                    .is_err()
+            );
         }
         let mut wrong_schema: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         wrong_schema["schema_version"] = serde_json::json!(2);
@@ -258,7 +259,11 @@ mod tests {
         let mut invalid = record.clone();
         for nonce in (invalid.header.nonce + 1)..(invalid.header.nonce + 4096) {
             invalid.header.nonce = nonce;
-            if !evaluate_v3_header_pow(&invalid.header, CHAIN).unwrap().pow.accepted {
+            if !evaluate_v3_header_pow(&invalid.header, CHAIN)
+                .unwrap()
+                .pow
+                .accepted
+            {
                 invalid.block_hash = compute_block_hash_v3(&invalid.header, CHAIN).unwrap();
                 break;
             }
@@ -269,38 +274,58 @@ mod tests {
     #[test]
     fn legacy_unknown_fields_mutated_hash_and_genesis_fail_closed() {
         let (record, frozen_hash) = fixture();
-        let encoded = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let encoded = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
         let canonical: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
 
         let mut wrong = canonical.clone();
-        wrong["header"]["timestamp"] =
-            serde_json::json!((FROZEN_NS + 500_000_000) / 1_000_000_000);
+        wrong["header"]["timestamp"] = serde_json::json!((FROZEN_NS + 500_000_000) / 1_000_000_000);
         assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&wrong).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&wrong).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         let mut unknown = canonical.clone();
         unknown["future_record_field"] = serde_json::json!(true);
         assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&unknown).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&unknown).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         let mut tampered = canonical.clone();
         tampered["block_hash"] = serde_json::json!("aa".repeat(32));
         assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&tampered).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&tampered).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         let mut no_pow_genesis = canonical;
         no_pow_genesis["header"]["height"] = serde_json::json!(0);
         no_pow_genesis["header"]["parents"] = serde_json::json!([]);
         assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
-            &serde_json::to_vec(&no_pow_genesis).unwrap(), CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            &serde_json::to_vec(&no_pow_genesis).unwrap(),
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
 
         assert!(NativeV3HeaderRestoreRecordV1::decode_verified(
             &vec![b' '; MAX_NATIVE_V3_HEADER_RESTORE_RECORD_BYTES + 1],
-            CHAIN, FROZEN_NS, &frozen_hash,
-        ).is_err());
+            CHAIN,
+            FROZEN_NS,
+            &frozen_hash,
+        )
+        .is_err());
     }
 }
