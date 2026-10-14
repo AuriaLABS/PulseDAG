@@ -57,6 +57,40 @@ The temporary development disposition is valid only while clean compiler-artifac
 
 This is not a final v3 launch disposition. The exact candidate security review in #1127 must either remove this lock-only residue through a supported parent migration or explicitly renew the reviewed unreachable disposition for the final candidate.
 
+## Newly published Quinn 0.11.16 advisory inventory — #1298
+
+The exact `Cargo.lock` currently retains `quinn-proto 0.11.16`, now flagged
+by **five vulnerabilities**: `RUSTSEC-2026-0338`, `0339`, `0340`,
+`0341`, and `0342`. The October 14, 2026 `main` RustSec job failed
+**correctly** on the newly detected raw advisory set; these findings cannot
+be waived just to turn a build green.
+
+The resolved lock graph reaches Quinn through **two branches**, not just
+optional libp2p QUIC:
+
+- `libp2p 0.56.0 -> libp2p-quic 0.13.1 -> quinn-proto 0.11.16`;
+- `reqwest 0.12.28 -> quinn 0.11.9 -> quinn-proto 0.11.16`.
+
+Therefore a libp2p feature-set check **alone is insufficient**. The
+development-only disposition must verify clean compiler-artifact inventories
+for *every* launch root — `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner`,
+`pulsedag-wallet` — proving `quinn-proto@0.11.16` and **all** `quinn`,
+`quinn-proto`, `quinn-udp`, `libp2p-quic` source packages absent.
+Any compiled package from this stack, a version change, an extra advisory or
+missing compiler evidence **fails closed**.
+
+The raw cargo-audit artifact still shows all seven vulnerabilities (two
+Hickory plus five Quinn). Only *after* exact-candidate compiler proof,
+the workflow's **per-command, version-specific** advisory IDs may be passed
+to cargo-audit for a temporary *development checkpoint*.
+`.cargo/audit.toml` remains `ignore = []` with no persistent waiver.
+
+This is **not** a final v3 public security or launch disposition. A supported
+patched upstream Quinn/libp2p/reqwest graph is preferred, or the actual exact
+release candidate requires independently reviewed lock-only evidence and
+explicit renewed disposition. Tracks #1298, #1127, and #781. Public GO
+remains blocked, independently of any scanner/checkpoint PASS.
+
 ## Remaining launch blocker: `atty` via `hexplay`
 
 This remediation does **not** close #1127 or #1139. The known reachable warning remaining from the inherited Kaspa / workflow parent graph is:
