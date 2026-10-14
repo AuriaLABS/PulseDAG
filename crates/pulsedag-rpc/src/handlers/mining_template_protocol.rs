@@ -147,6 +147,26 @@ fn template_protocol_path(
     }
 }
 
+/// Resolve a mining protocol only after refusing permanently inactive
+/// monetary-v3 nonce work. A numeric header-v3 identity cannot be routed
+/// through a v2-only resolver before the terminal sidecar error is returned.
+fn template_protocol_path_with_monetary_guard(
+    chain: &ChainState,
+    local_identity: Option<&ProtocolActivationIdentity>,
+    monetary_activation: Option<&ProtocolMonetaryActivationRecordV2>,
+) -> Result<PowValidationPath, (&'static str, String)> {
+    if let (Some(identity), Some(record)) = (local_identity, monetary_activation) {
+        check_monetary_v3_mining_template_activation(identity, Some(record))
+            .map_err(|(code, message)| (code, message.to_string()))?;
+    }
+    template_protocol_path(chain, local_identity).map_err(|error| {
+        (
+            "PROTOCOL_MISMATCH",
+            format!("cannot select mining template protocol: {error}"),
+        )
+    })
+}
+
 fn parent_confirmed_txids(chain: &ChainState, parents: &[String]) -> HashSet<String> {
     parents
         .iter()
@@ -519,15 +539,14 @@ fn check_monetary_v3_mining_template_activation(
             "v3 monetary activation identity does not match mining protocol identity",
         ));
     }
-    if record.identity.block_header_protocol_version
-        != pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3
-    {
-        return Err((
-            MONETARY_V3_MINING_INACTIVE,
-            "monetary-v3 mining template is inactive: persisted monetary activation uses seconds-based v2 headers; refusing native 500ms mining work",
-        ));
-    }
-    Ok(())
+    // This RPC always returns the legacy seconds-based types::Block, even
+    // if a supplied/persisted identity happens to carry numeric header-v3.
+    // No version bit can make the response schema native-nanosecond work.
+    // Reject before peer availability, expensive replay, or staged overlays.
+    Err((
+        MONETARY_V3_MINING_INACTIVE,
+        "monetary-v3 mining template is inactive: the current RPC block schema is seconds-based regardless of the advertised header version; refusing native 500ms mining work",
+    ))
 }
 
 async fn post_legacy_template<S: RpcStateLike>(
@@ -613,17 +632,36 @@ pub async fn post_mining_template<S: RpcStateLike>(
         }
     };
 
+    // Read the monetary sidecar BEFORE selecting the PoW protocol path.
+    // A matched numeric header-v3 record is still permanently inactive under
+    // this seconds-based RPC; v2-only path resolution must not mask the
+    // terminal code with a retryable PROTOCOL_MISMATCH.
+    let early_monetary_activation = if local_identity.is_some() {
+        match state.storage().protocol_monetary_activation_record() {
+            Ok(record) => record,
+            Err(error) => {
+                return Json(ApiResponse::err(
+                    "MINING_TEMPLATE_ERROR",
+                    format!("cannot read v3 monetary activation sidecar: {error}"),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
     let path_and_legacy_identity = {
         let chain_handle = state.chain();
         let mut chain = chain_handle.write().await;
         pulsedag_core::normalize_production_mempool_resources_v1(&mut chain);
-        let path = match template_protocol_path(&chain, local_identity.as_ref()) {
+        let path = match template_protocol_path_with_monetary_guard(
+            &chain,
+            local_identity.as_ref(),
+            early_monetary_activation.as_ref(),
+        ) {
             Ok(path) => path,
-            Err(error) => {
-                return Json(ApiResponse::err(
-                    "PROTOCOL_MISMATCH",
-                    format!("cannot select mining template protocol: {error}"),
-                ));
+            Err((code, message)) => {
+                return Json(ApiResponse::err(code, message));
             }
         };
         let legacy_identity = (path == PowValidationPath::LegacyV1).then(|| {
@@ -964,6 +1002,29 @@ mod tests {
         assert!(message.contains("refusing native 500ms mining work"));
         assert!(check_monetary_v3_mining_template_activation(&identity, None).is_ok());
 
+        // A future or spoofed numeric header-v3 identity cannot promote
+        // the old seconds-based RPC response into native nanosecond work.
+        // The early gate must remain terminal even before the independent
+        // monetary-record/protocol-identity validator runs.
+        let mut numeric_v3_identity = identity.clone();
+        numeric_v3_identity.block_header_protocol_version =
+            pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3;
+        let numeric_v3_record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            numeric_v3_identity.clone(),
+            &cadence,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+        let (code, message) = check_monetary_v3_mining_template_activation(
+            &numeric_v3_identity,
+            Some(&numeric_v3_record),
+        )
+        .expect_err("numeric header-v3 must not bypass native mining inactivity");
+        assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
+        assert!(message.contains("seconds-based"));
+        assert!(message.contains("refusing native 500ms mining work"));
+        assert!(check_monetary_v3_mining_template_activation(&numeric_v3_identity, None).is_ok());
+
         let wrong_identity = ProtocolActivationIdentity::activated_v2(
             "another-network",
             chain.dag.genesis_hash.clone(),
@@ -972,6 +1033,56 @@ mod tests {
         let (code, _) =
             check_monetary_v3_mining_template_activation(&wrong_identity, Some(&record))
                 .expect_err("mismatched monetary sidecar must fail before availability");
+        assert_eq!(code, "PROTOCOL_MISMATCH");
+    }
+
+    #[test]
+    fn numeric_header_v3_sidecar_rejects_before_v2_only_path_resolution() {
+        let chain = init_chain_state_v3(
+            "task1045-numeric-v3-path-ordering".to_string(),
+            1_800_000_000,
+        )
+        .unwrap();
+        let mut identity = ProtocolActivationIdentity::activated_v2(
+            chain.chain_id.clone(),
+            chain.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        identity.block_header_protocol_version = pulsedag_core::protocol::BLOCK_HEADER_VERSION_V3;
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 500_000_000,
+        }];
+        let record = ProtocolMonetaryActivationRecordV2::from_identity_and_cadence(
+            identity.clone(),
+            &cadence,
+            pulsedag_core::REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .unwrap();
+
+        // Reproduce the actual old route: the v2-only resolver rejects the
+        // numeric-v3 header before the late monetary guard runs.
+        assert!(template_protocol_path(&chain, Some(&identity)).is_err());
+
+        // The RPC now checks the sidecar FIRST and yields the typed terminal
+        // error consumed by the standalone miner; no availability/replay.
+        let (code, message) =
+            template_protocol_path_with_monetary_guard(&chain, Some(&identity), Some(&record))
+                .expect_err("sidecar must block before v2-only path routing");
+        assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
+        assert!(message.contains("refusing native 500ms mining work"));
+
+        let wrong_identity = ProtocolActivationIdentity::activated_v2(
+            "another-network",
+            chain.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let (code, _) = template_protocol_path_with_monetary_guard(
+            &chain,
+            Some(&wrong_identity),
+            Some(&record),
+        )
+        .expect_err("mismatched sidecar identity must reject before path");
         assert_eq!(code, "PROTOCOL_MISMATCH");
     }
 
