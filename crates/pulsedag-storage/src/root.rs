@@ -6,6 +6,7 @@ mod fast_sync_network_resume;
 mod fast_sync_resume;
 mod fast_sync_transfer;
 mod native_genesis_v3;
+mod native_header_v3;
 mod protocol_bundle;
 mod protocol_identity;
 mod protocol_restore;
@@ -29,6 +30,10 @@ pub use fast_sync_transfer::{
 pub use native_genesis_v3::{
     NativeV3GenesisRestoreRecordV1, MAX_NATIVE_V3_GENESIS_RESTORE_RECORD_BYTES,
     NATIVE_V3_GENESIS_RESTORE_RECORD_VERSION,
+};
+pub use native_header_v3::{
+    NativeV3HeaderRestoreRecordV1, MAX_NATIVE_V3_HEADER_RESTORE_RECORD_BYTES,
+    NATIVE_V3_HEADER_RESTORE_RECORD_VERSION,
 };
 pub use protocol_bundle::{
     ProtocolMonetarySnapshotExportBundleV3, ProtocolSnapshotExportBundleV2,
