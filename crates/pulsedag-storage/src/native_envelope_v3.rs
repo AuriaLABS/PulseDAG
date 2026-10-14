@@ -405,7 +405,9 @@ mod tests {
     #[test]
     fn rejects_unknown_schema_before_rehashing_or_pow() {
         let (record, frozen_hash) = fixture();
-        let raw = record.encode_verified(CHAIN, FROZEN_NS, &frozen_hash).unwrap();
+        let raw = record
+            .encode_verified(CHAIN, FROZEN_NS, &frozen_hash)
+            .unwrap();
         let mut forged: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         forged["schema_version"] = serde_json::json!(9);
         forged["envelope"]["hash"] = serde_json::json!("aa".repeat(32));
@@ -417,7 +419,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.to_string().contains("unsupported native-v3 envelope schema version"),
+            error
+                .to_string()
+                .contains("unsupported native-v3 envelope schema version"),
             "schema check must take priority over cryptographic work: {error}"
         );
     }
@@ -443,7 +447,11 @@ mod tests {
         let mut mined = false;
         for nonce in 0..4096 {
             different.nonce = nonce;
-            if evaluate_v3_header_pow(&different, CHAIN).unwrap().pow.accepted {
+            if evaluate_v3_header_pow(&different, CHAIN)
+                .unwrap()
+                .pow
+                .accepted
+            {
                 mined = true;
                 break;
             }
