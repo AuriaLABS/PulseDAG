@@ -930,15 +930,17 @@ mod tests {
 
     #[test]
     fn malformed_monetary_sidecar_is_terminal_not_retryable() {
-        let (code, message) = require_readable_monetary_sidecar(Err(
-            PulseError::StorageError("malformed on-disk activation record".to_string()),
-        ))
+        let (code, message) = require_readable_monetary_sidecar(Err(PulseError::StorageError(
+            "malformed on-disk activation record".to_string(),
+        )))
         .expect_err("sidecar read failure must terminate both v2 and legacy nonce requests");
         assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
         assert!(message.contains("malformed on-disk activation record"));
         assert!(message.contains("do not retry"));
 
-        assert!(require_readable_monetary_sidecar(Ok(None)).unwrap().is_none());
+        assert!(require_readable_monetary_sidecar(Ok(None))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
