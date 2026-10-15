@@ -654,7 +654,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
     // this seconds-based RPC; v2-only path resolution must not mask the
     // terminal code with a retryable PROTOCOL_MISMATCH.
     let early_monetary_activation = if local_identity.is_some() {
-        match require_readable_monetary_sidecar(state.storage().protocol_monetary_activation_record()) {
+        match require_readable_monetary_sidecar(
+            state.storage().protocol_monetary_activation_record(),
+        ) {
             Ok(record) => record,
             Err((code, message)) => {
                 return Json(ApiResponse::err(code, message));
