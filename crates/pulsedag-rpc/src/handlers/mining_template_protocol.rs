@@ -941,9 +941,10 @@ mod tests {
         // the activated-v2 route's second read (concurrent sidecar change).
         let first_read = require_readable_monetary_sidecar(Ok(None)).unwrap();
         assert!(first_read.is_none());
-        let (second_code, second_message) = require_readable_monetary_sidecar(Err(
-            PulseError::StorageError("second read became unreadable".to_string()),
-        ))
+        let (second_code, second_message) =
+            require_readable_monetary_sidecar(Err(PulseError::StorageError(
+                "second read became unreadable".to_string(),
+            )))
         .expect_err("activated-v2 reread failure must also terminate the miner");
         assert_eq!(second_code, MONETARY_V3_MINING_INACTIVE);
         assert!(second_message.contains("second read became unreadable"));
