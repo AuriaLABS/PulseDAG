@@ -137,7 +137,6 @@ fn select_startup_protocol_for_mode(
     }
 }
 
-
 /// Persisted monetary-v3 sidecars are not native-v3 consensus authorization.
 /// Fail closed before restoring runtime state, starting P2P or mining.
 ///
@@ -225,7 +224,9 @@ mod tests {
             .expect("ordinary legacy and ghostdag-v1 startup without monetary sidecar");
         let error = enforce_inactive_persisted_monetary_v3_startup(true)
             .expect_err("monetary sidecar must not bootstrap v3 monetary runtime");
-        assert!(error.to_string().contains("persisted monetary-v3 activation is INACTIVE"));
+        assert!(error
+            .to_string()
+            .contains("persisted monetary-v3 activation is INACTIVE"));
     }
 
     #[test]
