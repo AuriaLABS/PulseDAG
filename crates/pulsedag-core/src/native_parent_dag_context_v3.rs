@@ -55,13 +55,17 @@ pub fn verify_dormant_native_v3_parent_dag(
         return Err(invalid("direct-parent count outside 1..=64"));
     }
     if direct_parents.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(invalid("direct parents must be unique and canonically sorted"));
+        return Err(invalid(
+            "direct parents must be unique and canonically sorted",
+        ));
     }
 
     let genesis = dormant_native_genesis_envelope_v3_ns(chain_id, frozen_genesis_timestamp_ns)
         .map_err(|error| invalid(format!("frozen genesis inputs: {error}")))?;
     if genesis.hash != frozen_genesis_hash {
-        return Err(invalid("trusted frozen genesis hash differs from canonical identity"));
+        return Err(invalid(
+            "trusted frozen genesis hash differs from canonical identity",
+        ));
     }
 
     let mut pending: Vec<BlockId> = direct_parents.to_vec();
@@ -83,12 +87,16 @@ pub fn verify_dormant_native_v3_parent_dag(
         let computed = compute_block_hash_v3(header, chain_id)
             .map_err(|error| invalid(format!("invalid native-v3 header {hash}: {error}")))?;
         if computed != hash {
-            return Err(invalid(format!("ancestor header key/hash mismatch for {hash}")));
+            return Err(invalid(format!(
+                "ancestor header key/hash mismatch for {hash}"
+            )));
         }
 
         if header.height == 0 {
             if hash != genesis.hash || header != &genesis.header {
-                return Err(invalid("height-zero ancestor is not the exact frozen genesis"));
+                return Err(invalid(
+                    "height-zero ancestor is not the exact frozen genesis",
+                ));
             }
             genesis_seen = true;
             continue;
@@ -115,10 +123,14 @@ pub fn verify_dormant_native_v3_parent_dag(
             max_height = max_height.max(parent_header.height);
             max_timestamp_ns = max_timestamp_ns.max(parent_header.timestamp_ns);
             if parent_header.height >= header.height {
-                return Err(invalid(format!("ancestor {hash} has non-lower parent {parent}")));
+                return Err(invalid(format!(
+                    "ancestor {hash} has non-lower parent {parent}"
+                )));
             }
             if parent_header.timestamp_ns >= header.timestamp_ns {
-                return Err(invalid(format!("ancestor {hash} has non-earlier parent {parent}")));
+                return Err(invalid(format!(
+                    "ancestor {hash} has non-earlier parent {parent}"
+                )));
             }
             pending.push(parent.clone());
         }
@@ -126,7 +138,9 @@ pub fn verify_dormant_native_v3_parent_dag(
             .checked_add(1)
             .ok_or_else(|| invalid("ancestor height overflow"))?;
         if header.height != expected_height || header.timestamp_ns <= max_timestamp_ns {
-            return Err(invalid(format!("ancestor {hash} has invalid DAG height/timestamp")));
+            return Err(invalid(format!(
+                "ancestor {hash} has invalid DAG height/timestamp"
+            )));
         }
     }
 
@@ -145,10 +159,8 @@ pub fn verify_dormant_native_v3_parent_dag(
 mod tests {
     use super::*;
     use crate::{
-        block_envelope_v3::BlockEnvelopeV3,
-        header_v3::compute_block_hash_v3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
+        block_envelope_v3::BlockEnvelopeV3, header_v3::compute_block_hash_v3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
     };
 
@@ -197,19 +209,32 @@ mod tests {
     fn independently_verifies_both_fork_ancestors_in_a_merge_dag() {
         let (genesis, mut headers) = fixture();
         let a = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let b = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 600_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
         );
         let merge = append_header(
-            &mut headers, vec![a.clone(), b.clone()], 2,
-            GENESIS_NS + 1_000_000_000, true,
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
         );
         let result = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[merge], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[merge],
+            &headers,
         )
         .unwrap();
         assert_eq!(result.authenticated_non_genesis_headers, 3);
@@ -221,19 +246,32 @@ mod tests {
     fn rejects_invalid_pow_in_a_side_branch_even_when_hash_is_consistent() {
         let (genesis, mut headers) = fixture();
         let good = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let bad = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 600_000_000, false,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
         );
         let merge = append_header(
-            &mut headers, vec![good, bad], 2,
-            GENESIS_NS + 1_000_000_000, true,
+            &mut headers,
+            vec![good, bad],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
         );
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[merge], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[merge],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("invalid PoW"));
@@ -247,21 +285,36 @@ mod tests {
         let fake_hash = compute_block_hash_v3(&fake, CHAIN).unwrap();
         headers.insert(fake_hash.clone(), fake);
         let wrong_root_child = append_header(
-            &mut headers, vec![fake_hash], 1, GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![fake_hash],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[wrong_root_child], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[wrong_root_child],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("exact frozen genesis"));
 
         let honest_child = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         headers.remove(&genesis.hash);
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[honest_child], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[honest_child],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("missing ancestor parent"));
@@ -271,21 +324,35 @@ mod tests {
     fn rejects_wrong_height_and_nonmonotonic_nanoseconds() {
         let (genesis, mut headers) = fixture();
         let too_high = append_header(
-            &mut headers, vec![genesis.hash.clone()], 3,
-            GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            3,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[too_high], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[too_high],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("invalid DAG height"));
 
         let stale = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS,
+            true,
         );
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[stale], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[stale],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("non-earlier parent"));
@@ -295,19 +362,34 @@ mod tests {
     fn rejects_untrusted_frozen_hash_and_incomplete_parent_set() {
         let (genesis, mut headers) = fixture();
         let tip = append_header(
-            &mut headers, vec![genesis.hash.clone()], 1,
-            GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.hash.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         assert!(verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, "00", &[tip.clone()], &headers,
+            CHAIN,
+            GENESIS_NS,
+            "00",
+            &[tip.clone()],
+            &headers,
         )
         .is_err());
         assert!(verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[],
+            &headers,
         )
         .is_err());
         assert!(verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[tip.clone(), tip], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[tip.clone(), tip],
+            &headers,
         )
         .is_err());
     }
@@ -318,17 +400,26 @@ mod tests {
         let mut tip = genesis.hash.clone();
         for height in 1..=MAX_DORMANT_V3_DAG_HEADERS as u64 {
             tip = append_header(
-                &mut headers, vec![tip], height,
-                GENESIS_NS + height * 500_000_000, true,
+                &mut headers,
+                vec![tip],
+                height,
+                GENESIS_NS + height * 500_000_000,
+                true,
             );
         }
         let over_limit = append_header(
-            &mut headers, vec![tip], MAX_DORMANT_V3_DAG_HEADERS as u64 + 1,
+            &mut headers,
+            vec![tip],
+            MAX_DORMANT_V3_DAG_HEADERS as u64 + 1,
             GENESIS_NS + (MAX_DORMANT_V3_DAG_HEADERS as u64 + 1) * 500_000_000,
             true,
         );
         let error = verify_dormant_native_v3_parent_dag(
-            CHAIN, GENESIS_NS, &genesis.hash, &[over_limit], &headers,
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &[over_limit],
+            &headers,
         )
         .unwrap_err();
         assert!(error.to_string().contains("visit limit"));
