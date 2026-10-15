@@ -362,7 +362,9 @@ mod tests {
             &different.hash,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("persisted genesis commitment mismatch"));
+        assert!(error
+            .to_string()
+            .contains("persisted genesis commitment mismatch"));
 
         // Schema-v1 bytes have no genesis commitment and are never silently
         // accepted as secure v2 records.
