@@ -138,7 +138,7 @@ fn select_startup_protocol_for_mode(
 }
 
 
-//// Persisted monetary-v3 sidecars are not native-v3 consensus authorization.
+/// Persisted monetary-v3 sidecars are not native-v3 consensus authorization.
 /// Fail closed before restoring runtime state, starting P2P or mining.
 ///
 /// The record cannot be inspected until RocksDB has opened. Thus this is an
