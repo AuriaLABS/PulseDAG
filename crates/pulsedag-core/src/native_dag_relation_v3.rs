@@ -126,10 +126,8 @@ pub fn derive_dormant_native_v3_pair_relation(
 mod tests {
     use super::*;
     use crate::{
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::compute_block_hash_v3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::compute_block_hash_v3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
     };
 
@@ -282,11 +280,10 @@ mod tests {
             GENESIS_NS + 600_000_000,
             true,
         );
-        let err = relation(
-            &genesis, std::slice::from_ref(&a), &a, &extra, &headers,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("reachable from the verified frontier"));
+        let err = relation(&genesis, std::slice::from_ref(&a), &a, &extra, &headers).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("reachable from the verified frontier"));
     }
 
     #[test]
@@ -313,10 +310,7 @@ mod tests {
             GENESIS_NS + 1_000_000_000,
             true,
         );
-        let err = relation(
-            &genesis, &[merge], &a, &a, &headers,
-        )
-        .unwrap_err();
+        let err = relation(&genesis, &[merge], &a, &a, &headers).unwrap_err();
         assert!(err.to_string().contains("invalid PoW"));
     }
 
