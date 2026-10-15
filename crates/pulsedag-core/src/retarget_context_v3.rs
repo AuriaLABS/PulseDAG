@@ -368,6 +368,64 @@ mod tests {
     }
 
     #[test]
+    fn invalid_pow_at_interior_and_oldest_retained_sample_fails_closed() {
+        // The retarget window holds exactly 20 samples. The first block
+        // after genesis is the oldest retained sample here, with genesis
+        // intentionally outside the 20-sample window. Its PoW must still
+        // be enforced, just like a corrupt middle block or selected tip.
+        for invalid_height in [1_u64, 10, 20] {
+            let mut headers = BTreeMap::new();
+            let mut selected = BTreeMap::new();
+            let genesis = insert(&mut headers, &mut selected, vec![], None, 0, BASE);
+            let mut preceding = genesis;
+            let mut invalid_hash = String::new();
+
+            for height in 1..=PRODUCTION_V3_RETARGET_WINDOW as u64 {
+                let timestamp_ns = BASE + height * 500_000_000;
+                if height == invalid_height {
+                    let mut forged = header(vec![preceding.clone()], height, timestamp_ns);
+                    let nonce = (0..1_024_u64)
+                        .find(|nonce| {
+                            forged.nonce = *nonce;
+                            !evaluate_v3_header_pow(&forged, CHAIN).unwrap().pow.accepted
+                        })
+                        .expect("easy-target history fixture must have an invalid PoW nonce");
+                    forged.nonce = nonce;
+                    invalid_hash = compute_block_hash_v3(&forged, CHAIN).unwrap();
+                    headers.insert(invalid_hash.clone(), forged);
+                    selected.insert(invalid_hash.clone(), Some(preceding));
+                    preceding = invalid_hash.clone();
+                } else {
+                    preceding = insert(
+                        &mut headers,
+                        &mut selected,
+                        vec![preceding.clone()],
+                        Some(preceding),
+                        height,
+                        timestamp_ns,
+                    );
+                }
+            }
+
+            assert!(matches!(
+                selected_parent_retarget_window_v3_ns(CHAIN, &preceding, &headers, &selected),
+                Err(V3SelectedParentWindowError::InvalidHistoryPow { hash, .. })
+                    if hash == invalid_hash
+            ));
+            assert!(matches!(
+                expected_difficulty_for_selected_parent_v3_ns(
+                    CHAIN,
+                    &preceding,
+                    &headers,
+                    &selected,
+                ),
+                Err(V3SelectedParentWindowError::InvalidHistoryPow { hash, .. })
+                    if hash == invalid_hash
+            ));
+        }
+    }
+
+    #[test]
     fn missing_selection_and_nonparent_selection_fail_closed() {
         let (headers, mut selected, genesis, _, tip) = three_block_chain();
         selected.remove(&tip);
