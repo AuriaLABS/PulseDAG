@@ -137,6 +137,23 @@ fn select_startup_protocol_for_mode(
     }
 }
 
+
+//// Persisted monetary-v3 sidecars are not native-v3 consensus authorization.
+/// Fail closed before restoring runtime state, starting P2P or mining.
+///
+/// The record cannot be inspected until RocksDB has opened. Thus this is an
+/// early *post-open* guard, not a claim that all persisted monetary records can
+/// be denied before Storage::open. Explicit monetary_v3 startup mode is already
+/// rejected by the parser before the database is opened.
+pub fn enforce_inactive_persisted_monetary_v3_startup(record_present: bool) -> Result<()> {
+    if record_present {
+        bail!(
+            "persisted monetary-v3 activation is INACTIVE: refusing daemon runtime restore until native-v3 500ms consensus, security review and launch gates are complete"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +220,15 @@ mod tests {
     }
 
     #[test]
+    fn persisted_monetary_sidecar_never_activates_in_dormant_v3() {
+        enforce_inactive_persisted_monetary_v3_startup(false)
+            .expect("ordinary legacy and ghostdag-v1 startup without monetary sidecar");
+        let error = enforce_inactive_persisted_monetary_v3_startup(true)
+            .expect_err("monetary sidecar must not bootstrap v3 monetary runtime");
+        assert!(error.to_string().contains("persisted monetary-v3 activation is INACTIVE"));
+    }
+
+    #[test]
     fn startup_mode_parser_is_fail_closed() {
         assert_eq!(
             StartupProtocolMode::parse("legacy").unwrap(),
@@ -213,6 +239,7 @@ mod tests {
             StartupProtocolMode::GhostdagV1
         );
         assert!(StartupProtocolMode::parse("ghostdag-v1").is_err());
+        assert!(StartupProtocolMode::parse("monetary_v3").is_err());
         assert!(StartupProtocolMode::parse("").is_err());
     }
 
