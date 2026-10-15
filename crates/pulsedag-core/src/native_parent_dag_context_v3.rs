@@ -372,7 +372,7 @@ mod tests {
             CHAIN,
             GENESIS_NS,
             "00",
-            &[tip.clone()],
+            std::slice::from_ref(&tip),
             &headers,
         )
         .is_err());
