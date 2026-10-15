@@ -304,6 +304,38 @@ mod tests {
     }
 
     #[test]
+    fn ancestor_parent_is_not_a_duplicate_merge_set_entry() {
+        let (genesis, mut headers) = fixture();
+        let ancestor = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let descendant = append(
+            &mut headers,
+            vec![ancestor.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
+        let mut parents = vec![ancestor.clone(), descendant.clone()];
+        parents.sort();
+
+        // A redundant parent already belongs to the chosen descendant's
+        // inclusive past, so no merge-set member remains.
+        let newer = examine(&genesis, &parents, &descendant, &headers).unwrap();
+        assert!(newer.unordered_merge_set.is_empty());
+        assert_eq!(newer.selected_parent_past_size, 3);
+
+        // The reverse comparison is not symmetric: the newer parent's
+        // inclusive past contains exactly one block absent from the older.
+        let older = examine(&genesis, &parents, &ancestor, &headers).unwrap();
+        assert_eq!(older.unordered_merge_set, vec![descendant]);
+    }
+
+    #[test]
     fn single_parent_has_no_merge_set() {
         let (genesis, mut headers) = fixture();
         let a = append(
