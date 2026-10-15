@@ -717,13 +717,12 @@ pub async fn post_mining_template<S: RpcStateLike>(
             // Otherwise missing-parent recovery or zero peers masks a permanent
             // v3 nonce-work denial with retryable MINING_TEMPLATE_UNAVAILABLE.
             let storage = state.storage();
-            let monetary_activation = match storage.protocol_monetary_activation_record() {
+            let monetary_activation = match require_readable_monetary_sidecar(
+                storage.protocol_monetary_activation_record(),
+            ) {
                 Ok(record) => record,
-                Err(error) => {
-                    return Json(ApiResponse::err(
-                        "MINING_TEMPLATE_ERROR",
-                        format!("cannot read v3 monetary activation sidecar: {error}"),
-                    ));
+                Err((code, message)) => {
+                    return Json(ApiResponse::err(code, message));
                 }
             };
             if let Err((code, message)) = check_monetary_v3_mining_template_activation(
@@ -938,9 +937,16 @@ mod tests {
         assert!(message.contains("malformed on-disk activation record"));
         assert!(message.contains("do not retry"));
 
-        assert!(require_readable_monetary_sidecar(Ok(None))
-            .unwrap()
-            .is_none());
+        // A successful initial read must not mask corruption discovered by
+        // the activated-v2 route's second read (concurrent sidecar change).
+        let first_read = require_readable_monetary_sidecar(Ok(None)).unwrap();
+        assert!(first_read.is_none());
+        let (second_code, second_message) = require_readable_monetary_sidecar(Err(
+            PulseError::StorageError("second read became unreadable".to_string()),
+        ))
+        .expect_err("activated-v2 reread failure must also terminate the miner");
+        assert_eq!(second_code, MONETARY_V3_MINING_INACTIVE);
+        assert!(second_message.contains("second read became unreadable"));
     }
 
     #[test]
