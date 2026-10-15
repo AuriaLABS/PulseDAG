@@ -167,6 +167,23 @@ fn template_protocol_path_with_monetary_guard(
     })
 }
 
+/// A corrupt or unreadable monetary sidecar cannot be classified as absent:
+/// treating that read failure as retryable can trap standalone miners in
+/// endless nonce-template polling. Fail closed with a recognized terminal
+/// monetary code BEFORE protocol-path selection or legacy fallback.
+fn require_readable_monetary_sidecar(
+    result: Result<Option<ProtocolMonetaryActivationRecordV2>, PulseError>,
+) -> Result<Option<ProtocolMonetaryActivationRecordV2>, (&'static str, String)> {
+    result.map_err(|error| {
+        (
+            MONETARY_V3_MINING_INACTIVE,
+            format!(
+                "cannot verify v3 monetary activation sidecar, so all seconds-based mining nonce work is inactive until operator repair; do not retry: {error}"
+            ),
+        )
+    })
+}
+
 fn parent_confirmed_txids(chain: &ChainState, parents: &[String]) -> HashSet<String> {
     parents
         .iter()
@@ -637,13 +654,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
     // this seconds-based RPC; v2-only path resolution must not mask the
     // terminal code with a retryable PROTOCOL_MISMATCH.
     let early_monetary_activation = if local_identity.is_some() {
-        match state.storage().protocol_monetary_activation_record() {
+        match require_readable_monetary_sidecar(state.storage().protocol_monetary_activation_record()) {
             Ok(record) => record,
-            Err(error) => {
-                return Json(ApiResponse::err(
-                    "MINING_TEMPLATE_ERROR",
-                    format!("cannot read v3 monetary activation sidecar: {error}"),
-                ));
+            Err((code, message)) => {
+                return Json(ApiResponse::err(code, message));
             }
         }
     } else {
@@ -911,6 +925,19 @@ mod tests {
         ProtocolMonetaryActivationRecordV2, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
         GHOSTDAG_V1_ORDERING_VERSION,
     };
+
+    #[test]
+    fn malformed_monetary_sidecar_is_terminal_not_retryable() {
+        let (code, message) = require_readable_monetary_sidecar(Err(
+            PulseError::StorageError("malformed on-disk activation record".to_string()),
+        ))
+        .expect_err("sidecar read failure must terminate both v2 and legacy nonce requests");
+        assert_eq!(code, MONETARY_V3_MINING_INACTIVE);
+        assert!(message.contains("malformed on-disk activation record"));
+        assert!(message.contains("do not retry"));
+
+        assert!(require_readable_monetary_sidecar(Ok(None)).unwrap().is_none());
+    }
 
     #[test]
     fn default_and_explicit_legacy_select_v1() {
