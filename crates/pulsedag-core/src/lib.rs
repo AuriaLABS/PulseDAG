@@ -47,6 +47,7 @@ pub mod mining_v2;
 pub mod monetary_audit_v3;
 pub mod monetary_v3;
 pub mod multisig_v1;
+pub mod native_parent_dag_context_v3;
 pub mod network_block_v2;
 pub mod network_block_v3;
 pub mod network_context_v2;
