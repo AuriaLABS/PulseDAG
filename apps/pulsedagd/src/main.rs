@@ -2400,9 +2400,7 @@ async fn main() -> Result<()> {
     // ghostdag_v1 restore branch before native-v3 monetary consensus exists.
     // This check is necessarily post-open, but precedes snapshot commands,
     // state restoration, P2P initialization and mining.
-    enforce_inactive_persisted_monetary_v3_startup(
-        storage.protocol_monetary_activation_record()?.is_some(),
-    )?;
+    enforce_inactive_persisted_monetary_v3_startup(&storage)?;
     if let Some(command) = snapshot_bundle_command {
         run_snapshot_bundle_command(
             &storage,
