@@ -254,7 +254,10 @@ mod tests {
         assert!(error
             .to_string()
             .contains("persisted monetary-v3 activation is INACTIVE"));
-        assert!(storage.protocol_monetary_activation_record().unwrap().is_some());
+        assert!(storage
+            .protocol_monetary_activation_record()
+            .unwrap()
+            .is_some());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
