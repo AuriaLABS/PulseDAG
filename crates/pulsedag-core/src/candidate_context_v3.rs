@@ -82,6 +82,16 @@ pub fn preflight_v3_candidate_context(
             )));
         }
         validate_v3_pow_target(header.difficulty)?;
+        // A hash-consistent side parent is not automatically a valid PoW
+        // ancestor. Validate ALL direct non-genesis parents, including those
+        // outside the selected-parent retarget window.
+        if header.height != 0 {
+            verify_v3_header_pow(header, chain_id).map_err(|error| {
+                invalid(format!(
+                    "v3 candidate parent {parent} has invalid historical PoW: {error}"
+                ))
+            })?;
+        }
         greatest_parent_height = greatest_parent_height.max(header.height);
         newest_parent_timestamp_ns = newest_parent_timestamp_ns.max(header.timestamp_ns);
     }
@@ -295,6 +305,45 @@ mod tests {
             &candidate, CHAIN, &genesis, &headers, &selected, BASE_NS,
         )
         .is_err());
+    }
+
+    #[test]
+    fn non_selected_parent_with_valid_hash_but_invalid_pow_is_rejected() {
+        let (mut headers, mut selected, genesis) = single_genesis();
+        let mut side = header(1, vec![genesis.clone()], BASE_NS + 250_000_000);
+        let bad_nonce = (0..512_u64)
+            .find(|nonce| {
+                side.nonce = *nonce;
+                !evaluate_v3_header_pow(&side, CHAIN).unwrap().pow.accepted
+            })
+            .expect("easy-target side parent must have a rejected nonce");
+        side.nonce = bad_nonce;
+        let side_hash = compute_block_hash_v3(&side, CHAIN).unwrap();
+        headers.insert(side_hash.clone(), side);
+        selected.insert(side_hash.clone(), Some(genesis.clone()));
+
+        let mut parents = vec![genesis.clone(), side_hash];
+        parents.sort();
+        let mut header = header(2, parents, BASE_NS + 500_000_000);
+        let good_nonce = (0..512_u64)
+            .find(|nonce| {
+                header.nonce = *nonce;
+                evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            })
+            .expect("v3 candidate itself must have a valid PoW nonce");
+        header.nonce = good_nonce;
+        let candidate = build_block_envelope_v3(CHAIN, header, vec![]).unwrap();
+
+        let error = preflight_v3_candidate_context(
+            &candidate,
+            CHAIN,
+            &genesis,
+            &headers,
+            &selected,
+            BASE_NS + 500_000_000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid historical PoW"));
     }
 
     #[test]
