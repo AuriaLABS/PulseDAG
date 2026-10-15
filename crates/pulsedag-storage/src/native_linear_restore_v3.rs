@@ -10,10 +10,7 @@
 //! order, whether committed state roots are true, or whether 500ms retarget
 //! rules were followed. Do not feed the result to production admission.
 
-use pulsedag_core::{
-    errors::PulseError,
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-};
+use pulsedag_core::{errors::PulseError, genesis_v3::dormant_native_genesis_envelope_v3_ns};
 
 use crate::NativeV3EnvelopeRestoreRecordV1;
 
@@ -57,13 +54,13 @@ pub fn verify_dormant_v3_genesis_anchored_linear_segment(
             records.len()
         )));
     }
-    let genesis = dormant_native_genesis_envelope_v3_ns(
-        trusted_chain_id,
-        frozen_genesis_timestamp_ns,
-    )
-    .map_err(|error| invalid(format!("invalid externally frozen genesis: {error}")))?;
+    let genesis =
+        dormant_native_genesis_envelope_v3_ns(trusted_chain_id, frozen_genesis_timestamp_ns)
+            .map_err(|error| invalid(format!("invalid externally frozen genesis: {error}")))?;
     if genesis.hash != frozen_genesis_hash {
-        return Err(invalid("frozen genesis identity does not match independently derived hash"));
+        return Err(invalid(
+            "frozen genesis identity does not match independently derived hash",
+        ));
     }
 
     let mut preceding_hash = genesis.hash;
@@ -76,12 +73,12 @@ pub fn verify_dormant_v3_genesis_anchored_linear_segment(
                 frozen_genesis_timestamp_ns,
                 frozen_genesis_hash,
             )
-            .map_err(|error| invalid(format!("record {index} failed frame verification: {error}")))?;
+            .map_err(|error| {
+                invalid(format!("record {index} failed frame verification: {error}"))
+            })?;
 
         let envelope = record.envelope();
-        if envelope.header.parents.len() != 1
-            || envelope.header.parents[0] != preceding_hash
-        {
+        if envelope.header.parents.len() != 1 || envelope.header.parents[0] != preceding_hash {
             return Err(invalid(format!(
                 "record {index} is not linked by its unique parent to the preceding frame"
             )));
@@ -186,13 +183,9 @@ mod tests {
     #[test]
     fn validates_two_canonical_ns_frames_from_independent_frozen_genesis() {
         let (genesis, records) = sequence();
-        let report = verify_dormant_v3_genesis_anchored_linear_segment(
-            &records,
-            CHAIN,
-            FROZEN_NS,
-            &genesis,
-        )
-        .unwrap();
+        let report =
+            verify_dormant_v3_genesis_anchored_linear_segment(&records, CHAIN, FROZEN_NS, &genesis)
+                .unwrap();
         assert_eq!(report.linkage_checked_records, 2);
         assert_eq!(report.last_hash, records[1].envelope().hash);
         assert_eq!(report.last_height, 2);
@@ -202,19 +195,13 @@ mod tests {
     #[test]
     fn refuses_empty_excessive_and_wrong_network_freeze() {
         let (genesis, records) = sequence();
-        assert!(verify_dormant_v3_genesis_anchored_linear_segment(
-            &[],
-            CHAIN,
-            FROZEN_NS,
-            &genesis,
-        )
-        .is_err());
+        assert!(
+            verify_dormant_v3_genesis_anchored_linear_segment(&[], CHAIN, FROZEN_NS, &genesis,)
+                .is_err()
+        );
         let too_many = vec![records[0].clone(); MAX_DORMANT_V3_LINEAR_RESTORE_RECORDS + 1];
         assert!(verify_dormant_v3_genesis_anchored_linear_segment(
-            &too_many,
-            CHAIN,
-            FROZEN_NS,
-            &genesis,
+            &too_many, CHAIN, FROZEN_NS, &genesis,
         )
         .is_err());
         for (chain, time, hash) in [
@@ -222,13 +209,10 @@ mod tests {
             (CHAIN, FROZEN_NS + 1, genesis.as_str()),
             (CHAIN, FROZEN_NS, "00"),
         ] {
-            assert!(verify_dormant_v3_genesis_anchored_linear_segment(
-                &records,
-                chain,
-                time,
-                hash,
-            )
-            .is_err());
+            assert!(
+                verify_dormant_v3_genesis_anchored_linear_segment(&records, chain, time, hash,)
+                    .is_err()
+            );
         }
     }
 
@@ -241,10 +225,7 @@ mod tests {
             vec![records[1].clone()],
         ] {
             assert!(verify_dormant_v3_genesis_anchored_linear_segment(
-                &attempted,
-                CHAIN,
-                FROZEN_NS,
-                &genesis,
+                &attempted, CHAIN, FROZEN_NS, &genesis,
             )
             .is_err());
         }
