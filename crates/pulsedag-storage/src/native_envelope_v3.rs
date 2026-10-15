@@ -195,7 +195,7 @@ impl NativeV3EnvelopeRestoreRecordV1 {
     /// authenticated blue work, state-root replay, or persisted block authority.
     pub fn verify_matching_header_record(
         &self,
-        header_record: &crate::NativeV3HeaderRestoreRecordV1,
+        header_record: &crate::NativeV3HeaderRestoreRecordV2,
         trusted_chain_id: &str,
         frozen_genesis_timestamp_ns: u64,
         frozen_genesis_hash: &str,
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn matching_header_and_envelope_restore_records_reject_valid_but_different_pow() {
         let (record, frozen_hash) = fixture();
-        let companion = crate::NativeV3HeaderRestoreRecordV1::from_verified_header(
+        let companion = crate::NativeV3HeaderRestoreRecordV2::from_verified_header(
             CHAIN,
             record.envelope().header.clone(),
             FROZEN_NS,
@@ -457,7 +457,7 @@ mod tests {
             }
         }
         assert!(mined, "valid alternate PoW fixture must exist");
-        let different_companion = crate::NativeV3HeaderRestoreRecordV1::from_verified_header(
+        let different_companion = crate::NativeV3HeaderRestoreRecordV2::from_verified_header(
             CHAIN,
             different,
             FROZEN_NS,
