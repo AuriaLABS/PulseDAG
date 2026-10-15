@@ -38,7 +38,7 @@ pub use native_genesis_v3::{
     NATIVE_V3_GENESIS_RESTORE_RECORD_VERSION,
 };
 pub use native_header_v3::{
-    NativeV3HeaderRestoreRecordV1, MAX_NATIVE_V3_HEADER_RESTORE_RECORD_BYTES,
+    NativeV3HeaderRestoreRecordV2, MAX_NATIVE_V3_HEADER_RESTORE_RECORD_BYTES,
     NATIVE_V3_HEADER_RESTORE_RECORD_VERSION,
 };
 pub use native_linear_restore_v3::{
