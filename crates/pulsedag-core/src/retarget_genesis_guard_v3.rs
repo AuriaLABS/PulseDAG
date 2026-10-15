@@ -50,13 +50,9 @@ pub fn verify_dormant_frozen_genesis_retarget_v3_ns(
         ));
     }
 
-    let samples = selected_parent_retarget_window_v3_ns(
-        chain_id,
-        selected_tip,
-        headers,
-        selected_parents,
-    )
-    .map_err(|error| invalid(format!("selected-parent PoW/window: {error}")))?;
+    let samples =
+        selected_parent_retarget_window_v3_ns(chain_id, selected_tip, headers, selected_parents)
+            .map_err(|error| invalid(format!("selected-parent PoW/window: {error}")))?;
     let mut current = selected_tip.clone();
     let mut anchored = false;
     for index in 0..samples.len() {
@@ -100,10 +96,8 @@ pub fn verify_dormant_frozen_genesis_retarget_v3_ns(
 mod tests {
     use super::*;
     use crate::{
-        block_envelope_v3::BlockEnvelopeV3,
-        header_v3::compute_block_hash_v3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
+        block_envelope_v3::BlockEnvelopeV3, header_v3::compute_block_hash_v3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
     };
 
@@ -202,12 +196,14 @@ mod tests {
         );
         // The unbound window helper considers arbitrary height-zero headers
         // non-mined anchors; this new subset guard intentionally rejects one.
-        assert!(selected_parent_retarget_window_v3_ns(
-            CHAIN, &tip, &headers, &selected,
-        )
-        .is_ok());
+        assert!(selected_parent_retarget_window_v3_ns(CHAIN, &tip, &headers, &selected,).is_ok());
         let error = verify_dormant_frozen_genesis_retarget_v3_ns(
-            CHAIN, FROZEN_NS, &genesis.hash, &tip, &headers, &selected,
+            CHAIN,
+            FROZEN_NS,
+            &genesis.hash,
+            &tip,
+            &headers,
+            &selected,
         )
         .unwrap_err();
         assert!(error.to_string().contains("externally frozen genesis"));
@@ -224,7 +220,12 @@ mod tests {
             genesis.header.difficulty,
         );
         assert!(verify_dormant_frozen_genesis_retarget_v3_ns(
-            CHAIN, FROZEN_NS + 1, &genesis.hash, &tip, &headers, &selected,
+            CHAIN,
+            FROZEN_NS + 1,
+            &genesis.hash,
+            &tip,
+            &headers,
+            &selected,
         )
         .is_err());
         assert!(verify_dormant_frozen_genesis_retarget_v3_ns(
@@ -232,12 +233,22 @@ mod tests {
         )
         .is_err());
         assert!(verify_dormant_frozen_genesis_retarget_v3_ns(
-            "other-network", FROZEN_NS, &genesis.hash, &tip, &headers, &selected,
+            "other-network",
+            FROZEN_NS,
+            &genesis.hash,
+            &tip,
+            &headers,
+            &selected,
         )
         .is_err());
         selected.insert(genesis.hash.clone(), Some("aa".repeat(32)));
         assert!(verify_dormant_frozen_genesis_retarget_v3_ns(
-            CHAIN, FROZEN_NS, &genesis.hash, &tip, &headers, &selected,
+            CHAIN,
+            FROZEN_NS,
+            &genesis.hash,
+            &tip,
+            &headers,
+            &selected,
         )
         .is_err());
     }
@@ -264,9 +275,16 @@ mod tests {
             20
         );
         let error = verify_dormant_frozen_genesis_retarget_v3_ns(
-            CHAIN, FROZEN_NS, &genesis.hash, &tip, &headers, &selected,
+            CHAIN,
+            FROZEN_NS,
+            &genesis.hash,
+            &tip,
+            &headers,
+            &selected,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("outside the verified retarget window"));
+        assert!(error
+            .to_string()
+            .contains("outside the verified retarget window"));
     }
 }
