@@ -6,6 +6,7 @@ use pulsedag_core::{
     CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use pulsedag_p2p::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
+use pulsedag_storage::Storage;
 
 pub const STARTUP_PROTOCOL_MODE_ENV: &str = "PULSEDAG_PROTOCOL_CONSENSUS_MODE";
 pub const CONTRACTS_ENABLED_ENV: &str = "PULSEDAG_CONTRACTS_ENABLED";
@@ -144,8 +145,10 @@ fn select_startup_protocol_for_mode(
 /// early *post-open* guard, not a claim that all persisted monetary records can
 /// be denied before Storage::open. Explicit monetary_v3 startup mode is already
 /// rejected by the parser before the database is opened.
-pub fn enforce_inactive_persisted_monetary_v3_startup(record_present: bool) -> Result<()> {
-    if record_present {
+pub fn enforce_inactive_persisted_monetary_v3_startup(storage: &Storage) -> Result<()> {
+    // A malformed or unknown record is also terminal: propagate decode/schema
+    // failures rather than treating them as absence of activation.
+    if storage.protocol_monetary_activation_record()?.is_some() {
         bail!(
             "persisted monetary-v3 activation is INACTIVE: refusing daemon runtime restore until native-v3 500ms consensus, security review and launch gates are complete"
         );
@@ -220,13 +223,41 @@ mod tests {
 
     #[test]
     fn persisted_monetary_sidecar_never_activates_in_dormant_v3() {
-        enforce_inactive_persisted_monetary_v3_startup(false)
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .join(format!("pulsedagd-v3-sidecar-deny-{unique}"))
+            .to_string_lossy()
+            .into_owned();
+        let storage = Storage::open(&path).unwrap();
+        enforce_inactive_persisted_monetary_v3_startup(&storage)
             .expect("ordinary legacy and ghostdag-v1 startup without monetary sidecar");
-        let error = enforce_inactive_persisted_monetary_v3_startup(true)
-            .expect_err("monetary sidecar must not bootstrap v3 monetary runtime");
+
+        let state = pulsedag_core::genesis_v3::init_chain_state_v3(
+            "pulsedagd-monetary-sidecar-denial-test".to_string(),
+            1_800_000_123,
+        )
+        .unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        storage
+            .persist_chain_state_with_production_v3_protocol_record(&state, &identity)
+            .unwrap();
+
+        let error = enforce_inactive_persisted_monetary_v3_startup(&storage)
+            .expect_err("valid persisted monetary sidecar must not bootstrap v3");
         assert!(error
             .to_string()
             .contains("persisted monetary-v3 activation is INACTIVE"));
+        assert!(storage.protocol_monetary_activation_record().unwrap().is_some());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
