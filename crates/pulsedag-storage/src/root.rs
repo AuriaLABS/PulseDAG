@@ -8,6 +8,7 @@ mod fast_sync_transfer;
 mod native_envelope_v3;
 mod native_genesis_v3;
 mod native_header_v3;
+mod native_linear_restore_v3;
 mod protocol_bundle;
 mod protocol_identity;
 mod protocol_restore;
@@ -39,6 +40,10 @@ pub use native_genesis_v3::{
 pub use native_header_v3::{
     NativeV3HeaderRestoreRecordV1, MAX_NATIVE_V3_HEADER_RESTORE_RECORD_BYTES,
     NATIVE_V3_HEADER_RESTORE_RECORD_VERSION,
+};
+pub use native_linear_restore_v3::{
+    verify_dormant_v3_genesis_anchored_linear_segment, DormantV3LinearRestoreCheck,
+    MAX_DORMANT_V3_LINEAR_RESTORE_RECORDS,
 };
 pub use protocol_bundle::{
     ProtocolMonetarySnapshotExportBundleV3, ProtocolSnapshotExportBundleV2,
