@@ -51,6 +51,18 @@ All actual hash/PoW fixture files must fix chain ID, independent frozen nanoseco
 
 For every approved fixture, verify independent implementations on at least two different runtimes and report header hash, work digest, selected parent, ordered merge blues/reds, selected tip, derived blue score/work, ordering digest, accepted/rejected UTXO set and error code (or explicit `N/A` before that stage). Never report placeholder values as passing golden vectors.
 
+### Independent symbolic topology reference (diagnostic only)
+
+A separate, Python-standard-library implementation of the **graph-only** ancestry and parent-relative merge-set algebra is checked with:
+
+```bash
+python3 scripts/native_v3_topology_oracle.py --self-test docs/fixtures/native_v3_symbolic_topology.json
+```
+
+The fixture covers fork/join, redundant and single-parent cases; validates expected pair relations and sorted *set* results; rejects cycles, absent reachable parents, duplicate roots/parents, forged symbolic genesis and over-limit complete closures; tolerates unrelated **unqueried** map entries; rejects an **unreachable queried** block. It repeats computations with reversed input-map and candidate-root order. The bounded 128-header/2048-edge/64-root values are existing **diagnostic limits, not protocol constants**.
+
+**Important:** symbolic labels `G,A,B,` etc. are not frozen chain-bound header hashes; this oracle performs **no canonical serialization, independent genesis commitment, KHeavyHash, target verification or reward-state replay**. Passing it is **not** evidence of valid PoW, authoritative selected-parent/K/blue-red/blue-work rules, monetary consensus or #781 launch readiness. That requires distinct authenticated native-v3 vectors and independent human review.
+
 ## Implementation ordering after approval
 
 1. Freeze V3-GD-01 through V3-GD-07 and approve independent integer-work/tie/anticone vectors. Do not implement an authoritative selector before this.

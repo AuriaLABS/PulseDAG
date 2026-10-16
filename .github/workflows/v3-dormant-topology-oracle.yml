@@ -1,0 +1,35 @@
+name: v3 dormant topology oracle (no consensus authority)
+
+on:
+  pull_request:
+    paths:
+      - "scripts/native_v3_topology_oracle.py"
+      - "docs/fixtures/native_v3_symbolic_topology.json"
+      - "docs/NATIVE_V3_GHOSTDAG_POLICY_FREEZE_RFC.md"
+      - ".github/workflows/v3-dormant-topology-oracle.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/native_v3_topology_oracle.py"
+      - "docs/fixtures/native_v3_symbolic_topology.json"
+      - "docs/NATIVE_V3_GHOSTDAG_POLICY_FREEZE_RFC.md"
+      - ".github/workflows/v3-dormant-topology-oracle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  topology-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify independent graph-theoretic oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_topology_oracle.py --self-test docs/fixtures/native_v3_symbolic_topology.json
