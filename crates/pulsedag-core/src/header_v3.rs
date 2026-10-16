@@ -378,7 +378,10 @@ mod tests {
             let preimage = canonical_mining_preimage_bytes_v3(header, chain).unwrap();
             assert_eq!(full.len(), expected_header_len);
             assert_eq!(preimage.len(), expected_preimage_len);
-            assert_eq!(compute_block_hash_v3(header, chain).unwrap(), expected_header_hash);
+            assert_eq!(
+                compute_block_hash_v3(header, chain).unwrap(),
+                expected_header_hash
+            );
             assert_eq!(
                 hex::encode(Sha256::digest(&preimage)),
                 expected_preimage_hash
@@ -454,5 +457,4 @@ mod tests {
             241,
         );
     }
-
 }
