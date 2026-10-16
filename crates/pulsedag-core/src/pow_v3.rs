@@ -245,5 +245,4 @@ mod tests {
             assert!(validate_v3_pow_target(bad).is_err(), "bits={bad:#010x}");
         }
     }
-
 }
