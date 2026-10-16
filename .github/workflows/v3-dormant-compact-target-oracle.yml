@@ -3,6 +3,7 @@ name: v3 dormant compact target 256-bit independent oracle
 on:
   pull_request:
     paths:
+      - "crates/pulsedag-core/src/pow.rs"
       - "crates/pulsedag-core/src/pow_v3.rs"
       - "scripts/native_v3_compact_target_oracle.py"
       - ".github/workflows/v3-dormant-compact-target-oracle.yml"
@@ -10,6 +11,7 @@ on:
     branches:
       - main
     paths:
+      - "crates/pulsedag-core/src/pow.rs"
       - "crates/pulsedag-core/src/pow_v3.rs"
       - "scripts/native_v3_compact_target_oracle.py"
       - ".github/workflows/v3-dormant-compact-target-oracle.yml"
