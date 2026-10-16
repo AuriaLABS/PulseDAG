@@ -361,4 +361,100 @@ mod tests {
             canonical_block_header_bytes_v3(&candidate, "pulsedag-test").unwrap()
         );
     }
+
+    /// Frozen SHA-256 bytes derived by the separate Python/stdlib reference
+    /// in scripts/native_v3_header_hash_oracle.py; NOT KHeavyHash PoW evidence.
+    #[test]
+    fn matches_independent_native_v3_sha256_header_and_preimage_vectors() {
+        fn check(
+            header: &BlockHeaderV3,
+            chain: &str,
+            expected_header_hash: &str,
+            expected_preimage_hash: &str,
+            expected_header_len: usize,
+            expected_preimage_len: usize,
+        ) {
+            let full = canonical_block_header_bytes_v3(header, chain).unwrap();
+            let preimage = canonical_mining_preimage_bytes_v3(header, chain).unwrap();
+            assert_eq!(full.len(), expected_header_len);
+            assert_eq!(preimage.len(), expected_preimage_len);
+            assert_eq!(
+                compute_block_hash_v3(header, chain).unwrap(),
+                expected_header_hash
+            );
+            assert_eq!(
+                hex::encode(Sha256::digest(&preimage)),
+                expected_preimage_hash
+            );
+        }
+
+        let chain = "pulsedag-v3-header-vector";
+        let mut h = header(1_800_000_000_000_000_123);
+        check(
+            &h,
+            chain,
+            "e800eab3989a069f0d07e97f1cf6c9a84fa3071242fb6ee764f1e283ec599782",
+            "23f1bed8f5668f8a264a629a80cd947c593573ed0050032b16961a2576312fe2",
+            317,
+            309,
+        );
+
+        h.nonce = 15;
+        check(
+            &h,
+            chain,
+            "9084663e4c0c5b31f62ffbca1254931be67295028c458c1b1e12e6d442e4b38d",
+            "23f1bed8f5668f8a264a629a80cd947c593573ed0050032b16961a2576312fe2",
+            317,
+            309,
+        );
+
+        h.nonce = 14;
+        h.timestamp_ns += 1;
+        check(
+            &h,
+            chain,
+            "ada5a8921dca740af01f35cac42401b6539219602ca81ffab26bc5918d17548a",
+            "8319e233cc32022e0f117caef441cea4db407a5c89ea6dfecc4a0d09b41960d5",
+            317,
+            309,
+        );
+
+        h.timestamp_ns -= 1;
+        check(
+            &h,
+            "pulsedag-v3-header-vector-other",
+            "8801fa9972f8ec85921e7eab42de8b737d7545f7f5eccdfdb9eb79bd0763e2fc",
+            "28b8760f19feddf435fc7ee18d28280daf9cb67bee5dc66938f694ce66a7b5f4",
+            323,
+            315,
+        );
+
+        h.parents.push("44".repeat(32));
+        h.nonce = 16;
+        h.height = 6;
+        h.blue_score = 13;
+        check(
+            &h,
+            chain,
+            "1555634b76a34e80c3d2b576ea76771d1d0ff581f6b59ac26759ecba2ed2d048",
+            "c0d66b8ac6b28086b9b3f649e6e955678e0ff1adec51f3d64a5d64f40ed8ec13",
+            385,
+            377,
+        );
+
+        // This tests only parentless header serialization, NOT a frozen genesis.
+        h.parents.clear();
+        h.nonce = 0;
+        h.height = 0;
+        h.blue_score = 0;
+        check(
+            &h,
+            chain,
+            "c2a3dde1d47824fe13bfa8e874898c870c434a10266c26203020a5c66fd8254d",
+            "d76cfacb68f148a6ea6d0c22ed91ceec94277bac6b71416ca10bf50d1d394c95",
+            249,
+            241,
+        );
+    }
 }

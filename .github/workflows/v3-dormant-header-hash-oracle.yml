@@ -1,0 +1,39 @@
+name: v3 dormant header SHA256 cross-language vectors
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "scripts/native_v3_header_hash_oracle.py"
+      - "docs/fixtures/native_v3_header_hash_vectors.json"
+      - ".github/workflows/v3-dormant-header-hash-oracle.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "scripts/native_v3_header_hash_oracle.py"
+      - "docs/fixtures/native_v3_header_hash_vectors.json"
+      - ".github/workflows/v3-dormant-header-hash-oracle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  independent-header-sha:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check Python-standard-library canonical byte reference
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_header_hash_oracle.py --self-test docs/fixtures/native_v3_header_hash_vectors.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compare native Rust SHA commitments against independent goldens
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-core matches_independent_native_v3_sha256_header_and_preimage_vectors --lib
