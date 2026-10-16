@@ -1,0 +1,33 @@
+name: v3 dormant compact target 256-bit independent oracle
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - "scripts/native_v3_compact_target_oracle.py"
+      - ".github/workflows/v3-dormant-compact-target-oracle.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - "scripts/native_v3_compact_target_oracle.py"
+      - ".github/workflows/v3-dormant-compact-target-oracle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  independent-compact-target-256:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run independent Python unsigned-256 reference
+        run: python3 scripts/native_v3_compact_target_oracle.py
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compare Rust native-v3 target decisions against independent goldens
+        run: cargo test -p pulsedag-core native_v3_compact_target_matches_independent_full_256_bit_vectors --lib
