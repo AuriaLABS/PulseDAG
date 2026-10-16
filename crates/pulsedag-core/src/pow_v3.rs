@@ -267,14 +267,11 @@ mod tests {
         for vector in vectors {
             let name = vector["name"].as_str().unwrap();
             let chain_id = vector["chain_id"].as_str().unwrap();
-            let header: BlockHeaderV3 =
-                serde_json::from_value(vector["header"].clone()).unwrap();
+            let header: BlockHeaderV3 = serde_json::from_value(vector["header"].clone()).unwrap();
             assert_ne!(header.height, 0, "{name}: no mined genesis vectors");
 
-            let full = crate::header_v3::canonical_block_header_bytes_v3(
-                &header, chain_id
-            )
-            .unwrap();
+            let full =
+                crate::header_v3::canonical_block_header_bytes_v3(&header, chain_id).unwrap();
             let seed = v3_pow_preimage_bytes(&header, chain_id).unwrap();
             assert_eq!(
                 full.len() as u64,
