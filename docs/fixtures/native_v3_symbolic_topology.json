@@ -1,0 +1,180 @@
+{
+  "schema": "pulsedag.dormant-v3-symbolic-topology.v1",
+  "purpose": "K-neutral symbolic DAG relation and merge-set reference; NO PoW/authenticated block hashes, no selected-parent/blue-work/blues/reds/network authority.",
+  "cases": [
+    {
+      "name": "fork_join_branch_merge",
+      "parents": {
+        "G": [],
+        "A": [
+          "G"
+        ],
+        "B": [
+          "G"
+        ],
+        "M": [
+          "A",
+          "B"
+        ],
+        "A2": [
+          "A"
+        ],
+        "B2": [
+          "B"
+        ],
+        "extra_unqueried": [
+          "G"
+        ]
+      },
+      "frontier": [
+        "M",
+        "A2",
+        "B2"
+      ],
+      "relations": [
+        {
+          "first": "A",
+          "second": "B",
+          "expected": "Anticone"
+        },
+        {
+          "first": "A",
+          "second": "M",
+          "expected": "FirstIsAncestor"
+        },
+        {
+          "first": "M",
+          "second": "B",
+          "expected": "SecondIsAncestor"
+        },
+        {
+          "first": "M",
+          "second": "A2",
+          "expected": "Anticone"
+        },
+        {
+          "first": "A2",
+          "second": "B2",
+          "expected": "Anticone"
+        },
+        {
+          "first": "A",
+          "second": "A",
+          "expected": "SameBlock"
+        },
+        {
+          "first": "G",
+          "second": "M",
+          "expected": "FirstIsAncestor"
+        }
+      ],
+      "merge_sets": [
+        {
+          "relative_to": "M",
+          "expected_sorted_set": [
+            "A2",
+            "B2"
+          ]
+        },
+        {
+          "relative_to": "A2",
+          "expected_sorted_set": [
+            "B",
+            "B2",
+            "M"
+          ]
+        },
+        {
+          "relative_to": "B2",
+          "expected_sorted_set": [
+            "A",
+            "A2",
+            "M"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "redundant_parent",
+      "parents": {
+        "G": [],
+        "A": [
+          "G"
+        ],
+        "D": [
+          "A"
+        ]
+      },
+      "frontier": [
+        "A",
+        "D"
+      ],
+      "relations": [
+        {
+          "first": "A",
+          "second": "D",
+          "expected": "FirstIsAncestor"
+        },
+        {
+          "first": "D",
+          "second": "A",
+          "expected": "SecondIsAncestor"
+        },
+        {
+          "first": "A",
+          "second": "G",
+          "expected": "SecondIsAncestor"
+        }
+      ],
+      "merge_sets": [
+        {
+          "relative_to": "D",
+          "expected_sorted_set": []
+        },
+        {
+          "relative_to": "A",
+          "expected_sorted_set": [
+            "D"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "single_parent",
+      "parents": {
+        "G": [],
+        "A": [
+          "G"
+        ],
+        "B": [
+          "G"
+        ],
+        "M": [
+          "A",
+          "B"
+        ]
+      },
+      "frontier": [
+        "M"
+      ],
+      "relations": [
+        {
+          "first": "A",
+          "second": "B",
+          "expected": "Anticone"
+        },
+        {
+          "first": "G",
+          "second": "M",
+          "expected": "FirstIsAncestor"
+        }
+      ],
+      "merge_sets": [
+        {
+          "relative_to": "M",
+          "expected_sorted_set": []
+        }
+      ]
+    }
+  ]
+}
