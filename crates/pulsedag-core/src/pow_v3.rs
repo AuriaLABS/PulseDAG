@@ -205,4 +205,44 @@ mod tests {
             assert!(verify_v3_header_pow(&candidate, CHAIN).is_err());
         }
     }
+
+    // Golden targets are computed with an independent Python integer
+    // reference, scripts/native_v3_compact_target_oracle.py. These validate
+    // compact PoW *comparison*, not KHeavyHash or GHOSTDAG blue work.
+    #[test]
+    fn native_v3_compact_target_matches_independent_full_256_bit_vectors() {
+        use crate::pow::{bits_from_target, compare_pow_hash_to_target, target_from_bits};
+
+        let vectors = [
+            (0x207f_ffff, format!("7fffff{}", "00".repeat(29))),
+            (0x1f7f_ffff, format!("007fffff{}", "00".repeat(28))),
+            (0x1e7f_ffff, format!("00007fffff{}", "00".repeat(27))),
+            (0x1d00_ffff, format!("00000000ffff{}", "00".repeat(26))),
+            (0x0101_0000, format!("{}01", "00".repeat(31))),
+        ];
+        for (bits, expected) in vectors {
+            let target = target_from_bits(bits);
+            assert_eq!(hex::encode(target), expected, "bits={bits:#010x}");
+            assert_eq!(bits_from_target(&target), bits);
+            validate_v3_pow_target(bits).unwrap();
+            assert!(compare_pow_hash_to_target(&target, &target));
+        }
+
+        // The low byte alone flips acceptance although the leading u64 is
+        // unchanged. No miner or validator may rely on score_u64 instead of
+        // the full 256-bit target.
+        let target = target_from_bits(0x1f7f_ffff);
+        let mut above = target;
+        above[31] = 1;
+        assert_eq!(&target[..8], &above[..8]);
+        assert!(!compare_pow_hash_to_target(&above, &target));
+        let mut below = target;
+        below[3] -= 1;
+        below[31] = 255;
+        assert!(compare_pow_hash_to_target(&below, &target));
+
+        for bad in [0, 0x0300_0001, 0x2000_7fff, 0x2100_ffff, 0x2201_0101] {
+            assert!(validate_v3_pow_target(bad).is_err(), "bits={bad:#010x}");
+        }
+    }
 }
