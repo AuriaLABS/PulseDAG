@@ -1,0 +1,51 @@
+name: v3 dormant independent KHeavyHash full digest oracle
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/pow.rs"
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "crates/pulsedag-core/src/retarget.rs"
+      - "crates/pulsedag-core/Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "docs/fixtures/native_v3_kheavyhash_vectors.json"
+      - ".github/workflows/v3-dormant-kheavyhash-oracle.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/pow.rs"
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "crates/pulsedag-core/src/retarget.rs"
+      - "crates/pulsedag-core/Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "docs/fixtures/native_v3_kheavyhash_vectors.json"
+      - ".github/workflows/v3-dormant-kheavyhash-oracle.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  independent-full-kheavyhash:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check independent Keccak/SHA3/Kaspa stage reference and 7 goldens
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_kheavyhash_oracle.py --self-test docs/fixtures/native_v3_kheavyhash_vectors.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check dormant native Rust output against independently derived digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-core native_v3_matches_independent_kheavyhash_goldens --lib

@@ -245,4 +245,91 @@ mod tests {
             assert!(validate_v3_pow_target(bad).is_err(), "bits={bad:#010x}");
         }
     }
+
+    /// Independently derived full KHeavyHash round outputs from Python/stdlib
+    /// Keccak-f1600, SP800-185 cSHAKE256 and xoshiro matrix arithmetic.
+    /// This is DORMANT diagnostic evidence, not GHOSTDAG/monetary authorization.
+    #[test]
+    fn native_v3_matches_independent_kheavyhash_goldens() {
+        use sha2::{Digest, Sha256};
+
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/native_v3_kheavyhash_vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            cases["schema"].as_str().unwrap(),
+            "pulsedag.dormant-v3-independent-kheavyhash-v1"
+        );
+        let vectors = cases["vectors"].as_array().unwrap();
+        assert_eq!(vectors.len(), 7);
+        let mut invalid_pow_cases = 0;
+        for vector in vectors {
+            let name = vector["name"].as_str().unwrap();
+            let chain_id = vector["chain_id"].as_str().unwrap();
+            let header: BlockHeaderV3 =
+                serde_json::from_value(vector["header"].clone()).unwrap();
+            assert_ne!(header.height, 0, "{name}: no mined genesis vectors");
+
+            let full = crate::header_v3::canonical_block_header_bytes_v3(
+                &header, chain_id
+            )
+            .unwrap();
+            let seed = v3_pow_preimage_bytes(&header, chain_id).unwrap();
+            assert_eq!(
+                full.len() as u64,
+                vector["header_bytes"].as_u64().unwrap(),
+                "{name}: canonical header length"
+            );
+            assert_eq!(
+                seed.len() as u64,
+                vector["seed_bytes"].as_u64().unwrap(),
+                "{name}: nonce-free preimage length"
+            );
+            assert_eq!(
+                compute_block_hash_v3(&header, chain_id).unwrap(),
+                vector["expected_header_sha256"].as_str().unwrap(),
+                "{name}: canonical SHA-256 block ID"
+            );
+            assert_eq!(
+                hex::encode(Sha256::digest(&seed)),
+                vector["expected_seed_sha256"].as_str().unwrap(),
+                "{name}: nonce-free seed SHA-256, not PoW"
+            );
+            assert_eq!(
+                hex::encode(target_from_bits(header.difficulty)),
+                vector["expected_target_256_hex"].as_str().unwrap(),
+                "{name}: full 256-bit compact target"
+            );
+
+            let evaluated = evaluate_v3_header_pow(&header, chain_id).unwrap();
+            assert_eq!(
+                evaluated.block_hash,
+                vector["expected_header_sha256"].as_str().unwrap(),
+                "{name}: header hash / work digest must differ"
+            );
+            assert_eq!(
+                evaluated.pow.hash_hex,
+                vector["stages"]["kheavyhash"].as_str().unwrap(),
+                "{name}: independent KHeavyHash final digest"
+            );
+            assert_eq!(
+                hex::encode(evaluated.pow.hash),
+                vector["stages"]["kheavyhash"].as_str().unwrap(),
+                "{name}: exact 32-byte PoW digest order"
+            );
+            let accepted = vector["expected_meets_target"].as_bool().unwrap();
+            assert_eq!(evaluated.pow.accepted, accepted, "{name}: PoW outcome");
+            if accepted {
+                assert!(verify_v3_header_pow(&header, chain_id).is_ok(), "{name}");
+            } else {
+                invalid_pow_cases += 1;
+                assert!(
+                    verify_v3_header_pow(&header, chain_id).is_err(),
+                    "{name}: header SHA identity cannot excuse bad PoW"
+                );
+            }
+        }
+        assert!(invalid_pow_cases >= 2);
+    }
 }
