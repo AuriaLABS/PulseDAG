@@ -1,0 +1,218 @@
+{
+  "schema": "pulsedag.dormant-v3-independent-kheavyhash-v1",
+  "status": "DORMANT independent Python Keccak/cSHAKE256/xoshiro/matrix goldens, not approved genesis, GHOSTDAG K/blue-work, monetary v3 or mainnet authorization.",
+  "upstream_reference": "kaspanet/rusty-kaspa cfafeb4c093fa37a303f1b9f19c58f986b870ce3 and public independent C kHeavyHash vector with pre-pow hash 0x2a*32",
+  "vectors": [
+    {
+      "name": "base-nonce14",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 545259519,
+        "nonce": 14,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "e800eab3989a069f0d07e97f1cf6c9a84fa3071242fb6ee764f1e283ec599782",
+      "expected_seed_sha256": "23f1bed8f5668f8a264a629a80cd947c593573ed0050032b16961a2576312fe2",
+      "header_bytes": 317,
+      "seed_bytes": 309,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "414e4f80e7c2ca4edafb1df08dabad7f9cc2fa2ef8b68c23a296ca9acaaa6aa4",
+        "nonce_pow_hash": "955b26aa5485b8dee3ff33c1e382271c5a0fff37a7b594f8da8ca24d44c45044",
+        "matrix_retries": 0,
+        "matrix_xor": "a668158967a68bedd0cc07f2d0b1132f693dbc049486a7bbe9bf916e77f76477",
+        "kheavyhash": "5af0387f5c25d487d435b55383620ad629139f753cc5d43c2c306643079249de"
+      },
+      "expected_meets_target": true
+    },
+    {
+      "name": "same-header-nonce15",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 545259519,
+        "nonce": 15,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "9084663e4c0c5b31f62ffbca1254931be67295028c458c1b1e12e6d442e4b38d",
+      "expected_seed_sha256": "23f1bed8f5668f8a264a629a80cd947c593573ed0050032b16961a2576312fe2",
+      "header_bytes": 317,
+      "seed_bytes": 309,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "414e4f80e7c2ca4edafb1df08dabad7f9cc2fa2ef8b68c23a296ca9acaaa6aa4",
+        "nonce_pow_hash": "3306d85bc92ae52d9e7dbf5086cc769545e6be9aed9895818bb2fcfa4ee7bf76",
+        "matrix_retries": 0,
+        "matrix_xor": "7742eb68fd1ea169ad39fb63c28842d106a5fdd9d9aca6c5bff6b8c90aa38b45",
+        "kheavyhash": "79442a2657396ffab4711de78d6b6f99c0f146b334675a5d9a9abcfa63f02790"
+      },
+      "expected_meets_target": true
+    },
+    {
+      "name": "same-header-invalid-pow-nonce16",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 545259519,
+        "nonce": 16,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "35d1608764e22e3425e0a62a90032e85ae2dd8f553f362a75a6c9ed06783010c",
+      "expected_seed_sha256": "23f1bed8f5668f8a264a629a80cd947c593573ed0050032b16961a2576312fe2",
+      "header_bytes": 317,
+      "seed_bytes": 309,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "414e4f80e7c2ca4edafb1df08dabad7f9cc2fa2ef8b68c23a296ca9acaaa6aa4",
+        "nonce_pow_hash": "f55265e5c350042140a6e27eae66b2ab31401ae41d708d92fbf8c8e78eebb4fb",
+        "matrix_retries": 0,
+        "matrix_xor": "c66156c6f07337126395d64d9d558699027229d72e43bed1c8cbfbd4bdd887c8",
+        "kheavyhash": "d5fd73faf15ed718288b88c07eb2ed54458af6b2202fa867891183d2bdc9db9b"
+      },
+      "expected_meets_target": false
+    },
+    {
+      "name": "one-nanosecond-later",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000124,
+        "difficulty": 545259519,
+        "nonce": 14,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "ada5a8921dca740af01f35cac42401b6539219602ca81ffab26bc5918d17548a",
+      "expected_seed_sha256": "8319e233cc32022e0f117caef441cea4db407a5c89ea6dfecc4a0d09b41960d5",
+      "header_bytes": 317,
+      "seed_bytes": 309,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "0d06888562e8b398c85c54295006a3ab0ec95f674657aab53f02f1ff511de39c",
+        "nonce_pow_hash": "5c28483e1113402221be09672d2c68569c278b7bf44921fbbae14967bfab1b51",
+        "matrix_retries": 0,
+        "matrix_xor": "6f1b7a0d22307311038d3a541e1e5a74ae15b848d76b13d889d27a548c982973",
+        "kheavyhash": "74d3f5777a38d430a991245892def68f6305151ae2f971f27858ad90bc24a0cd"
+      },
+      "expected_meets_target": true
+    },
+    {
+      "name": "different-chain",
+      "chain_id": "pulsedag-v3-header-vector-other",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 545259519,
+        "nonce": 14,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "8801fa9972f8ec85921e7eab42de8b737d7545f7f5eccdfdb9eb79bd0763e2fc",
+      "expected_seed_sha256": "28b8760f19feddf435fc7ee18d28280daf9cb67bee5dc66938f694ce66a7b5f4",
+      "header_bytes": 323,
+      "seed_bytes": 315,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "879fa644e526d79e0dd0cb42f4f37b1963f7a4bf84a9ced6b1ba43677153b433",
+        "nonce_pow_hash": "036a0afc0d549b093c2746036fcf28cdb342860ef35b27615c6f69abe3e1c79f",
+        "matrix_retries": 0,
+        "matrix_xor": "305938cf3e67a83a0f0375305cfc1afe8071b53cc06814527f5c5b98d0c284ac",
+        "kheavyhash": "0c0f622f592bc30e7ab67c21d8ffbfe1da9075149eb297eb6f18f29fee8ae8a1"
+      },
+      "expected_meets_target": true
+    },
+    {
+      "name": "two-parent-join",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "4444444444444444444444444444444444444444444444444444444444444444"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 545259519,
+        "nonce": 16,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 13,
+        "height": 6
+      },
+      "expected_header_sha256": "1555634b76a34e80c3d2b576ea76771d1d0ff581f6b59ac26759ecba2ed2d048",
+      "expected_seed_sha256": "c0d66b8ac6b28086b9b3f649e6e955678e0ff1adec51f3d64a5d64f40ed8ec13",
+      "header_bytes": 385,
+      "seed_bytes": 377,
+      "expected_target_256_hex": "7fffff0000000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "abcbef1ec2c8bbaae40af85a80bb5dea9ea5fbc36e01888749a35a04796aa9b4",
+        "nonce_pow_hash": "a3b6300ca51f073d9e0e6881e2916bc88e758ca66c8d099323f263aeaa9af419",
+        "matrix_retries": 0,
+        "matrix_xor": "90850238962c330ead3d5bb2d1a25ffbbd46bf955fbe2aa010c1509d99b9c72a",
+        "kheavyhash": "5bfc1b945b243951b8a3928e9715ec058075df0a16eb49db8570bdf571fa8c5e"
+      },
+      "expected_meets_target": true
+    },
+    {
+      "name": "harder-target-invalid-pow",
+      "chain_id": "pulsedag-v3-header-vector",
+      "header": {
+        "version": 3,
+        "parents": [
+          "1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "timestamp_ns": 1800000000000000123,
+        "difficulty": 528482303,
+        "nonce": 14,
+        "merkle_root": "2222222222222222222222222222222222222222222222222222222222222222",
+        "state_root": "3333333333333333333333333333333333333333333333333333333333333333",
+        "blue_score": 12,
+        "height": 5
+      },
+      "expected_header_sha256": "9f6088f6c5442d82ecfedefca67ae57cfa6e6822b49f53b2c1f2b39f16526024",
+      "expected_seed_sha256": "e9619e2e7fcd30e2ea045744cd7fdaafd216abcdaebd5f331791f474e904d5eb",
+      "header_bytes": 317,
+      "seed_bytes": 309,
+      "expected_target_256_hex": "007fffff00000000000000000000000000000000000000000000000000000000",
+      "stages": {
+        "pre_pow_keccak256": "a1e9fa285ab28c0483e9118aaf1dbf7c190abfedbd2ddf07af7f37eb22be9ef5",
+        "nonce_pow_hash": "6db70d6fe57705af958525bda27f8270e1cbaa6c9f16292c9406197e6145a837",
+        "matrix_retries": 0,
+        "matrix_xor": "5e843e4cc744379ca6b6168e914cb143d3f8995eac251a1fa7322a4d52769b04",
+        "kheavyhash": "1b0f068e2a63109a3a497ecb886ba89f973ffbeea923f8182a019cebc55c4da0"
+      },
+      "expected_meets_target": false
+    }
+  ]
+}
