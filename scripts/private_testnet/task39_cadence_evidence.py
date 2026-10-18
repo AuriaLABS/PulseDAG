@@ -735,6 +735,22 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 "accepted_total_from_terminal_miner_results": accepted_total,
                 "selected_height_advance": blocks,
                 "per_miner_accepted_total": accepted,
+                "per_node_start_height": start_heights,
+                "per_node_end_height": end_heights,
+                "per_node_final_selected_tip": {
+                    name: data.get("selected_tip") for name, data in final.items()
+                },
+                "per_node_final_ordered_dag_tip": {
+                    name: data.get("ordered_dag_tip") for name, data in final.items()
+                },
+                "per_node_final_state_root": {
+                    name: data.get("ordered_dag_state_root")
+                    for name, data in final.items()
+                },
+                "per_node_final_persisted_block_count": {
+                    name: int(data.get("persisted_block_count") or 0)
+                    for name, data in final.items()
+                },
                 "unresolved_mined_pow_results_by_miner": {
                     name: data["unresolved_mined_pow_results"]
                     for name, data in miner_data.items()
