@@ -399,9 +399,7 @@ mod tests {
     fn diagnostic_parent_count_does_not_inherit_v1_consensus_policy() {
         let (genesis, headers) = fixture();
         assert_eq!(MAX_DORMANT_V3_DAG_DIRECT_PARENTS, 64);
-        let mut parents: Vec<_> = (0..64_u64)
-            .map(|index| format!("{index:064x}"))
-            .collect();
+        let mut parents: Vec<_> = (0..64_u64).map(|index| format!("{index:064x}")).collect();
         // The local count check allows 64 candidate roots, but the complete
         // authenticated-ancestry verifier must still reject absent headers.
         let missing = verify_dormant_native_v3_parent_dag(
@@ -422,7 +420,9 @@ mod tests {
             &headers,
         )
         .unwrap_err();
-        assert!(over_limit.to_string().contains("direct-parent count outside 1..=64"));
+        assert!(over_limit
+            .to_string()
+            .contains("direct-parent count outside 1..=64"));
     }
 
     #[test]
