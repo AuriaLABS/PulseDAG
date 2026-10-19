@@ -42,6 +42,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/native_v3_kheavyhash_oracle.py --self-test docs/fixtures/native_v3_kheavyhash_vectors.json
+          # Fail closed under PYTHONOPTIMIZE too: no dropped cryptographic
+          # stage-vector checks or missing-adversarial-fixture assertions.
+          python3 -O scripts/native_v3_kheavyhash_oracle.py --self-test docs/fixtures/native_v3_kheavyhash_vectors.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check dormant native Rust output against independently derived digests

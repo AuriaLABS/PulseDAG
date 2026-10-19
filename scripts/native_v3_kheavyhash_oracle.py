@@ -213,20 +213,26 @@ def canonical_header(header: dict, chain_id: str, include_nonce: bool) -> bytes:
 
 
 def self_test() -> None:
-    assert sponge(b"",0x01).hex() == (
-        "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+    if sponge(b"",0x01).hex() != (
+        "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    ):
+        raise AssertionError("independent empty Keccak-256 vector mismatch")
     for n in (0,2,135,136,137,272):
-        assert sponge(bytes(n),0x06)==hashlib.sha3_256(bytes(n)).digest()
+        if sponge(bytes(n),0x06) != hashlib.sha3_256(bytes(n)).digest():
+            raise AssertionError(f"SHA3-256 boundary reference differs at n={n}")
     prehash = bytes([42])*32
     pow_input = prehash + struct.pack("<Q",5435345234) + bytes(32) + struct.pack("<Q",432432432)
     first = cshake256(pow_input,b"ProofOfWorkHash")
-    assert first.hex().startswith("2fb72b63dd0dd0d82b00cd9f83d4eca0")
+    if not first.hex().startswith("2fb72b63dd0dd0d82b00cd9f83d4eca0"):
+        raise AssertionError("published Kaspa initial PowHash stage mismatch")
     matrix,_ = generate_matrix(prehash)
     nibs = [v for b in first for v in (b>>4,b&15)]
     mixed = [(sum(a*b for a,b in zip(row,nibs))>>10)&15 for row in matrix]
     xor = bytes(first[i]^((mixed[2*i]<<4)|mixed[2*i+1]) for i in range(32))
-    assert cshake256(xor,b"HeavyHash").hex() == (
-        "5a5bcd6e352eb8c87c80d0f0574a45a5fcc3d5755660ac120dc9893684c19be6")
+    if cshake256(xor,b"HeavyHash").hex() != (
+        "5a5bcd6e352eb8c87c80d0f0574a45a5fcc3d5755660ac120dc9893684c19be6"
+    ):
+        raise AssertionError("published Kaspa final HeavyHash stage mismatch")
 
 
 def verify_fixture(doc: dict) -> int:
@@ -270,9 +276,36 @@ def verify_fixture(doc: dict) -> int:
         accepted=int(result["kheavyhash"],16)<=target
         if accepted is not v["expected_meets_target"]:
             raise AssertionError("full-256-bit PoW verdict mismatch: "+v["name"])
-    assert "same-header-invalid-pow-nonce16" in seen
-    assert "harder-target-invalid-pow" in seen
+    required_invalid = {"same-header-invalid-pow-nonce16", "harder-target-invalid-pow"}
+    if not required_invalid.issubset(seen):
+        raise AssertionError("mandatory invalid-PoW adversarial fixtures are missing")
     return len(vectors)
+
+
+def fixture_byte_tamper_self_test(document: dict) -> None:
+    """Reject mutated frozen raw inputs even when Python assertions are disabled.
+
+    These cases fail at the first vector BEFORE expensive PoW evaluation; the
+    untouched independent digest and full-target vectors still run separately.
+    """
+    for key, error_text in (
+        ("canonical_header_hex", "canonical header bytes disagreement"),
+        ("canonical_seed_hex", "canonical nonce-free preimage bytes disagreement"),
+    ):
+        malformed = {**document}
+        vectors = [*document["vectors"]]
+        corrupted = {**vectors[0]}
+        original = corrupted[key]
+        corrupted[key] = ("00" if original[:2] != "00" else "ff") + original[2:]
+        vectors[0] = corrupted
+        malformed["vectors"] = vectors
+        try:
+            verify_fixture(malformed)
+        except AssertionError as error:
+            if error_text not in str(error):
+                raise
+        else:
+            raise AssertionError(f"mutated frozen fixture {key} was accepted")
 
 
 def main() -> None:
@@ -284,8 +317,10 @@ def main() -> None:
         self_test()
         print("PASS: Keccak/SHA3 boundary and published independent Kaspa stages")
     if args.fixture:
-        count=verify_fixture(json.loads(args.fixture.read_text(encoding="utf-8")))
-        print(f"PASS: {count} independent full KHeavyHash SHA/preimage/nonce/target vectors")
+        document=json.loads(args.fixture.read_text(encoding="utf-8"))
+        count=verify_fixture(document)
+        fixture_byte_tamper_self_test(document)
+        print(f"PASS: {count} independent full KHeavyHash SHA/preimage/nonce/target vectors plus raw-byte tamper rejections")
     if not args.self_test and not args.fixture:
         parser.error("supply --self-test and/or fixture")
 
