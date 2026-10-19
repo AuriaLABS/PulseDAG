@@ -249,6 +249,41 @@ def in_measurement_window(mono_ns, start_ns, end_ns):
     return True
 
 
+def unresolved_mined_pow_results(records, start_ns=None, end_ns=None):
+    """Local PoW solutions with no observed terminal submit outcome in miner logs.
+
+    These are NOT accepted blocks. A miner killed during an in-flight RPC may
+    have no terminal response, so a chain-height/acceptance mismatch must keep
+    failing; this read-only diagnostic preserves the candidate for forensics.
+    """
+    pending = None
+    unmatched = []
+    for mono_ns, line in records:
+        if not in_measurement_window(mono_ns, start_ns, end_ns):
+            continue
+        lower = line.lower()
+        if "mining: algorithm=" in lower:
+            fields = dict(FIELD_RE.findall(line))
+            if fields.get("accepted", "false").lower() != "true":
+                continue
+            if pending is not None:
+                unmatched.append(pending)
+            pending = {
+                "observed_mono_ns": int(mono_ns),
+                "height": fields.get("height"),
+                "nonce": fields.get("nonce"),
+                "template_id": fields.get("template_id"),
+            }
+        elif (
+            "submit_result:" in lower
+            or "stale-template safety: skip submit:" in lower
+        ):
+            pending = None
+    if pending is not None:
+        unmatched.append(pending)
+    return unmatched
+
+
 def miner_metrics(records, start_ns=None, end_ns=None):
     last_template_ns = None
     template_to_submit_ms = []
@@ -341,6 +376,9 @@ def miner_metrics(records, start_ns=None, end_ns=None):
     metrics["reasons"] = dict(sorted(metrics["reasons"].items()))
     metrics["reconciliation_reasons"] = dict(sorted(reconciliation_reasons.items()))
     metrics["template_to_submit_ms"] = dist(template_to_submit_ms)
+    metrics["unresolved_mined_pow_results"] = unresolved_mined_pow_results(
+        records, start_ns, end_ns
+    )
     return metrics
 
 
@@ -690,9 +728,47 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
         accepted = {name: int(data["accepted"]) for name, data in miner_data.items()}
         accepted_total = sum(accepted.values())
         if accepted_total < blocks:
+            diagnostic = {
+                "schema": "task39-acceptance-gap-diagnostics-v1",
+                "candidate_sha": sha,
+                "configured_cadence_ms": cadence,
+                "accepted_total_from_terminal_miner_results": accepted_total,
+                "selected_height_advance": blocks,
+                "per_miner_accepted_total": accepted,
+                "per_node_start_height": start_heights,
+                "per_node_end_height": end_heights,
+                "per_node_final_selected_tip": {
+                    name: data.get("selected_tip") for name, data in final.items()
+                },
+                "per_node_final_ordered_dag_tip": {
+                    name: data.get("ordered_dag_tip") for name, data in final.items()
+                },
+                "per_node_final_state_root": {
+                    name: data.get("ordered_dag_state_root")
+                    for name, data in final.items()
+                },
+                "per_node_final_persisted_block_count": {
+                    name: int(data.get("persisted_block_count") or 0)
+                    for name, data in final.items()
+                },
+                "unresolved_mined_pow_results_by_miner": {
+                    name: data["unresolved_mined_pow_results"]
+                    for name, data in miner_data.items()
+                },
+                "interpretation": (
+                    "PoW solution without terminal submit_result is NOT proof "
+                    "of node acceptance; investigate node state and miner RPC "
+                    "shutdown race. Strict runtime gate remains FAIL."
+                ),
+            }
+            (run_dir / "acceptance_gap_diagnostics.json").write_text(
+                json.dumps(diagnostic, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             raise RuntimeError(
                 "miner acceptance telemetry is smaller than selected-height advance "
-                f"accepted_total={accepted_total} selected_height_advance={blocks}"
+                f"accepted_total={accepted_total} selected_height_advance={blocks}; "
+                "see acceptance_gap_diagnostics.json (no acceptance inferred)"
             )
 
         storage = {}
@@ -993,6 +1069,40 @@ def selftest():
     assert accepted["rejected"] == 0
     assert accepted["template_to_submit_ms"]["count"] == 1
     assert accepted["template_to_submit_ms"]["p50"] == 1.0
+    assert accepted["unresolved_mined_pow_results"] == []
+
+    # A solved PoW at the shutdown boundary is not a confirmed block.
+    solved = (
+        "mining: algorithm=kHeavyHash height=36 nonce=3216 "
+        "template_id=v3:forensic accepted=true"
+    )
+    gap = unresolved_mined_pow_results([(base, solved)], base, base + 1)
+    assert len(gap) == 1
+    assert gap[0]["height"] == "36" and gap[0]["nonce"] == "3216"
+    assert gap[0]["template_id"] == "v3:forensic"
+    assert unresolved_mined_pow_results(
+        [
+            (base, solved),
+            (base + 1, "submit_result: accepted=true rejected=false block_hash=hash36"),
+        ]
+    ) == []
+    assert unresolved_mined_pow_results(
+        [
+            (base, solved),
+            (base + 1, "submit_result: accepted=false rejected=true reason_code=stale_template"),
+        ]
+    ) == []
+    assert unresolved_mined_pow_results(
+        [
+            (base, solved),
+            (base + 1, "stale-template safety: skip submit: height=36"),
+        ]
+    ) == []
+    assert unresolved_mined_pow_results(
+        [(base, solved)], start_ns=base + 1, end_ns=base + 2
+    ) == []
+    assert miner_metrics([(base, solved)])["accepted"] == 0
+    assert len(miner_metrics([(base, solved)])["unresolved_mined_pow_results"]) == 1
 
     reconciled_accept = miner_metrics(
         [
