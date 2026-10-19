@@ -245,6 +245,12 @@ def verify_fixture(doc: dict) -> int:
             raise ValueError("genesis must remain unmined and externally frozen")
         full=canonical_header(h,chain,True)
         pre=canonical_header(h,chain,False)
+        # Raw canonical inputs are frozen, not just their SHA digests/lengths.
+        # This comparison is explicit and cannot be skipped with python -O.
+        if full.hex() != v["canonical_header_hex"]:
+            raise AssertionError("canonical header bytes disagreement: "+v["name"])
+        if pre.hex() != v["canonical_seed_hex"]:
+            raise AssertionError("canonical nonce-free preimage bytes disagreement: "+v["name"])
         if (len(full),len(pre)) != (v["header_bytes"],v["seed_bytes"]):
             raise AssertionError("canonical header length disagreement: "+v["name"])
         if hashlib.sha256(full).hexdigest()!=v["expected_header_sha256"]:
