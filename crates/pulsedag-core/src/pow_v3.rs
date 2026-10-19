@@ -274,6 +274,16 @@ mod tests {
                 crate::header_v3::canonical_block_header_bytes_v3(&header, chain_id).unwrap();
             let seed = v3_pow_preimage_bytes(&header, chain_id).unwrap();
             assert_eq!(
+                hex::encode(&full),
+                vector["canonical_header_hex"].as_str().unwrap(),
+                "{name}: exact independently frozen canonical header bytes"
+            );
+            assert_eq!(
+                hex::encode(&seed),
+                vector["canonical_seed_hex"].as_str().unwrap(),
+                "{name}: exact independently frozen nonce-free PoW preimage bytes"
+            );
+            assert_eq!(
                 full.len() as u64,
                 vector["header_bytes"].as_u64().unwrap(),
                 "{name}: canonical header length"
