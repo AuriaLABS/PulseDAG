@@ -14,11 +14,12 @@ use crate::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
     pow_v3::verify_v3_header_pow,
-    selection_v2::GHOSTDAG_V1_MAX_PARENTS,
     types::BlockId,
 };
 
-/// Local diagnostic CPU/space caps, not network consensus limits.
+/// Local diagnostic CPU/space caps, NOT network consensus limits.
+/// These MUST NOT borrow GHOSTDAG v1 constants or silently track v1 changes.
+pub const MAX_DORMANT_V3_DAG_DIRECT_PARENTS: usize = 64;
 pub const MAX_DORMANT_V3_DAG_HEADERS: usize = 128;
 pub const MAX_DORMANT_V3_DAG_EDGES: usize = 2_048;
 
@@ -51,7 +52,7 @@ pub fn verify_dormant_native_v3_parent_dag(
     direct_parents: &[BlockId],
     headers: &BTreeMap<BlockId, BlockHeaderV3>,
 ) -> Result<DormantV3ParentDagCheck, PulseError> {
-    if direct_parents.is_empty() || direct_parents.len() > GHOSTDAG_V1_MAX_PARENTS {
+    if direct_parents.is_empty() || direct_parents.len() > MAX_DORMANT_V3_DAG_DIRECT_PARENTS {
         return Err(invalid("direct-parent count outside 1..=64"));
     }
     if direct_parents.windows(2).any(|pair| pair[0] >= pair[1]) {
@@ -392,6 +393,36 @@ mod tests {
             &headers,
         )
         .is_err());
+    }
+
+    #[test]
+    fn diagnostic_parent_count_does_not_inherit_v1_consensus_policy() {
+        let (genesis, headers) = fixture();
+        assert_eq!(MAX_DORMANT_V3_DAG_DIRECT_PARENTS, 64);
+        let mut parents: Vec<_> = (0..64_u64)
+            .map(|index| format!("{index:064x}"))
+            .collect();
+        // The local count check allows 64 candidate roots, but the complete
+        // authenticated-ancestry verifier must still reject absent headers.
+        let missing = verify_dormant_native_v3_parent_dag(
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &parents,
+            &headers,
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("missing ancestor header"));
+        parents.push(format!("{:064x}", 64));
+        let over_limit = verify_dormant_native_v3_parent_dag(
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            &parents,
+            &headers,
+        )
+        .unwrap_err();
+        assert!(over_limit.to_string().contains("direct-parent count outside 1..=64"));
     }
 
     #[test]
