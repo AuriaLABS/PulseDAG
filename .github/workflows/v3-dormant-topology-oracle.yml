@@ -33,3 +33,5 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/native_v3_topology_oracle.py --self-test docs/fixtures/native_v3_symbolic_topology.json
+          # The exhaustive differential must run even if Python assert statements are disabled.
+          python3 -O scripts/native_v3_topology_oracle.py --self-test docs/fixtures/native_v3_symbolic_topology.json

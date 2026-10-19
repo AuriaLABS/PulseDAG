@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from itertools import product
 from pathlib import Path
 
 MAX_HEADERS = 128
@@ -149,6 +150,86 @@ def check_fixture(document: dict) -> int:
     return len(cases)
 
 
+def exhaustive_small_dag_properties() -> tuple[int, int, int, int]:
+    """Compare every five-vertex DAG and frontier with an independent bitset DP.
+
+    The expected ancestor bitsets do NOT call our DFS or inclusive-past code.
+    This is K-neutral graph algebra, not authenticated consensus selection.
+    """
+    names = ("G", "A", "B", "C", "D")
+    graphs = frontiers = merges = relations = 0
+    # Each vertex selects a nonempty subset of previous vertices:
+    # 1 * 3 * 7 * 15 = 315 complete labeled DAG constructions.
+    for choices in product(*(range(1, 1 << i) for i in range(1, 5))):
+        graph = {"G": []}
+        reference = {"G": 1}
+        for i, choice in enumerate(choices, start=1):
+            parents = [names[j] for j in range(i) if choice & (1 << j)]
+            graph[names[i]] = parents
+            ancestors = 1 << i
+            for parent in parents:
+                ancestors |= reference[parent]
+            reference[names[i]] = ancestors
+        graphs += 1
+        reordered = dict(reversed(list(graph.items())))
+
+        # Exhaust all 15 nonempty frontiers, including redundant parent-child
+        # roots and extra valid map entries outside the verified closure.
+        for roots_bits in range(1, 1 << 4):
+            roots = [names[i + 1] for i in range(4) if roots_bits & (1 << i)]
+            closure_bits = 0
+            for root in roots:
+                closure_bits |= reference[root]
+            expected_closure = {
+                name for i, name in enumerate(names) if closure_bits & (1 << i)
+            }
+            closure = verified_closure(graph, roots)
+            if closure != expected_closure:
+                raise AssertionError(f"bitset closure mismatch {choices} {roots}")
+            if verified_closure(reordered, list(reversed(roots))) != expected_closure:
+                raise AssertionError(f"permutation closure mismatch {choices} {roots}")
+            frontiers += 1
+
+            for first in sorted(expected_closure):
+                for second in sorted(expected_closure):
+                    if first == second:
+                        expected_relation = "SameBlock"
+                    elif reference[second] & (1 << names.index(first)):
+                        expected_relation = "FirstIsAncestor"
+                    elif reference[first] & (1 << names.index(second)):
+                        expected_relation = "SecondIsAncestor"
+                    else:
+                        expected_relation = "Anticone"
+                    actual = pair_relation(graph, closure, first, second)
+                    if actual != expected_relation:
+                        raise AssertionError(
+                            f"bitset relation mismatch {choices} {roots} "
+                            f"{first}/{second}: {actual} != {expected_relation}"
+                        )
+                    relations += 1
+
+            for selected in roots:
+                other_bits = 0
+                for root in roots:
+                    if root != selected:
+                        other_bits |= reference[root]
+                expected_bits = (other_bits & ~reference[selected]) & closure_bits
+                expected = sorted(
+                    name for i, name in enumerate(names) if expected_bits & (1 << i)
+                )
+                actual = parent_relative_merge_set(graph, roots, selected)
+                inverted = parent_relative_merge_set(
+                    reordered, list(reversed(roots)), selected
+                )
+                if actual != expected or inverted != expected:
+                    raise AssertionError(
+                        f"bitset merge mismatch {choices} {roots} {selected}: "
+                        f"{actual} vs {expected} (reordered {inverted})"
+                    )
+                merges += 1
+    return graphs, frontiers, merges, relations
+
+
 def self_test() -> None:
     graph = {
         "G": [], "A": ["G"], "B": ["G"], "M": ["A", "B"],
@@ -181,6 +262,13 @@ def self_test() -> None:
     for index in range(MAX_HEADERS):
         chain[f"H{index}"] = ["G" if index == 0 else f"H{index - 1}"]
     rejects(lambda: verified_closure(chain, [f"H{MAX_HEADERS - 1}"]))
+    # Separate integer-bitset DP against graph DFS and inclusive-past logic.
+    # Never hide a costly differential test inside assert: PYTHONOPTIMIZE
+    # must not be able to elide all evidence and print a false PASS.
+    observed = exhaustive_small_dag_properties()
+    expected = (315, 4_725, 10_080, 77_965)
+    if observed != expected:
+        raise AssertionError(f"exhaustive DAG coverage changed: {observed} != {expected}")
 
 
 def main() -> None:
@@ -190,7 +278,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.self_test:
         self_test()
-        print("PASS: symbolic DAG oracle negative and permutation tests")
+        print("PASS: symbolic DAG oracle, 315 graphs, 4725 frontiers, 10080 merge checks, 77965 relation checks")
     if args.fixture:
         count = check_fixture(json.loads(args.fixture.read_text(encoding="utf-8")))
         print(f"PASS: {count} deterministic, K-neutral symbolic DAG fixtures")
