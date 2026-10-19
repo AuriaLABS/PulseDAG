@@ -263,7 +263,12 @@ def self_test() -> None:
         chain[f"H{index}"] = ["G" if index == 0 else f"H{index - 1}"]
     rejects(lambda: verified_closure(chain, [f"H{MAX_HEADERS - 1}"]))
     # Separate integer-bitset DP against graph DFS and inclusive-past logic.
-    assert exhaustive_small_dag_properties() == (315, 4_725, 10_080, 77_965)
+    # Never hide a costly differential test inside assert: PYTHONOPTIMIZE
+    # must not be able to elide all evidence and print a false PASS.
+    observed = exhaustive_small_dag_properties()
+    expected = (315, 4_725, 10_080, 77_965)
+    if observed != expected:
+        raise AssertionError(f"exhaustive DAG coverage changed: {observed} != {expected}")
 
 
 def main() -> None:
