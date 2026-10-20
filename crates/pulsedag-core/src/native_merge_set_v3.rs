@@ -443,6 +443,94 @@ mod tests {
         assert!(examine(&genesis, std::slice::from_ref(&a), &a, &headers).is_err());
     }
 
+    /// The input header index may be rebuilt in any insertion order after a
+    /// restart, and may contain unrelated but valid headers. Neither changes
+    /// the authenticated reachable closure nor its parent-relative set algebra.
+    /// No selected-parent election or GHOSTDAG blue/red policy is asserted.
+    #[test]
+    fn verified_merge_set_survives_index_rebuild_and_out_of_order_side_history() {
+        let (genesis, mut headers) = fixture();
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let joined = append(
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
+        let a_tip = append(
+            &mut headers,
+            vec![a],
+            2,
+            GENESIS_NS + 1_100_000_000,
+            true,
+        );
+        let b_tip = append(
+            &mut headers,
+            vec![b],
+            2,
+            GENESIS_NS + 1_200_000_000,
+            true,
+        );
+        // Present in an overall header index but not reachable from any
+        // candidate parent: it must not enter the parent-relative merge set.
+        let unrelated = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 700_000_000,
+            true,
+        );
+        let mut parents = vec![joined.clone(), a_tip.clone(), b_tip.clone()];
+        parents.sort();
+        let mut expected = vec![a_tip, b_tip.clone()];
+        expected.sort();
+
+        let initial = examine(&genesis, &parents, &joined, &headers).unwrap();
+        assert_eq!(initial.unordered_merge_set, expected);
+        assert_eq!(initial.selected_parent_past_size, 4);
+        assert_eq!(initial.verified_dag.authenticated_non_genesis_headers, 5);
+        assert_eq!(initial.verified_dag.authenticated_parent_edges, 6);
+        assert!(!initial.unordered_merge_set.contains(&unrelated));
+
+        // Rebuild the index in reverse insertion order, as could happen on
+        // restart or when receiving valid headers from different peers.
+        let rebuilt: BTreeMap<BlockId, BlockHeaderV3> = headers
+            .iter()
+            .rev()
+            .map(|(hash, header)| (hash.clone(), header.clone()))
+            .collect();
+        assert_eq!(
+            examine(&genesis, &parents, &joined, &rebuilt).unwrap(),
+            initial
+        );
+
+        // A late side parent cannot be silently omitted from the set. Only
+        // after its exact header is available and reverified can the same
+        // deterministic diagnostic be returned.
+        let mut missing_side = rebuilt;
+        let saved = missing_side.remove(&b_tip).unwrap();
+        assert!(examine(&genesis, &parents, &joined, &missing_side).is_err());
+        missing_side.insert(b_tip, saved);
+        assert_eq!(
+            examine(&genesis, &parents, &joined, &missing_side).unwrap(),
+            initial
+        );
+    }
+
     #[test]
     fn cannot_promote_noncanonical_order_or_cross_network_input() {
         let (genesis, mut headers) = fixture();
