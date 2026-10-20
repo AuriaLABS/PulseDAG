@@ -7,9 +7,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::{
-    errors::PulseError, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
-};
+use crate::{errors::PulseError, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId};
 
 const BLOCK_HEADER_V3_DOMAIN: &[u8] = b"PulseDAG:block-header:v3:nanoseconds";
 // Bound header serialization *before* allocating/copying untrusted strings.
