@@ -1,0 +1,58 @@
+name: v3 dormant native merge-set regression (no consensus authority)
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/native_merge_set_v3.rs"
+      - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - ".github/workflows/v3-dormant-native-merge-set-regression.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/native_merge_set_v3.rs"
+      - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - ".github/workflows/v3-dormant-native-merge-set-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  dormant-merge-set-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify checked-out commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify format and exact new arrival-order regression executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --lib native_merge_set_v3::tests::verified_merge_set_survives_index_rebuild_and_out_of_order_side_history -- --exact --nocapture | tee /tmp/v3-dormant-merge-set-arrivals.log
+          grep -Eq '^test result: ok\. 1 passed; 0 failed;' /tmp/v3-dormant-merge-set-arrivals.log
+      - name: Verify all dormant merge-set unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib native_merge_set_v3::tests:: -- --nocapture | tee /tmp/v3-dormant-merge-set-suite.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/v3-dormant-merge-set-suite.log
