@@ -471,20 +471,8 @@ mod tests {
             GENESIS_NS + 1_000_000_000,
             true,
         );
-        let a_tip = append(
-            &mut headers,
-            vec![a],
-            2,
-            GENESIS_NS + 1_100_000_000,
-            true,
-        );
-        let b_tip = append(
-            &mut headers,
-            vec![b],
-            2,
-            GENESIS_NS + 1_200_000_000,
-            true,
-        );
+        let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
+        let b_tip = append(&mut headers, vec![b], 2, GENESIS_NS + 1_200_000_000, true);
         // Present in an overall header index but not reachable from any
         // candidate parent: it must not enter the parent-relative merge set.
         let unrelated = append(
