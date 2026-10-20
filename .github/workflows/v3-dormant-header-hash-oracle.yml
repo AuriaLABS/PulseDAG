@@ -37,3 +37,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p pulsedag-core matches_independent_native_v3_sha256_header_and_preimage_vectors --lib
+      - name: Pin existing pre-freeze 64-parent header envelope and 65-parent rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib header_v3::tests::maximum_parent_window_has_a_bounded_canonical_envelope -- --exact --nocapture | tee /tmp/v3-dormant-header-parent-boundary.log
+          grep -Eq '^test result: ok\. 1 passed; 0 failed;' /tmp/v3-dormant-header-parent-boundary.log
