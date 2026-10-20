@@ -494,8 +494,35 @@ mod tests {
         assert_eq!(initial.verified_dag.authenticated_parent_edges, 6);
         assert!(!initial.unordered_merge_set.contains(&unrelated));
 
-        // Rebuild the index in reverse insertion order, as could happen on
-        // restart or when receiving valid headers from different peers.
+        // A BTreeMap normalizes key iteration order. To exercise actual
+        // *arrival* order, replay every prefix of two opposite insertion
+        // sequences, excluding only the deliberately unrelated header.
+        // No partial reachable ancestry may yield a successful diagnostic.
+        let all_required: Vec<(BlockId, BlockHeaderV3)> = headers
+            .iter()
+            .filter(|(hash, _)| *hash != &unrelated)
+            .map(|(hash, header)| (hash.clone(), header.clone()))
+            .collect();
+        assert_eq!(all_required.len(), 6); // genesis plus five reachable.
+        for reverse in [false, true] {
+            let mut arrivals = all_required.clone();
+            if reverse {
+                arrivals.reverse();
+            }
+            let mut reconstructed = BTreeMap::new();
+            for (index, (hash, header)) in arrivals.into_iter().enumerate() {
+                reconstructed.insert(hash, header);
+                let result = examine(&genesis, &parents, &joined, &reconstructed);
+                if index + 1 < all_required.len() {
+                    assert!(result.is_err(), "incomplete parent DAG was accepted");
+                } else {
+                    assert_eq!(result.unwrap(), initial);
+                }
+            }
+        }
+
+        // Rebuilt full indices may additionally contain valid unrelated
+        // headers, which are never part of the verified reachable closure.
         let rebuilt: BTreeMap<BlockId, BlockHeaderV3> = headers
             .iter()
             .rev()
