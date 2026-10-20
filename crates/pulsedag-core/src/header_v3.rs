@@ -7,16 +7,19 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::{
-    errors::PulseError, protocol::BLOCK_HEADER_VERSION_V3, selection_v2::GHOSTDAG_V1_MAX_PARENTS,
-    types::BlockId,
-};
+use crate::{errors::PulseError, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId};
 
 const BLOCK_HEADER_V3_DOMAIN: &[u8] = b"PulseDAG:block-header:v3:nanoseconds";
 // Bound header serialization *before* allocating/copying untrusted strings.
 const V3_MAX_CHAIN_ID_BYTES: usize = 128;
 const V3_HEX_HASH_BYTES: usize = 64;
 const V3_MAX_CANONICAL_HEADER_BYTES: usize = 8_192;
+// Current DORMANT v3 wire-shape safety envelope (preserves the prior 64-parent
+// bound). Independent of v1 GHOSTDAG and NOT the native-v3 consensus maximum
+// eligible parents or GHOSTDAG K. V3-GD-01/02 (#1309) remain UNAPPROVED;
+// changing this pre-freeze format limit requires independent protocol review
+// and updated canonical byte/hash vectors before any monetary-v3 activation.
+const MAX_DORMANT_V3_HEADER_SHAPE_PARENTS: usize = 64;
 
 /// Distinct from the seconds-based v1/v2 BlockHeader. Do not deserialize
 /// existing v2 blocks into this type or reinterpret their timestamp units.
@@ -77,11 +80,11 @@ pub fn validate_block_header_v3_shape(
     if header.timestamp_ns == 0 {
         return Err(invalid_v3("header v3 Unix nanoseconds must be positive"));
     }
-    if header.parents.len() > GHOSTDAG_V1_MAX_PARENTS {
+    if header.parents.len() > MAX_DORMANT_V3_HEADER_SHAPE_PARENTS {
         return Err(invalid_v3(format!(
             "header v3 parents {} exceed the limit {}",
             header.parents.len(),
-            GHOSTDAG_V1_MAX_PARENTS
+            MAX_DORMANT_V3_HEADER_SHAPE_PARENTS
         )));
     }
     if header.height == 0 && !header.parents.is_empty() {
@@ -332,7 +335,7 @@ mod tests {
     #[test]
     fn maximum_parent_window_has_a_bounded_canonical_envelope() {
         let mut candidate = header(BASE_NS);
-        candidate.parents = (0..GHOSTDAG_V1_MAX_PARENTS)
+        candidate.parents = (0..MAX_DORMANT_V3_HEADER_SHAPE_PARENTS)
             .map(|i| format!("{i:064x}"))
             .collect();
         let full = canonical_block_header_bytes_v3(&candidate, &"n".repeat(V3_MAX_CHAIN_ID_BYTES))
@@ -342,9 +345,23 @@ mod tests {
                 .unwrap();
         assert!(full.len() <= V3_MAX_CANONICAL_HEADER_BYTES);
         assert!(mining.len() < full.len());
+        // SHA-256 fingerprints calculated independently using Python stdlib
+        // (struct.pack + hashlib), not through Rust canonical serialization.
+        // These pin the existing 64-parent pre-freeze wire envelope, NOT K,
+        // blue-work, monetary-v3 parent eligibility or KHeavyHash PoW.
+        assert_eq!(full.len(), 4_704);
+        assert_eq!(mining.len(), 4_696);
+        assert_eq!(
+            hex::encode(Sha256::digest(&full)),
+            "8d846d6e86569ddc1b0a0d6162f10d564da2bd694bab0030934335d98a51a070"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&mining)),
+            "0d31f4e55b2da516ef68fd31b377089c6a89db527c306103d44227c0003e81df"
+        );
         candidate
             .parents
-            .push(format!("{:064x}", GHOSTDAG_V1_MAX_PARENTS));
+            .push(format!("{:064x}", MAX_DORMANT_V3_HEADER_SHAPE_PARENTS));
         assert!(canonical_block_header_bytes_v3(&candidate, "v3").is_err());
     }
 

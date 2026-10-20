@@ -27,6 +27,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify checked-out exact commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check Python-standard-library canonical byte reference
         run: |
           set -euo pipefail
@@ -37,3 +45,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p pulsedag-core matches_independent_native_v3_sha256_header_and_preimage_vectors --lib
+      - name: Pin existing pre-freeze 64-parent header envelope and 65-parent rejection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib header_v3::tests::maximum_parent_window_has_a_bounded_canonical_envelope -- --exact --nocapture | tee /tmp/v3-dormant-header-parent-boundary.log
+          grep -Eq '^test result: ok\. 1 passed; 0 failed;' /tmp/v3-dormant-header-parent-boundary.log
