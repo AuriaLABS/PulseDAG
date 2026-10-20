@@ -73,11 +73,8 @@ pub fn derive_dormant_native_v3_merge_set_for_parent(
     supplied_selected_parent: &BlockId,
     headers: &BTreeMap<BlockId, BlockHeaderV3>,
 ) -> Result<DormantV3MergeSetCheck, PulseError> {
-    if !candidate_parents.contains(supplied_selected_parent) {
-        return Err(invalid(
-            "supplied comparison parent not listed in candidate parents",
-        ));
-    }
+    // An invalid caller-specified comparison parent must not bypass
+    // complete authenticated ancestry or side-branch PoW verification.
     let verified_dag = verify_dormant_native_v3_parent_dag(
         chain_id,
         frozen_genesis_timestamp_ns,
@@ -85,6 +82,11 @@ pub fn derive_dormant_native_v3_merge_set_for_parent(
         candidate_parents,
         headers,
     )?;
+    if !candidate_parents.contains(supplied_selected_parent) {
+        return Err(invalid(
+            "supplied comparison parent not listed in candidate parents",
+        ));
+    }
     let selected_past = inclusive_past(supplied_selected_parent, headers)?;
     let mut unordered_merge_set = BTreeSet::new();
     for parent in candidate_parents {
@@ -372,6 +374,46 @@ mod tests {
         assert!(examine(&genesis, &[a.clone(), a.clone()], &a, &headers).is_err());
         headers.remove(&b);
         assert!(examine(&genesis, &parents, &b, &headers).is_err());
+    }
+
+    #[test]
+    fn unlisted_comparison_parent_cannot_bypass_full_dag_authentication() {
+        let (genesis, mut headers) = fixture();
+        let good = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let bad = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
+        );
+        let mut parents = vec![good.clone(), bad.clone()];
+        parents.sort();
+
+        // The caller did not include genesis as a candidate comparison
+        // parent, but malformed PoW anywhere in the supplied closure must
+        // still be the first failure.
+        let bad_pow = examine(&genesis, &parents, &genesis, &headers).unwrap_err();
+        assert!(bad_pow.to_string().contains("invalid PoW"));
+
+        // Missing side history also wins over an unlisted comparison parent.
+        headers.remove(&bad);
+        let missing = examine(&genesis, &parents, &genesis, &headers).unwrap_err();
+        assert!(missing.to_string().contains("missing ancestor header"));
+
+        // A valid, fully authenticated reachable frontier still rejects
+        // the comparison parent that was never in its candidate list.
+        let unlisted =
+            examine(&genesis, std::slice::from_ref(&good), &genesis, &headers).unwrap_err();
+        assert!(unlisted
+            .to_string()
+            .contains("supplied comparison parent not listed"));
     }
 
     #[test]
