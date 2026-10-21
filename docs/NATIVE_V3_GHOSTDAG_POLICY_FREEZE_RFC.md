@@ -2,6 +2,8 @@
 
 **Status: OPEN RFC / NO CONSENSUS FREEZE.** Tracking issue: [#1309](https://github.com/AuriaLABS/PulseDAG/issues/1309). This document supplies reviewable decision questions and fixture contracts, **not** adopted network constants, canonical protocol rules, or permission to activate mining.
 
+**Launch-plan change (2026-10-21):** An independent human/third-party code audit is **not a mandatory v3.0.0 milestone or GO checkbox** under the project owner's decision; see archived [#1305](https://github.com/AuriaLABS/PulseDAG/issues/1305). The protocol owner may review their own code, but that is **self-review, not independent validation**. Objective safeguards remain mandatory: explicit versioned consensus-policy freeze, independently reproducible golden vectors, checked arithmetic and invalid-ancestry rejection, exact-candidate security/dependency assessment, adversarial/production tests, and formal #781 GO. Removing an external reviewer increases residual risk and does **not** approve native monetary mining, relax fail-closed behavior or activate smart contracts.
+
 Read with [GHOSTDAG_SELECTION_DESIGN_SPEC.md](GHOSTDAG_SELECTION_DESIGN_SPEC.md), [GHOSTDAG_SELECTION_MULTI_PR_PLAN.md](GHOSTDAG_SELECTION_MULTI_PR_PLAN.md), and [ROADMAP_V3_0_0.md](ROADMAP_V3_0_0.md). Their general or v2-era proposals do not, on their own, freeze new `BlockHeaderV3` monetary consensus rules.
 
 ## Evidence already merged, but not authoritative selection
@@ -24,7 +26,7 @@ The above use **local diagnostic caps** of 128 reachable headers, 2,048 edges an
 
 ## Mandatory versioned protocol decisions (not yet approved)
 
-| ID | Decision requiring explicit independent approval | Completion artifact |
+| ID | Decision requiring explicit protocol-owner approval | Completion artifact |
 | --- | --- | --- |
 | V3-GD-01 | Exact consensus identity, activation/version domain, genesis identity and migration rule; forbid implicitly inheriting v1 metadata | Frozen versioned specification + network-specific genesis vectors |
 | V3-GD-02 | GHOSTDAG `K`, eligible parent count, merge-set, anticone and total validation work budgets; precise reject/defer behavior | Numeric constants and adversarial bound tests |
@@ -35,9 +37,9 @@ The above use **local diagnostic caps** of 128 reachable headers, 2,048 edges an
 | V3-GD-07 | Use independently derived selected chain for nanosecond retarget/20-sample window, oldest sampled ancestor and independently proven pruning/snapshot boundary | Near-genesis, oldest-window, missing/pruned-history and restart vectors |
 | V3-GD-08 | Deterministic DAG total ordering and monetary state transition, duplicate UTXO/fee/reward handling, transaction-bearing native envelopes | Two-independent-implementation replay and conflict vectors |
 | V3-GD-09 | Production DoS budgets, orphan and out-of-order arrival behavior, on-disk schema identities, atomic restoration and network admission order | 500ms ≥25-node/16-miner adversarial evidence and restart/rollback tests |
-| V3-GD-10 | Independent human security approval, exact integrated source/tree/artifacts and launch authorization | Human review on #1305; a separately implemented, proven native 500ms runtime (historical #1276 was closed unmerged); #781 separate formal GO |
+| V3-GD-10 | Exact-release security evidence, proven native-v3 production runtime and formal launch authorization; no mandatory outside-auditor sign-off | Exact source/tree/artifact identity, tested native 500ms runtime and security/reachability evidence; #781 formal GO (historical #1276 closed unmerged) |
 
-**Freeze requires a named protocol owner and independent security reviewer to record, for each ID, a chosen rule, alternative rejected, rationale, exact spec hash/revision and reproducible vectors.** Until that happens, all IDs remain open. Work on purely diagnostic helpers may continue without adopting unresolved policy.
+**Freeze requires the named protocol owner to record and approve, for each ID, a chosen rule, alternative rejected, rationale, exact spec hash/revision, reproducible cross-implementation vectors and evidence of verification.** An external auditor is not required for this record. Until the owner explicitly approves the protocol rules and evidence, all IDs remain open. Work on purely diagnostic helpers may continue without adopting unresolved policy.
 
 ## Fixture contracts for independent implementations
 
@@ -63,14 +65,14 @@ The fixture covers fork/join, redundant and single-parent cases; validates expec
 
 **Additional exhaustive K-neutral reference (#1324):** the same `--self-test` enumerates every 315 nonempty-earlier-parent DAG on the five symbolic vertices `{G,A,B,C,D}` (genesis and four subsequent vertices) and all 15 nonempty candidate frontiers per DAG: **4,725 complete-closure comparisons**, **77,965 ordered pair ancestry/anticone relations**, and **10,080 specified-parent merge-set evaluations**. A separate integer-bitset dynamic program computes expected ancestor closure and set algebra without calling the DFS/inclusive-past reference being checked. Candidate-root and map insertion order permutations must agree. This is exhaustive **only for this constrained five-vertex symbolic family**, not a proof of full-size DAG safety, full Rust equivalence, blue/red score, `K` policy, cryptography or native monetary admission.
 
-**Important:** symbolic labels `G,A,B,` etc. are not frozen chain-bound header hashes; this oracle performs **no canonical serialization, independent genesis commitment, KHeavyHash, target verification or reward-state replay**. Passing it is **not** evidence of valid PoW, authoritative selected-parent/K/blue-red/blue-work rules, monetary consensus or #781 launch readiness. That requires distinct authenticated native-v3 vectors and independent human review.
+**Important:** symbolic labels `G,A,B,` etc. are not frozen chain-bound header hashes; this oracle performs **no canonical serialization, independent genesis commitment, KHeavyHash, target verification or reward-state replay**. Passing it is **not** evidence of valid PoW, authoritative selected-parent/K/blue-red/blue-work rules, monetary consensus or #781 launch readiness. That requires distinct authenticated native-v3 vectors, reproducible verification and the actual #781 technical/security gates; an external human audit is not itself a milestone.
 
 ## Implementation ordering after approval
 
 1. Freeze V3-GD-01 through V3-GD-07 and approve independent integer-work/tie/anticone vectors. Do not implement an authoritative selector before this.
 2. Add a **versioned, dormant** independently recomputed header-DAG scoring/classifier (fail closed for missing or over-budget history). Compare the committed v3 blue score against derived authority.
 3. Authenticate retarget ancestry and its pruning proofs against the newly derived selected chain, never a caller-supplied map.
-4. Introduce native transaction/reward/UTXO replay, atomic persisted DAG state, P2P/mined admission and 500ms end-to-end convergence with separate security reviews.
-5. Preserve both currently merged **fail-closed boundaries**: explicit `monetary_v3` startup mode is rejected **before `Storage::open`**, and a persisted valid/malformed monetary sidecar is rejected **after storage open but before** any snapshot command, runtime restore, P2P/RPC or mining (#1313). Keep the real-RocksDB regression and pre-open mode-parser regression; never silently turn those safeguards into a network activation switch. Completing a real independently audited native-500ms production runtime remains a **separate unimplemented P1**. Historical #1276 is **CLOSED UNMERGED**, so its prior implementation proposal is not an accepted release gate. Smart contracts remain **INACTIVE**; #781 is mainnet/parallel-testnet **NO-GO** without formal authorization.
+4. Introduce native transaction/reward/UTXO replay, atomic persisted DAG state, P2P/mined admission and 500ms end-to-end convergence with explicit code, security, adversarial and release-candidate checks (without an obligatory independent-auditor sign-off).
+5. Preserve both currently merged **fail-closed boundaries**: explicit `monetary_v3` startup mode is rejected **before `Storage::open`**, and a persisted valid/malformed monetary sidecar is rejected **after storage open but before** any snapshot command, runtime restore, P2P/RPC or mining (#1313). Keep the real-RocksDB regression and pre-open mode-parser regression; never silently turn those safeguards into a network activation switch. Completing and verifying a real native-500ms production runtime remains a **separate unimplemented P1**. Historical #1276 is **CLOSED UNMERGED**, so its prior implementation proposal is not an accepted release gate. Smart contracts remain **INACTIVE**; #781 is mainnet/parallel-testnet **NO-GO** without formal authorization.
 
 **Do not merge a later PR that treats this unapproved RFC as the chosen policy.** It becomes normative only after a separate explicit freeze decision and protocol version/hash are recorded on #1309.
