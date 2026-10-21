@@ -533,6 +533,37 @@ mod tests {
             initial
         );
 
+        // Verify *every* subset of the six required reachable headers,
+        // not only prefixes of two chosen arrival sequences. A valid but
+        // unrelated index entry must never satisfy missing ancestry.
+        let complete_mask = (1_u64 << all_required.len()) - 1;
+        assert_eq!(complete_mask, 63);
+        for mask in 0..=complete_mask {
+            let mut subset = BTreeMap::new();
+            for (index, (hash, header)) in all_required.iter().enumerate() {
+                if mask & (1_u64 << index) != 0 {
+                    subset.insert(hash.clone(), header.clone());
+                }
+            }
+            subset.insert(unrelated.clone(), headers[&unrelated].clone());
+            let result = examine(&genesis, &parents, &joined, &subset);
+            if mask == complete_mask {
+                assert_eq!(result.unwrap(), initial);
+            } else {
+                assert!(result.is_err(), "partial reachable closure {mask:#08b} accepted");
+            }
+        }
+
+        // An unqueried, unreachable index record is not consensus input.
+        // Even corruption of that entry cannot authenticate a missing parent
+        // or change the parent-relative diagnostic for a valid reachable DAG.
+        let mut unrelated_corrupt = headers.clone();
+        unrelated_corrupt.get_mut(&unrelated).unwrap().nonce ^= 1;
+        assert_eq!(
+            examine(&genesis, &parents, &joined, &unrelated_corrupt).unwrap(),
+            initial
+        );
+
         // A late side parent cannot be silently omitted from the set. Only
         // after its exact header is available and reverified can the same
         // deterministic diagnostic be returned.
