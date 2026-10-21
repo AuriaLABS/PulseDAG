@@ -96,9 +96,7 @@ mod tests {
     use crate::{
         genesis_v3::dormant_native_genesis_envelope_v3_ns,
         header_v3::compute_block_hash_v3,
-        native_dag_relation_v3::{
-            derive_dormant_native_v3_pair_relation, DormantV3PairRelation,
-        },
+        native_dag_relation_v3::{derive_dormant_native_v3_pair_relation, DormantV3PairRelation},
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
@@ -156,9 +154,27 @@ mod tests {
     #[test]
     fn compares_all_pairs_to_existing_independent_single_pair_reference() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let b = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true);
-        let joined = append(&mut headers, vec![a.clone(), b.clone()], 2, GENESIS_NS + 1_000_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let joined = append(
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
         let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
         let mut frontier = vec![joined, a_tip];
         frontier.sort();
@@ -168,9 +184,15 @@ mod tests {
             for second in result.anticone_by_block.keys() {
                 let expected = derive_dormant_native_v3_pair_relation(
                     CHAIN, GENESIS_NS, &genesis, &frontier, first, second, &headers,
-                ).unwrap().relation == DormantV3PairRelation::Anticone;
+                )
+                .unwrap()
+                .relation
+                    == DormantV3PairRelation::Anticone;
                 assert_eq!(anticone.contains(second), expected);
-                assert_eq!(anticone.contains(second), result.anticone_by_block[second].contains(first));
+                assert_eq!(
+                    anticone.contains(second),
+                    result.anticone_by_block[second].contains(first)
+                );
             }
         }
         assert!(result.anticone_by_block[&genesis].is_empty());
@@ -179,8 +201,20 @@ mod tests {
     #[test]
     fn ignores_unreachable_bad_index_and_rebuild_order() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let b = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
         let mut frontier = vec![a, b];
         frontier.sort();
         let original = matrix(&genesis, &frontier, &headers).unwrap();
@@ -194,27 +228,62 @@ mod tests {
     #[test]
     fn bad_side_pow_or_missing_ancestor_denies_entire_matrix() {
         let (genesis, mut headers) = fixture();
-        let good = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let bad = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, false);
+        let good = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let bad = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
+        );
         let mut frontier = vec![good, bad.clone()];
         frontier.sort();
-        assert!(matrix(&genesis, &frontier, &headers).unwrap_err().to_string().contains("invalid PoW"));
+        assert!(matrix(&genesis, &frontier, &headers)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid PoW"));
         headers.remove(&bad);
-        assert!(matrix(&genesis, &frontier, &headers).unwrap_err().to_string().contains("missing ancestor header"));
+        assert!(matrix(&genesis, &frontier, &headers)
+            .unwrap_err()
+            .to_string()
+            .contains("missing ancestor header"));
     }
 
     #[test]
     fn wrong_genesis_unsorted_frontier_and_cross_chain_fail_closed() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let b = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
         let mut frontier = vec![a, b];
         frontier.sort();
         assert!(matrix("00", &frontier, &headers).is_err());
         frontier.reverse();
         assert!(matrix(&genesis, &frontier, &headers).is_err());
         assert!(derive_dormant_native_v3_anticone_matrix(
-            "different-chain", GENESIS_NS, &genesis, &frontier, &headers,
-        ).is_err());
+            "different-chain",
+            GENESIS_NS,
+            &genesis,
+            &frontier,
+            &headers,
+        )
+        .is_err());
     }
 }
