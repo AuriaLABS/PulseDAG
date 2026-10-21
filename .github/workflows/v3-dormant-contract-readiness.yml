@@ -1,0 +1,95 @@
+name: v3 dormant contracts dual-feature readiness (no activation)
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/contracts_gate.rs"
+      - "crates/pulsedag-core/src/programmability_activation_v1.rs"
+      - "crates/pulsedag-core/src/contract_v3.rs"
+      - "crates/pulsedag-core/src/contract_state_v1.rs"
+      - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
+      - "crates/pulsedag-core/Cargo.toml"
+      - ".github/workflows/v3-dormant-contract-readiness.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/pulsedag-core/src/contracts_gate.rs"
+      - "crates/pulsedag-core/src/programmability_activation_v1.rs"
+      - "crates/pulsedag-core/src/contract_v3.rs"
+      - "crates/pulsedag-core/src/contract_state_v1.rs"
+      - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
+      - "crates/pulsedag-core/Cargo.toml"
+      - ".github/workflows/v3-dormant-contract-readiness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-contract-core:
+    name: offline-contract-core (${{ matrix.feature_profile }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        feature_profile:
+          - default
+          - executable-contracts
+
+    steps:
+      - name: Checkout exact PR or main commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify immutable checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned compiler
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dormant-contracts-${{ matrix.feature_profile }}
+      - name: Exact test + frozen offline contract modules under this feature profile
+        shell: bash
+        env:
+          FEATURE_PROFILE: ${{ matrix.feature_profile }}
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          args=()
+          if [[ "$FEATURE_PROFILE" == "executable-contracts" ]]; then
+            args=(--features executable-contracts)
+          fi
+
+          cargo test --locked -p pulsedag-core "${args[@]}" --test v3_dormant_contract_readiness -- --nocapture | tee /tmp/dormant-contract-readiness.log
+          grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/dormant-contract-readiness.log
+
+          for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate; do
+            cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "/tmp/dormant-contract-$module.log"
+          done
+
+      - name: Strict clippy on tested core/profile
+        shell: bash
+        env:
+          FEATURE_PROFILE: ${{ matrix.feature_profile }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$FEATURE_PROFILE" == "executable-contracts" ]]; then
+            args=(--features executable-contracts)
+          fi
+          cargo clippy --locked -p pulsedag-core "${args[@]}" --all-targets -- -D warnings
