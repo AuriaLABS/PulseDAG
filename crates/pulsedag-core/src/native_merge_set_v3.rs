@@ -15,6 +15,9 @@ use crate::{
     native_parent_dag_context_v3::{
         verify_dormant_native_v3_parent_dag, DormantV3ParentDagCheck, MAX_DORMANT_V3_DAG_HEADERS,
     },
+    native_topological_evaluation_v3::{
+        derive_dormant_native_v3_topological_evaluation, DormantV3TopologicalEvaluation,
+    },
     types::BlockId,
 };
 
@@ -109,6 +112,96 @@ pub fn derive_dormant_native_v3_merge_set_for_parent(
         unordered_merge_set: unordered_merge_set.into_iter().collect(),
         selected_parent_past_size: selected_past.len(),
         verified_dag,
+    })
+}
+
+/// K-neutral merge-set **matrix** for every listed comparison parent.
+///
+/// The caller supplies a canonical sorted parent frontier. Every reachable
+/// ancestor is verified ONCE against externally frozen native-v3 genesis,
+/// including invalid side-branch PoW, before bounded set algebra begins.
+/// This does **not** choose a selected parent, classify blues or derive work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantV3AllParentMergeSetsCheck {
+    /// Keyed by canonical candidate parent, with each relative merge set
+    /// lexically sorted. The sets are NOT blue/red or transaction order.
+    pub by_comparison_parent: BTreeMap<BlockId, Vec<BlockId>>,
+    pub topological_evaluation: DormantV3TopologicalEvaluation,
+}
+
+/// Evaluate all valid comparison parents without privileging any of them.
+///
+/// Unlike re-verifying the full PoW DAG for each comparison, topological
+/// dynamic programming computes every bounded inclusive ancestor past after
+/// a single complete and authenticated native-v3 header-DAG verification.
+pub fn derive_dormant_native_v3_all_parent_merge_sets(
+    chain_id: &str,
+    frozen_genesis_timestamp_ns: u64,
+    frozen_genesis_hash: &str,
+    candidate_parents: &[BlockId],
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+) -> Result<DormantV3AllParentMergeSetsCheck, PulseError> {
+    let topological_evaluation = derive_dormant_native_v3_topological_evaluation(
+        chain_id,
+        frozen_genesis_timestamp_ns,
+        frozen_genesis_hash,
+        candidate_parents,
+        headers,
+    )?;
+
+    let mut ancestor_pasts: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
+    for hash in &topological_evaluation.ordered_reachable_headers {
+        let header = headers
+            .get(hash)
+            .ok_or_else(|| invalid(format!("missing authenticated header {hash}")))?;
+        let mut inclusive_past = BTreeSet::new();
+        inclusive_past.insert(hash.clone());
+        for parent in &header.parents {
+            let parent_past = ancestor_pasts.get(parent).ok_or_else(|| {
+                invalid(format!(
+                    "parent {parent} precedes no authenticated topological past"
+                ))
+            })?;
+            inclusive_past.extend(parent_past.iter().cloned());
+        }
+        if inclusive_past.len() > MAX_DORMANT_V3_DAG_HEADERS {
+            return Err(invalid("inclusive past exceeds authenticated DAG budget"));
+        }
+        ancestor_pasts.insert(hash.clone(), inclusive_past);
+    }
+
+    let mut union_of_parent_pasts = BTreeSet::new();
+    for parent in candidate_parents {
+        let past = ancestor_pasts.get(parent).ok_or_else(|| {
+            invalid(format!(
+                "missing candidate parent {parent} in verified past"
+            ))
+        })?;
+        union_of_parent_pasts.extend(past.iter().cloned());
+    }
+    if union_of_parent_pasts.len() != topological_evaluation.ordered_reachable_headers.len() {
+        return Err(invalid(
+            "verified ancestor closure differs from parent-past union",
+        ));
+    }
+
+    let mut by_comparison_parent = BTreeMap::new();
+    for parent in candidate_parents {
+        let past = ancestor_pasts.get(parent).ok_or_else(|| {
+            invalid(format!(
+                "missing candidate parent {parent} in verified past"
+            ))
+        })?;
+        // union(parent inclusive pasts) - past(this parent) is exactly
+        // union(past(other parents)) - past(this parent), even for redundant
+        // parent/ancestor relationships. This is set algebra, NOT blue order.
+        let relative: Vec<BlockId> = union_of_parent_pasts.difference(past).cloned().collect();
+        by_comparison_parent.insert(parent.clone(), relative);
+    }
+
+    Ok(DormantV3AllParentMergeSetsCheck {
+        by_comparison_parent,
+        topological_evaluation,
     })
 }
 
@@ -607,6 +700,169 @@ mod tests {
             &genesis,
             std::slice::from_ref(&a),
             &a,
+            &headers,
+        )
+        .is_err());
+    }
+    #[test]
+    fn all_comparison_sets_match_independent_single_parent_reference_on_three_parents() {
+        let (genesis, mut headers) = fixture();
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let joined = append(
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
+        let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
+        let b_tip = append(&mut headers, vec![b], 2, GENESIS_NS + 1_200_000_000, true);
+        let mut parents = vec![joined, a_tip, b_tip];
+        parents.sort();
+
+        let matrix = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &parents, &headers,
+        )
+        .unwrap();
+        assert_eq!(matrix.by_comparison_parent.len(), 3);
+        assert_eq!(
+            matrix
+                .topological_evaluation
+                .verified_dag
+                .authenticated_non_genesis_headers,
+            5
+        );
+        for parent in &parents {
+            let reference = examine(&genesis, &parents, parent, &headers).unwrap();
+            assert_eq!(
+                matrix.by_comparison_parent.get(parent).unwrap(),
+                &reference.unordered_merge_set,
+            );
+        }
+    }
+
+    #[test]
+    fn all_comparison_sets_ignore_unreachable_corrupted_map_entries_and_reinsertion_order() {
+        let (genesis, mut headers) = fixture();
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let mut parents = vec![a, b];
+        parents.sort();
+        let original = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &parents, &headers,
+        )
+        .unwrap();
+        let mut bad = headers.get(&genesis).unwrap().clone();
+        bad.nonce += 99;
+        headers.insert("ff".repeat(32), bad);
+        let mut rebuilt = BTreeMap::new();
+        for (hash, header) in headers.iter().rev() {
+            rebuilt.insert(hash.clone(), header.clone());
+        }
+        let result = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &parents, &rebuilt,
+        )
+        .unwrap();
+        assert_eq!(original, result);
+        assert_eq!(result.by_comparison_parent.len(), 2);
+        for parent in &parents {
+            assert_eq!(result.by_comparison_parent.get(parent).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn all_comparison_sets_reject_missing_and_bad_pow_side_ancestry() {
+        let (genesis, mut headers) = fixture();
+        let good = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let bad = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
+        );
+        let mut parents = vec![good, bad.clone()];
+        parents.sort();
+
+        let rejected = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &parents, &headers,
+        )
+        .unwrap_err();
+        assert!(rejected.to_string().contains("invalid PoW"));
+        headers.remove(&bad);
+        let missing = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &parents, &headers,
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("missing ancestor header"));
+        assert!(derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, "00", &parents, &headers,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn all_comparison_single_parent_is_empty_and_invalid_frontier_fails_closed() {
+        let (genesis, mut headers) = fixture();
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let result = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN,
+            GENESIS_NS,
+            &genesis,
+            std::slice::from_ref(&a),
+            &headers,
+        )
+        .unwrap();
+        assert_eq!(result.by_comparison_parent.get(&a), Some(&Vec::new()));
+        assert_eq!(
+            result
+                .topological_evaluation
+                .ordered_reachable_headers
+                .len(),
+            2
+        );
+        assert!(derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN,
+            GENESIS_NS,
+            &genesis,
+            &[a.clone(), a],
             &headers,
         )
         .is_err());

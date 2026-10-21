@@ -58,6 +58,12 @@ jobs:
           set -euo pipefail
           cargo test --locked -p pulsedag-core --lib native_topological_evaluation_v3::tests:: -- --nocapture | tee /tmp/v3-dormant-topo-order.log
           grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/v3-dormant-topo-order.log
+      - name: Verify four new all-parent comparisons against reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib native_merge_set_v3::tests::all_comparison_ -- --nocapture | tee /tmp/v3-dormant-all-parent-matrix.log
+          grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/v3-dormant-all-parent-matrix.log
       - name: Verify all dormant merge-set unit tests
         shell: bash
         run: |
