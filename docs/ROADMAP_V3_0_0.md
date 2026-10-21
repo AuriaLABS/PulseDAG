@@ -12,6 +12,32 @@ Earlier v2.x release lines are no longer predecessor release gates. Their artifa
 
 Physical NVIDIA/AMD acceptance is not a v3.0.0 GO prerequisite under #781/#794; production GPU claims remain separately gated.
 
+## Required pre-mainnet native-v3 monetary mining rehearsal (decision 2026-10-21)
+
+**Plan:** native-v3 **monetary block production must be activated and tested before the public mainnet launch**, but first in an explicitly configured **isolated non-public rehearsal chain**, distinct from both mainnet and the public parallel testnet. The public parallel testnet still launches together with mainnet under [#781](https://github.com/AuriaLABS/PulseDAG/issues/781). This is a real CPU-mining and economic-state validation milestone, not merely a miner benchmark, dormant PoW-header test or a claim about activated-v2 monetary replay.
+
+- [ ] Freeze native-v3 GHOSTDAG/PoW selected-parent, `K`, ordered blue/red, checked cumulative blue-work and full retarget rules, with reproducible cross-implementation vectors (#1309).
+- [ ] Implement native block/transaction/reward/fees/UTXO admission and deterministic DAG replay with safe storage, pruning, orphan processing, restart and recovery.
+- [ ] Create an **opt-in isolated rehearsal activation profile**, bound to its own frozen genesis, chain ID, signing domain, storage and P2P peers; prevent configuration or persisted-state bypass on mainnet/public network profiles.
+- [ ] **Activate actual native-v3 monetary mining on that non-public chain** and verify valid reward issuance, fees, accepted transaction reconciliation, state roots, double-spend/conflict rejection and steady 500ms behavior with multiple miners/nodes.
+- [ ] Preserve adversarial, exact-candidate security/dependency, sustained-cadence, replay and coordinated-launch acceptance gates. Obtain separate formal public GO on #781.
+- [ ] Verify smart-contract deployment/execution is still **INACTIVE** throughout the pre-mainnet rehearsal and the v3.0.0 public launch.
+
+**Not activated today:** current explicit `monetary_v3` startup mode is intentionally rejected before `Storage::open`; a stored monetary sidecar is denied after opening storage but before restore/P2P/mining (#1313). A later tested, explicitly isolated activation mechanism may replace these guards only in its own approved rehearsal configuration, while production/public profiles must remain fail-closed until formal #781 GO. Planning does **not** itself change code or release any mining network.
+
+## Pre-mainnet smart-contract readiness with full v3.0 non-activation (decision 2026-10-21)
+
+**Required prelaunch implementation deliverable:** the **defined core smart-contract stack** must be functionally complete, code-reviewed, adversarially tested and reproducibly marked `CONTRACT_IMPLEMENTATION_READY` for an exact candidate before the coordinated public mainnet launch. Implementation readiness does **not** authorize live deployment or execution. The acceptance ledger is [#1333](https://github.com/AuriaLABS/PulseDAG/issues/1333); the sole public GO remains [#781](https://github.com/AuriaLABS/PulseDAG/issues/781).
+
+- [ ] Freeze versioned **core** scope (canonical Contract Transaction v3, bounded PulseScript compiler, deterministic VM, required contract state/resource/fee handling and defined offline integration), with explicit exclusions for optional Based Apps, PulseProgs, generic ZK and unrelated advanced extensions.
+- [ ] Finish the core implementation and run deterministic positive/negative, cross-implementation, performance-budget, reorg/restart/pruning, parallel-conflict and fuzz/security suites **in offline or explicitly isolated development harnesses**.
+- [ ] Build the exact release candidate reproducibly and record core version, artifact/tree hashes, readiness evidence and any documented limitations; `READY` remains **NOT PROVEN** until these checks pass.
+- [ ] Keep `contracts_enabled=false` **mandatory** for all v3.0 mining/consensus modes, including isolated pre-mainnet monetary-v3 mining. No ordinary CLI flag, config, stored sidecar, replay, restart, peer, contract-bearing block or public RPC may activate a contract.
+- [ ] Prove **non-interference** across active UTXO/DAG replay, native PoW/work, accepted block ordering, reward/fees, state roots, mining-template/P2P, node startup, RPC, wallet and package behavior by comparing contract-inactive candidate to a verified baseline with the same non-contract inputs.
+- [ ] Complete the core readiness and inactive-boundary acceptance before #781 GO. Contract *activation*, public deploy/execute endpoints and general VM consensus remain **out of v3.0.0** and require a later separately versioned upgrade and dedicated GO.
+
+The previously accepted option to ship **partially implemented core contracts** is superseded. However, unfinished **optional** proof/application extensions are not misrepresented as part of a complete core. If mandatory core readiness cannot be proven by release freeze, the status is DELAY/NO-GO or an explicit separately recorded scope decision, not a fabricated readiness pass.
+
 ## Thesis
 
 PulseDAG 3.0 is the Pulse Layer: high-cadence UTXO money, a DAG-derived clock, bounded covenant templates, and verifiable settlement. L1 does not execute unbounded applications.
@@ -20,7 +46,7 @@ Activation intent for the v3.0 candidate genesis:
 
 - `contracts_enabled=false` remains mandatory;
 - `covenants_enabled` may be true only for the frozen template set defined here;
-- PulseVM / PulseScript / generic ZK verification stay out of 3.0 and belong to `3.1+` or a later `v2.6.0` continuation.
+- **Live** PulseVM/PulseScript execution and generic ZK verification stay out of 3.0; the **dormant core implementation** of bounded PulseScript/VM is required READY before mainnet (#1333), with separately versioned activation later.
 
 ## Non-negotiable principles
 
@@ -130,7 +156,7 @@ Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 
 ## Explicitly out of 3.0.0
 
-- Enabling a general contract VM in the same genesis as first public mainnet identity.
+- Enabling **execution or deployment** of the general contract VM in the same genesis as first public mainnet identity; having a completed, verified but INACTIVE implementation in release artifacts is allowed only with proven non-interference.
 - EVM compatibility.
 - Pool/stratum inside the node or official miner.
 - Changing PoW away from domain-separated kHeavyHash before a live network exists.
@@ -145,8 +171,8 @@ Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 | v2.4.0 | GHOSTDAG v1, tx v2, header v2, exact-candidate release gates | this roadmap |
 | v2.5.0 | compact relay, pruning/sync, mempool, miner proto v3, NVIDIA+AMD GPU, cadence envelope, 1M-block replay | contracts |
 | v2.6-lite / 3.0 spec freeze | PulseClock, access sets, six templates, colored UTXO, based-app v0, `pulsedag verify`, wallet + DAG explorer | PulseVM, generic ZK, NFT standards |
-| v3.0.0 genesis (future decision) | fresh identity, templates on, PulseClock on, based-apps v0 on, `contracts_enabled=false` | general VM |
-| 3.1+ / remaining v2.6.0 | PulseScript, PulseVM, PDT-721, ZK PulseProgs | — |
+| v3.0.0 genesis (future decision) | fresh identity; active monetary-v3 consensus after internal rehearsal/GO; frozen bounded core contract implementation READY but `contracts_enabled=false` and no contract execution | active general VM, contract deployment and public contract RPC |
+| 3.1+ / remaining v2.6.0 | separately versioned activation of already tested PulseScript/VM, advanced assets, ZK PulseProgs and future extensions | — |
 
 ## Acceptance demo (planning bar, not a release gate)
 
