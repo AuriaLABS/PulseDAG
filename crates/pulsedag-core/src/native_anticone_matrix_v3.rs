@@ -277,6 +277,9 @@ mod tests {
         assert!(matrix("00", &frontier, &headers).is_err());
         frontier.reverse();
         assert!(matrix(&genesis, &frontier, &headers).is_err());
+        // Restore a canonical frontier so this rejection is specifically
+        // attributable to chain-domain authentication, not parent ordering.
+        frontier.sort();
         assert!(derive_dormant_native_v3_anticone_matrix(
             "different-chain",
             GENESIS_NS,
