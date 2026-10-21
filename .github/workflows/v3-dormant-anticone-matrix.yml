@@ -1,0 +1,61 @@
+name: v3 dormant anticone matrix diagnostics (no K authority)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-core/src/native_anticone_matrix_v3.rs"
+      - "crates/pulsedag-core/src/native_dag_relation_v3.rs"
+      - "crates/pulsedag-core/src/native_topological_evaluation_v3.rs"
+      - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - ".github/workflows/v3-dormant-anticone-matrix.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-core/src/native_anticone_matrix_v3.rs"
+      - "crates/pulsedag-core/src/native_dag_relation_v3.rs"
+      - "crates/pulsedag-core/src/native_topological_evaluation_v3.rs"
+      - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - ".github/workflows/v3-dormant-anticone-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  dormant-anticone-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format, new four-test matrix and pairwise oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --lib native_anticone_matrix_v3::tests:: -- --nocapture | tee /tmp/v3-anticone-matrix.log
+          grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/v3-anticone-matrix.log
+          cargo test --locked -p pulsedag-core --lib native_dag_relation_v3::tests:: -- --nocapture | tee /tmp/v3-pair-relation-reference.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/v3-pair-relation-reference.log
+      - name: Strict all-targets Clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
