@@ -319,20 +319,8 @@ mod tests {
             GENESIS_NS + 1_000_000_000,
             true,
         );
-        let a_tip = append(
-            &mut headers,
-            vec![a],
-            2,
-            GENESIS_NS + 1_100_000_000,
-            true,
-        );
-        let b_tip = append(
-            &mut headers,
-            vec![b],
-            2,
-            GENESIS_NS + 1_200_000_000,
-            true,
-        );
+        let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
+        let b_tip = append(&mut headers, vec![b], 2, GENESIS_NS + 1_200_000_000, true);
         let mut frontier = vec![joined.clone(), a_tip.clone(), b_tip.clone()];
         frontier.sort();
 
