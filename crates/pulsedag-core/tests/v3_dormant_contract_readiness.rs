@@ -19,7 +19,10 @@ use pulsedag_core::{
     },
 };
 
-fn isolated_identity() -> (ProtocolActivationIdentity, ProgrammabilityActivationIdentity) {
+fn isolated_identity() -> (
+    ProtocolActivationIdentity,
+    ProgrammabilityActivationIdentity,
+) {
     // Synthetic historical protocol identity for the dormant activation-contract
     // fixture; deliberately NOT a v3.0 network identity or activation authority.
     let base = ProtocolActivationIdentity::activated_v2(
@@ -90,8 +93,7 @@ fn local_upgrade_proposal_with_no_trusted_authority_fails_closed() {
 fn offline_vm_vectors_are_identical_across_feature_builds_without_network_activation() {
     let source = "pulsescript-v1\npush_u64 2\npush_u64 3\nadd_u64\npush_u64 5\neq_u64\nhalt\n";
     let compiled = compile_pulsescript_v1(source).unwrap();
-    let expected_fingerprint =
-        "dd9c436647ddcd2af828f1c3dd60ac13ca6102ce436adc1d8e67494da409908d";
+    let expected_fingerprint = "dd9c436647ddcd2af828f1c3dd60ac13ca6102ce436adc1d8e67494da409908d";
     assert_eq!(
         hex::encode(pulse_bytecode_fingerprint_v1(&compiled.bytecode).unwrap()),
         expected_fingerprint,
