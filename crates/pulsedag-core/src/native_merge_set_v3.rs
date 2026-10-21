@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     errors::PulseError,
     header_v3::BlockHeaderV3,
-    native_topological_evaluation_v3::{
-        derive_dormant_native_v3_topological_evaluation, DormantV3TopologicalEvaluation,
-    },
     native_parent_dag_context_v3::{
         verify_dormant_native_v3_parent_dag, DormantV3ParentDagCheck, MAX_DORMANT_V3_DAG_HEADERS,
+    },
+    native_topological_evaluation_v3::{
+        derive_dormant_native_v3_topological_evaluation, DormantV3TopologicalEvaluation,
     },
     types::BlockId,
 };
@@ -158,7 +158,9 @@ pub fn derive_dormant_native_v3_all_parent_merge_sets(
         inclusive_past.insert(hash.clone());
         for parent in &header.parents {
             let parent_past = ancestor_pasts.get(parent).ok_or_else(|| {
-                invalid(format!("parent {parent} precedes no authenticated topological past"))
+                invalid(format!(
+                    "parent {parent} precedes no authenticated topological past"
+                ))
             })?;
             inclusive_past.extend(parent_past.iter().cloned());
         }
@@ -170,25 +172,30 @@ pub fn derive_dormant_native_v3_all_parent_merge_sets(
 
     let mut union_of_parent_pasts = BTreeSet::new();
     for parent in candidate_parents {
-        let past = ancestor_pasts
-            .get(parent)
-            .ok_or_else(|| invalid(format!("missing candidate parent {parent} in verified past")))?;
+        let past = ancestor_pasts.get(parent).ok_or_else(|| {
+            invalid(format!(
+                "missing candidate parent {parent} in verified past"
+            ))
+        })?;
         union_of_parent_pasts.extend(past.iter().cloned());
     }
     if union_of_parent_pasts.len() != topological_evaluation.ordered_reachable_headers.len() {
-        return Err(invalid("verified ancestor closure differs from parent-past union"));
+        return Err(invalid(
+            "verified ancestor closure differs from parent-past union",
+        ));
     }
 
     let mut by_comparison_parent = BTreeMap::new();
     for parent in candidate_parents {
-        let past = ancestor_pasts
-            .get(parent)
-            .ok_or_else(|| invalid(format!("missing candidate parent {parent} in verified past")))?;
+        let past = ancestor_pasts.get(parent).ok_or_else(|| {
+            invalid(format!(
+                "missing candidate parent {parent} in verified past"
+            ))
+        })?;
         // union(parent inclusive pasts) - past(this parent) is exactly
         // union(past(other parents)) - past(this parent), even for redundant
         // parent/ancestor relationships. This is set algebra, NOT blue order.
-        let relative: Vec<BlockId> =
-            union_of_parent_pasts.difference(past).cloned().collect();
+        let relative: Vec<BlockId> = union_of_parent_pasts.difference(past).cloned().collect();
         by_comparison_parent.insert(parent.clone(), relative);
     }
 
@@ -700,9 +707,27 @@ mod tests {
     #[test]
     fn all_comparison_sets_match_independent_single_parent_reference_on_three_parents() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let b = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true);
-        let joined = append(&mut headers, vec![a.clone(), b.clone()], 2, GENESIS_NS + 1_000_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let joined = append(
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
         let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
         let b_tip = append(&mut headers, vec![b], 2, GENESIS_NS + 1_200_000_000, true);
         let mut parents = vec![joined, a_tip, b_tip];
@@ -710,9 +735,16 @@ mod tests {
 
         let matrix = derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, &genesis, &parents, &headers,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(matrix.by_comparison_parent.len(), 3);
-        assert_eq!(matrix.topological_evaluation.verified_dag.authenticated_non_genesis_headers, 5);
+        assert_eq!(
+            matrix
+                .topological_evaluation
+                .verified_dag
+                .authenticated_non_genesis_headers,
+            5
+        );
         for parent in &parents {
             let reference = examine(&genesis, &parents, parent, &headers).unwrap();
             assert_eq!(
@@ -725,13 +757,26 @@ mod tests {
     #[test]
     fn all_comparison_sets_ignore_unreachable_corrupted_map_entries_and_reinsertion_order() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let b = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
         let mut parents = vec![a, b];
         parents.sort();
         let original = derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, &genesis, &parents, &headers,
-        ).unwrap();
+        )
+        .unwrap();
         let mut bad = headers.get(&genesis).unwrap().clone();
         bad.nonce += 99;
         headers.insert("ff".repeat(32), bad);
@@ -741,7 +786,8 @@ mod tests {
         }
         let result = derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, &genesis, &parents, &rebuilt,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(original, result);
         assert_eq!(result.by_comparison_parent.len(), 2);
         for parent in &parents {
@@ -752,37 +798,73 @@ mod tests {
     #[test]
     fn all_comparison_sets_reject_missing_and_bad_pow_side_ancestry() {
         let (genesis, mut headers) = fixture();
-        let good = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
-        let bad = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, false);
+        let good = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let bad = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
+        );
         let mut parents = vec![good, bad.clone()];
         parents.sort();
 
         let rejected = derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, &genesis, &parents, &headers,
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(rejected.to_string().contains("invalid PoW"));
         headers.remove(&bad);
         let missing = derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, &genesis, &parents, &headers,
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(missing.to_string().contains("missing ancestor header"));
         assert!(derive_dormant_native_v3_all_parent_merge_sets(
             CHAIN, GENESIS_NS, "00", &parents, &headers,
-        ).is_err());
+        )
+        .is_err());
     }
 
     #[test]
     fn all_comparison_single_parent_is_empty_and_invalid_frontier_fails_closed() {
         let (genesis, mut headers) = fixture();
-        let a = append(&mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true);
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
         let result = derive_dormant_native_v3_all_parent_merge_sets(
-            CHAIN, GENESIS_NS, &genesis, std::slice::from_ref(&a), &headers,
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &genesis,
+            std::slice::from_ref(&a),
+            &headers,
+        )
+        .unwrap();
         assert_eq!(result.by_comparison_parent.get(&a), Some(&Vec::new()));
-        assert_eq!(result.topological_evaluation.ordered_reachable_headers.len(), 2);
+        assert_eq!(
+            result
+                .topological_evaluation
+                .ordered_reachable_headers
+                .len(),
+            2
+        );
         assert!(derive_dormant_native_v3_all_parent_merge_sets(
-            CHAIN, GENESIS_NS, &genesis, &[a.clone(), a], &headers,
-        ).is_err());
+            CHAIN,
+            GENESIS_NS,
+            &genesis,
+            &[a.clone(), a],
+            &headers,
+        )
+        .is_err());
     }
-
 }
