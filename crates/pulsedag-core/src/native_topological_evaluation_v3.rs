@@ -15,8 +15,7 @@ use crate::{
     errors::PulseError,
     header_v3::BlockHeaderV3,
     native_parent_dag_context_v3::{
-        verify_dormant_native_v3_parent_dag, DormantV3ParentDagCheck,
-        MAX_DORMANT_V3_DAG_HEADERS,
+        verify_dormant_native_v3_parent_dag, DormantV3ParentDagCheck, MAX_DORMANT_V3_DAG_HEADERS,
     },
     types::BlockId,
 };
@@ -83,8 +82,7 @@ pub fn derive_dormant_native_v3_topological_evaluation(
         keyed.push((header.height, hash.clone()));
     }
     keyed.sort_unstable();
-    let ordered_reachable_headers: Vec<BlockId> =
-        keyed.into_iter().map(|(_, hash)| hash).collect();
+    let ordered_reachable_headers: Vec<BlockId> = keyed.into_iter().map(|(_, hash)| hash).collect();
 
     if ordered_reachable_headers.first().map(String::as_str) != Some(frozen_genesis_hash)
         || ordered_reachable_headers.len() != verified_dag.authenticated_non_genesis_headers + 1
@@ -118,10 +116,8 @@ pub fn derive_dormant_native_v3_topological_evaluation(
 mod tests {
     use super::*;
     use crate::{
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::compute_block_hash_v3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::compute_block_hash_v3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
     };
 
@@ -180,20 +176,39 @@ mod tests {
     fn branch_join_order_is_height_then_hash_and_parent_before_child() {
         let (genesis, mut headers) = fixture();
         let a = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let b = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
         );
         let joined = append(
-            &mut headers, vec![a.clone(), b.clone()], 2, GENESIS_NS + 1_000_000_000, true,
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
         );
         let side = append(
-            &mut headers, vec![b.clone()], 2, GENESIS_NS + 1_200_000_000, true,
+            &mut headers,
+            vec![b.clone()],
+            2,
+            GENESIS_NS + 1_200_000_000,
+            true,
         );
         let tip = append(
-            &mut headers, vec![joined.clone(), side.clone()], 3,
-            GENESIS_NS + 1_800_000_000, true,
+            &mut headers,
+            vec![joined.clone(), side.clone()],
+            3,
+            GENESIS_NS + 1_800_000_000,
+            true,
         );
         let found = evaluate(&genesis, &[tip.clone()], &headers).unwrap();
         let mut height_one = vec![a, b];
@@ -213,10 +228,18 @@ mod tests {
     fn diagnostic_does_not_depend_on_candidate_order_or_unreachable_index_entries() {
         let (genesis, mut headers) = fixture();
         let a = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let b = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
         );
         let mut roots = vec![a, b];
         roots.sort();
@@ -242,10 +265,18 @@ mod tests {
     fn rejects_missing_side_ancestry_and_side_branch_pow() {
         let (genesis, mut headers) = fixture();
         let a = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let bad = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, false,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            false,
         );
         let mut roots = vec![a.clone(), bad.clone()];
         roots.sort();
@@ -264,10 +295,18 @@ mod tests {
     fn fails_closed_for_untrusted_genesis_unsorted_roots_and_other_chain() {
         let (genesis, mut headers) = fixture();
         let a = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 500_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
         );
         let b = append(
-            &mut headers, vec![genesis.clone()], 1, GENESIS_NS + 600_000_000, true,
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
         );
         let mut unsorted = vec![a.clone(), b.clone()];
         unsorted.sort();
@@ -275,7 +314,12 @@ mod tests {
         assert!(evaluate(&genesis, &unsorted, &headers).is_err());
         assert!(evaluate("00", &[a.clone()], &headers).is_err());
         assert!(derive_dormant_native_v3_topological_evaluation(
-            "different-chain", GENESIS_NS, &genesis, &[a], &headers,
-        ).is_err());
+            "different-chain",
+            GENESIS_NS,
+            &genesis,
+            &[a],
+            &headers,
+        )
+        .is_err());
     }
 }
