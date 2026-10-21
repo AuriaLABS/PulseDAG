@@ -395,5 +395,4 @@ mod tests {
         assert!(compared.by_comparison_parent[&descendant].is_empty());
         assert!(!anticones.anticone_by_block[&ancestor].contains(&descendant));
     }
-
 }
