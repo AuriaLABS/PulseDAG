@@ -1,6 +1,6 @@
 //! Offline contract readiness conformance. Does NOT enable contract consensus.
- //! Run identically with and without executable-contracts to prove v3.0
- //! inactive network behavior is independent of compiled developer tooling.
+//! Run identically with and without executable-contracts to prove v3.0
+//! inactive network behavior is independent of compiled developer tooling.
 
 use pulsedag_core::{
     contract_v3::{
