@@ -12,6 +12,19 @@ Earlier v2.x release lines are no longer predecessor release gates. Their artifa
 
 Physical NVIDIA/AMD acceptance is not a v3.0.0 GO prerequisite under #781/#794; production GPU claims remain separately gated.
 
+## Required pre-mainnet native-v3 monetary mining rehearsal (decision 2026-10-21)
+
+**Plan:** native-v3 **monetary block production must be activated and tested before the public mainnet launch**, but first in an explicitly configured **isolated non-public rehearsal chain**, distinct from both mainnet and the public parallel testnet. The public parallel testnet still launches together with mainnet under [#781](https://github.com/AuriaLABS/PulseDAG/issues/781). This is a real CPU-mining and economic-state validation milestone, not merely a miner benchmark, dormant PoW-header test or a claim about activated-v2 monetary replay.
+
+- [ ] Freeze native-v3 GHOSTDAG/PoW selected-parent, `K`, ordered blue/red, checked cumulative blue-work and full retarget rules, with reproducible cross-implementation vectors (#1309).
+- [ ] Implement native block/transaction/reward/fees/UTXO admission and deterministic DAG replay with safe storage, pruning, orphan processing, restart and recovery.
+- [ ] Create an **opt-in isolated rehearsal activation profile**, bound to its own frozen genesis, chain ID, signing domain, storage and P2P peers; prevent configuration or persisted-state bypass on mainnet/public network profiles.
+- [ ] **Activate actual native-v3 monetary mining on that non-public chain** and verify valid reward issuance, fees, accepted transaction reconciliation, state roots, double-spend/conflict rejection and steady 500ms behavior with multiple miners/nodes.
+- [ ] Preserve adversarial, exact-candidate security/dependency, sustained-cadence, replay and coordinated-launch acceptance gates. Obtain separate formal public GO on #781.
+- [ ] Verify smart-contract deployment/execution is still **INACTIVE** throughout the pre-mainnet rehearsal and the v3.0.0 public launch.
+
+**Not activated today:** current explicit `monetary_v3` startup mode is intentionally rejected before `Storage::open`; a stored monetary sidecar is denied after opening storage but before restore/P2P/mining (#1313). A later tested, explicitly isolated activation mechanism may replace these guards only in its own approved rehearsal configuration, while production/public profiles must remain fail-closed until formal #781 GO. Planning does **not** itself change code or release any mining network.
+
 ## Thesis
 
 PulseDAG 3.0 is the Pulse Layer: high-cadence UTXO money, a DAG-derived clock, bounded covenant templates, and verifiable settlement. L1 does not execute unbounded applications.
