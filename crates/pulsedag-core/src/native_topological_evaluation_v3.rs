@@ -210,7 +210,7 @@ mod tests {
             GENESIS_NS + 1_800_000_000,
             true,
         );
-        let found = evaluate(&genesis, &[tip.clone()], &headers).unwrap();
+        let found = evaluate(&genesis, std::slice::from_ref(&tip), &headers).unwrap();
         let mut height_one = vec![a, b];
         height_one.sort();
         let mut height_two = vec![joined, side];
@@ -312,7 +312,7 @@ mod tests {
         unsorted.sort();
         unsorted.reverse();
         assert!(evaluate(&genesis, &unsorted, &headers).is_err());
-        assert!(evaluate("00", &[a.clone()], &headers).is_err());
+        assert!(evaluate("00", std::slice::from_ref(&a), &headers).is_err());
         assert!(derive_dormant_native_v3_topological_evaluation(
             "different-chain",
             GENESIS_NS,
