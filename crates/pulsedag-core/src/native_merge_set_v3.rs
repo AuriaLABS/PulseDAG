@@ -550,7 +550,10 @@ mod tests {
             if mask == complete_mask {
                 assert_eq!(result.unwrap(), initial);
             } else {
-                assert!(result.is_err(), "partial reachable closure {mask:#08b} accepted");
+                assert!(
+                    result.is_err(),
+                    "partial reachable closure {mask:#08b} accepted"
+                );
             }
         }
 
