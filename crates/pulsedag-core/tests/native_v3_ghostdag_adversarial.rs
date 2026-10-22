@@ -82,7 +82,7 @@ fn target_weighted_hard_parent_wins_and_k_changes_actual_merge_colors() {
     headers.insert(hard.clone(), h_hard);
     headers.insert(easy_b.clone(), h_b);
 
-    let mut side = vec![easy_a.clone(), easy_b.clone()];
+    let mut side = [easy_a.clone(), easy_b.clone()];
     side.sort();
     let mut frontier = vec![easy_a.clone(), hard.clone(), easy_b.clone()];
     frontier.sort();
@@ -102,7 +102,7 @@ fn target_weighted_hard_parent_wins_and_k_changes_actual_merge_colors() {
             CHAIN,
             GENESIS_NS,
             &g,
-            &[joined.clone()],
+            std::slice::from_ref(&joined),
             &headers,
             trial_k,
         )
@@ -158,7 +158,7 @@ fn malformed_committed_score_rejected_even_if_kheavyhash_is_valid() {
             CHAIN,
             GENESIS_NS,
             &g,
-            &[invalid.clone()],
+            std::slice::from_ref(&invalid),
             &headers,
             k,
         );
