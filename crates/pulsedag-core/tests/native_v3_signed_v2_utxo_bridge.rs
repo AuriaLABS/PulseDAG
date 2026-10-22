@@ -24,7 +24,8 @@ use pulsedag_core::{
 };
 
 #[path = "support/native_v3_utxo_preview.rs"]
-#[allow(dead_code)] // shared test helper exposes additional UTXO adversarial checks in a separate suite
+#[allow(dead_code)]
+// shared test helper exposes additional UTXO adversarial checks in a separate suite
 mod detached_utxo;
 
 use detached_utxo::{apply, coin, fingerprint, undo, HypotheticalBlockEffects, PreviewSet};
@@ -49,8 +50,13 @@ fn test_state() -> (ChainState, Utxo) {
         false,
         1,
     );
-    state.utxo.utxos.insert(funding.outpoint.clone(), funding.clone());
-    state.utxo.address_index
+    state
+        .utxo
+        .utxos
+        .insert(funding.outpoint.clone(), funding.clone());
+    state
+        .utxo
+        .address_index
         .entry(funding.address.clone())
         .or_default()
         .push(funding.outpoint.clone());
@@ -75,8 +81,11 @@ fn signed_v2_transfer(source: &OutPoint, recipient: &str, amount: u64, fee: u64)
         fee,
         nonce: 7,
     };
-    tx.inputs[0].signature =
-        hex::encode(signing_key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+    tx.inputs[0].signature = hex::encode(
+        signing_key
+            .sign(&signing_message_v2(&tx, CHAIN).unwrap())
+            .to_bytes(),
+    );
     tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
     tx
 }
@@ -122,27 +131,42 @@ fn signed_v2_effect(
     }
     validate_transaction_v2(tx, state, CHAIN)
         .map_err(|error| format!("v2 signed transfer invalid: {error}"))?;
-    let spent: Vec<Utxo> = tx.inputs.iter().map(|input| {
-        state.utxo.utxos.get(&input.previous_output)
-            .cloned().ok_or("input lacks a settled UTXO".to_string())
-    }).collect::<Result<_, _>>()?;
-    let created: Vec<Utxo> = tx.outputs.iter().enumerate().map(|(i, output)| {
-        Ok(Utxo {
-            outpoint: OutPoint {
-                txid: tx.txid.clone(),
-                index: u32::try_from(i).map_err(|_| "output index overflow")?,
-            },
-            address: output.address.clone(),
-            amount: output.amount,
-            coinbase: false,
-            height: 1,
+    let spent: Vec<Utxo> = tx
+        .inputs
+        .iter()
+        .map(|input| {
+            state
+                .utxo
+                .utxos
+                .get(&input.previous_output)
+                .cloned()
+                .ok_or("input lacks a settled UTXO".to_string())
         })
-    }).collect::<Result<_, String>>()?;
+        .collect::<Result<_, _>>()?;
+    let created: Vec<Utxo> = tx
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(i, output)| {
+            Ok(Utxo {
+                outpoint: OutPoint {
+                    txid: tx.txid.clone(),
+                    index: u32::try_from(i).map_err(|_| "output index overflow")?,
+                },
+                address: output.address.clone(),
+                amount: output.amount,
+                coinbase: false,
+                height: 1,
+            })
+        })
+        .collect::<Result<_, String>>()?;
     let inputs = spent.iter().try_fold(0u128, |sum, coin| {
-        sum.checked_add(u128::from(coin.amount)).ok_or("input sum overflow".to_string())
+        sum.checked_add(u128::from(coin.amount))
+            .ok_or("input sum overflow".to_string())
     })?;
     let outputs = created.iter().try_fold(0u128, |sum, coin| {
-        sum.checked_add(u128::from(coin.amount)).ok_or("output sum overflow".to_string())
+        sum.checked_add(u128::from(coin.amount))
+            .ok_or("output sum overflow".to_string())
     })?;
     if inputs != outputs + u128::from(tx.fee) {
         return Err("strict test-only input/output/fee equality mismatch".into());
@@ -181,8 +205,14 @@ fn genuine_signed_v2_spends_have_native_v3_header_pow_merkle_and_reversible_prev
     let after_b = apply(&initial, &effects_b).unwrap();
     assert_eq!(detached_utxo::total_supply(&after_a).unwrap(), 90);
     assert_eq!(detached_utxo::total_supply(&after_b).unwrap(), 92);
-    assert!(apply(&after_a, &effects_b).is_err(), "conflicting signed spends cannot coexist");
-    assert!(apply(&after_b, &effects_a).is_err(), "opposite spend is also exclusive");
+    assert!(
+        apply(&after_a, &effects_b).is_err(),
+        "conflicting signed spends cannot coexist"
+    );
+    assert!(
+        apply(&after_b, &effects_a).is_err(),
+        "opposite spend is also exclusive"
+    );
 
     let from_alice = undo(&after_a, &effects_a).unwrap();
     assert_eq!(fingerprint(&from_alice), fingerprint(&initial));
@@ -190,7 +220,10 @@ fn genuine_signed_v2_spends_have_native_v3_header_pow_merkle_and_reversible_prev
     assert_eq!(fingerprint(&new_branch), fingerprint(&after_b));
     let from_bob = undo(&after_b, &effects_b).unwrap();
     assert_eq!(fingerprint(&from_bob), fingerprint(&initial));
-    assert_eq!(fingerprint(&apply(&from_bob, &effects_a).unwrap()), fingerprint(&after_a));
+    assert_eq!(
+        fingerprint(&apply(&from_bob, &effects_a).unwrap()),
+        fingerprint(&after_a)
+    );
     assert_eq!(state.utxo.utxos[&funding.outpoint].amount, 100);
 }
 
