@@ -88,5 +88,5 @@ jobs:
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
           cargo test --locked -p pulsedag-core --lib native_ghostdag_policy_candidate_v3::tests:: -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_adversarial -- --nocapture | tee /tmp/native-v3-ghostdag-adversarial.log
-          grep -Fq 'test result: ok. 3 passed; 0 failed;' /tmp/native-v3-ghostdag-adversarial.log
+          grep -Fq 'test result: ok. 4 passed; 0 failed;' /tmp/native-v3-ghostdag-adversarial.log
           cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
