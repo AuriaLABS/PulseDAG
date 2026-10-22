@@ -249,14 +249,7 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         0x84,
     );
     headers.insert(b.clone(), hb);
-    let (b2, hb2) = mine(
-        vec![b],
-        2,
-        GENESIS_NS + 1_100_000_000,
-        2,
-        EASY_BITS,
-        0x85,
-    );
+    let (b2, hb2) = mine(vec![b], 2, GENESIS_NS + 1_100_000_000, 2, EASY_BITS, 0x85);
     headers.insert(b2.clone(), hb2);
 
     let tips = derive_dormant_native_v3_ghostdag_trial(
