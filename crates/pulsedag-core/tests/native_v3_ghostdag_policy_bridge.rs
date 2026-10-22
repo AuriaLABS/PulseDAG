@@ -81,7 +81,10 @@ fn independently_authenticated_rust_fork_and_rejoin_match_candidate_k_zero_and_o
         1,
         "22".repeat(32),
     );
-    assert_ne!(a, b, "different headers must have distinct SHA256 identities");
+    assert_ne!(
+        a, b,
+        "different headers must have distinct SHA256 identities"
+    );
     headers.insert(a.clone(), ha);
     headers.insert(b.clone(), hb);
 
@@ -97,7 +100,10 @@ fn independently_authenticated_rust_fork_and_rejoin_match_candidate_k_zero_and_o
     )
     .expect("every ancestor including the side branch must be authenticated");
     assert_eq!(
-        all_sets.topological_evaluation.verified_dag.authenticated_non_genesis_headers,
+        all_sets
+            .topological_evaluation
+            .verified_dag
+            .authenticated_non_genesis_headers,
         2
     );
     let selected = &parents[0];
@@ -131,7 +137,11 @@ fn independently_authenticated_rust_fork_and_rejoin_match_candidate_k_zero_and_o
             2,
             GENESIS_NS + 1_000_000_000,
             expected_score,
-            if k == 0 { root.clone() } else { "44".repeat(32) },
+            if k == 0 {
+                root.clone()
+            } else {
+                "44".repeat(32)
+            },
         );
         assert_eq!(join.parents, parents);
         assert_eq!(join.blue_score, expected_score);
@@ -150,8 +160,14 @@ fn independently_authenticated_rust_fork_and_rejoin_match_candidate_k_zero_and_o
     }
     assert_eq!(
         derive_dormant_native_v3_all_parent_merge_sets(
-            CHAIN, GENESIS_NS, &genesis_hash, &parents, &reversed_map
-        ).unwrap().by_comparison_parent,
+            CHAIN,
+            GENESIS_NS,
+            &genesis_hash,
+            &parents,
+            &reversed_map
+        )
+        .unwrap()
+        .by_comparison_parent,
         all_sets.by_comparison_parent
     );
 }
@@ -163,26 +179,42 @@ fn independent_rust_dag_rejects_invalid_pow_on_unselected_side_branch() {
     let mut headers = BTreeMap::new();
     headers.insert(genesis_hash.clone(), genesis.header);
     let (good, good_header) = mine(
-        vec![genesis_hash.clone()], 1, GENESIS_NS + 500_000_000, 1,
-        compute_merkle_root(&[])
+        vec![genesis_hash.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        1,
+        compute_merkle_root(&[]),
     );
     headers.insert(good.clone(), good_header);
     let (_, mut bad_header) = mine(
-        vec![genesis_hash.clone()], 1, GENESIS_NS + 600_000_000, 1,
-        "55".repeat(32)
+        vec![genesis_hash.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        1,
+        "55".repeat(32),
     );
-    bad_header.nonce = (0..1_024_u64).find(|nonce| {
-        bad_header.nonce = *nonce;
-        !evaluate_v3_header_pow(&bad_header, CHAIN).unwrap().pow.accepted
-    }).expect("invalid nonce exists for easiest allowed target");
+    bad_header.nonce = (0..1_024_u64)
+        .find(|nonce| {
+            bad_header.nonce = *nonce;
+            !evaluate_v3_header_pow(&bad_header, CHAIN)
+                .unwrap()
+                .pow
+                .accepted
+        })
+        .expect("invalid nonce exists for easiest allowed target");
     let bad_hash = compute_block_hash_v3(&bad_header, CHAIN).unwrap();
     headers.insert(bad_hash.clone(), bad_header);
     let mut parents = vec![good, bad_hash];
     parents.sort();
     assert!(
         derive_dormant_native_v3_all_parent_merge_sets(
-            CHAIN, GENESIS_NS, &genesis_hash, &parents, &headers
-        ).is_err(),
+            CHAIN,
+            GENESIS_NS,
+            &genesis_hash,
+            &parents,
+            &headers
+        )
+        .is_err(),
         "invalid-PoW side ancestry may not be omitted by selected-parent choice"
     );
 }
