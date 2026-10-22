@@ -6,8 +6,6 @@
 //! This is NOT a signed PQC v3 transaction, monetary reward settlement,
 //! canonical ordered DAG replay, live admission or a balance/state-root update.
 
-use std::collections::BTreeMap;
-
 use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{
     address_from_public_key,
@@ -26,6 +24,7 @@ use pulsedag_core::{
 };
 
 #[path = "support/native_v3_utxo_preview.rs"]
+#[allow(dead_code)] // shared test helper exposes additional UTXO adversarial checks in a separate suite
 mod detached_utxo;
 
 use detached_utxo::{apply, coin, fingerprint, undo, HypotheticalBlockEffects, PreviewSet};
