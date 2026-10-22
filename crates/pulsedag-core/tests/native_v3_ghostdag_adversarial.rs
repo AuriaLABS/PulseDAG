@@ -6,12 +6,14 @@
 use std::collections::BTreeMap;
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::{
-        derive_dormant_native_v3_ghostdag_trial,
-        preview_dormant_v3_candidate_selected_chain_delta,
+        derive_dormant_native_v3_ghostdag_trial, preview_dormant_v3_candidate_selected_chain_delta,
     },
-    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
+    pow_v3::evaluate_v3_header_pow,
+    protocol::BLOCK_HEADER_VERSION_V3,
+    types::BlockId,
 };
 
 const CHAIN: &str = "pulsedag-dormant-v3-ghostdag-variable-work";
@@ -252,7 +254,14 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         0x84,
     );
     headers.insert(b.clone(), hb);
-    let (b2, hb2) = mine(vec![b.clone()], 2, GENESIS_NS + 1_100_000_000, 2, EASY_BITS, 0x85);
+    let (b2, hb2) = mine(
+        vec![b.clone()],
+        2,
+        GENESIS_NS + 1_100_000_000,
+        2,
+        EASY_BITS,
+        0x85,
+    );
     headers.insert(b2.clone(), hb2);
 
     let tips = derive_dormant_native_v3_ghostdag_trial(
@@ -271,11 +280,13 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
     // Pure selected-SPINE preview: no UTXO rollback, no accepted-order
     // decision, no finality, no on-chain activation. Full merge-set blocks
     // must be separately processed under a future frozen monetary policy.
-    let switch = preview_dormant_v3_candidate_selected_chain_delta(
-        &tips, &a3, &b2,
-    ).expect("authenticated both tips' selected-parent metadata");
+    let switch = preview_dormant_v3_candidate_selected_chain_delta(&tips, &a3, &b2)
+        .expect("authenticated both tips' selected-parent metadata");
     assert_eq!(switch.common_selected_ancestor, g);
-    assert_eq!(switch.detach_tip_first, vec![a3.clone(), a2.clone(), a.clone()]);
+    assert_eq!(
+        switch.detach_tip_first,
+        vec![a3.clone(), a2.clone(), a.clone()]
+    );
     assert_eq!(switch.attach_ancestor_first, vec![b.clone(), b2.clone()]);
     assert_eq!(switch.old_tip_blue_work.decimal(), "6");
     assert_eq!(switch.new_tip_blue_work.decimal(), "514");
@@ -284,7 +295,10 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         .expect("reverse metadata comparison is symmetric");
     assert_eq!(reverse.common_selected_ancestor, g);
     assert_eq!(reverse.detach_tip_first, vec![b2.clone(), b.clone()]);
-    assert_eq!(reverse.attach_ancestor_first, vec![a.clone(), a2.clone(), a3.clone()]);
+    assert_eq!(
+        reverse.attach_ancestor_first,
+        vec![a.clone(), a2.clone(), a3.clone()]
+    );
     assert_eq!(reverse.old_tip_blue_work.decimal(), "514");
     assert_eq!(reverse.new_tip_blue_work.decimal(), "6");
 
@@ -294,11 +308,9 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
     assert!(unchanged.detach_tip_first.is_empty());
     assert!(unchanged.attach_ancestor_first.is_empty());
     assert!(
-        preview_dormant_v3_candidate_selected_chain_delta(&tips, "not-a-known-tip", &b2)
-            .is_err(),
+        preview_dormant_v3_candidate_selected_chain_delta(&tips, "not-a-known-tip", &b2).is_err(),
         "unknown disconnected tip must fail closed"
     );
-
 
     let mut parents = vec![a3.clone(), b2.clone()];
     parents.sort();
