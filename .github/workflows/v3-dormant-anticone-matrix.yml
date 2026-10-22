@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "crates/pulsedag-core/src/native_anticone_matrix_v3.rs"
+      - "crates/pulsedag-core/src/native_merge_set_v3.rs"
       - "crates/pulsedag-core/src/native_dag_relation_v3.rs"
       - "crates/pulsedag-core/src/native_topological_evaluation_v3.rs"
       - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
@@ -14,6 +15,7 @@ on:
     branches: [main]
     paths:
       - "crates/pulsedag-core/src/native_anticone_matrix_v3.rs"
+      - "crates/pulsedag-core/src/native_merge_set_v3.rs"
       - "crates/pulsedag-core/src/native_dag_relation_v3.rs"
       - "crates/pulsedag-core/src/native_topological_evaluation_v3.rs"
       - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
@@ -45,7 +47,7 @@ jobs:
           toolchain: 1.91.0
           components: rustfmt,clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Format, new four-test matrix and pairwise oracle
+      - name: Format, six-test cross-module matrix and pairwise oracle
         shell: bash
         run: |
           set -euo pipefail
