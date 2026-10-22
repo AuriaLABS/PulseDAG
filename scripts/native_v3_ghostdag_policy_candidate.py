@@ -132,6 +132,38 @@ def self_test():
     require(k1["X"] == ("B", 3, 548, ("D",), ("A",)), "K=1 triple mismatch")
     require(k2["X"] == ("B", 4, 550, ("D", "A"), ()), "K=2 triple mismatch")
 
+    # A longer easy-work selected chain (3 x work=2) is overtaken by
+    # a shorter branch with one hard target (512) and an easy child (2).
+    # The proposed K-cluster admits 0/2/3 merge-side ancestors as K rises.
+    # This is metadata policy only, never live UTXO reorganization authority.
+    deep = {
+        "G": ((), 0),
+        "A": (("G",), 2),
+        "A2": (("A",), 2),
+        "A3": (("A2",), 2),
+        "B": (("G",), 512),
+        "B2": (("B",), 2),
+        "X": (("A3", "B2"), 2),
+    }
+    for k, score, work, blues, reds in [
+        (0, 3, 516, (), ("A", "A2", "A3")),
+        (1, 3, 516, (), ("A", "A2", "A3")),
+        (2, 5, 520, ("A", "A2"), ("A3",)),
+        (3, 6, 522, ("A", "A2", "A3"), ()),
+    ]:
+        out = select_and_color(deep, k)
+        require(out["A3"][2] == 6, "weak multi-height work")
+        require(out["B2"][2] == 514, "hard branch cumulative work")
+        require(out["X"] == ("B2", score, work, blues, reds),
+                f"multi-height K={k} fork/join classification mismatch")
+        for order in (
+            ("G", "A", "A2", "A3", "B", "B2", "X"),
+            ("X", "B2", "B", "A3", "A2", "A", "G"),
+            ("B", "B2", "G", "X", "A3", "A2", "A"),
+        ):
+            require(select_and_color({n: deep[n] for n in order}, k) == out,
+                    f"arrival-order dependent multi-height K={k}")
+
     # All 120 map arrival orders must produce byte-for-byte identical output.
     for ids in permutations(triple):
         candidate = {n: triple[n] for n in ids}
