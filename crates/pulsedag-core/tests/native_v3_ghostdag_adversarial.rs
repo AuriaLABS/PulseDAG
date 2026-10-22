@@ -498,15 +498,20 @@ fn detached_utxo_preview_rejects_double_spend_mint_collision_and_undo_tampering(
             test_fee_burn: 0,
             ..good.clone()
         },
-        HypotheticalBlockEffects {
-            created: vec![coin("next-coin", 90, "eve", false, 1)],
-            ..good.clone()
-        },
     ];
     for bad in bad_cases {
         assert!(apply(&original, &bad).is_err());
         assert_eq!(fingerprint(&original), before);
     }
+    // This simulator intentionally verifies arithmetic/UTXO replay ONLY.
+    // A different output address is not invalid until a real transaction
+    // signature/ownership checker has validated the original transaction.
+    let unverified_recipient = HypotheticalBlockEffects {
+        created: vec![coin("next-coin", 90, "eve", false, 1)],
+        ..good.clone()
+    };
+    assert!(apply(&original, &unverified_recipient).is_ok());
+    // Never interpret this test-only result as a signed transaction approval.
     let forgery = HypotheticalBlockEffects {
         spent: vec![coin("source", 100, "malicious", false, 0)],
         ..good.clone()
