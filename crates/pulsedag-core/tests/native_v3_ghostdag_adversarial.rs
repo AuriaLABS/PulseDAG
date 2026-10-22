@@ -6,12 +6,9 @@
 use std::collections::BTreeMap;
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
-    pow_v3::evaluate_v3_header_pow,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    types::BlockId,
+    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
 
 const CHAIN: &str = "pulsedag-dormant-v3-ghostdag-variable-work";
@@ -113,7 +110,10 @@ fn target_weighted_hard_parent_wins_and_k_changes_actual_merge_colors() {
         let metadata = &result.blocks[&joined];
         assert_eq!(metadata.selected_parent.as_deref(), Some(hard.as_str()));
         assert_eq!(metadata.blue_score, expected_score);
-        assert_eq!(metadata.blue_work.decimal(), (514 + 2 * trial_k).to_string());
+        assert_eq!(
+            metadata.blue_work.decimal(),
+            (514 + 2 * trial_k).to_string()
+        );
         assert_eq!(metadata.merge_blues, side[..trial_k].to_vec());
         assert_eq!(metadata.merge_reds, side[trial_k..].to_vec());
         assert_eq!(result.k_trial, trial_k);
@@ -154,9 +154,17 @@ fn malformed_committed_score_rejected_even_if_kheavyhash_is_valid() {
     );
     headers.insert(invalid.clone(), hi);
     for k in [0, 1, 2] {
-        let verdict =
-            derive_dormant_native_v3_ghostdag_trial(CHAIN, GENESIS_NS, &g, &[invalid.clone()], &headers, k);
-        let error = verdict.expect_err("PoW-valid but forged score must fail closed").to_string();
+        let verdict = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            &[invalid.clone()],
+            &headers,
+            k,
+        );
+        let error = verdict
+            .expect_err("PoW-valid but forged score must fail closed")
+            .to_string();
         assert!(error.contains("committed blue score differs"), "{error}");
     }
 }
@@ -191,14 +199,10 @@ fn redundant_direct_parent_frontier_fails_closed_without_live_consensus() {
         0x73,
     );
     headers.insert(invalid.clone(), hi);
-    let result = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN,
-        GENESIS_NS,
-        &g,
-        &[invalid],
-        &headers,
-        2,
-    );
-    let error = result.expect_err("redundant ancestor/direct parent").to_string();
+    let result =
+        derive_dormant_native_v3_ghostdag_trial(CHAIN, GENESIS_NS, &g, &[invalid], &headers, 2);
+    let error = result
+        .expect_err("redundant ancestor/direct parent")
+        .to_string();
     assert!(error.contains("antichain"), "{error}");
 }
