@@ -206,3 +206,106 @@ fn redundant_direct_parent_frontier_fails_closed_without_live_consensus() {
         .to_string();
     assert!(error.contains("antichain"), "{error}");
 }
+
+#[test]
+fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
+    // A longer easy-target chain (6 total trial work) competes with a
+    // shorter branch carrying one harder PoW block (514 total trial work).
+    // The merge uses real mined headers but NEVER triggers an actual reorg.
+    let (g, mut headers) = genesis();
+    let (a, ha) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        1,
+        EASY_BITS,
+        0x81,
+    );
+    headers.insert(a.clone(), ha);
+    let (a2, ha2) = mine(
+        vec![a.clone()],
+        2,
+        GENESIS_NS + 1_000_000_000,
+        2,
+        EASY_BITS,
+        0x82,
+    );
+    headers.insert(a2.clone(), ha2);
+    let (a3, ha3) = mine(
+        vec![a2.clone()],
+        3,
+        GENESIS_NS + 1_500_000_000,
+        3,
+        EASY_BITS,
+        0x83,
+    );
+    headers.insert(a3.clone(), ha3);
+    let (b, hb) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        1,
+        HARD_BITS,
+        0x84,
+    );
+    headers.insert(b.clone(), hb);
+    let (b2, hb2) = mine(
+        vec![b],
+        2,
+        GENESIS_NS + 1_100_000_000,
+        2,
+        EASY_BITS,
+        0x85,
+    );
+    headers.insert(b2.clone(), hb2);
+
+    let tips = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &g,
+        &[a3.clone(), b2.clone()],
+        &headers,
+        1,
+    )
+    .expect("both competing tips must have valid PoW and provenance");
+    assert_eq!(tips.blocks[&a3].blue_work.decimal(), "6");
+    assert_eq!(tips.blocks[&b2].blue_work.decimal(), "514");
+    assert!(tips.blocks[&a3].blue_work.0[0] < tips.blocks[&b2].blue_work.0[0]);
+
+    let mut parents = vec![a3.clone(), b2.clone()];
+    parents.sort();
+    for (k, score, work, blue_count) in [
+        (0usize, 3u64, "516", 0usize),
+        (1, 3, "516", 0),
+        (2, 5, "520", 2),
+        (3, 6, "522", 3),
+    ] {
+        let (join, h_join) = mine(
+            parents.clone(),
+            4,
+            GENESIS_NS + 2_000_000_000,
+            score,
+            EASY_BITS,
+            0x90 + k as u8,
+        );
+        headers.insert(join.clone(), h_join);
+        let result = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&join),
+            &headers,
+            k,
+        )
+        .expect("independently derived trial K decision on authenticated full DAG");
+        let record = &result.blocks[&join];
+        assert_eq!(record.selected_parent.as_deref(), Some(b2.as_str()));
+        assert_eq!(record.blue_score, score);
+        assert_eq!(record.blue_work.decimal(), work);
+        let side = [a.clone(), a2.clone(), a3.clone()];
+        assert_eq!(record.merge_blues, side[..blue_count].to_vec());
+        assert_eq!(record.merge_reds, side[blue_count..].to_vec());
+        assert_eq!(result.blocks[&a3].blue_work.decimal(), "6");
+        assert_eq!(result.blocks[&b2].blue_work.decimal(), "514");
+    }
+}
