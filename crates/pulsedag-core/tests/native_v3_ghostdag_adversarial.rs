@@ -5,6 +5,14 @@
 
 use std::collections::BTreeMap;
 
+#[path = "support/native_v3_utxo_preview.rs"]
+mod detached_utxo;
+
+use detached_utxo::{
+    apply, apply_selected_spine_preview, coin, fingerprint, total_supply,
+    HypotheticalBlockEffects, PreviewSet,
+};
+
 use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::BlockHeaderV3,
@@ -291,6 +299,70 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
     assert_eq!(switch.old_tip_blue_work.decimal(), "6");
     assert_eq!(switch.new_tip_blue_work.decimal(), "514");
 
+    // A *detached* UTXO demonstration tied to the REAL mined-header selected
+    // spine above. Effects are hypothetical, NOT signed transactions or a
+    // protocol-valid native-v3 monetary/reward/state-root implementation.
+    let reserve = coin("test-only-reserve", 1_000, "reserve", false, 0);
+    let old_a_credit = coin("old-a-credit", 1_000, "alice", false, 1);
+    let old_a_reward = coin("old-a-mint", 50, "old-miner", true, 1);
+    let old_a2_credit = coin("old-a2-credit", 970, "alice", false, 2);
+    let old_a3_credit = coin("old-a3-credit", 960, "alice", false, 3);
+    let new_b_credit = coin("new-b-credit", 1_000, "bob", false, 1);
+    let new_b_reward = coin("new-b-mint", 80, "new-miner", true, 1);
+    let new_b2_credit = coin("new-b2-credit", 940, "bob", false, 2);
+
+    let effects = BTreeMap::from([
+        (a.clone(), HypotheticalBlockEffects {
+            block: a.clone(), spent: vec![reserve.clone()],
+            created: vec![old_a_credit.clone(), old_a_reward.clone()],
+            test_issuance: 50, test_fee_burn: 0,
+        }),
+        (a2.clone(), HypotheticalBlockEffects {
+            block: a2.clone(), spent: vec![old_a_credit],
+            created: vec![old_a2_credit.clone()],
+            test_issuance: 0, test_fee_burn: 30,
+        }),
+        (a3.clone(), HypotheticalBlockEffects {
+            block: a3.clone(), spent: vec![old_a2_credit],
+            created: vec![old_a3_credit.clone()],
+            test_issuance: 0, test_fee_burn: 10,
+        }),
+        (b.clone(), HypotheticalBlockEffects {
+            block: b.clone(), spent: vec![reserve.clone()],
+            created: vec![new_b_credit.clone(), new_b_reward.clone()],
+            test_issuance: 80, test_fee_burn: 0,
+        }),
+        (b2.clone(), HypotheticalBlockEffects {
+            block: b2.clone(), spent: vec![new_b_credit],
+            created: vec![new_b2_credit.clone()],
+            test_issuance: 0, test_fee_burn: 60,
+        }),
+    ]);
+    let genesis_state = PreviewSet::from([(reserve.outpoint.clone(), reserve)]);
+    let after_a = apply(&genesis_state, &effects[&a]).unwrap();
+    let after_a2 = apply(&after_a, &effects[&a2]).unwrap();
+    let old_snapshot = apply(&after_a2, &effects[&a3]).unwrap();
+    assert_eq!(total_supply(&old_snapshot).unwrap(), 1_010);
+    let old_snapshot_identity = fingerprint(&old_snapshot);
+    let switched = apply_selected_spine_preview(&old_snapshot, &switch, &effects)
+        .expect("simulate disconnected old effects and applied new effects");
+    assert_eq!(total_supply(&switched).unwrap(), 1_020);
+    assert!(switched.contains_key(&new_b2_credit.outpoint));
+    assert!(switched.contains_key(&new_b_reward.outpoint));
+    assert!(!switched.contains_key(&old_a3_credit.outpoint));
+    assert!(!switched.contains_key(&old_a_reward.outpoint));
+
+    let backwards = apply_selected_spine_preview(&switched, &reverse, &effects)
+        .expect("reverse hypothetical branch switch");
+    assert_eq!(fingerprint(&backwards), old_snapshot_identity);
+    assert_eq!(fingerprint(&old_snapshot), old_snapshot_identity);
+
+    let mut bad_effects = effects.clone();
+    bad_effects.get_mut(&b2).unwrap().test_fee_burn += 1;
+    assert!(apply_selected_spine_preview(&old_snapshot, &switch, &bad_effects).is_err());
+    assert_eq!(fingerprint(&old_snapshot), old_snapshot_identity);
+
+
     let reverse = preview_dormant_v3_candidate_selected_chain_delta(&tips, &b2, &a3)
         .expect("reverse metadata comparison is symmetric");
     assert_eq!(reverse.common_selected_ancestor, g);
@@ -348,4 +420,75 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         assert_eq!(result.blocks[&a3].blue_work.decimal(), "6");
         assert_eq!(result.blocks[&b2].blue_work.decimal(), "514");
     }
+}
+
+#[test]
+fn detached_utxo_preview_rejects_double_spend_mint_collision_and_undo_tampering() {
+    use detached_utxo::{undo, HypotheticalBlockEffects};
+    let source = coin("source", 100, "alice", false, 0);
+    let next_coin = coin("next-coin", 90, "bob", false, 1);
+    let original = PreviewSet::from([(source.outpoint.clone(), source.clone())]);
+    let good = HypotheticalBlockEffects {
+        block: "dummy-branch".into(),
+        spent: vec![source.clone()],
+        created: vec![next_coin.clone()],
+        test_issuance: 0,
+        test_fee_burn: 10,
+    };
+    let applied = apply(&original, &good).unwrap();
+    assert_eq!(total_supply(&applied).unwrap(), 90);
+    let restored = undo(&applied, &good).unwrap();
+    assert_eq!(fingerprint(&restored), fingerprint(&original));
+    assert!(apply(&applied, &good).is_err(), "spent input cannot be replayed");
+    assert!(undo(&original, &good).is_err(), "missing created coin cannot be undone");
+    let before = fingerprint(&original);
+
+    let bad_cases = [
+        HypotheticalBlockEffects {
+            spent: vec![source.clone(), source.clone()],
+            created: vec![coin("too-large", 200, "bob", false, 1)],
+            ..good.clone()
+        },
+        HypotheticalBlockEffects { test_fee_burn: 11, ..good.clone() },
+        HypotheticalBlockEffects { test_issuance: 50, ..good.clone() },
+        HypotheticalBlockEffects {
+            created: vec![source.clone()],
+            test_fee_burn: 0,
+            ..good.clone()
+        },
+        HypotheticalBlockEffects {
+            created: vec![coin("source", 100, "eve", false, 1)],
+            test_fee_burn: 0,
+            ..good.clone()
+        },
+        HypotheticalBlockEffects {
+            created: vec![coin("next-coin", 90, "eve", false, 1)],
+            ..good.clone()
+        },
+    ];
+    for bad in bad_cases {
+        assert!(apply(&original, &bad).is_err());
+        assert_eq!(fingerprint(&original), before);
+    }
+    let forgery = HypotheticalBlockEffects {
+        spent: vec![coin("source", 100, "malicious", false, 0)],
+        ..good.clone()
+    };
+    assert!(apply(&original, &forgery).is_err());
+    assert_eq!(fingerprint(&original), before);
+    let mutated = PreviewSet::from([
+        (next_coin.outpoint.clone(), coin("next-coin", 90, "hijacked", false, 1))
+    ]);
+    assert!(undo(&mutated, &good).is_err());
+
+    let invalid_spine = pulsedag_core::native_ghostdag_policy_candidate_v3::DormantCandidateSelectedChainDelta {
+        common_selected_ancestor: "common".into(),
+        detach_tip_first: vec!["a".into()],
+        attach_ancestor_first: vec!["a".into()],
+        old_tip_blue_work: Default::default(),
+        new_tip_blue_work: Default::default(),
+    };
+    assert!(apply_selected_spine_preview(
+        &original, &invalid_spine, &BTreeMap::new()
+    ).is_err(), "same block may not be both disconnected and reconnected");
 }
