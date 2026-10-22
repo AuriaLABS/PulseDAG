@@ -4,6 +4,7 @@
 Uses manually assigned integer work and symbolic block IDs to exercise the exact
 selected-parent/merge coloring recurrence proposed in #1341. It is not an
 independent PoW-valid Rust vector, a policy freeze, or activation evidence.
+Does not choose a production K, parent cap, bounds or canonical hash-byte ordering.
 """
 from itertools import permutations
 
@@ -102,6 +103,11 @@ def select_and_color(blocks, k):
     }
 
 
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def self_test():
     fork = {
         "G": ((), 0),
@@ -111,8 +117,8 @@ def self_test():
     }
     k0 = select_and_color(fork, 0)
     k1 = select_and_color(fork, 1)
-    assert k0["C"] == ("B", 2, 516, (), ("A",)), k0["C"]
-    assert k1["C"] == ("B", 3, 518, ("A",), ()), k1["C"]
+    require(k0["C"] == ("B", 2, 516, (), ("A",)), "K=0 fork mismatch")
+    require(k1["C"] == ("B", 3, 518, ("A",), ()), "K=1 fork mismatch")
 
     triple = {
         "G": ((), 0),
@@ -123,18 +129,18 @@ def self_test():
     }
     k1 = select_and_color(triple, 1)
     k2 = select_and_color(triple, 2)
-    assert k1["X"] == ("B", 3, 548, ("D",), ("A",)), k1["X"]
-    assert k2["X"] == ("B", 4, 550, ("D", "A"), ()), k2["X"]
+    require(k1["X"] == ("B", 3, 548, ("D",), ("A",)), "K=1 triple mismatch")
+    require(k2["X"] == ("B", 4, 550, ("D", "A"), ()), "K=2 triple mismatch")
 
     # All 120 map arrival orders must produce byte-for-byte identical output.
     for ids in permutations(triple):
         candidate = {n: triple[n] for n in ids}
-        assert select_and_color(candidate, 1) == k1
-        assert select_and_color(candidate, 2) == k2
+        require(select_and_color(candidate, 1) == k1, "K=1 permutation mismatch")
+        require(select_and_color(candidate, 2) == k2, "K=2 permutation mismatch")
 
     high = {"G": ((), 0), "A": (("G",), 1 << 255),
             "B": (("A",), 1 << 255)}
-    assert select_and_color(high, 1)["B"][2] == 1 << 256
+    require(select_and_color(high, 1)["B"][2] == 1 << 256, "wide work lost precision")
 
     bad = [
         {"G": ((), 0), "A": (("MISSING",), 2)},
