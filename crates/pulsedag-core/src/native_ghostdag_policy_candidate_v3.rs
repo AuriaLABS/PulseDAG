@@ -147,6 +147,79 @@ pub struct CandidateGhostdagEvaluation {
     pub k_trial: usize,
 }
 
+/// A preview of the SELECTED-PARENT SPINE only, never a monetary reorg.
+///
+/// The full DAG merge-set order can also contain blue/red side blocks; these
+/// lists MUST NOT be used as UTXO disconnect/connect or coinbase replay lists.
+/// Recomputes no consensus policy and mutates no block, chain or account state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantCandidateSelectedChainDelta {
+    pub common_selected_ancestor: BlockId,
+    /// Selected spine, from old tip down to (but not including) common ancestor.
+    pub detach_tip_first: Vec<BlockId>,
+    /// Selected spine, from common ancestor's child through new tip.
+    pub attach_ancestor_first: Vec<BlockId>,
+    pub old_tip_blue_work: CandidateWork512,
+    pub new_tip_blue_work: CandidateWork512,
+}
+
+/// Preview a selected-spine switch within one ALREADY fully authenticated
+/// trial evaluation. This is not a policy choice between tips; the caller
+/// supplies both. Missing tips/cycles/genesis incompatibility fail closed.
+pub fn preview_dormant_v3_candidate_selected_chain_delta(
+    trial: &CandidateGhostdagEvaluation,
+    old_tip: &str,
+    new_tip: &str,
+) -> Result<DormantCandidateSelectedChainDelta, PulseError> {
+    fn selected_to_genesis(
+        trial: &CandidateGhostdagEvaluation,
+        tip: &str,
+    ) -> Result<Vec<BlockId>, PulseError> {
+        let mut backwards = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut current = Some(tip.to_owned());
+        while let Some(hash) = current {
+            if !seen.insert(hash.clone()) || seen.len() > trial.blocks.len() {
+                return Err(invalid("cycle / unbounded selected-parent spine"));
+            }
+            let node = trial
+                .blocks
+                .get(&hash)
+                .ok_or_else(|| invalid("missing tip or selected-parent metadata"))?;
+            current = node.selected_parent.clone();
+            backwards.push(hash);
+        }
+        backwards.reverse();
+        Ok(backwards)
+    }
+
+    let old_metadata = trial
+        .blocks
+        .get(old_tip)
+        .ok_or_else(|| invalid("missing old tip in authenticated trial"))?;
+    let new_metadata = trial
+        .blocks
+        .get(new_tip)
+        .ok_or_else(|| invalid("missing new tip in authenticated trial"))?;
+    let old_spine = selected_to_genesis(trial, old_tip)?;
+    let new_spine = selected_to_genesis(trial, new_tip)?;
+    let prefix = old_spine
+        .iter()
+        .zip(new_spine.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if prefix == 0 {
+        return Err(invalid("selected tips have incompatible genesis ancestry"));
+    }
+    Ok(DormantCandidateSelectedChainDelta {
+        common_selected_ancestor: old_spine[prefix - 1].clone(),
+        detach_tip_first: old_spine[prefix..].iter().rev().cloned().collect(),
+        attach_ancestor_first: new_spine[prefix..].to_vec(),
+        old_tip_blue_work: old_metadata.blue_work,
+        new_tip_blue_work: new_metadata.blue_work,
+    })
+}
+
 fn is_incomparable(a: &str, b: &str, past: &BTreeMap<BlockId, BTreeSet<BlockId>>) -> bool {
     !past[a].contains(b) && !past[b].contains(a)
 }
