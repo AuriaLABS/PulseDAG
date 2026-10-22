@@ -114,18 +114,27 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
             &[text_field(join, "id").to_string()],
             &headers,
             k as usize,
-        ).expect("fully authenticated frozen K trial");
+        )
+        .expect("fully authenticated frozen K trial");
         let metadata = &trial.blocks[text_field(join, "id")];
         assert_eq!(metadata.selected_parent.as_deref(), Some(selected));
         assert_eq!(metadata.blue_score, if k == 0 { 2 } else { 3 });
         assert_eq!(metadata.blue_work.decimal(), if k == 0 { "4" } else { "6" });
         assert_eq!(
             metadata.merge_blues,
-            if k == 0 { vec![] } else { vec![other.to_string()] }
+            if k == 0 {
+                vec![]
+            } else {
+                vec![other.to_string()]
+            }
         );
         assert_eq!(
             metadata.merge_reds,
-            if k == 0 { vec![other.to_string()] } else { vec![] }
+            if k == 0 {
+                vec![other.to_string()]
+            } else {
+                vec![]
+            }
         );
 
         let commit: BlockHeaderV3 = serde_json::from_value(join["header"].clone()).unwrap();
