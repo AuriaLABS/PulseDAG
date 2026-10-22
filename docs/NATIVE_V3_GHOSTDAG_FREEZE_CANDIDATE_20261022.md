@@ -32,6 +32,28 @@ The invariant to test at every block H is that `blue_work(H)` includes `work(H)`
 4. Derive an explicit ordered selected chain and use it to verify native retarget. Version all derived caches; after restart, reconstruct from authenticated immutable input and compare cached digests, failing closed on mismatch.
 5. **Do not apply money yet:** a later separately reviewed V3-GD-08/09 implementation must specify block-envelopes, topologically deterministic blue/red transaction order, issuance/reward/fees, UTXO spend conflicts, reorgs, atomic commits, P2P/mined admission and snapshot recovery. Neither blue/red color alone nor legacy `types::Block` replay decides spend validity.
 
+### Executable selected-parent/K/blue-work candidate reference (symbolic, NOT consensus)
+
+A new **non-activating** Python-standard-library reference now turns this precise proposal into executable *symbolic* expectations: [`scripts/native_v3_ghostdag_policy_candidate.py`](../scripts/native_v3_ghostdag_policy_candidate.py). It recomputes parent metadata only after ancestry is available, selects parents from independently assigned integer work, greedily applies both proposed K-cluster tests, and calculates checked u512 inclusive blue-work. Its [exact-head workflow](../.github/workflows/v3-ghostdag-policy-candidate.yml) runs regular and `python3 -O` executions, with explicit checks that optimizations cannot suppress.
+
+Reproduction:
+
+```bash
+python3 scripts/native_v3_ghostdag_policy_candidate.py
+python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+```
+
+**Worked expected outputs (symbolic values, not real PoW headers):**
+
+| Graph / K | Chosen parent | Merge blues | Merge reds | New `blue_score` | New `blue_work` |
+| --- | --- | --- | --- | ---: | ---: |
+| `G -> A(2), G -> B(512), {A,B} -> C(4)`, K=0 | B | none | A | 2 | 516 |
+| Same fork/rejoin, K=1 | B | A | none | 3 | 518 |
+| `G -> A(2), B(512), D(32); {A,B,D} -> X(4)`, K=1 | B | D | A | 3 | 548 |
+| Same three-parent merge, K=2 | B | D then A | none | 4 | 550 |
+
+The reference checks all **120 map-arrival permutations** of the five-vertex example, invalid/cyclic/redundant-parent closure, and u256-limit crossing: two hypothetical `2^255` contributions accumulate to `2^256` in the proposed u512 total. It does **not** exercise 500ms networking, mine headers, authenticate genesis, validate canonical compact targets/KHeavyHash, compare a separate Rust implementation, derive actual canonical hash-byte tie breaks, or select a justified production K/parent cap/budget. Any such claim is explicitly forbidden. This is directly tied to V3-GD-02..06 **policy evaluation**, not a runtime or a consensus activation flag. The symbolic K=0,1,2 tests do **not** validate the unrelated trial K=32.
+
 ### Adversarial acceptance vectors required before approval
 
 - Same authenticated DAG presented in reversed and arbitrary peer/index/map order must produce identical selected parents, blue/red order, scores, 512-bit work and selected tip.
