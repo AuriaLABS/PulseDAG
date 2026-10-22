@@ -5,12 +5,20 @@ on:
     branches: [main]
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "scripts/native_v3_compact_target_oracle.py"
       - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
       - ".github/workflows/v3-ghostdag-policy-candidate.yml"
   push:
     branches: [main]
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "scripts/native_v3_compact_target_oracle.py"
       - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
       - ".github/workflows/v3-ghostdag-policy-candidate.yml"
 
@@ -38,3 +46,7 @@ jobs:
           set -euo pipefail
           python3 scripts/native_v3_ghostdag_policy_candidate.py
           python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+      - name: Check independent KHeavyHash to policy integration (header-only, no activation)
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
