@@ -9,6 +9,7 @@ use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::{canonical_block_header_bytes_v3, compute_block_hash_v3, BlockHeaderV3},
     native_anticone_matrix_v3::derive_dormant_native_v3_anticone_matrix,
+    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     native_merge_set_v3::derive_dormant_native_v3_all_parent_merge_sets,
     pow_v3::{evaluate_v3_header_pow, v3_pow_preimage_bytes, verify_v3_header_pow},
     types::BlockId,
@@ -104,6 +105,29 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
 
     for (k, join_name, expected_name) in [(0_u64, "X0", "K0"), (1_u64, "X1", "K1")] {
         let join = &frozen["blocks"][join_name];
+        // This is the independently executed dormant Rust classifier, not
+        // a hardcoded Python expected-work assertion.
+        let trial = derive_dormant_native_v3_ghostdag_trial(
+            chain,
+            ns,
+            &genesis,
+            &[text_field(join, "id").to_string()],
+            &headers,
+            k as usize,
+        ).expect("fully authenticated frozen K trial");
+        let metadata = &trial.blocks[text_field(join, "id")];
+        assert_eq!(metadata.selected_parent.as_deref(), Some(selected));
+        assert_eq!(metadata.blue_score, if k == 0 { 2 } else { 3 });
+        assert_eq!(metadata.blue_work.decimal(), if k == 0 { "4" } else { "6" });
+        assert_eq!(
+            metadata.merge_blues,
+            if k == 0 { vec![] } else { vec![other.to_string()] }
+        );
+        assert_eq!(
+            metadata.merge_reds,
+            if k == 0 { vec![other.to_string()] } else { vec![] }
+        );
+
         let commit: BlockHeaderV3 = serde_json::from_value(join["header"].clone()).unwrap();
         assert_eq!(commit.parents, frontier);
         let expected = &frozen["expected"][expected_name];
