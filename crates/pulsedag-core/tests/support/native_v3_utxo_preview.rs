@@ -134,11 +134,17 @@ pub fn apply_selected_spine_preview(
         return Err("selected-spine common ancestor missing".into());
     }
     let mut all = BTreeSet::new();
-    for id in spine.detach_tip_first.iter().chain(&spine.attach_ancestor_first) {
+    for id in spine
+        .detach_tip_first
+        .iter()
+        .chain(&spine.attach_ancestor_first)
+    {
         if !all.insert(id) || id == &spine.common_selected_ancestor {
             return Err("duplicate spine block or ancestor in delta".into());
         }
-        let effects = by_block.get(id).ok_or("missing hypothetical block effects")?;
+        let effects = by_block
+            .get(id)
+            .ok_or("missing hypothetical block effects")?;
         if effects.block != *id {
             return Err("hypothetical effect ID mismatch".into());
         }
@@ -163,7 +169,10 @@ pub fn total_supply(state: &PreviewSet) -> Result<u128, String> {
 
 pub fn coin(name: &str, amount: u64, address: &str, coinbase: bool, height: u64) -> Utxo {
     Utxo {
-        outpoint: OutPoint { txid: name.into(), index: 0 },
+        outpoint: OutPoint {
+            txid: name.into(),
+            index: 0,
+        },
         amount,
         address: address.into(),
         coinbase,
@@ -173,7 +182,8 @@ pub fn coin(name: &str, amount: u64, address: &str, coinbase: bool, height: u64)
 
 /// Assert two snapshots are bytewise equivalent in all UTXO metadata fields.
 pub fn fingerprint(state: &PreviewSet) -> Vec<(OutPoint, String, u64, bool, u64)> {
-    state.iter().map(|(k, v)| {
-        (k.clone(), v.address.clone(), v.amount, v.coinbase, v.height)
-    }).collect()
+    state
+        .iter()
+        .map(|(k, v)| (k.clone(), v.address.clone(), v.amount, v.coinbase, v.height))
+        .collect()
 }
