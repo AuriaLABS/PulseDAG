@@ -1,0 +1,46 @@
+name: v3 dormant work-policy alternatives (non-normative)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_compact_target_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "docs/NATIVE_V3_WORK_POLICY_ALTERNATIVES.md"
+      - ".github/workflows/v3-dormant-work-policy-candidates.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_compact_target_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "docs/NATIVE_V3_WORK_POLICY_ALTERNATIVES.md"
+      - ".github/workflows/v3-dormant-work-policy-candidates.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  work-policy-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact head SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Compare unfrozen 256-bit work candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_compact_target_oracle.py
+          python3 scripts/native_v3_work_policy_candidates.py --self-test
+          python3 scripts/native_v3_work_policy_candidates.py > /tmp/native-v3-work-candidates.json
+          python3 -m json.tool /tmp/native-v3-work-candidates.json > /dev/null
