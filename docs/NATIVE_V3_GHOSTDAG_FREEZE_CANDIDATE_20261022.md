@@ -54,6 +54,20 @@ python3 -O scripts/native_v3_ghostdag_policy_candidate.py
 
 The reference checks all **120 map-arrival permutations** of the five-vertex example, invalid/cyclic/redundant-parent closure, and u256-limit crossing: two hypothetical `2^255` contributions accumulate to `2^256` in the proposed u512 total. It does **not** exercise 500ms networking, mine headers, authenticate genesis, validate canonical compact targets/KHeavyHash, compare a separate Rust implementation, derive actual canonical hash-byte tie breaks, or select a justified production K/parent cap/budget. Any such claim is explicitly forbidden. This is directly tied to V3-GD-02..06 **policy evaluation**, not a runtime or a consensus activation flag. The symbolic K=0,1,2 tests do **not** validate the unrelated trial K=32.
 
+### Exact-head real native-v3 header/PoW bridge (2026-10-22; non-normative)
+
+The accompanying `scripts/native_v3_ghostdag_kheavyhash_bridge.py` now connects the otherwise symbolic candidate classifier to **actual canonical v3 SHA256 header hashes and independently checked KHeavyHash** in a deterministic *test-only* fork/rejoin. It derives one unmined local genesis SHA256 domain-bound to a distinct test chain ID, mines two easy-target (0x207fffff) PoW-valid sibling headers referencing that exact genesis, and mines a two-parent rejoin committing the sorted real parent hashes and computed header `blue_score`. It verifies compact-target work contribution 2, independent KHeavyHash < = target, nanosecond/height structure, genesis chain-domain separation, equal-work tie by **actual canonical header hash bytes**, and the proposed K=0/K=1 colors and inclusive work from the symbolic scorer.
+
+Run at exact head through `.github/workflows/v3-ghostdag-policy-candidate.yml`, or locally:
+
+```bash
+python3 scripts/native_v3_ghostdag_policy_candidate.py
+python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
+```
+
+The symbolic K=0 result for the join is score=2, cumulative trial work=4, with the lexically greater sibling red; K=1 yields score=3, cumulative trial work=6, with both siblings contributing to the blue set under the *candidate* rule. The generated headers are deterministic given this Python implementation but **their individual hash/nonces are not yet frozen into canonical independent cross-language golden vectors**. The test-only merkle/state roots are placeholders; **do not claim monetary state validity, authorized native GHOSTDAG admission, production genesis authentication, end-to-end retarget, K=32 security, miner activation, or any independent Rust consensus implementation**. A separate native-Rust selected-parent/classifier, frozen full-byte cross-language acceptance vectors, and #1309 explicit policy approval are still missing.
+
 ### Adversarial acceptance vectors required before approval
 
 - Same authenticated DAG presented in reversed and arbitrary peer/index/map order must produce identical selected parents, blue/red order, scores, 512-bit work and selected tip.
