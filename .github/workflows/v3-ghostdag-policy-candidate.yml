@@ -6,6 +6,7 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
       - "scripts/native_v3_compact_target_oracle.py"
@@ -16,6 +17,7 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
       - "scripts/native_v3_compact_target_oracle.py"
@@ -28,7 +30,7 @@ permissions:
 jobs:
   symbolic-policy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    timeout-minutes: 35
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -50,3 +52,16 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-check authenticated native Rust headers and K candidate invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- --nocapture | tee /tmp/native-v3-ghostdag-rust-probe.log
+          grep -Eq '^test result: ok\\. 2 passed; 0 failed;' /tmp/native-v3-ghostdag-rust-probe.log
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
