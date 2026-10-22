@@ -15,8 +15,7 @@ use pulsedag_core::{
 };
 use serde_json::Value;
 
-const FROZEN: &str =
-    include_str!("../../../docs/fixtures/native_v3_ghostdag_fork_crosslang.json");
+const FROZEN: &str = include_str!("../../../docs/fixtures/native_v3_ghostdag_fork_crosslang.json");
 
 fn text_field<'a>(v: &'a Value, name: &str) -> &'a str {
     v[name].as_str().expect("frozen string field")
@@ -40,8 +39,7 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
     let mut headers: BTreeMap<BlockId, BlockHeaderV3> = BTreeMap::new();
     for name in ["G", "A", "B", "X0", "X1"] {
         let vec = &frozen["blocks"][name];
-        let header: BlockHeaderV3 =
-            serde_json::from_value(vec["header"].clone()).unwrap();
+        let header: BlockHeaderV3 = serde_json::from_value(vec["header"].clone()).unwrap();
         let block_id = text_field(vec, "id");
         assert_eq!(
             compute_block_hash_v3(&header, chain).unwrap(),
@@ -92,42 +90,31 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
     assert_eq!(other, sibling_a.max(sibling_b));
     let frontier = vec![selected.to_string(), other.to_string()];
     let genesis = actual_genesis.hash;
-    let sets = derive_dormant_native_v3_all_parent_merge_sets(
-        chain, ns, &genesis, &frontier, &headers,
-    )
-    .expect("the complete frozen DAG must authenticate all side-branch PoW");
+    let sets =
+        derive_dormant_native_v3_all_parent_merge_sets(chain, ns, &genesis, &frontier, &headers)
+            .expect("the complete frozen DAG must authenticate all side-branch PoW");
     assert_eq!(
         sets.by_comparison_parent.get(selected).unwrap(),
         &vec![other.to_string()]
     );
-    let anti = derive_dormant_native_v3_anticone_matrix(
-        chain, ns, &genesis, &frontier, &headers,
-    )
-    .unwrap();
+    let anti =
+        derive_dormant_native_v3_anticone_matrix(chain, ns, &genesis, &frontier, &headers).unwrap();
     assert_eq!(anti.anticone_by_block[selected], vec![other.to_string()]);
     assert_eq!(anti.anticone_by_block[other], vec![selected.to_string()]);
 
-    for (k, join_name, expected_name) in [
-        (0_u64, "X0", "K0"),
-        (1_u64, "X1", "K1"),
-    ] {
+    for (k, join_name, expected_name) in [(0_u64, "X0", "K0"), (1_u64, "X1", "K1")] {
         let join = &frozen["blocks"][join_name];
-        let commit: BlockHeaderV3 =
-            serde_json::from_value(join["header"].clone()).unwrap();
+        let commit: BlockHeaderV3 = serde_json::from_value(join["header"].clone()).unwrap();
         assert_eq!(commit.parents, frontier);
         let expected = &frozen["expected"][expected_name];
         assert_eq!(text_field(expected, "selected_parent"), selected);
-        let accept_other_blue = k >= 1 && anti.anticone_by_block[selected].contains(
-            &other.to_string()
-        );
+        let accept_other_blue =
+            k >= 1 && anti.anticone_by_block[selected].contains(&other.to_string());
         let expected_score = 2 + u64::from(accept_other_blue);
         let expected_work = 4 + 2 * u64::from(accept_other_blue);
         assert_eq!(commit.blue_score, expected_score);
         assert_eq!(expected["blue_score"].as_u64().unwrap(), expected_score);
-        assert_eq!(
-            text_field(expected, "blue_work"),
-            expected_work.to_string()
-        );
+        assert_eq!(text_field(expected, "blue_work"), expected_work.to_string());
         let blues: Vec<&str> = expected["merge_blues"]
             .as_array()
             .unwrap()
@@ -140,8 +127,22 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert_eq!(blues, if accept_other_blue { vec![other] } else { vec![] });
-        assert_eq!(reds, if accept_other_blue { vec![] } else { vec![other] });
+        assert_eq!(
+            blues,
+            if accept_other_blue {
+                vec![other]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(
+            reds,
+            if accept_other_blue {
+                vec![]
+            } else {
+                vec![other]
+            }
+        );
 
         // The frozen join itself also verifies as a PoW-valid child whose
         // full side ancestry is authenticated, not merely a standalone hash.
@@ -154,7 +155,10 @@ fn frozen_python_fork_headers_and_pow_match_native_rust_exactly() {
         )
         .expect("native Rust must verify full immutable join ancestry");
         assert_eq!(
-            closure.topological_evaluation.verified_dag.authenticated_non_genesis_headers,
+            closure
+                .topological_evaluation
+                .verified_dag
+                .authenticated_non_genesis_headers,
             3
         );
     }
