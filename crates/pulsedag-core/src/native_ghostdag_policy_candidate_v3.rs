@@ -5,7 +5,10 @@
 //! score from immutable headers. Rules are PROPOSED (#1309), not frozen.
 //! No mining, P2P, rewards, UTXO, contract execution or activation calls this.
 
-use std::{cmp::Ordering, collections::{BTreeMap, BTreeSet}};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use crate::{
     errors::PulseError,
@@ -18,7 +21,10 @@ use crate::{
 };
 
 fn invalid(reason: impl Into<String>) -> PulseError {
-    PulseError::InvalidBlock(format!("UNAPPROVED dormant v3 GHOSTDAG policy: {}", reason.into()))
+    PulseError::InvalidBlock(format!(
+        "UNAPPROVED dormant v3 GHOSTDAG policy: {}",
+        reason.into()
+    ))
 }
 
 /// Checked 512-bit unsigned accumulator; little-endian 64-bit limbs.
@@ -102,7 +108,8 @@ fn candidate_work(bits: u32) -> Result<CandidateWork512, PulseError> {
     let target: PowTarget = target_from_bits(bits);
     let mut denominator = CandidateWork512::default();
     for (i, chunk) in target.chunks_exact(8).rev().enumerate() {
-        denominator.0[i] = u64::from_be_bytes(chunk.try_into().map_err(|_| invalid("target width"))?);
+        denominator.0[i] =
+            u64::from_be_bytes(chunk.try_into().map_err(|_| invalid("target width"))?);
     }
     denominator = denominator.checked_add(CandidateWork512([1, 0, 0, 0, 0, 0, 0, 0]))?;
     let mut remainder = CandidateWork512::default();
@@ -152,7 +159,8 @@ fn priority(
 ) -> Ordering {
     let left = &derived[a];
     let right = &derived[b];
-    left.blue_work.compare(&right.blue_work)
+    left.blue_work
+        .compare(&right.blue_work)
         .then_with(|| left.blue_score.cmp(&right.blue_score))
         .then_with(|| headers[a].height.cmp(&headers[b].height))
         .then_with(|| b.cmp(a)) // smaller canonical hash wins final tie
@@ -176,17 +184,28 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
         return Err(invalid("trial K exceeds local diagnostic budget"));
     }
     let topo = derive_dormant_native_v3_topological_evaluation(
-        chain_id, frozen_genesis_timestamp_ns, frozen_genesis_hash, candidate_tips, headers
+        chain_id,
+        frozen_genesis_timestamp_ns,
+        frozen_genesis_hash,
+        candidate_tips,
+        headers,
     )?;
     let mut past: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
     let mut blue_past: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
     let mut derived: BTreeMap<BlockId, CandidateBlockMetadata> = BTreeMap::new();
 
     for block in topo.ordered_reachable_headers {
-        let h = headers.get(&block).ok_or_else(|| invalid("missing authenticated block"))?;
+        let h = headers
+            .get(&block)
+            .ok_or_else(|| invalid("missing authenticated block"))?;
         let mut ancestors = BTreeSet::from([block.clone()]);
         for parent in &h.parents {
-            ancestors.extend(past.get(parent).ok_or_else(|| invalid("missing parent past"))?.iter().cloned());
+            ancestors.extend(
+                past.get(parent)
+                    .ok_or_else(|| invalid("missing parent past"))?
+                    .iter()
+                    .cloned(),
+            );
         }
         if ancestors.len() > MAX_DORMANT_V3_DAG_HEADERS {
             return Err(invalid("inclusive past exceeds local graph budget"));
@@ -197,10 +216,16 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
             }
             past.insert(block.clone(), ancestors);
             blue_past.insert(block.clone(), BTreeSet::from([block.clone()]));
-            derived.insert(block, CandidateBlockMetadata {
-                selected_parent: None, blue_score: 0, blue_work: CandidateWork512::default(),
-                merge_blues: vec![], merge_reds: vec![],
-            });
+            derived.insert(
+                block,
+                CandidateBlockMetadata {
+                    selected_parent: None,
+                    blue_score: 0,
+                    blue_work: CandidateWork512::default(),
+                    merge_blues: vec![],
+                    merge_reds: vec![],
+                },
+            );
             continue;
         }
 
@@ -213,10 +238,16 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
                 }
             }
         }
-        let selected = h.parents.iter().max_by(|a, b| priority(a, b, &derived, headers))
+        let selected = h
+            .parents
+            .iter()
+            .max_by(|a, b| priority(a, b, &derived, headers))
             .ok_or_else(|| invalid("non-genesis block lacks parents"))?
             .clone();
-        let mut remaining = ancestors.difference(&past[&selected]).cloned().collect::<BTreeSet<_>>();
+        let mut remaining = ancestors
+            .difference(&past[&selected])
+            .cloned()
+            .collect::<BTreeSet<_>>();
         remaining.remove(&block); // candidate H itself is NOT part of its merge set
         let mut blues = vec![];
         let mut reds = vec![];
@@ -224,18 +255,27 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
 
         while !remaining.is_empty() {
             // Kahn-ready: all parents must have left the unprocessed merge set.
-            let next = remaining.iter()
-                .filter(|v| headers[*v].parents.iter().all(|parent| !remaining.contains(parent)))
+            let next = remaining
+                .iter()
+                .filter(|v| {
+                    headers[*v]
+                        .parents
+                        .iter()
+                        .all(|parent| !remaining.contains(parent))
+                })
                 .max_by(|a, b| priority(a, b, &derived, headers))
                 .ok_or_else(|| invalid("merge-set ordering has missing predecessors"))?
                 .clone();
             remaining.remove(&next);
-            let anticone_size = accepted_blue_past.iter()
+            let anticone_size = accepted_blue_past
+                .iter()
                 .filter(|v| is_incomparable(&next, v, &past))
                 .count();
             let all_prior_stay_bounded = accepted_blue_past.iter().all(|existing| {
-                let count = accepted_blue_past.iter()
-                    .filter(|other| is_incomparable(existing, other, &past)).count();
+                let count = accepted_blue_past
+                    .iter()
+                    .filter(|other| is_incomparable(existing, other, &past))
+                    .count();
                 count + usize::from(is_incomparable(existing, &next, &past)) <= trial_k
             });
             if anticone_size <= trial_k && all_prior_stay_bounded {
@@ -247,7 +287,9 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
         }
 
         let parent = &derived[&selected];
-        let score = parent.blue_score.checked_add(1)
+        let score = parent
+            .blue_score
+            .checked_add(1)
             .and_then(|v| v.checked_add(blues.len() as u64))
             .ok_or_else(|| invalid("blue score overflow"))?;
         if h.blue_score != score {
@@ -255,19 +297,30 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
                 "committed blue score differs from independently derived candidate at {block}"
             )));
         }
-        let mut work = parent.blue_work.checked_add(candidate_work(h.difficulty)?)?;
+        let mut work = parent
+            .blue_work
+            .checked_add(candidate_work(h.difficulty)?)?;
         for blue in &blues {
             work = work.checked_add(candidate_work(headers[blue].difficulty)?)?;
         }
         past.insert(block.clone(), ancestors);
         accepted_blue_past.insert(block.clone());
         blue_past.insert(block.clone(), accepted_blue_past);
-        derived.insert(block, CandidateBlockMetadata {
-            selected_parent: Some(selected), blue_score: score, blue_work: work,
-            merge_blues: blues, merge_reds: reds,
-        });
+        derived.insert(
+            block,
+            CandidateBlockMetadata {
+                selected_parent: Some(selected),
+                blue_score: score,
+                blue_work: work,
+                merge_blues: blues,
+                merge_reds: reds,
+            },
+        );
     }
-    Ok(CandidateGhostdagEvaluation { blocks: derived, k_trial: trial_k })
+    Ok(CandidateGhostdagEvaluation {
+        blocks: derived,
+        k_trial: trial_k,
+    })
 }
 
 #[cfg(test)]
@@ -280,12 +333,16 @@ mod tests {
         assert_eq!(candidate_work(0x1f7f_ffff).unwrap().decimal(), "512");
         assert_eq!(candidate_work(0x1e7f_ffff).unwrap().decimal(), "131072");
         assert_eq!(candidate_work(0x1d00_ffff).unwrap().decimal(), "4295032833");
-        assert_eq!(candidate_work(0x0101_0000).unwrap().decimal(),
-            "57896044618658097711785492504343953926634992332820282019728792003956564819968");
+        assert_eq!(
+            candidate_work(0x0101_0000).unwrap().decimal(),
+            "57896044618658097711785492504343953926634992332820282019728792003956564819968"
+        );
         let high = candidate_work(0x0101_0000).unwrap();
         let doubled = high.checked_add(high).unwrap();
-        assert_eq!(doubled.decimal(),
-            "115792089237316195423570985008687907853269984665640564039457584007913129639936");
+        assert_eq!(
+            doubled.decimal(),
+            "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+        );
         assert!(candidate_work(0).is_err());
         assert!(CandidateWork512([u64::MAX; 8]).checked_add(high).is_err());
         assert_eq!(CandidateWork512::default().decimal(), "0");
