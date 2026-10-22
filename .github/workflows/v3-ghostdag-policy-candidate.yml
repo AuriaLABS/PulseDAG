@@ -1,0 +1,40 @@
+name: v3 GHOSTDAG policy candidate symbolic self-test (non-normative)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
+      - ".github/workflows/v3-ghostdag-policy-candidate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
+      - ".github/workflows/v3-ghostdag-policy-candidate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  symbolic-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact candidate SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run 120-permutation candidate with assertions enabled and optimized Python
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_policy_candidate.py
+          python3 -O scripts/native_v3_ghostdag_policy_candidate.py
