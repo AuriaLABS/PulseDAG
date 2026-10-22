@@ -97,6 +97,7 @@ mod tests {
         genesis_v3::dormant_native_genesis_envelope_v3_ns,
         header_v3::compute_block_hash_v3,
         native_dag_relation_v3::{derive_dormant_native_v3_pair_relation, DormantV3PairRelation},
+        native_merge_set_v3::derive_dormant_native_v3_all_parent_merge_sets,
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         types::compute_merkle_root,
@@ -288,5 +289,98 @@ mod tests {
             &headers,
         )
         .is_err());
+    }
+
+    /// On a canonical candidate antichain, no parent-relative merge-set block
+    /// can be a descendant of the hypothetical comparison parent.
+    /// This links #1336 set algebra to #1337 K-neutral incomparability, but
+    /// deliberately does NOT classify GHOSTDAG blue/red blocks.
+    #[test]
+    fn antichain_candidate_merge_sets_match_authenticated_anticones() {
+        let (genesis, mut headers) = fixture();
+        let a = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let b = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 600_000_000,
+            true,
+        );
+        let joined = append(
+            &mut headers,
+            vec![a.clone(), b.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
+        let a_tip = append(&mut headers, vec![a], 2, GENESIS_NS + 1_100_000_000, true);
+        let b_tip = append(&mut headers, vec![b], 2, GENESIS_NS + 1_200_000_000, true);
+        let mut frontier = vec![joined.clone(), a_tip.clone(), b_tip.clone()];
+        frontier.sort();
+
+        let anticones = matrix(&genesis, &frontier, &headers).unwrap();
+        let compared = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &frontier, &headers,
+        )
+        .unwrap();
+        assert_eq!(
+            compared.topological_evaluation,
+            anticones.topological_evaluation
+        );
+        assert_eq!(compared.by_comparison_parent[&joined].len(), 2);
+        assert_eq!(compared.by_comparison_parent[&a_tip].len(), 3);
+        assert_eq!(compared.by_comparison_parent[&b_tip].len(), 3);
+        for (parent, merge_set) in &compared.by_comparison_parent {
+            let anticone = &anticones.anticone_by_block[parent];
+            for block in merge_set {
+                assert!(
+                    anticone.contains(block),
+                    "candidate antichain has a non-anticone merge-set member"
+                );
+            }
+        }
+    }
+
+    /// Parent frontiers containing an ancestor AND its descendant have
+    /// different semantics. A later parent may appear in the older parent's
+    /// relative merge set even though it is NOT in that parent's anticone.
+    /// Do not apply the antichain invariant to such redundant frontiers.
+    #[test]
+    fn redundant_ancestor_parent_preserves_merge_set_anticone_distinction() {
+        let (genesis, mut headers) = fixture();
+        let ancestor = append(
+            &mut headers,
+            vec![genesis.clone()],
+            1,
+            GENESIS_NS + 500_000_000,
+            true,
+        );
+        let descendant = append(
+            &mut headers,
+            vec![ancestor.clone()],
+            2,
+            GENESIS_NS + 1_000_000_000,
+            true,
+        );
+        let mut frontier = vec![ancestor.clone(), descendant.clone()];
+        frontier.sort();
+
+        let anticones = matrix(&genesis, &frontier, &headers).unwrap();
+        let compared = derive_dormant_native_v3_all_parent_merge_sets(
+            CHAIN, GENESIS_NS, &genesis, &frontier, &headers,
+        )
+        .unwrap();
+        assert_eq!(
+            compared.by_comparison_parent[&ancestor],
+            vec![descendant.clone()]
+        );
+        assert!(compared.by_comparison_parent[&descendant].is_empty());
+        assert!(!anticones.anticone_by_block[&ancestor].contains(&descendant));
     }
 }

@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo test --locked -p pulsedag-core --lib native_anticone_matrix_v3::tests:: -- --nocapture | tee /tmp/v3-anticone-matrix.log
-          grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/v3-anticone-matrix.log
+          grep -Eq '^test result: ok\. 6 passed; 0 failed;' /tmp/v3-anticone-matrix.log
           cargo test --locked -p pulsedag-core --lib native_dag_relation_v3::tests:: -- --nocapture | tee /tmp/v3-pair-relation-reference.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/v3-pair-relation-reference.log
       - name: Strict all-targets Clippy
