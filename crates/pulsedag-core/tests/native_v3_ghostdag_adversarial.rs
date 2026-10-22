@@ -299,6 +299,10 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
     assert_eq!(switch.old_tip_blue_work.decimal(), "6");
     assert_eq!(switch.new_tip_blue_work.decimal(), "514");
 
+    let reverse = preview_dormant_v3_candidate_selected_chain_delta(&tips, &b2, &a3)
+        .expect("reverse metadata comparison is symmetric");
+
+
     // A *detached* UTXO demonstration tied to the REAL mined-header selected
     // spine above. Effects are hypothetical, NOT signed transactions or a
     // protocol-valid native-v3 monetary/reward/state-root implementation.
@@ -363,8 +367,6 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
     assert_eq!(fingerprint(&old_snapshot), old_snapshot_identity);
 
 
-    let reverse = preview_dormant_v3_candidate_selected_chain_delta(&tips, &b2, &a3)
-        .expect("reverse metadata comparison is symmetric");
     assert_eq!(reverse.common_selected_ancestor, g);
     assert_eq!(reverse.detach_tip_first, vec![b2.clone(), b.clone()]);
     assert_eq!(
