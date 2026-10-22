@@ -111,7 +111,7 @@ pub fn undo(state: &PreviewSet, block: &HypotheticalBlockEffects) -> Result<Prev
             .get(&created.outpoint)
             .ok_or("preview undo missing created UTXO")?;
         if !same_coin(found, created) {
-            return Err("preview undo output mutated");
+            return Err("preview undo output mutated".into());
         }
         next.remove(&created.outpoint);
     }
@@ -169,4 +169,11 @@ pub fn coin(name: &str, amount: u64, address: &str, coinbase: bool, height: u64)
         coinbase,
         height,
     }
+}
+
+/// Assert two snapshots are bytewise equivalent in all UTXO metadata fields.
+pub fn fingerprint(state: &PreviewSet) -> Vec<(OutPoint, String, u64, bool, u64)> {
+    state.iter().map(|(k, v)| {
+        (k.clone(), v.address.clone(), v.amount, v.coinbase, v.height)
+    }).collect()
 }
