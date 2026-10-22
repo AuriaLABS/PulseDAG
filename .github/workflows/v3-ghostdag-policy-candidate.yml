@@ -9,6 +9,7 @@ on:
       - "scripts/native_v3_crosslang_ghostdag_vectors.py"
       - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
       - "scripts/native_v3_compact_target_oracle.py"
@@ -22,6 +23,7 @@ on:
       - "scripts/native_v3_crosslang_ghostdag_vectors.py"
       - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
       - "scripts/native_v3_compact_target_oracle.py"
@@ -56,10 +58,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
-      - name: Emit independent full-byte native fork vectors for fixture freezing
+      - name: Verify frozen independent full-byte native fork vectors
         run: |
           set -euo pipefail
-          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --emit
+          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.91.0
@@ -72,4 +74,7 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- --nocapture | tee /tmp/native-v3-ghostdag-rust-probe.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-ghostdag-rust-probe.log
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- --nocapture | tee /tmp/native-v3-ghostdag-crosslang.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-ghostdag-crosslang.log
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
