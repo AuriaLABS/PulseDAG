@@ -6,6 +6,8 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_crosslang_ghostdag_vectors.py"
+      - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
@@ -17,6 +19,8 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_crosslang_ghostdag_vectors.py"
+      - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
       - "scripts/native_v3_work_policy_candidates.py"
@@ -52,6 +56,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - name: Emit independent full-byte native fork vectors for fixture freezing
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --emit
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.91.0
