@@ -19,7 +19,9 @@ on:
       - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
       - ".github/workflows/v3-ghostdag-policy-candidate.yml"
   push:
-    branches: [main]
+    # Temporary direct SHA gate while PR #1341 head metadata lags this branch.
+    # Remove the proposal branch trigger after the PR synchronize event resumes.
+    branches: [main, proposal/v3-ghostdag-freeze-candidate-20261022]
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
