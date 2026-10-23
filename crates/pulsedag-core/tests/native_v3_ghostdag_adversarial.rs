@@ -644,3 +644,109 @@ fn detached_utxo_preview_rejects_double_spend_mint_collision_and_undo_tampering(
         "same block may not be both disconnected and reconnected"
     );
 }
+
+#[test]
+fn k32_k33_blue_anticone_pressure_on_34_actual_pow_valid_siblings() {
+    // Diagnostic boundary stress, NOT approval of K=32 or a 34-parent
+    // network policy. The native header currently permits more parents than
+    // the unapproved 8-parent production proposal. All 34 siblings carry
+    // independently mined KHeavyHash-valid compact-target PoW.
+    //
+    // With exactly 33 incomparable merge-side siblings, the proposed
+    // K-cluster must admit 32 and reject the 33rd at K=32. At K=33 the
+    // final side sibling crosses the boundary and becomes blue.
+    let (g, mut headers) = genesis();
+    let mut siblings = Vec::new();
+    for i in 0..34u8 {
+        let (hash, header) = mine(
+            vec![g.clone()],
+            1,
+            GENESIS_NS + 500_000_000 + u64::from(i) * 100_000,
+            1,
+            EASY_BITS,
+            0xa0 + i,
+        );
+        assert!(
+            headers.insert(hash.clone(), header).is_none(),
+            "distinct real-PoW sibling hashes expected"
+        );
+        siblings.push(hash);
+    }
+    siblings.sort();
+    assert_eq!(siblings.len(), 34);
+    let expected_selected = siblings[0].clone();
+    let other_siblings = siblings[1..].to_vec();
+
+    for (trial_k, expected_score, expected_work, blue_count) in [
+        (0usize, 2u64, "4", 0usize),
+        (32, 34, "68", 32),
+        (33, 35, "70", 33),
+    ] {
+        let (join, join_header) = mine(
+            siblings.clone(),
+            2,
+            GENESIS_NS + 1_000_000_000 + trial_k as u64 * 100_000,
+            expected_score,
+            EASY_BITS,
+            0xd0 + trial_k as u8,
+        );
+        headers.insert(join.clone(), join_header);
+        let result = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&join),
+            &headers,
+            trial_k,
+        )
+        .expect("fully authenticated 34-parent candidate K boundary");
+        let metadata = &result.blocks[&join];
+        assert_eq!(
+            metadata.selected_parent.as_deref(),
+            Some(expected_selected.as_str())
+        );
+        assert_eq!(metadata.blue_score, expected_score);
+        assert_eq!(metadata.blue_work.decimal(), expected_work);
+        assert_eq!(metadata.merge_blues, other_siblings[..blue_count].to_vec());
+        assert_eq!(metadata.merge_reds, other_siblings[blue_count..].to_vec());
+
+        let ordered = preview_unapproved_native_v3_order(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&join),
+            &headers,
+            trial_k,
+        )
+        .expect("parent-first bounded 34-sibling diagnostic preview");
+        assert_eq!(ordered.ordered_blocks.len(), 36); // G + 34 siblings + join.
+        assert_eq!(ordered.side_blues.len(), blue_count);
+        assert_eq!(ordered.side_reds.len(), 33 - blue_count);
+        assert_eq!(ordered.ordered_blocks[0], g);
+        assert_eq!(ordered.ordered_blocks.last(), Some(&join));
+
+        // Even though the mined PoW and v3 SHA256 identity are valid,
+        // a *separate* candidate committing the wrong blue_score fails.
+        let (forged, forged_header) = mine(
+            siblings.clone(),
+            2,
+            GENESIS_NS + 1_100_000_000 + trial_k as u64 * 100_000,
+            expected_score + 1,
+            EASY_BITS,
+            0xf0 + trial_k as u8,
+        );
+        headers.insert(forged.clone(), forged_header);
+        assert!(
+            derive_dormant_native_v3_ghostdag_trial(
+                CHAIN,
+                GENESIS_NS,
+                &g,
+                std::slice::from_ref(&forged),
+                &headers,
+                trial_k
+            )
+            .is_err(),
+            "valid KHeavyHash cannot excuse an incorrect committed score"
+        );
+    }
+}
