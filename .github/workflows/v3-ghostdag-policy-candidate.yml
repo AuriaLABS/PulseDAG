@@ -100,7 +100,7 @@ jobs:
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_adversarial -- --nocapture | tee /tmp/native-v3-ghostdag-adversarial.log
           grep -Fq 'test result: ok. 5 passed; 0 failed;' /tmp/native-v3-ghostdag-adversarial.log
           cargo test --locked -p pulsedag-core --test native_v3_signed_v2_utxo_bridge -- --nocapture | tee /tmp/native-v3-signed-v2-utxo.log
-          grep -Fq 'test result: ok. 3 passed; 0 failed;' /tmp/native-v3-signed-v2-utxo.log
+          grep -Fq 'test result: ok. 4 passed; 0 failed;' /tmp/native-v3-signed-v2-utxo.log
           cargo test --locked -p pulsedag-core --test native_v3_reward_policy_utxo_preview -- --nocapture | tee /tmp/native-v3-reward-policy-utxo.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-reward-policy-utxo.log
           cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
