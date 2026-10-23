@@ -14,6 +14,7 @@ on:
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
       - "crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs"
       - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
@@ -36,6 +37,7 @@ on:
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
       - "crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs"
       - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "scripts/native_v3_kheavyhash_oracle.py"
@@ -99,4 +101,6 @@ jobs:
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-signed-v2-utxo.log
           cargo test --locked -p pulsedag-core --test native_v3_reward_policy_utxo_preview -- --nocapture | tee /tmp/native-v3-reward-policy-utxo.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-reward-policy-utxo.log
+          cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-monetary-finality-reorg.log
           cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
