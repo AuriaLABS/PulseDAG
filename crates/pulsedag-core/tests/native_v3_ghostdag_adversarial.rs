@@ -752,7 +752,7 @@ fn k32_k33_blue_anticone_pressure_on_34_actual_pow_valid_siblings() {
 }
 
 #[test]
-fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
+fn eight_parent_proposed_cap_k_cluster_boundary_requires_canonical_tips() {
     // Eight real PoW-valid genesis children: this targets the PROPOSED eight
     // direct-parent cap, NOT approval of its production value. Seven true
     // side-anticone candidates test K=6 vs K=7. K=32 is also checked as
@@ -775,8 +775,9 @@ fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
     assert_eq!(siblings.len(), 8);
     let expected_selected = siblings[0].clone();
 
-    // The same verified tip SET in opposite arrival order must produce
-    // identical derived metadata before a miner creates a merging child.
+    // The existing native DAG verifier deliberately requires canonical
+    // sorted/unique tip frontiers. Raw reversed peer arrival is INVALID, not
+    // an alternative canonical representation. Normalize at the boundary.
     let mut reverse_tips = siblings.clone();
     reverse_tips.reverse();
     let forward = derive_dormant_native_v3_ghostdag_trial(
@@ -787,8 +788,21 @@ fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
         &headers,
         32,
     )
-    .expect("eight independent tips should be a fully verified DAG");
-    let reverse = derive_dormant_native_v3_ghostdag_trial(
+    .expect("eight independent sorted tips should be a verified DAG");
+    assert!(
+        derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &genesis_id,
+            &reverse_tips,
+            &headers,
+            32,
+        )
+        .is_err(),
+        "untrusted unsorted tip frontier must fail closed"
+    );
+    reverse_tips.sort_unstable();
+    let canonicalized = derive_dormant_native_v3_ghostdag_trial(
         CHAIN,
         GENESIS_NS,
         &genesis_id,
@@ -796,8 +810,8 @@ fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
         &headers,
         32,
     )
-    .expect("reverse receipt order must preserve same ancestor metadata");
-    assert_eq!(forward, reverse);
+    .expect("canonicalizing a reversed arrival order yields the same metadata");
+    assert_eq!(forward, canonicalized);
     assert_eq!(forward.blocks.len(), 9);
 
     for (k, expected_score, expected_work, blue_count) in [
