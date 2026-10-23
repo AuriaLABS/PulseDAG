@@ -61,10 +61,19 @@ pub fn preview_unapproved_native_v3_order(
     trial_k: usize,
 ) -> Result<UnapprovedTrialOrder, PulseError> {
     let verified = derive_dormant_native_v3_topological_evaluation(
-        chain_id, genesis_ns, genesis_hash, tips, headers,
+        chain_id,
+        genesis_ns,
+        genesis_hash,
+        tips,
+        headers,
     )?;
     let trial = derive_dormant_native_v3_ghostdag_trial(
-        chain_id, genesis_ns, genesis_hash, tips, headers, trial_k,
+        chain_id,
+        genesis_ns,
+        genesis_hash,
+        tips,
+        headers,
+        trial_k,
     )?;
     // This preview does not even purport to choose among disconnected tips.
     if tips.len() != 1 {
@@ -79,7 +88,10 @@ pub fn preview_unapproved_native_v3_order(
         }
     }
     for (i, anchor) in spine.iter().enumerate() {
-        let meta = trial.blocks.get(anchor).ok_or_else(|| reject("missing anchor"))?;
+        let meta = trial
+            .blocks
+            .get(anchor)
+            .ok_or_else(|| reject("missing anchor"))?;
         for (kind, members) in [
             (Kind::Blue, &meta.merge_blues),
             (Kind::Red, &meta.merge_reds),
@@ -101,31 +113,43 @@ pub fn preview_unapproved_native_v3_order(
     if priority.len() != reachable.len()
         || reachable.iter().any(|hash| !priority.contains_key(hash))
     {
-        return Err(reject("at least one authenticated side block is unclassified"));
+        return Err(reject(
+            "at least one authenticated side block is unclassified",
+        ));
     }
     if reachable.len() != trial.blocks.len() {
-        return Err(reject("inconsistent complete authenticated ancestor closure"));
+        return Err(reject(
+            "inconsistent complete authenticated ancestor closure",
+        ));
     }
 
     let mut remaining: BTreeSet<BlockId> = reachable.iter().cloned().collect();
     let mut emitted = BTreeSet::new();
     let mut ordered = Vec::with_capacity(remaining.len());
     while !remaining.is_empty() {
-        let chosen = remaining.iter().filter(|hash| {
-            headers[*hash].parents.iter().all(|parent| emitted.contains(parent))
-        }).min_by_key(|hash| {
-            let meta = &trial.blocks[*hash];
-            let (slot, kind) = priority[*hash];
-            let high_to_low_work: [u64; 8] = std::array::from_fn(|j| meta.blue_work.0[7 - j]);
-            (
-                slot,
-                kind as u8,
-                Reverse(high_to_low_work),
-                Reverse(meta.blue_score),
-                Reverse(headers[*hash].height),
-                (*hash).clone(),
-            )
-        }).ok_or_else(|| reject("no topologically available block"))?.clone();
+        let chosen = remaining
+            .iter()
+            .filter(|hash| {
+                headers[*hash]
+                    .parents
+                    .iter()
+                    .all(|parent| emitted.contains(parent))
+            })
+            .min_by_key(|hash| {
+                let meta = &trial.blocks[*hash];
+                let (slot, kind) = priority[*hash];
+                let high_to_low_work: [u64; 8] = std::array::from_fn(|j| meta.blue_work.0[7 - j]);
+                (
+                    slot,
+                    kind as u8,
+                    Reverse(high_to_low_work),
+                    Reverse(meta.blue_score),
+                    Reverse(headers[*hash].height),
+                    (*hash).clone(),
+                )
+            })
+            .ok_or_else(|| reject("no topologically available block"))?
+            .clone();
         remaining.remove(&chosen);
         emitted.insert(chosen.clone());
         ordered.push(chosen);
@@ -133,12 +157,16 @@ pub fn preview_unapproved_native_v3_order(
     if ordered.first().map(String::as_str) != Some(genesis_hash) {
         return Err(reject("canonical trusted genesis not first"));
     }
-    let side_blues = ordered.iter().filter(|hash| {
-        priority[*hash].1 == Kind::Blue
-    }).cloned().collect();
-    let side_reds = ordered.iter().filter(|hash| {
-        priority[*hash].1 == Kind::Red
-    }).cloned().collect();
+    let side_blues = ordered
+        .iter()
+        .filter(|hash| priority[*hash].1 == Kind::Blue)
+        .cloned()
+        .collect();
+    let side_reds = ordered
+        .iter()
+        .filter(|hash| priority[*hash].1 == Kind::Red)
+        .cloned()
+        .collect();
     let mut hasher = Sha256::new();
     hasher.update(PREVIEW_DOMAIN);
     hasher.update((trial_k as u64).to_le_bytes());
@@ -172,7 +200,9 @@ fn selected_spine(
         if !seen.insert(hash.clone()) || seen.len() > trial.blocks.len() {
             return Err(reject("cyclic selected-spine path"));
         }
-        let meta = trial.blocks.get(&hash)
+        let meta = trial
+            .blocks
+            .get(&hash)
             .ok_or_else(|| reject("missing selected ancestor"))?;
         if meta.selected_parent.is_none() && hash != genesis {
             return Err(reject("selected chain ends outside frozen genesis"));
