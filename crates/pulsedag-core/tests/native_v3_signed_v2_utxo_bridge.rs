@@ -749,3 +749,231 @@ fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_poli
         "different txids can still conflict by spending the same UTXO"
     );
 }
+
+
+/// This simulator is not the frozen DAG acceptance policy. It explicitly
+/// varies whether an eligible repeated TXID is a whole-order error or a
+/// deterministic no-op. Neither variant is yet authorized for mainnet.
+#[derive(Clone, Copy)]
+enum TrialDuplicatePolicy {
+    RejectEntireOrder,
+    SkipRepeatedTxid,
+}
+
+struct TrialDuplicateOutcome {
+    snapshot: PreviewSet,
+    accepted_txids: Vec<String>,
+    duplicate_txids: Vec<String>,
+    conflict_txids: Vec<String>,
+    excluded_red_txids: Vec<String>,
+    fee_by_containing_block: BTreeMap<String, u64>,
+}
+
+fn replay_explicit_duplicate_policy(
+    order: &UnapprovedTrialOrder,
+    initial: &PreviewSet,
+    effects: &BTreeMap<String, (Transaction, HypotheticalBlockEffects)>,
+    include_red: bool,
+    duplicate_policy: TrialDuplicatePolicy,
+) -> Result<TrialDuplicateOutcome, String> {
+    let mut seen = BTreeSet::new();
+    let mut snapshot = initial.clone();
+    let mut accepted_txids = Vec::new();
+    let mut duplicate_txids = Vec::new();
+    let mut conflict_txids = Vec::new();
+    let mut excluded_red_txids = Vec::new();
+    let mut fee_by_containing_block = BTreeMap::new();
+    let reds: BTreeSet<_> = order.side_reds.iter().cloned().collect();
+    for hash in &order.ordered_blocks {
+        if let Some((tx, effect)) = effects.get(hash) {
+            if effect.block != *hash {
+                return Err("cross-block test effect identity mismatch".into());
+            }
+            if !include_red && reds.contains(hash) {
+                excluded_red_txids.push(tx.txid.clone());
+                continue;
+            }
+            if !seen.insert(tx.txid.clone()) {
+                match duplicate_policy {
+                    TrialDuplicatePolicy::RejectEntireOrder => {
+                        return Err("eligible duplicate signed txid across native-v3 DAG".into());
+                    }
+                    TrialDuplicatePolicy::SkipRepeatedTxid => {
+                        duplicate_txids.push(tx.txid.clone());
+                        continue;
+                    }
+                }
+            }
+            if tx
+                .inputs
+                .iter()
+                .any(|input| !snapshot.contains_key(&input.previous_output))
+            {
+                if tx.inputs.iter().any(|input| !initial.contains_key(&input.previous_output)) {
+                    return Err("unknown input, not a legitimate ordered conflict".into());
+                }
+                conflict_txids.push(tx.txid.clone());
+                continue;
+            }
+            snapshot = detached_utxo::apply(&snapshot, effect)?;
+            if fee_by_containing_block
+                .insert(hash.clone(), tx.fee)
+                .is_some()
+            {
+                return Err("duplicate fee entitlement at same containing block".into());
+            }
+            accepted_txids.push(tx.txid.clone());
+        }
+    }
+    Ok(TrialDuplicateOutcome {
+        snapshot,
+        accepted_txids,
+        duplicate_txids,
+        conflict_txids,
+        excluded_red_txids,
+        fee_by_containing_block,
+    })
+}
+
+#[test]
+fn duplicate_policy_matrix_never_pays_a_signed_fee_twice() {
+    // Both genuine PoW-valid v3 blocks contain exactly the same Ed25519 v2
+    // transaction, spending one test-only preloaded UTXO of 100 atoms.
+    // Beneficiary identities and claim maturity are NOT inferred here.
+    let (state, funding) = test_state();
+    let signed = signed_v2_transfer(&funding.outpoint, "pulse1alice", 90, 10);
+    validate_transaction_v2(&signed, &state, CHAIN).unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine_full_envelope(
+        vec![genesis.hash.clone()],
+        vec![signed.clone()],
+        1,
+        1,
+        HARD_BITS,
+        GENESIS_NS + 500_000_000,
+    );
+    let second = mine_full_envelope(
+        vec![genesis.hash.clone()],
+        vec![signed.clone()],
+        1,
+        1,
+        EASY_BITS,
+        GENESIS_NS + 600_000_000,
+    );
+    let mut parents = vec![first.hash.clone(), second.hash.clone()];
+    parents.sort();
+    let mut headers = BTreeMap::from([
+        (genesis.hash.clone(), genesis.header),
+        (first.hash.clone(), first.header.clone()),
+        (second.hash.clone(), second.header.clone()),
+    ]);
+    let effects = BTreeMap::from([
+        (
+            first.hash.clone(),
+            (
+                signed.clone(),
+                signed_v2_effect(&first.hash, &signed, &state).unwrap(),
+            ),
+        ),
+        (
+            second.hash.clone(),
+            (
+                signed.clone(),
+                signed_v2_effect(&second.hash, &signed, &state).unwrap(),
+            ),
+        ),
+    ]);
+    let starting = PreviewSet::from([(funding.outpoint.clone(), funding.clone())]);
+    for k in [0_usize, 1] {
+        let join = mine_full_envelope(
+            parents.clone(),
+            vec![],
+            2 + k as u64,
+            2,
+            EASY_BITS,
+            GENESIS_NS + 1_000_000_000 + k as u64 * 100_000,
+        );
+        headers.insert(join.hash.clone(), join.header.clone());
+        let order = preview_unapproved_native_v3_order(
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &headers,
+            k,
+        )
+        .unwrap();
+        assert_eq!(order.ordered_blocks.len(), 4);
+        assert_eq!(order.side_reds.len(), 1 - k);
+        assert_eq!(
+            order.selected_spine,
+            vec![genesis.hash.clone(), first.hash.clone(), join.hash.clone()]
+        );
+        let strict = replay_explicit_duplicate_policy(
+            &order, &starting, &effects, true, TrialDuplicatePolicy::RejectEntireOrder,
+        );
+        assert!(strict.is_err(), "including two copies under strict policy must reject");
+        let skipped = replay_explicit_duplicate_policy(
+            &order, &starting, &effects, true, TrialDuplicatePolicy::SkipRepeatedTxid,
+        )
+        .unwrap();
+        assert_eq!(skipped.accepted_txids, vec![signed.txid.clone()]);
+        assert_eq!(skipped.duplicate_txids, vec![signed.txid.clone()]);
+        assert!(skipped.conflict_txids.is_empty());
+        assert_eq!(skipped.fee_by_containing_block.len(), 1);
+        assert_eq!(skipped.fee_by_containing_block[&first.hash], 10);
+        assert!(!skipped.fee_by_containing_block.contains_key(&second.hash));
+        assert_eq!(detached_utxo::total_supply(&skipped.snapshot).unwrap(), 90);
+        assert_eq!(detached_utxo::fingerprint(&starting),
+                   detached_utxo::fingerprint(&detached_utxo::undo(
+                       &skipped.snapshot, &effects[&first.hash].1
+                   ).unwrap()));
+
+        let blue_only = replay_explicit_duplicate_policy(
+            &order, &starting, &effects, false, TrialDuplicatePolicy::SkipRepeatedTxid,
+        )
+        .unwrap();
+        assert_eq!(detached_utxo::fingerprint(&blue_only.snapshot),
+                   detached_utxo::fingerprint(&skipped.snapshot));
+        assert_eq!(blue_only.fee_by_containing_block[&first.hash], 10);
+        assert_eq!(blue_only.duplicate_txids.len(), k);
+        assert_eq!(blue_only.excluded_red_txids.len(), 1 - k);
+        if k == 0 {
+            assert!(replay_explicit_duplicate_policy(
+                &order, &starting, &effects, false, TrialDuplicatePolicy::RejectEntireOrder,
+            ).is_ok(), "red exclusion must happen before duplicate-policy evaluation");
+        } else {
+            assert!(replay_explicit_duplicate_policy(
+                &order, &starting, &effects, false, TrialDuplicatePolicy::RejectEntireOrder,
+            ).is_err());
+        }
+
+        // Distinct signed txids consuming the same funding are NOT duplicates.
+        // They are handled by the independent atomic UTXO-conflict gate.
+        let conflicting = signed_v2_transfer(&funding.outpoint, "pulse1bob", 92, 8);
+        validate_transaction_v2(&conflicting, &state, CHAIN).unwrap();
+        let mixed = BTreeMap::from([
+            (first.hash.clone(), effects[&first.hash].clone()),
+            (
+                second.hash.clone(),
+                (
+                    conflicting.clone(),
+                    signed_v2_effect(&second.hash, &conflicting, &state).unwrap(),
+                ),
+            ),
+        ]);
+        let conflict = replay_explicit_duplicate_policy(
+            &order, &starting, &mixed, true, TrialDuplicatePolicy::RejectEntireOrder,
+        )
+        .expect("different txids with same source must be an atomic spend conflict");
+        assert!(conflict.duplicate_txids.is_empty());
+        assert_eq!(conflict.conflict_txids, vec![conflicting.txid.clone()]);
+        assert_eq!(conflict.fee_by_containing_block[&first.hash], 10);
+        assert_eq!(conflict.fee_by_containing_block.len(), 1);
+        assert_eq!(detached_utxo::total_supply(&conflict.snapshot).unwrap(), 90);
+        assert_eq!(detached_utxo::fingerprint(&starting),
+                   detached_utxo::fingerprint(&PreviewSet::from([
+                       (funding.outpoint.clone(), funding.clone())
+                   ])));
+    }
+}
