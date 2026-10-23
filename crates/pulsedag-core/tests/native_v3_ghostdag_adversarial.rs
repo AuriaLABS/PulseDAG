@@ -825,7 +825,10 @@ fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
         )
         .expect("canonical eight-parent join must pass independent native DAG checks");
         let meta = &trial.blocks[&join];
-        assert_eq!(meta.selected_parent.as_deref(), Some(expected_selected.as_str()));
+        assert_eq!(
+            meta.selected_parent.as_deref(),
+            Some(expected_selected.as_str())
+        );
         assert_eq!(meta.blue_score, expected_score);
         assert_eq!(meta.blue_work.decimal(), expected_work);
         assert_eq!(meta.merge_blues, siblings[1..1 + blue_count].to_vec());
@@ -843,18 +846,24 @@ fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
         assert_eq!(order.ordered_blocks.len(), 10);
         assert_eq!(order.ordered_blocks.first(), Some(&genesis_id));
         assert_eq!(order.ordered_blocks.last(), Some(&join));
-        assert_eq!(order.selected_spine, vec![
-            genesis_id.clone(), expected_selected.clone(), join.clone()
-        ]);
+        assert_eq!(
+            order.selected_spine,
+            vec![genesis_id.clone(), expected_selected.clone(), join.clone()]
+        );
         assert_eq!(order.side_blues, siblings[1..1 + blue_count].to_vec());
         assert_eq!(order.side_reds, siblings[1 + blue_count..].to_vec());
         let mut damaged = headers.clone();
         damaged.remove(&siblings[7]);
         assert!(
             derive_dormant_native_v3_ghostdag_trial(
-                CHAIN, GENESIS_NS, &genesis_id,
-                std::slice::from_ref(&join), &damaged, k
-            ).is_err(),
+                CHAIN,
+                GENESIS_NS,
+                &genesis_id,
+                std::slice::from_ref(&join),
+                &damaged,
+                k
+            )
+            .is_err(),
             "a valid PoW join must not excuse a missing side parent at any K"
         );
     }
