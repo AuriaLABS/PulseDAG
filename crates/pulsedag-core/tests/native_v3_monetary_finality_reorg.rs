@@ -8,6 +8,7 @@
 //! authoritative monetary replay + live root/finality validation routines.
 
 use pulsedag_core::{
+    build_reward_claim_transaction_v3,
     genesis_v3::init_chain_state_v3,
     live_reward_settlement_v3::{
         derive_live_reward_finality_boundary_v3, validate_live_reward_settlement_v3,
@@ -20,7 +21,6 @@ use pulsedag_core::{
     state::{ChainState, UtxoState},
     state_replay_v3::{materialize_authoritative_state_v3, REWARD_FINALITY_POLICY_VERSION_V3},
     types::{Block, BlockHeader},
-    build_reward_claim_transaction_v3,
 };
 
 const CHAIN: &str = "dormant-v3-reward-finality-reorg-audit";
@@ -34,7 +34,10 @@ const ONE_HOUR_PER_SCORE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment 
 /// v3 monetary replay. It does not impersonate the native-v3 header protocol.
 fn linear_two_rewards(first_beneficiary: &str, tag: &str) -> ChainState {
     let mut state = init_chain_state_v3(CHAIN.into(), GENESIS_SEC).unwrap();
-    assert!(state.utxo.utxos.is_empty(), "native v3 genesis must be empty");
+    assert!(
+        state.utxo.utxos.is_empty(),
+        "native v3 genesis must be empty"
+    );
     assert!(!state.contracts.config.enabled);
     let mut parent = state.dag.genesis_hash.clone();
     for score in 1u64..=2 {
@@ -44,9 +47,8 @@ fn linear_two_rewards(first_beneficiary: &str, tag: &str) -> ChainState {
         } else {
             "pulse1later-miner".to_string()
         };
-        let claim = build_reward_claim_transaction_v3(
-            &beneficiary, score, &state.chain_id,
-        ).unwrap();
+        let claim =
+            build_reward_claim_transaction_v3(&beneficiary, score, &state.chain_id).unwrap();
         assert!(claim.inputs.is_empty());
         assert_eq!(claim.outputs[0].amount, 0);
         let block = Block {
@@ -65,7 +67,10 @@ fn linear_two_rewards(first_beneficiary: &str, tag: &str) -> ChainState {
             transactions: vec![claim],
         };
         state.dag.blocks.insert(hash.clone(), block);
-        state.dag.selected_parents.insert(hash.clone(), Some(parent));
+        state
+            .dag
+            .selected_parents
+            .insert(hash.clone(), Some(parent));
         state.dag.merge_set_blues.insert(hash.clone(), vec![]);
         state.dag.merge_set_reds.insert(hash.clone(), vec![]);
         state.dag.blue_work.insert(hash.clone(), u128::from(score));
@@ -87,17 +92,29 @@ fn old_finalized_coinbase_must_not_survive_a_replayed_prefix_switch() {
     let live_old = materialize_authoritative_state_v3(&first, &ONE_HOUR_PER_SCORE).unwrap();
     let live_new = materialize_authoritative_state_v3(&alternative, &ONE_HOUR_PER_SCORE).unwrap();
     let checked_old = validate_live_reward_settlement_v3(
-        &live_old, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap();
+        &live_old,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .unwrap();
     let checked_new = validate_live_reward_settlement_v3(
-        &live_new, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap();
+        &live_new,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .unwrap();
     assert_eq!(checked_old.current_monetary_score, 2);
     assert_eq!(checked_new.current_monetary_score, 2);
     assert_eq!(checked_old.claims[0].status, RewardClaimStatusV3::Spendable);
     assert_eq!(checked_new.claims[0].status, RewardClaimStatusV3::Spendable);
-    assert_eq!(checked_old.claims[1].status, RewardClaimStatusV3::Provisional);
-    assert_eq!(checked_new.claims[1].status, RewardClaimStatusV3::Provisional);
+    assert_eq!(
+        checked_old.claims[1].status,
+        RewardClaimStatusV3::Provisional
+    );
+    assert_eq!(
+        checked_new.claims[1].status,
+        RewardClaimStatusV3::Provisional
+    );
     let old_rewards = materializable_reward_utxos_v3(&checked_old);
     let new_rewards = materializable_reward_utxos_v3(&checked_new);
     assert_eq!(old_rewards.len(), 1);
@@ -115,23 +132,38 @@ fn old_finalized_coinbase_must_not_survive_a_replayed_prefix_switch() {
     assert_ne!(old_root, new_root);
 
     let old_boundary = derive_live_reward_finality_boundary_v3(
-        &live_old, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap();
+        &live_old,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .unwrap();
     assert_eq!(old_boundary.finalized_through_score, 1);
     assert!(validate_reward_finality_boundary_v3(
-        &live_old, &old_boundary, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_ok());
-    assert!(validate_reward_finality_boundary_v3(
-        &live_new, &old_boundary, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err(), "stale prefix certificate must not validate across a reorg");
+        &live_old,
+        &old_boundary,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_ok());
+    assert!(
+        validate_reward_finality_boundary_v3(
+            &live_new,
+            &old_boundary,
+            REWARD_FINALITY_POLICY_VERSION_V3,
+        )
+        .is_err(),
+        "stale prefix certificate must not validate across a reorg"
+    );
 
     // Reusing an old committed UTXO snapshot with the alternative prefix is
     // NOT equivalent to rebuilding the monetary state. Must fail closed.
     let mut corrupted = live_new.clone();
     corrupted.utxo = live_old.utxo.clone();
     assert!(validate_live_reward_settlement_v3(
-        &corrupted, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &corrupted,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     assert_eq!(live_new.utxo.compute_state_root().unwrap(), new_root);
     assert_eq!(live_old.utxo.compute_state_root().unwrap(), old_root);
 }
@@ -140,49 +172,72 @@ fn old_finalized_coinbase_must_not_survive_a_replayed_prefix_switch() {
 fn maturity_alone_never_authorizes_unmaterialized_rewards_or_a_fake_certificate() {
     let source = linear_two_rewards("pulse1miner", "solo");
     let original_root = source.utxo.compute_state_root().unwrap();
-    assert_eq!(original_root, UtxoState::default().compute_state_root().unwrap());
+    assert_eq!(
+        original_root,
+        UtxoState::default().compute_state_root().unwrap()
+    );
     // Economic time has elapsed for score 1, but the live state hasn't been
     // replayed/materialized: it must NOT silently gain a reward UTXO.
     let error = validate_live_reward_settlement_v3(
-        &source, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap_err();
+        &source,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("does not match live state"));
 
     let live = materialize_authoritative_state_v3(&source, &ONE_HOUR_PER_SCORE).unwrap();
     let good = validate_live_reward_settlement_v3(
-        &live, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap();
+        &live,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .unwrap();
     assert_eq!(materializable_reward_utxos_v3(&good).len(), 1);
-    let real_binding = bind_reward_finality_boundary_v3(
-        &live, 1, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).unwrap();
+    let real_binding =
+        bind_reward_finality_boundary_v3(&live, 1, REWARD_FINALITY_POLICY_VERSION_V3).unwrap();
     let mut forged = real_binding.clone();
     forged.ordered_prefix_digest = "00".repeat(32);
     assert!(validate_reward_finality_boundary_v3(
-        &live, &forged, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &live,
+        &forged,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     let mut forged = real_binding.clone();
     forged.finalized_block_hash = "forged-finality-hash".into();
     assert!(validate_reward_finality_boundary_v3(
-        &live, &forged, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &live,
+        &forged,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     let mut forged = real_binding.clone();
     forged.finalized_through_score = 3;
     assert!(validate_reward_finality_boundary_v3(
-        &live, &forged, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &live,
+        &forged,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     let mut forged = real_binding;
     forged.policy_version = "unapproved-p2p-finality".into();
     assert!(validate_reward_finality_boundary_v3(
-        &live, &forged, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &live,
+        &forged,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     // Genesis/candidate consistency and persisted state-root checks are still
     // required beyond a verified prefix digest.
     let mut tampered = live.clone();
     let reward = tampered.utxo.utxos.values_mut().next().unwrap();
     reward.amount = reward.amount.checked_add(1).unwrap();
     assert!(validate_live_reward_settlement_v3(
-        &tampered, &ONE_HOUR_PER_SCORE, REWARD_FINALITY_POLICY_VERSION_V3,
-    ).is_err());
+        &tampered,
+        &ONE_HOUR_PER_SCORE,
+        REWARD_FINALITY_POLICY_VERSION_V3,
+    )
+    .is_err());
     assert_eq!(source.utxo.compute_state_root().unwrap(), original_root);
 }
