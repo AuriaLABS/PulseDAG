@@ -138,9 +138,18 @@ fn target_weighted_hard_parent_wins_and_k_changes_actual_merge_colors() {
         // topological order. Even red side blocks appear in this UNAPPROVED
         // diagnostic ordering, and no monetary replay reads it.
         let order = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&joined), &headers, trial_k,
-        ).expect("true mined 3-parent candidate full-ancestor order");
-        assert_eq!(order.selected_spine, vec![g.clone(), hard.clone(), joined.clone()]);
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&joined),
+            &headers,
+            trial_k,
+        )
+        .expect("true mined 3-parent candidate full-ancestor order");
+        assert_eq!(
+            order.selected_spine,
+            vec![g.clone(), hard.clone(), joined.clone()]
+        );
         let mut expected = vec![g.clone(), hard.clone()];
         expected.extend(side.iter().cloned());
         expected.push(joined.clone());
@@ -149,11 +158,24 @@ fn target_weighted_hard_parent_wins_and_k_changes_actual_merge_colors() {
         assert_eq!(order.side_reds, side[trial_k..].to_vec());
         assert_eq!(order.ordered_blocks.len(), 5);
         assert_eq!(order.trial_k, trial_k);
-        let reversed: BTreeMap<_, _> = headers.iter().rev()
-            .map(|(key, val)| (key.clone(), val.clone())).collect();
-        assert_eq!(order, preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&joined), &reversed, trial_k,
-        ).unwrap(), "diagnostic ordering must be insertion-independent");
+        let reversed: BTreeMap<_, _> = headers
+            .iter()
+            .rev()
+            .map(|(key, val)| (key.clone(), val.clone()))
+            .collect();
+        assert_eq!(
+            order,
+            preview_unapproved_native_v3_order(
+                CHAIN,
+                GENESIS_NS,
+                &g,
+                std::slice::from_ref(&joined),
+                &reversed,
+                trial_k,
+            )
+            .unwrap(),
+            "diagnostic ordering must be insertion-independent"
+        );
 
         assert_eq!(result.k_trial, trial_k);
         assert_eq!(result.blocks[&hard].blue_work.decimal(), "512");
@@ -469,8 +491,14 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         assert_eq!(record.merge_blues, side[..blue_count].to_vec());
         assert_eq!(record.merge_reds, side[blue_count..].to_vec());
         let order = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&join), &headers, k,
-        ).expect("multi-height K trial fully authenticated and classified");
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&join),
+            &headers,
+            k,
+        )
+        .expect("multi-height K trial fully authenticated and classified");
         assert_eq!(
             order.selected_spine,
             vec![g.clone(), b.clone(), b2.clone(), join.clone()]
@@ -478,26 +506,46 @@ fn multi_height_heterogeneous_work_selected_parent_switch_and_k_boundary() {
         assert_eq!(
             order.ordered_blocks,
             vec![
-                g.clone(), b.clone(), b2.clone(),
-                a.clone(), a2.clone(), a3.clone(), join.clone(),
+                g.clone(),
+                b.clone(),
+                b2.clone(),
+                a.clone(),
+                a2.clone(),
+                a3.clone(),
+                join.clone(),
             ]
         );
         assert_eq!(order.side_blues, side[..blue_count].to_vec());
         assert_eq!(order.side_reds, side[blue_count..].to_vec());
         assert_eq!(order.ordered_blocks.len(), 7);
         assert_ne!(order.digest, "", "trial digest must be nonempty");
-        let reversed: BTreeMap<_, _> = headers.iter().rev()
-            .map(|(key, val)| (key.clone(), val.clone())).collect();
+        let reversed: BTreeMap<_, _> = headers
+            .iter()
+            .rev()
+            .map(|(key, val)| (key.clone(), val.clone()))
+            .collect();
         let another = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&join), &reversed, k,
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&join),
+            &reversed,
+            k,
+        )
+        .unwrap();
         assert_eq!(order, another);
         let mut incomplete = headers.clone();
         incomplete.remove(&a2);
         assert!(
             preview_unapproved_native_v3_order(
-                CHAIN, GENESIS_NS, &g, std::slice::from_ref(&join), &incomplete, k,
-            ).is_err(),
+                CHAIN,
+                GENESIS_NS,
+                &g,
+                std::slice::from_ref(&join),
+                &incomplete,
+                k,
+            )
+            .is_err(),
             "missing side-branch ancestry must never create an incomplete ledger ordering"
         );
 
