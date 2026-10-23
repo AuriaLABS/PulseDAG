@@ -750,7 +750,6 @@ fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_poli
     );
 }
 
-
 /// This simulator is not the frozen DAG acceptance policy. It explicitly
 /// varies whether an eligible repeated TXID is a whole-order error or a
 /// deterministic no-op. Neither variant is yet authorized for mainnet.
@@ -809,7 +808,11 @@ fn replay_explicit_duplicate_policy(
                 .iter()
                 .any(|input| !snapshot.contains_key(&input.previous_output))
             {
-                if tx.inputs.iter().any(|input| !initial.contains_key(&input.previous_output)) {
+                if tx
+                    .inputs
+                    .iter()
+                    .any(|input| !initial.contains_key(&input.previous_output))
+                {
                     return Err("unknown input, not a legitimate ordered conflict".into());
                 }
                 conflict_txids.push(tx.txid.clone());
@@ -910,11 +913,22 @@ fn duplicate_policy_matrix_never_pays_a_signed_fee_twice() {
             vec![genesis.hash.clone(), first.hash.clone(), join.hash.clone()]
         );
         let strict = replay_explicit_duplicate_policy(
-            &order, &starting, &effects, true, TrialDuplicatePolicy::RejectEntireOrder,
+            &order,
+            &starting,
+            &effects,
+            true,
+            TrialDuplicatePolicy::RejectEntireOrder,
         );
-        assert!(strict.is_err(), "including two copies under strict policy must reject");
+        assert!(
+            strict.is_err(),
+            "including two copies under strict policy must reject"
+        );
         let skipped = replay_explicit_duplicate_policy(
-            &order, &starting, &effects, true, TrialDuplicatePolicy::SkipRepeatedTxid,
+            &order,
+            &starting,
+            &effects,
+            true,
+            TrialDuplicatePolicy::SkipRepeatedTxid,
         )
         .unwrap();
         assert_eq!(skipped.accepted_txids, vec![signed.txid.clone()]);
@@ -924,28 +938,49 @@ fn duplicate_policy_matrix_never_pays_a_signed_fee_twice() {
         assert_eq!(skipped.fee_by_containing_block[&first.hash], 10);
         assert!(!skipped.fee_by_containing_block.contains_key(&second.hash));
         assert_eq!(detached_utxo::total_supply(&skipped.snapshot).unwrap(), 90);
-        assert_eq!(detached_utxo::fingerprint(&starting),
-                   detached_utxo::fingerprint(&detached_utxo::undo(
-                       &skipped.snapshot, &effects[&first.hash].1
-                   ).unwrap()));
+        assert_eq!(
+            detached_utxo::fingerprint(&starting),
+            detached_utxo::fingerprint(
+                &detached_utxo::undo(&skipped.snapshot, &effects[&first.hash].1).unwrap()
+            )
+        );
 
         let blue_only = replay_explicit_duplicate_policy(
-            &order, &starting, &effects, false, TrialDuplicatePolicy::SkipRepeatedTxid,
+            &order,
+            &starting,
+            &effects,
+            false,
+            TrialDuplicatePolicy::SkipRepeatedTxid,
         )
         .unwrap();
-        assert_eq!(detached_utxo::fingerprint(&blue_only.snapshot),
-                   detached_utxo::fingerprint(&skipped.snapshot));
+        assert_eq!(
+            detached_utxo::fingerprint(&blue_only.snapshot),
+            detached_utxo::fingerprint(&skipped.snapshot)
+        );
         assert_eq!(blue_only.fee_by_containing_block[&first.hash], 10);
         assert_eq!(blue_only.duplicate_txids.len(), k);
         assert_eq!(blue_only.excluded_red_txids.len(), 1 - k);
         if k == 0 {
-            assert!(replay_explicit_duplicate_policy(
-                &order, &starting, &effects, false, TrialDuplicatePolicy::RejectEntireOrder,
-            ).is_ok(), "red exclusion must happen before duplicate-policy evaluation");
+            assert!(
+                replay_explicit_duplicate_policy(
+                    &order,
+                    &starting,
+                    &effects,
+                    false,
+                    TrialDuplicatePolicy::RejectEntireOrder,
+                )
+                .is_ok(),
+                "red exclusion must happen before duplicate-policy evaluation"
+            );
         } else {
             assert!(replay_explicit_duplicate_policy(
-                &order, &starting, &effects, false, TrialDuplicatePolicy::RejectEntireOrder,
-            ).is_err());
+                &order,
+                &starting,
+                &effects,
+                false,
+                TrialDuplicatePolicy::RejectEntireOrder,
+            )
+            .is_err());
         }
 
         // Distinct signed txids consuming the same funding are NOT duplicates.
@@ -963,7 +998,11 @@ fn duplicate_policy_matrix_never_pays_a_signed_fee_twice() {
             ),
         ]);
         let conflict = replay_explicit_duplicate_policy(
-            &order, &starting, &mixed, true, TrialDuplicatePolicy::RejectEntireOrder,
+            &order,
+            &starting,
+            &mixed,
+            true,
+            TrialDuplicatePolicy::RejectEntireOrder,
         )
         .expect("different txids with same source must be an atomic spend conflict");
         assert!(conflict.duplicate_txids.is_empty());
@@ -971,9 +1010,12 @@ fn duplicate_policy_matrix_never_pays_a_signed_fee_twice() {
         assert_eq!(conflict.fee_by_containing_block[&first.hash], 10);
         assert_eq!(conflict.fee_by_containing_block.len(), 1);
         assert_eq!(detached_utxo::total_supply(&conflict.snapshot).unwrap(), 90);
-        assert_eq!(detached_utxo::fingerprint(&starting),
-                   detached_utxo::fingerprint(&PreviewSet::from([
-                       (funding.outpoint.clone(), funding.clone())
-                   ])));
+        assert_eq!(
+            detached_utxo::fingerprint(&starting),
+            detached_utxo::fingerprint(&PreviewSet::from([(
+                funding.outpoint.clone(),
+                funding.clone()
+            )]))
+        );
     }
 }
