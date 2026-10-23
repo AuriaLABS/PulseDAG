@@ -750,3 +750,112 @@ fn k32_k33_blue_anticone_pressure_on_34_actual_pow_valid_siblings() {
         );
     }
 }
+
+#[test]
+fn eight_parent_proposed_cap_k_cluster_boundary_is_tip_order_independent() {
+    // Eight real PoW-valid genesis children: this targets the PROPOSED eight
+    // direct-parent cap, NOT approval of its production value. Seven true
+    // side-anticone candidates test K=6 vs K=7. K=32 is also checked as
+    // an unapproved mathematical upper-range diagnostic.
+    let (genesis_id, mut headers) = genesis();
+    let mut siblings = Vec::new();
+    for i in 0..8_u8 {
+        let (id, header) = mine(
+            vec![genesis_id.clone()],
+            1,
+            GENESIS_NS + 500_000_000 + u64::from(i) * 100_000,
+            1,
+            EASY_BITS,
+            0x40 + i,
+        );
+        assert!(headers.insert(id.clone(), header).is_none());
+        siblings.push(id);
+    }
+    siblings.sort();
+    assert_eq!(siblings.len(), 8);
+    let expected_selected = siblings[0].clone();
+
+    // The same verified tip SET in opposite arrival order must produce
+    // identical derived metadata before a miner creates a merging child.
+    let mut reverse_tips = siblings.clone();
+    reverse_tips.reverse();
+    let forward = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis_id,
+        &siblings,
+        &headers,
+        32,
+    )
+    .expect("eight independent tips should be a fully verified DAG");
+    let reverse = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis_id,
+        &reverse_tips,
+        &headers,
+        32,
+    )
+    .expect("reverse receipt order must preserve same ancestor metadata");
+    assert_eq!(forward, reverse);
+    assert_eq!(forward.blocks.len(), 9);
+
+    for (k, expected_score, expected_work, blue_count) in [
+        (0_usize, 2_u64, "4", 0_usize),
+        (6, 8, "16", 6),
+        (7, 9, "18", 7),
+        (32, 9, "18", 7),
+    ] {
+        let (join, header) = mine(
+            siblings.clone(),
+            2,
+            GENESIS_NS + 1_000_000_000 + (k as u64) * 100_000,
+            expected_score,
+            EASY_BITS,
+            0x80 + k as u8,
+        );
+        headers.insert(join.clone(), header);
+        let trial = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &genesis_id,
+            std::slice::from_ref(&join),
+            &headers,
+            k,
+        )
+        .expect("canonical eight-parent join must pass independent native DAG checks");
+        let meta = &trial.blocks[&join];
+        assert_eq!(meta.selected_parent.as_deref(), Some(expected_selected.as_str()));
+        assert_eq!(meta.blue_score, expected_score);
+        assert_eq!(meta.blue_work.decimal(), expected_work);
+        assert_eq!(meta.merge_blues, siblings[1..1 + blue_count].to_vec());
+        assert_eq!(meta.merge_reds, siblings[1 + blue_count..].to_vec());
+
+        let order = preview_unapproved_native_v3_order(
+            CHAIN,
+            GENESIS_NS,
+            &genesis_id,
+            std::slice::from_ref(&join),
+            &headers,
+            k,
+        )
+        .expect("test-only complete topology and blue/red diagnostic");
+        assert_eq!(order.ordered_blocks.len(), 10);
+        assert_eq!(order.ordered_blocks.first(), Some(&genesis_id));
+        assert_eq!(order.ordered_blocks.last(), Some(&join));
+        assert_eq!(order.selected_spine, vec![
+            genesis_id.clone(), expected_selected.clone(), join.clone()
+        ]);
+        assert_eq!(order.side_blues, siblings[1..1 + blue_count].to_vec());
+        assert_eq!(order.side_reds, siblings[1 + blue_count..].to_vec());
+        let mut damaged = headers.clone();
+        damaged.remove(&siblings[7]);
+        assert!(
+            derive_dormant_native_v3_ghostdag_trial(
+                CHAIN, GENESIS_NS, &genesis_id,
+                std::slice::from_ref(&join), &damaged, k
+            ).is_err(),
+            "a valid PoW join must not excuse a missing side parent at any K"
+        );
+    }
+}
