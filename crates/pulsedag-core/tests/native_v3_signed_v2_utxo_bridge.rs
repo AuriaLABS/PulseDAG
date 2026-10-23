@@ -584,7 +584,6 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
     assert_eq!(state.utxo.utxos[&funding_b.outpoint].amount, 80);
 }
 
-
 /// A strict **non-normative diagnostic**, not a new network-level rule.
 /// Duplicate txids are harmless at the *individual envelope* boundary but
 /// require an explicit canonical DAG-level policy before monetary replay.
@@ -601,7 +600,8 @@ fn diagnostic_unique_native_v3_txids(
         if hash == trusted_genesis {
             continue;
         }
-        let envelope = envelopes.get(hash)
+        let envelope = envelopes
+            .get(hash)
             .ok_or_else(|| format!("missing authenticated native envelope {hash}"))?;
         if envelope.hash != *hash {
             return Err("envelope identity mismatch".into());
@@ -613,7 +613,10 @@ fn diagnostic_unique_native_v3_txids(
         checked_blocks += 1;
         for tx in &envelope.transactions {
             if !seen.insert(tx.txid.as_str()) {
-                return Err(format!("duplicate signed transaction ID across DAG: {}", tx.txid));
+                return Err(format!(
+                    "duplicate signed transaction ID across DAG: {}",
+                    tx.txid
+                ));
             }
         }
     }
@@ -630,12 +633,20 @@ fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_poli
     validate_transaction_v2(&tx, &state, CHAIN).unwrap();
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
     let first = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![tx.clone()], 1, 1,
-        HARD_BITS, GENESIS_NS + 500_000_000,
+        vec![genesis.hash.clone()],
+        vec![tx.clone()],
+        1,
+        1,
+        HARD_BITS,
+        GENESIS_NS + 500_000_000,
     );
     let second = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![tx.clone()], 1, 1,
-        EASY_BITS, GENESIS_NS + 600_000_000,
+        vec![genesis.hash.clone()],
+        vec![tx.clone()],
+        1,
+        1,
+        EASY_BITS,
+        GENESIS_NS + 600_000_000,
     );
     assert_ne!(first.hash, second.hash);
     assert_eq!(first.transactions[0].txid, second.transactions[0].txid);
@@ -648,14 +659,23 @@ fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_poli
     ]);
     for k in 0..=1_usize {
         let join = mine_full_envelope(
-            parents.clone(), vec![], 2 + k as u64, 2, EASY_BITS,
+            parents.clone(),
+            vec![],
+            2 + k as u64,
+            2,
+            EASY_BITS,
             GENESIS_NS + 1_000_000_000 + k as u64 * 100_000,
         );
         headers.insert(join.hash.clone(), join.header.clone());
         let order = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &genesis.hash,
-            std::slice::from_ref(&join.hash), &headers, k,
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &headers,
+            k,
+        )
+        .unwrap();
         assert_eq!(
             order.selected_spine,
             vec![genesis.hash.clone(), first.hash.clone(), join.hash.clone()]
@@ -667,45 +687,65 @@ fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_poli
             (second.hash.clone(), second.clone()),
             (join.hash.clone(), join.clone()),
         ]);
-        let err = diagnostic_unique_native_v3_txids(
-            &order, &genesis.hash, &complete,
-        ).expect_err("valid envelopes do not imply unique txids across blue/red DAG blocks");
-        assert!(err.contains("duplicate signed transaction ID across DAG"), "{err}");
+        let err = diagnostic_unique_native_v3_txids(&order, &genesis.hash, &complete)
+            .expect_err("valid envelopes do not imply unique txids across blue/red DAG blocks");
+        assert!(
+            err.contains("duplicate signed transaction ID across DAG"),
+            "{err}"
+        );
 
         let mut missing = complete.clone();
         missing.remove(&second.hash);
-        assert!(diagnostic_unique_native_v3_txids(
-            &order, &genesis.hash, &missing,
-        ).is_err(), "a missing authenticated side envelope cannot be skipped");
+        assert!(
+            diagnostic_unique_native_v3_txids(&order, &genesis.hash, &missing,).is_err(),
+            "a missing authenticated side envelope cannot be skipped"
+        );
     }
     let distinct = signed_v2_transfer(&funding.outpoint, "pulse1bob", 92, 8);
     validate_transaction_v2(&distinct, &state, CHAIN).unwrap();
     let second_different = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![distinct], 1, 1,
-        EASY_BITS, GENESIS_NS + 600_000_000,
+        vec![genesis.hash.clone()],
+        vec![distinct],
+        1,
+        1,
+        EASY_BITS,
+        GENESIS_NS + 600_000_000,
     );
     let mut different_parents = vec![first.hash.clone(), second_different.hash.clone()];
     different_parents.sort();
     let alternate_join = mine_full_envelope(
-        different_parents, vec![], 2, 2, EASY_BITS,
+        different_parents,
+        vec![],
+        2,
+        2,
+        EASY_BITS,
         GENESIS_NS + 1_000_000_000,
     );
     let other_headers = BTreeMap::from([
         (genesis.hash.clone(), headers[&genesis.hash].clone()),
         (first.hash.clone(), first.header.clone()),
-        (second_different.hash.clone(), second_different.header.clone()),
+        (
+            second_different.hash.clone(),
+            second_different.header.clone(),
+        ),
         (alternate_join.hash.clone(), alternate_join.header.clone()),
     ]);
     let order = preview_unapproved_native_v3_order(
-        CHAIN, GENESIS_NS, &genesis.hash,
-        std::slice::from_ref(&alternate_join.hash), &other_headers, 0,
-    ).unwrap();
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&alternate_join.hash),
+        &other_headers,
+        0,
+    )
+    .unwrap();
     let distinct_envelopes = BTreeMap::from([
         (first.hash.clone(), first),
         (second_different.hash.clone(), second_different),
         (alternate_join.hash.clone(), alternate_join),
     ]);
-    assert!(diagnostic_unique_native_v3_txids(
-        &order, &genesis.hash, &distinct_envelopes,
-    ).is_ok(), "different txids can still conflict by spending the same UTXO");
+    assert!(
+        diagnostic_unique_native_v3_txids(&order, &genesis.hash, &distinct_envelopes,).is_ok(),
+        "different txids can still conflict by spending the same UTXO"
+    );
 }
