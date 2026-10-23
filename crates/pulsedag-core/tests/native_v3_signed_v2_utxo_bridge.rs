@@ -583,3 +583,129 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
     assert_eq!(state.utxo.utxos[&funding_a.outpoint].amount, 100);
     assert_eq!(state.utxo.utxos[&funding_b.outpoint].amount, 80);
 }
+
+
+/// A strict **non-normative diagnostic**, not a new network-level rule.
+/// Duplicate txids are harmless at the *individual envelope* boundary but
+/// require an explicit canonical DAG-level policy before monetary replay.
+/// This trial check deliberately rejects them even if the second header is
+/// classified red; "reject" vs "skip duplicate" remains a policy choice.
+fn diagnostic_unique_native_v3_txids(
+    order: &UnapprovedTrialOrder,
+    trusted_genesis: &str,
+    envelopes: &BTreeMap<String, pulsedag_core::block_envelope_v3::BlockEnvelopeV3>,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    let mut checked_blocks = 0_usize;
+    for hash in &order.ordered_blocks {
+        if hash == trusted_genesis {
+            continue;
+        }
+        let envelope = envelopes.get(hash)
+            .ok_or_else(|| format!("missing authenticated native envelope {hash}"))?;
+        if envelope.hash != *hash {
+            return Err("envelope identity mismatch".into());
+        }
+        pulsedag_core::block_envelope_v3::validate_block_envelope_v3(envelope, CHAIN)
+            .map_err(|e| format!("invalid native envelope: {e}"))?;
+        verify_v3_header_pow(&envelope.header, CHAIN)
+            .map_err(|e| format!("invalid native PoW: {e}"))?;
+        checked_blocks += 1;
+        for tx in &envelope.transactions {
+            if !seen.insert(tx.txid.as_str()) {
+                return Err(format!("duplicate signed transaction ID across DAG: {}", tx.txid));
+            }
+        }
+    }
+    if checked_blocks != envelopes.len() {
+        return Err("extraneous candidate envelope outside authenticated order".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn duplicate_signed_txid_in_distinct_valid_native_v3_headers_needs_explicit_policy() {
+    let (state, funding) = test_state();
+    let tx = signed_v2_transfer(&funding.outpoint, "pulse1alice", 90, 10);
+    validate_transaction_v2(&tx, &state, CHAIN).unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine_full_envelope(
+        vec![genesis.hash.clone()], vec![tx.clone()], 1, 1,
+        HARD_BITS, GENESIS_NS + 500_000_000,
+    );
+    let second = mine_full_envelope(
+        vec![genesis.hash.clone()], vec![tx.clone()], 1, 1,
+        EASY_BITS, GENESIS_NS + 600_000_000,
+    );
+    assert_ne!(first.hash, second.hash);
+    assert_eq!(first.transactions[0].txid, second.transactions[0].txid);
+    let mut parents = vec![first.hash.clone(), second.hash.clone()];
+    parents.sort();
+    let mut headers = BTreeMap::from([
+        (genesis.hash.clone(), genesis.header),
+        (first.hash.clone(), first.header.clone()),
+        (second.hash.clone(), second.header.clone()),
+    ]);
+    for k in 0..=1_usize {
+        let join = mine_full_envelope(
+            parents.clone(), vec![], 2 + k as u64, 2, EASY_BITS,
+            GENESIS_NS + 1_000_000_000 + k as u64 * 100_000,
+        );
+        headers.insert(join.hash.clone(), join.header.clone());
+        let order = preview_unapproved_native_v3_order(
+            CHAIN, GENESIS_NS, &genesis.hash,
+            std::slice::from_ref(&join.hash), &headers, k,
+        ).unwrap();
+        assert_eq!(
+            order.selected_spine,
+            vec![genesis.hash.clone(), first.hash.clone(), join.hash.clone()]
+        );
+        assert_eq!(order.side_reds.len(), 1 - k);
+        assert_eq!(order.side_blues.len(), k);
+        let complete = BTreeMap::from([
+            (first.hash.clone(), first.clone()),
+            (second.hash.clone(), second.clone()),
+            (join.hash.clone(), join.clone()),
+        ]);
+        let err = diagnostic_unique_native_v3_txids(
+            &order, &genesis.hash, &complete,
+        ).expect_err("valid envelopes do not imply unique txids across blue/red DAG blocks");
+        assert!(err.contains("duplicate signed transaction ID across DAG"), "{err}");
+
+        let mut missing = complete.clone();
+        missing.remove(&second.hash);
+        assert!(diagnostic_unique_native_v3_txids(
+            &order, &genesis.hash, &missing,
+        ).is_err(), "a missing authenticated side envelope cannot be skipped");
+    }
+    let distinct = signed_v2_transfer(&funding.outpoint, "pulse1bob", 92, 8);
+    validate_transaction_v2(&distinct, &state, CHAIN).unwrap();
+    let second_different = mine_full_envelope(
+        vec![genesis.hash.clone()], vec![distinct], 1, 1,
+        EASY_BITS, GENESIS_NS + 600_000_000,
+    );
+    let mut different_parents = vec![first.hash.clone(), second_different.hash.clone()];
+    different_parents.sort();
+    let alternate_join = mine_full_envelope(
+        different_parents, vec![], 2, 2, EASY_BITS,
+        GENESIS_NS + 1_000_000_000,
+    );
+    let other_headers = BTreeMap::from([
+        (genesis.hash.clone(), headers[&genesis.hash].clone()),
+        (first.hash.clone(), first.header.clone()),
+        (second_different.hash.clone(), second_different.header.clone()),
+        (alternate_join.hash.clone(), alternate_join.header.clone()),
+    ]);
+    let order = preview_unapproved_native_v3_order(
+        CHAIN, GENESIS_NS, &genesis.hash,
+        std::slice::from_ref(&alternate_join.hash), &other_headers, 0,
+    ).unwrap();
+    let distinct_envelopes = BTreeMap::from([
+        (first.hash.clone(), first),
+        (second_different.hash.clone(), second_different),
+        (alternate_join.hash.clone(), alternate_join),
+    ]);
+    assert!(diagnostic_unique_native_v3_txids(
+        &order, &genesis.hash, &distinct_envelopes,
+    ).is_ok(), "different txids can still conflict by spending the same UTXO");
+}
