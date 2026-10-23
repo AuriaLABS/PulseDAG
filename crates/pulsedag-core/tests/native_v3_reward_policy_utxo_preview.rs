@@ -98,7 +98,10 @@ fn policy_reward_effect(
 fn root_of(snapshot: &PreviewSet) -> String {
     let mut utxo = UtxoState::default();
     for coin in snapshot.values() {
-        assert!(utxo.utxos.insert(coin.outpoint.clone(), coin.clone()).is_none());
+        assert!(utxo
+            .utxos
+            .insert(coin.outpoint.clone(), coin.clone())
+            .is_none());
         utxo.address_index
             .entry(coin.address.clone())
             .or_default()
@@ -115,9 +118,15 @@ fn native_v3_amountless_claim_obeys_actual_subsidy_maturity_and_finality_separat
     assert_eq!(envelope.transactions[0].outputs[0].amount, 0);
     assert_eq!(envelope.header.state_root, root_of(&PreviewSet::new()));
     assert_eq!(GENESIS_ISSUANCE_ATOMS, 0);
-    assert_eq!(total_supply_atoms_for_score(0, &PRODUCTION_CADENCE_V3).unwrap(), 0);
+    assert_eq!(
+        total_supply_atoms_for_score(0, &PRODUCTION_CADENCE_V3).unwrap(),
+        0
+    );
     let subsidy = subsidy_atoms_for_score(1, &PRODUCTION_CADENCE_V3).unwrap();
-    assert_eq!(subsidy, total_supply_atoms_for_score(1, &PRODUCTION_CADENCE_V3).unwrap());
+    assert_eq!(
+        subsidy,
+        total_supply_atoms_for_score(1, &PRODUCTION_CADENCE_V3).unwrap()
+    );
     assert!(subsidy > 0 && subsidy < MAX_SUPPLY_ATOMS);
     assert_eq!(PRODUCTION_CADENCE_TARGET_INTERVAL_NS_V3, 500_000_000);
     assert_eq!(COINBASE_MATURITY_NS, 3_600_000_000_000);
@@ -125,10 +134,19 @@ fn native_v3_amountless_claim_obeys_actual_subsidy_maturity_and_finality_separat
     assert_eq!(ORDINARY_FEE_RECIPIENT_BPS, 10_000);
     assert!(!economic_maturity_reached(1, 7_200, &PRODUCTION_CADENCE_V3).unwrap());
     assert!(economic_maturity_reached(1, 7_201, &PRODUCTION_CADENCE_V3).unwrap());
-    assert_eq!(mature_reward_prefix_score_v3(7_200, &PRODUCTION_CADENCE_V3).unwrap(), 0);
-    assert_eq!(mature_reward_prefix_score_v3(7_201, &PRODUCTION_CADENCE_V3).unwrap(), 1);
+    assert_eq!(
+        mature_reward_prefix_score_v3(7_200, &PRODUCTION_CADENCE_V3).unwrap(),
+        0
+    );
+    assert_eq!(
+        mature_reward_prefix_score_v3(7_201, &PRODUCTION_CADENCE_V3).unwrap(),
+        1
+    );
     assert!(!economic_maturity_reached(7_201, 7_200, &PRODUCTION_CADENCE_V3).unwrap());
-    assert_eq!(max_coinbase_claim_atoms(1, 13, &PRODUCTION_CADENCE_V3).unwrap(), subsidy + 13);
+    assert_eq!(
+        max_coinbase_claim_atoms(1, 13, &PRODUCTION_CADENCE_V3).unwrap(),
+        subsidy + 13
+    );
 
     // Neither the zero-value wire claim nor economic maturity by itself
     // authorizes materializing the reward. We NEVER call policy_reward_effect
@@ -174,12 +192,24 @@ fn detached_real_policy_reward_outpoints_and_utxo_roots_are_reversible_if_finali
     let alternate = apply(&back_to_zero, &policy_effects[&b.hash]).unwrap();
     assert_eq!(root_of(&alternate), root_of(&after_b));
     assert_eq!(fingerprint(&alternate), fingerprint(&after_b));
-    assert_eq!(root_of(&undo(&after_b, &policy_effects[&b.hash]).unwrap()), initial_root);
+    assert_eq!(
+        root_of(&undo(&after_b, &policy_effects[&b.hash]).unwrap()),
+        initial_root
+    );
 
     let mut forged = policy_effects[&a.hash].clone();
     forged.created[0].amount += 1;
-    assert!(apply(&initial, &forged).is_err(), "unauthorized subsidy mismatch");
+    assert!(
+        apply(&initial, &forged).is_err(),
+        "unauthorized subsidy mismatch"
+    );
     assert_eq!(root_of(&initial), initial_root);
-    assert!(apply(&after_a, &policy_effects[&a.hash]).is_err(), "duplicate reward outpoint");
-    assert!(undo(&after_b, &policy_effects[&a.hash]).is_err(), "wrong fork undo");
+    assert!(
+        apply(&after_a, &policy_effects[&a.hash]).is_err(),
+        "duplicate reward outpoint"
+    );
+    assert!(
+        undo(&after_b, &policy_effects[&a.hash]).is_err(),
+        "wrong fork undo"
+    );
 }
