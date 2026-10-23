@@ -16,13 +16,13 @@ use pulsedag_core::{
     errors::PulseError,
     genesis_v3::{dormant_native_genesis_envelope_v3_ns, init_chain_state_v3},
     header_v3::BlockHeaderV3,
+    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     pow_v3::{evaluate_v3_header_pow, verify_v3_header_pow},
     protocol::BLOCK_HEADER_VERSION_V3,
     signing_message_v2,
     state::ChainState,
     tx::TRANSACTION_VERSION_V2,
     types::{compute_merkle_root, OutPoint, Transaction, TxInput, TxOutput, Utxo},
-    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     validation_v2::validate_transaction_v2,
 };
 
@@ -284,7 +284,6 @@ fn signed_v2_carrier_refuses_tamper_cross_chain_and_reserved_unsigned_pqc_v3() {
     assert!(signed_v2_effect("mismatch", &tx, &foreign_state).is_err());
 }
 
-
 const HARD_BITS: u32 = 0x1f7f_ffff; // Unequal target, trial work 512 vs 2.
 
 fn mine_full_envelope(
@@ -352,12 +351,19 @@ fn replay_trial_order(
                 continue;
             }
             assert_eq!(effect.block, *hash);
-            if tx.inputs.iter().any(|input| !snapshot.contains_key(&input.previous_output)) {
+            if tx
+                .inputs
+                .iter()
+                .any(|input| !snapshot.contains_key(&input.previous_output))
+            {
                 // All inputs MUST exist in the original fixture; otherwise a
                 // bogus/missing input cannot masquerade as an ordinary conflict.
-                assert!(tx.inputs.iter().all(|input| {
-                    original.contains_key(&input.previous_output)
-                }), "unknown original input must not be silently skipped");
+                assert!(
+                    tx.inputs
+                        .iter()
+                        .all(|input| { original.contains_key(&input.previous_output) }),
+                    "unknown original input must not be silently skipped"
+                );
                 rejected_conflict.push(tx.txid.clone());
                 continue;
             }
@@ -382,10 +388,16 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
     // A second artificial settled coin is needed to distinguish a true
     // blue/red fee choice from a mere double-spend conflict.
     let funding_b = coin("test-only-second-funding", 80, &funding_a.address, false, 1);
-    state.utxo.utxos.insert(funding_b.outpoint.clone(), funding_b.clone());
-    state.utxo.address_index
+    state
+        .utxo
+        .utxos
+        .insert(funding_b.outpoint.clone(), funding_b.clone());
+    state
+        .utxo
+        .address_index
         .entry(funding_b.address.clone())
-        .or_default().push(funding_b.outpoint.clone());
+        .or_default()
+        .push(funding_b.outpoint.clone());
     let initial = PreviewSet::from([
         (funding_a.outpoint.clone(), funding_a.clone()),
         (funding_b.outpoint.clone(), funding_b.clone()),
@@ -399,16 +411,28 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
         validate_transaction_v2(tx, &state, CHAIN).unwrap();
     }
     let a = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![a_tx.clone()], 1, 1,
-        HARD_BITS, GENESIS_NS + 500_000_000,
+        vec![genesis.hash.clone()],
+        vec![a_tx.clone()],
+        1,
+        1,
+        HARD_BITS,
+        GENESIS_NS + 500_000_000,
     );
     let b = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![b_tx.clone()], 1, 1,
-        EASY_BITS, GENESIS_NS + 600_000_000,
+        vec![genesis.hash.clone()],
+        vec![b_tx.clone()],
+        1,
+        1,
+        EASY_BITS,
+        GENESIS_NS + 600_000_000,
     );
     let c = mine_full_envelope(
-        vec![genesis.hash.clone()], vec![c_tx.clone()], 1, 1,
-        EASY_BITS, GENESIS_NS + 700_000_000,
+        vec![genesis.hash.clone()],
+        vec![c_tx.clone()],
+        1,
+        1,
+        EASY_BITS,
+        GENESIS_NS + 700_000_000,
     );
     let mut headers = BTreeMap::from([
         (genesis.hash.clone(), genesis.header),
@@ -417,29 +441,67 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
         (c.hash.clone(), c.header.clone()),
     ]);
     let effects = BTreeMap::from([
-        (a.hash.clone(), (a_tx.clone(), signed_v2_effect(&a.hash, &a_tx, &state).unwrap())),
-        (b.hash.clone(), (b_tx.clone(), signed_v2_effect(&b.hash, &b_tx, &state).unwrap())),
-        (c.hash.clone(), (c_tx.clone(), signed_v2_effect(&c.hash, &c_tx, &state).unwrap())),
+        (
+            a.hash.clone(),
+            (
+                a_tx.clone(),
+                signed_v2_effect(&a.hash, &a_tx, &state).unwrap(),
+            ),
+        ),
+        (
+            b.hash.clone(),
+            (
+                b_tx.clone(),
+                signed_v2_effect(&b.hash, &b_tx, &state).unwrap(),
+            ),
+        ),
+        (
+            c.hash.clone(),
+            (
+                c_tx.clone(),
+                signed_v2_effect(&c.hash, &c_tx, &state).unwrap(),
+            ),
+        ),
     ]);
     let mut parents = vec![a.hash.clone(), b.hash.clone(), c.hash.clone()];
     parents.sort();
     for k in [0_usize, 1, 2] {
         // The K-specific blue score is committed in the new *mined* join.
         let join = mine_full_envelope(
-            parents.clone(), vec![], 2 + k as u64, 2,
-            EASY_BITS, GENESIS_NS + 1_000_000_000 + k as u64 * 10_000,
+            parents.clone(),
+            vec![],
+            2 + k as u64,
+            2,
+            EASY_BITS,
+            GENESIS_NS + 1_000_000_000 + k as u64 * 10_000,
         );
         headers.insert(join.hash.clone(), join.header.clone());
         let order = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &genesis.hash,
-            std::slice::from_ref(&join.hash), &headers, k,
-        ).expect("complete authentic native-v3 GHOSTDAG trial ancestor graph");
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &headers,
+            k,
+        )
+        .expect("complete authentic native-v3 GHOSTDAG trial ancestor graph");
         let trial = derive_dormant_native_v3_ghostdag_trial(
-            CHAIN, GENESIS_NS, &genesis.hash,
-            std::slice::from_ref(&join.hash), &headers, k,
-        ).unwrap();
-        assert_eq!(trial.blocks[&join.hash].selected_parent.as_deref(), Some(a.hash.as_str()));
-        assert_eq!(order.selected_spine, vec![genesis.hash.clone(), a.hash.clone(), join.hash.clone()]);
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &headers,
+            k,
+        )
+        .unwrap();
+        assert_eq!(
+            trial.blocks[&join.hash].selected_parent.as_deref(),
+            Some(a.hash.as_str())
+        );
+        assert_eq!(
+            order.selected_spine,
+            vec![genesis.hash.clone(), a.hash.clone(), join.hash.clone()]
+        );
         assert_eq!(order.ordered_blocks.len(), 5);
         assert_eq!(order.side_reds.len(), 2 - k);
         assert_eq!(order.side_blues.len(), k);
@@ -457,34 +519,65 @@ fn native_v3_k_red_policy_ambiguity_changes_signed_fee_and_utxo_outcome() {
 
         assert!(blue_only.accepted.contains(&a_tx.txid));
         assert_eq!(blue_only.rejected_red.len(), 2 - k);
-        assert_eq!(blue_only.unspent_atoms, 180 - blue_only.accepted_fees as u128);
-        assert_eq!(blue_only.accepted_fees, if order.side_reds.contains(&b.hash) { 10 } else { 17 });
-        assert_eq!(blue_only.accepted.contains(&b_tx.txid), !order.side_reds.contains(&b.hash));
-        assert_eq!(blue_only.rejected_conflict.contains(&c_tx.txid),
-                   !order.side_reds.contains(&c.hash));
+        assert_eq!(
+            blue_only.unspent_atoms,
+            180 - blue_only.accepted_fees as u128
+        );
+        assert_eq!(
+            blue_only.accepted_fees,
+            if order.side_reds.contains(&b.hash) {
+                10
+            } else {
+                17
+            }
+        );
+        assert_eq!(
+            blue_only.accepted.contains(&b_tx.txid),
+            !order.side_reds.contains(&b.hash)
+        );
+        assert_eq!(
+            blue_only.rejected_conflict.contains(&c_tx.txid),
+            !order.side_reds.contains(&c.hash)
+        );
         if k == 0 {
             assert_eq!(blue_only.accepted_fees, 10);
             assert_eq!(blue_only.unspent_atoms, 170);
-            assert_ne!(detached_utxo::fingerprint(&blue_only.snapshot),
-                       detached_utxo::fingerprint(&all.snapshot));
+            assert_ne!(
+                detached_utxo::fingerprint(&blue_only.snapshot),
+                detached_utxo::fingerprint(&all.snapshot)
+            );
         }
         if k == 2 {
-            assert_eq!(detached_utxo::fingerprint(&blue_only.snapshot),
-                       detached_utxo::fingerprint(&all.snapshot));
+            assert_eq!(
+                detached_utxo::fingerprint(&blue_only.snapshot),
+                detached_utxo::fingerprint(&all.snapshot)
+            );
         }
         // Rebuilding the test fixture in reversed map insertion order must
         // preserve the same trial economic result under a fixed policy.
-        let reversed: BTreeMap<_, _> = headers.iter().rev()
-            .map(|(hash, h)| (hash.clone(), h.clone())).collect();
+        let reversed: BTreeMap<_, _> = headers
+            .iter()
+            .rev()
+            .map(|(hash, h)| (hash.clone(), h.clone()))
+            .collect();
         let order_again = preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &genesis.hash,
-            std::slice::from_ref(&join.hash), &reversed, k,
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &reversed,
+            k,
+        )
+        .unwrap();
         assert_eq!(order, order_again);
-        assert_eq!(replay_trial_order(&order_again, &initial, &effects, false).accepted,
-                   blue_only.accepted);
-        assert_eq!(replay_trial_order(&order_again, &initial, &effects, true).accepted,
-                   all.accepted);
+        assert_eq!(
+            replay_trial_order(&order_again, &initial, &effects, false).accepted,
+            blue_only.accepted
+        );
+        assert_eq!(
+            replay_trial_order(&order_again, &initial, &effects, true).accepted,
+            all.accepted
+        );
     }
     // No tests above change live chainstate; genesis funding is SYNTHETIC.
     assert_eq!(state.utxo.utxos[&funding_a.outpoint].amount, 100);
