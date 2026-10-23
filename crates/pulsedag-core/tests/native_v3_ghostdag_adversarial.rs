@@ -733,7 +733,7 @@ fn k32_k33_blue_anticone_pressure_on_34_actual_pow_valid_siblings() {
             GENESIS_NS + 1_100_000_000 + trial_k as u64 * 100_000,
             expected_score + 1,
             EASY_BITS,
-            0xf0 + trial_k as u8,
+            0x60 + trial_k as u8,
         );
         headers.insert(forged.clone(), forged_header);
         assert!(
