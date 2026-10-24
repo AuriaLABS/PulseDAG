@@ -20,6 +20,9 @@ use pulsedag_core::{
         derive_dormant_native_v3_ghostdag_trial, CandidateGhostdagEvaluation,
     },
     pow_v3::evaluate_v3_header_pow,
+    retarget_context_v3::selected_parent_retarget_window_v3_ns,
+    retarget_genesis_guard_v3::verify_dormant_frozen_genesis_retarget_v3_ns,
+    retarget_v3::{expected_difficulty_for_v3_window_ns, V3RetargetSample},
     protocol::BLOCK_HEADER_VERSION_V3,
     types::BlockId,
 };
@@ -735,5 +738,155 @@ fn candidate_retention_inventory_revalidates_full_history_and_rejects_mutations(
         verify_untrusted_resume_inventory_for_review(CHAIN, &g2, &tip2, &missing, 6, &inventory)
             .is_err(),
         "verified DAG cannot skip one missing authentic colored side block"
+    );
+}
+
+
+/// TEST ONLY: an untrusted cached selected-parent map MUST match a fresh
+/// complete-genesis native GHOSTDAG trial before it is passed to the existing
+/// v3 20-sample retarget adapter. That adapter independently checks hashes,
+/// PoW and parent linkage but CANNOT by itself establish *which* parent wins.
+/// This helper intentionally refuses pruned or >128-header input, and does
+/// not produce a validated production difficulty/admission decision.
+fn trial_retarget_window_rejecting_cached_selection(
+    genesis: &str,
+    tip: &str,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    k: usize,
+    cached_selection: &BTreeMap<BlockId, Option<BlockId>>,
+) -> Result<Vec<V3RetargetSample>, String> {
+    let fresh = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        genesis,
+        std::slice::from_ref(&tip.to_owned()),
+        headers,
+        k,
+    )
+    .map_err(|error| format!("full authenticated GHOSTDAG ancestry required: {error}"))?;
+    if fresh.blocks.len() != headers.len() {
+        return Err("unverified extra header entries in retarget context".into());
+    }
+    let derived: BTreeMap<BlockId, Option<BlockId>> = fresh
+        .blocks
+        .iter()
+        .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
+        .collect();
+    if *cached_selection != derived {
+        return Err("cached selected-parent metadata differs from full GHOSTDAG derivation".into());
+    }
+    selected_parent_retarget_window_v3_ns(CHAIN, &tip.to_owned(), headers, &derived)
+        .map_err(|error| format!("retarget window rejected: {error}"))
+}
+
+#[test]
+fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cache() {
+    // At 120 blocks, the actual adapter retains 20 newest-first samples,
+    // while the frozen-genesis-window-only guard refuses this old boundary.
+    // The *full-history* test-only candidate can derive the parent map,
+    // but it is NOT an approved pruning/finality/checkpoint witness.
+    let (genesis, tip, headers) = chain(120);
+    let fresh = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN, GENESIS_NS, &genesis, std::slice::from_ref(&tip), &headers, 32
+    )
+    .unwrap();
+    let selected: BTreeMap<BlockId, Option<BlockId>> = fresh
+        .blocks
+        .iter()
+        .map(|(id, m)| (id.clone(), m.selected_parent.clone()))
+        .collect();
+    let window = trial_retarget_window_rejecting_cached_selection(
+        &genesis, &tip, &headers, 32, &selected
+    )
+    .unwrap();
+    assert_eq!(window.len(), 20);
+    assert_eq!(window[0].timestamp_ns, GENESIS_NS + 120 * 500_000_000);
+    assert_eq!(window[19].timestamp_ns, GENESIS_NS + 101 * 500_000_000);
+    let decision = expected_difficulty_for_v3_window_ns(&window).unwrap();
+    assert_eq!(decision.observed_intervals, 19);
+    assert_eq!(decision.average_interval_ns, 500_000_000);
+    assert!(
+        verify_dormant_frozen_genesis_retarget_v3_ns(
+            CHAIN, GENESIS_NS, &genesis, &tip, &headers, &selected
+        )
+        .is_err(),
+        "the genesis-anchored limited adapter MUST reject a 120-deep window"
+    );
+    let mut cut = headers.clone();
+    cut.retain(|id, h| id == &genesis || h.height >= 101);
+    assert!(
+        trial_retarget_window_rejecting_cached_selection(
+            &genesis, &tip, &cut, 32, &selected
+        )
+        .is_err(),
+        "having all twenty authentic retarget samples is not enough to accept a pruned prefix"
+    );
+
+    // Eight competing PoW-valid siblings share genesis; the join commits K6.
+    // The generic retarget adapter alone can verify *either* listed sibling's
+    // hash/PoW/linkage, but it cannot authenticate GHOSTDAG's actual winner.
+    let (g2, join, fork_headers) = eight_parent_fork(6);
+    let fork = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN, GENESIS_NS, &g2, std::slice::from_ref(&join), &fork_headers, 6
+    )
+    .unwrap();
+    let derived_map: BTreeMap<BlockId, Option<BlockId>> = fork
+        .blocks
+        .iter()
+        .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
+        .collect();
+    let honest = trial_retarget_window_rejecting_cached_selection(
+        &g2, &join, &fork_headers, 6, &derived_map
+    )
+    .unwrap();
+    assert_eq!(honest.len(), 3);
+    let expected = expected_difficulty_for_v3_window_ns(&honest).unwrap();
+    assert_eq!(
+        verify_dormant_frozen_genesis_retarget_v3_ns(
+            CHAIN, GENESIS_NS, &g2, &join, &fork_headers, &derived_map
+        )
+        .unwrap(),
+        expected
+    );
+
+    // The forged cached parent IS an actual PoW-valid direct parent. Even
+    // that is insufficient: it did not win the authenticated candidate K6
+    // GHOSTDAG selection. A malicious selection changes sample timestamps.
+    let genuine_parent = derived_map[&join].clone().unwrap();
+    let wrong_but_listed = fork_headers[&join]
+        .parents
+        .iter()
+        .find(|parent| **parent != genuine_parent)
+        .unwrap()
+        .clone();
+    let mut forged = derived_map.clone();
+    forged.insert(join.clone(), Some(wrong_but_listed));
+    let locally_well_formed = selected_parent_retarget_window_v3_ns(
+        CHAIN, &join, &fork_headers, &forged
+    )
+    .expect("hash/PoW/linkage alone do not prove correct GHOSTDAG selection");
+    assert_ne!(honest, locally_well_formed);
+    assert!(
+        trial_retarget_window_rejecting_cached_selection(
+            &g2, &join, &fork_headers, 6, &forged
+        )
+        .is_err(),
+        "re-deriving full native GHOSTDAG must reject a plausible forged winner"
+    );
+    assert!(
+        trial_retarget_window_rejecting_cached_selection(
+            &g2, &join, &fork_headers, 7, &derived_map
+        )
+        .is_err(),
+        "a K6 block cannot silently inherit a different trial policy's selection"
+    );
+    let mut no_side = fork_headers.clone();
+    no_side.remove(&genuine_parent);
+    assert!(
+        trial_retarget_window_rejecting_cached_selection(
+            &g2, &join, &no_side, 6, &derived_map
+        )
+        .is_err(),
+        "valid 20-sample retarget cannot excuse missing fork-side full ancestry"
     );
 }
