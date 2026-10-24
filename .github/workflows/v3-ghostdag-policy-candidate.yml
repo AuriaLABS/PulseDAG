@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_k_delay_sensitivity.py"
+      - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
       - "scripts/native_v3_crosslang_ghostdag_vectors.py"
       - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
@@ -29,6 +31,8 @@ on:
     branches: [main, proposal/v3-ghostdag-freeze-candidate-20261022]
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_k_delay_sensitivity.py"
+      - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
       - "scripts/native_v3_crosslang_ghostdag_vectors.py"
       - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
@@ -72,6 +76,14 @@ jobs:
           set -euo pipefail
           python3 scripts/native_v3_ghostdag_policy_candidate.py
           python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+      - name: Report 500ms trial-K propagation sensitivity (hypothetical, no policy freeze)
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_k_delay_sensitivity.py --check
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --check
+          python3 scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-normal.json
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-optimized.json
+          cmp /tmp/native-v3-k-delay-normal.json /tmp/native-v3-k-delay-optimized.json
       - name: Check independent KHeavyHash to policy integration (header-only, no activation)
         run: |
           set -euo pipefail
