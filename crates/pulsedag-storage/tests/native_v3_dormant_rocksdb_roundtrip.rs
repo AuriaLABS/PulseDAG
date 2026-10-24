@@ -58,11 +58,7 @@ impl Drop for DisposableDb {
     }
 }
 
-fn mine(
-    parent: &BlockEnvelopeV3,
-    height: u64,
-    timestamp_ns: u64,
-) -> BlockEnvelopeV3 {
+fn mine(parent: &BlockEnvelopeV3, height: u64, timestamp_ns: u64) -> BlockEnvelopeV3 {
     let mut header = BlockHeaderV3 {
         version: BLOCK_HEADER_VERSION_V3,
         parents: vec![parent.hash.clone()],
@@ -106,11 +102,15 @@ fn persist_test_only_frames(db: &DB, genesis: &str, records: &[NativeV3EnvelopeR
     let mut batch = WriteBatch::default();
     batch.put(
         FIRST_KEY,
-        records[0].encode_verified(CHAIN, GENESIS_NS, genesis).unwrap(),
+        records[0]
+            .encode_verified(CHAIN, GENESIS_NS, genesis)
+            .unwrap(),
     );
     batch.put(
         SECOND_KEY,
-        records[1].encode_verified(CHAIN, GENESIS_NS, genesis).unwrap(),
+        records[1]
+            .encode_verified(CHAIN, GENESIS_NS, genesis)
+            .unwrap(),
     );
     let mut write_options = WriteOptions::default();
     write_options.set_sync(true); // Crash-durable WAL for this isolated test.
@@ -128,13 +128,8 @@ fn reload_test_only_frames(
                 .get(key)
                 .map_err(|error| format!("temporary test DB read failed: {error}"))?
                 .ok_or_else(|| "required test frame is missing".to_owned())?;
-            NativeV3EnvelopeRestoreRecordV1::decode_verified(
-                &raw,
-                CHAIN,
-                GENESIS_NS,
-                genesis,
-            )
-            .map_err(|error| format!("strict persisted frame revalidation: {error}"))
+            NativeV3EnvelopeRestoreRecordV1::decode_verified(&raw, CHAIN, GENESIS_NS, genesis)
+                .map_err(|error| format!("strict persisted frame revalidation: {error}"))
         })
         .collect()
 }
@@ -187,7 +182,8 @@ fn persisted_corruption_or_missing_frame_is_rejected_after_actual_db_reopen() {
         let raw = db.get(SECOND_KEY).unwrap().unwrap();
         let mut untrusted: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         untrusted["envelope"]["header"]["state_root"] = serde_json::json!("66".repeat(32));
-        db.put(SECOND_KEY, serde_json::to_vec(&untrusted).unwrap()).unwrap();
+        db.put(SECOND_KEY, serde_json::to_vec(&untrusted).unwrap())
+            .unwrap();
         db.flush_wal(true).unwrap();
     }
 
@@ -203,7 +199,9 @@ fn persisted_corruption_or_missing_frame_is_rejected_after_actual_db_reopen() {
         // Repair only that corrupted frame, then physically remove the first.
         db.put(
             SECOND_KEY,
-            records[1].encode_verified(CHAIN, GENESIS_NS, &genesis).unwrap(),
+            records[1]
+                .encode_verified(CHAIN, GENESIS_NS, &genesis)
+                .unwrap(),
         )
         .unwrap();
         db.delete(FIRST_KEY).unwrap();
@@ -224,7 +222,10 @@ fn persisted_corruption_or_missing_frame_is_rejected_after_actual_db_reopen() {
         .unwrap();
         assert!(
             verify_dormant_v3_genesis_anchored_linear_segment(
-                &[valid_individual_frame], CHAIN, GENESIS_NS, &genesis,
+                &[valid_individual_frame],
+                CHAIN,
+                GENESIS_NS,
+                &genesis,
             )
             .is_err(),
             "valid KHeavyHash for an orphan frame does NOT authorize missing ancestry"
