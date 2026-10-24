@@ -396,84 +396,143 @@ fn revalidate_untrusted_full_history_cache(
 fn restart_cache_revalidation_refuses_self_attested_consensus_metadata() {
     let (g, tip, headers) = chain(120);
     let exact = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &g,
-        std::slice::from_ref(&tip), &headers, 32
-    ).unwrap();
-    let digest = informational_trial_prefix_fingerprint(
-        CHAIN, &g, &tip, &headers, &exact
-    ).unwrap();
+        CHAIN,
+        GENESIS_NS,
+        &g,
+        std::slice::from_ref(&tip),
+        &headers,
+        32,
+    )
+    .unwrap();
+    let digest = informational_trial_prefix_fingerprint(CHAIN, &g, &tip, &headers, &exact).unwrap();
     assert!(
-        revalidate_untrusted_full_history_cache(
-            CHAIN, &g, &tip, &headers, 32, &exact, &digest
-        ).is_ok(),
+        revalidate_untrusted_full_history_cache(CHAIN, &g, &tip, &headers, 32, &exact, &digest)
+            .is_ok(),
         "full independent re-evaluation must accept its exact cache"
     );
 
     let mut tampered = exact.clone();
     tampered.blocks.get_mut(&tip).unwrap().blue_work.0[0] ^= 1;
-    let forged_digest = informational_trial_prefix_fingerprint(
-        CHAIN, &g, &tip, &headers, &tampered
-    ).unwrap();
+    let forged_digest =
+        informational_trial_prefix_fingerprint(CHAIN, &g, &tip, &headers, &tampered).unwrap();
     assert!(
         revalidate_untrusted_full_history_cache(
-            CHAIN, &g, &tip, &headers, 32, &tampered, &forged_digest
-        ).is_err(),
+            CHAIN,
+            &g,
+            &tip,
+            &headers,
+            32,
+            &tampered,
+            &forged_digest
+        )
+        .is_err(),
         "self-consistent forged cache/checksum must NOT bypass recomputation"
     );
     let mut wrong_parent = exact.clone();
     wrong_parent.blocks.get_mut(&tip).unwrap().selected_parent = None;
-    let parent_digest = informational_trial_prefix_fingerprint(
-        CHAIN, &g, &tip, &headers, &wrong_parent
-    ).unwrap();
+    let parent_digest =
+        informational_trial_prefix_fingerprint(CHAIN, &g, &tip, &headers, &wrong_parent).unwrap();
     assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &headers, 32, &wrong_parent, &parent_digest
-    ).is_err());
+        CHAIN,
+        &g,
+        &tip,
+        &headers,
+        32,
+        &wrong_parent,
+        &parent_digest
+    )
+    .is_err());
     assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &headers, 32, &exact, &"00".repeat(32)
-    ).is_err());
+        CHAIN,
+        &g,
+        &tip,
+        &headers,
+        32,
+        &exact,
+        &"00".repeat(32)
+    )
+    .is_err());
+    assert!(
+        revalidate_untrusted_full_history_cache(CHAIN, &g, &tip, &headers, 7, &exact, &digest)
+            .is_err()
+    );
     assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &headers, 7, &exact, &digest
-    ).is_err());
-    assert!(revalidate_untrusted_full_history_cache(
-        "foreign-v3-network", &g, &tip, &headers, 32, &exact, &digest
-    ).is_err());
+        "foreign-v3-network",
+        &g,
+        &tip,
+        &headers,
+        32,
+        &exact,
+        &digest
+    )
+    .is_err());
 
     let mut truncated = headers.clone();
     truncated.retain(|id, h| id == &g || h.height >= 60);
-    assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &truncated, 32, &exact, &digest
-    ).is_err(), "historical gaps remain FAIL-CLOSED, regardless of cached digest");
+    assert!(
+        revalidate_untrusted_full_history_cache(CHAIN, &g, &tip, &truncated, 32, &exact, &digest)
+            .is_err(),
+        "historical gaps remain FAIL-CLOSED, regardless of cached digest"
+    );
 
     let mut corrupted = headers.clone();
     corrupted.get_mut(&tip).unwrap().nonce ^= 1;
-    assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &corrupted, 32, &exact, &digest
-    ).is_err(), "cached metadata cannot excuse changed block-hash bytes");
+    assert!(
+        revalidate_untrusted_full_history_cache(CHAIN, &g, &tip, &corrupted, 32, &exact, &digest)
+            .is_err(),
+        "cached metadata cannot excuse changed block-hash bytes"
+    );
 
     let mut extra = headers.clone();
-    extra.insert("untrusted-extra-not-on-selected-closure".into(), headers[&tip].clone());
-    assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g, &tip, &extra, 32, &exact, &digest
-    ).is_err(), "unverified extra entries must not be imported as consensus state");
+    extra.insert(
+        "untrusted-extra-not-on-selected-closure".into(),
+        headers[&tip].clone(),
+    );
+    assert!(
+        revalidate_untrusted_full_history_cache(CHAIN, &g, &tip, &extra, 32, &exact, &digest)
+            .is_err(),
+        "unverified extra entries must not be imported as consensus state"
+    );
 
     // Multilateral DAG data has colored side branches: not just linear work.
     let (g2, tip2, multi) = eight_parent_fork(6);
     let multi_fresh = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &g2, std::slice::from_ref(&tip2), &multi, 6
-    ).unwrap();
-    let multi_hash = informational_trial_prefix_fingerprint(
-        CHAIN, &g2, &tip2, &multi, &multi_fresh
-    ).unwrap();
+        CHAIN,
+        GENESIS_NS,
+        &g2,
+        std::slice::from_ref(&tip2),
+        &multi,
+        6,
+    )
+    .unwrap();
+    let multi_hash =
+        informational_trial_prefix_fingerprint(CHAIN, &g2, &tip2, &multi, &multi_fresh).unwrap();
     assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g2, &tip2, &multi, 6, &multi_fresh, &multi_hash
-    ).is_ok());
+        CHAIN,
+        &g2,
+        &tip2,
+        &multi,
+        6,
+        &multi_fresh,
+        &multi_hash
+    )
+    .is_ok());
     let mut colors = multi_fresh.clone();
     let join = colors.blocks.get_mut(&tip2).unwrap();
     join.merge_blues.clear();
-    let invented_hash = informational_trial_prefix_fingerprint(
-        CHAIN, &g2, &tip2, &multi, &colors
-    ).unwrap();
-    assert!(revalidate_untrusted_full_history_cache(
-        CHAIN, &g2, &tip2, &multi, 6, &colors, &invented_hash
-    ).is_err(), "an invented blue/red list cannot pass even with a new digest");
+    let invented_hash =
+        informational_trial_prefix_fingerprint(CHAIN, &g2, &tip2, &multi, &colors).unwrap();
+    assert!(
+        revalidate_untrusted_full_history_cache(
+            CHAIN,
+            &g2,
+            &tip2,
+            &multi,
+            6,
+            &colors,
+            &invented_hash
+        )
+        .is_err(),
+        "an invented blue/red list cannot pass even with a new digest"
+    );
 }
