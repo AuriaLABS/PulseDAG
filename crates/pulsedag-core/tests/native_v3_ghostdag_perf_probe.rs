@@ -8,9 +8,13 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
+use sha2::{Digest, Sha256};
+
 use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
-    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
+    native_ghostdag_policy_candidate_v3::{
+        derive_dormant_native_v3_ghostdag_trial, CandidateGhostdagEvaluation,
+    },
     pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
 
@@ -197,4 +201,140 @@ fn native_v3_real_pow_dag_work_profile_is_non_normative() {
             2 + k.min(7) as u64,
         );
     }
+}
+
+
+/// TEST-ONLY digest format. This is computed ONLY after *full* authenticated
+/// ancestry derivation from frozen genesis. The digest has NO intrinsic
+/// authority: it is not a checkpoint witness/proof, signature or finality
+/// certificate. It cannot let truncated ancestry bypass the 128-header cap.
+fn informational_trial_prefix_fingerprint(
+    chain_id: &str,
+    trusted_genesis: &str,
+    tip: &str,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    trial: &CandidateGhostdagEvaluation,
+) -> Result<String, &'static str> {
+    fn commit_str(hash: &mut Sha256, value: &str) -> Result<(), &'static str> {
+        let size = u32::try_from(value.len()).map_err(|_| "oversized value")?;
+        hash.update(size.to_le_bytes());
+        hash.update(value.as_bytes());
+        Ok(())
+    }
+
+    if chain_id.is_empty() || trusted_genesis.is_empty() || tip.is_empty() {
+        return Err("missing identity");
+    }
+    if !trial.blocks.contains_key(trusted_genesis)
+        || !trial.blocks.contains_key(tip)
+        || trial.blocks.len() > 128
+    {
+        return Err("unverified or over-budget prefix");
+    }
+    // SHA256 commits to exact FULL verified prefix metadata in deterministic
+    // hash order, including every selected parent, K color list and u512 work.
+    // Headers are an input to the fully authenticated trial, NOT independent
+    // authority for this stand-alone diagnostic.
+    let mut digest = Sha256::new();
+    digest.update(b"PulseDAG:NONNORMATIVE:full-v3-prefix-audit:v1");
+    commit_str(&mut digest, chain_id)?;
+    commit_str(&mut digest, trusted_genesis)?;
+    commit_str(&mut digest, tip)?;
+    digest.update((trial.k_trial as u64).to_le_bytes());
+    digest.update((trial.blocks.len() as u64).to_le_bytes());
+    for (block_hash, meta) in &trial.blocks {
+        let header = headers.get(block_hash).ok_or("prefix header missing")?;
+        commit_str(&mut digest, block_hash)?;
+        digest.update(header.height.to_le_bytes());
+        digest.update(header.timestamp_ns.to_le_bytes());
+        digest.update(header.difficulty.to_le_bytes());
+        digest.update(header.nonce.to_le_bytes());
+        digest.update((header.parents.len() as u64).to_le_bytes());
+        for parent in &header.parents {
+            commit_str(&mut digest, parent)?;
+        }
+        commit_str(&mut digest, meta.selected_parent.as_deref().unwrap_or(""))?;
+        digest.update(meta.blue_score.to_le_bytes());
+        for limb in meta.blue_work.0 {
+            digest.update(limb.to_le_bytes());
+        }
+        for group in [&meta.merge_blues, &meta.merge_reds] {
+            digest.update((group.len() as u64).to_le_bytes());
+            for colored_hash in group {
+                commit_str(&mut digest, colored_hash)?;
+            }
+        }
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+#[test]
+fn informational_full_prefix_hash_must_never_admit_pruned_native_v3_history() {
+    // A complete 120-block chain CAN be independently authenticated from
+    // frozen genesis, so a diagnostic digest over its full verified prefix
+    // can be compared as data. That digest is not an authorized checkpoint.
+    let (genesis, tip, headers) = chain(120);
+    let full = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis,
+        std::slice::from_ref(&tip),
+        &headers,
+        32,
+    )
+    .expect("unpruned complete 120-block authenticated test DAG");
+    let baseline = informational_trial_prefix_fingerprint(
+        CHAIN, &genesis, &tip, &headers, &full,
+    )
+    .unwrap();
+    let reordered: BTreeMap<_, _> = headers
+        .iter()
+        .rev()
+        .map(|(id, header)| (id.clone(), header.clone()))
+        .collect();
+    assert_eq!(
+        informational_trial_prefix_fingerprint(CHAIN, &genesis, &tip, &reordered, &full).unwrap(),
+        baseline,
+        "map receipt order must not change full-prefix informational fingerprint"
+    );
+
+    // An attacker with a valid header set can still lie about blue-work,
+    // selected parent, K or identity in a supplied metadata summary.
+    let mut forged = full.clone();
+    forged.blocks.get_mut(&tip).unwrap().blue_work.0[0] ^= 1;
+    assert_ne!(
+        informational_trial_prefix_fingerprint(CHAIN, &genesis, &tip, &headers, &forged).unwrap(),
+        baseline
+    );
+    assert_ne!(
+        informational_trial_prefix_fingerprint("another-chain", &genesis, &tip, &headers, &full)
+            .unwrap(),
+        baseline
+    );
+    let alternate_k = CandidateGhostdagEvaluation {
+        k_trial: 7,
+        blocks: full.blocks.clone(),
+    };
+    assert_ne!(
+        informational_trial_prefix_fingerprint(CHAIN, &genesis, &tip, &headers, &alternate_k)
+            .unwrap(),
+        baseline
+    );
+
+    // Most importantly: even possession of the ORIGINAL digest cannot
+    // authorize a verifier to skip omitted ancestors or invent a checkpoint.
+    let mut truncated = headers.clone();
+    truncated.retain(|id, header| id == &genesis || header.height >= 60);
+    assert!(!truncated.values().any(|header| header.height == 59));
+    assert!(
+        derive_dormant_native_v3_ghostdag_trial(
+            CHAIN, GENESIS_NS, &genesis,
+            std::slice::from_ref(&tip), &truncated, 32
+        ).is_err(),
+        "an informational full-prefix digest MUST NOT bypass missing PoW ancestry"
+    );
+    assert!(
+        informational_trial_prefix_fingerprint(CHAIN, &genesis, &tip, &truncated, &full).is_err(),
+        "cannot reproduce a full authenticated prefix fingerprint from missing headers"
+    );
 }
