@@ -17,6 +17,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
       - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
       - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
+      - "crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
@@ -47,6 +48,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
       - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
       - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
+      - "crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
@@ -147,6 +149,9 @@ jobs:
           cargo test --locked -p pulsedag-storage --test native_v3_dormant_rocksdb_roundtrip -- --nocapture | tee /tmp/native-v3-real-rocksdb-reopen.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-real-rocksdb-reopen.log
           cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_rocksdb_roundtrip -- -D warnings
+          cargo test --locked -p pulsedag-storage --test native_v3_dormant_atomic_checkpoint_trial -- --nocapture | tee /tmp/native-v3-rocksdb-atomic-checkpoint.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-rocksdb-atomic-checkpoint.log
+          cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_atomic_checkpoint_trial -- -D warnings
       - name: Archive exact-run local profiling evidence (not network benchmark)
         if: always()
         uses: actions/upload-artifact@v4
