@@ -13,6 +13,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
@@ -39,6 +40,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
       - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
@@ -118,3 +120,25 @@ jobs:
           cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-monetary-finality-reorg.log
           cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Profile bounded local native-v3 DAG math (not real-network propagation)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --nocapture | tee /tmp/native-v3-diagnostic-budget.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 1 ignored;' /tmp/native-v3-diagnostic-budget.log
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --ignored --nocapture | tee /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-local-cpu-rss.log
+          test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 7
+          grep -Fq 'case=linear_120_500ms' /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'case=eight_parent_K32' /tmp/native-v3-local-cpu-rss.log
+      - name: Archive exact-run local profiling evidence (not network benchmark)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-v3-local-cpu-rss-${{ github.run_id }}
+          path: |
+            /tmp/native-v3-diagnostic-budget.log
+            /tmp/native-v3-local-cpu-rss.log
+          if-no-files-found: warn
+          retention-days: 14
+
