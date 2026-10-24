@@ -143,7 +143,7 @@ fn real_rocksdb_restart_reverifies_two_pow_valid_native_v3_frames_without_activa
     {
         let db = disk.open();
         persist_test_only_frames(&db, &genesis, &records);
-        assert_eq!(db.get(FIRST_KEY).unwrap().is_some(), true);
+        assert!(db.get(FIRST_KEY).unwrap().is_some());
     } // Drop real RocksDB instance; no in-memory cache carries frames forward.
 
     {
