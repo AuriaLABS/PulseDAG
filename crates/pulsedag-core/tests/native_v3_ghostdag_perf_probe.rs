@@ -856,7 +856,7 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
     let wrong_but_listed = fork_headers[&join]
         .parents
         .iter()
-        .find(|parent| **parent != genuine_parent)
+        .find(|parent| parent.as_str() != genuine_parent.as_str())
         .unwrap()
         .clone();
     let mut forged = derived_map.clone();
