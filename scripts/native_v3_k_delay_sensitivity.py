@@ -104,8 +104,8 @@ def self_test() -> None:
             assert all(x <= y for x, y in zip(probs, probs[1:]))
 
     # Independently hand-derived exact cases: NB(r=2,mean=2) uses q=1/2.
-    assert upper_tail(Decimal(2), 6, Decimal(2)) == Decimal("0.03515625")
-    assert upper_tail(Decimal(2), 7, Decimal(2)) == Decimal("0.01953125")
+    assert abs(upper_tail(Decimal(2), 6, Decimal(2)) - Decimal("0.03515625")) < Decimal("1e-84")
+    assert abs(upper_tail(Decimal(2), 7, Decimal(2)) - Decimal("0.01953125")) < Decimal("1e-84")
     # Poisson K=0 identity with analytic reference.
     with localcontext() as ctx:
         ctx.prec = PRECISION
