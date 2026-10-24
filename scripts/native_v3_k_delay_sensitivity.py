@@ -86,38 +86,62 @@ def study() -> list[dict[str, str | int]]:
     return rows
 
 
+def require(condition: bool, message: str) -> None:
+    # Intentionally NOT 'assert': keep checks alive in python3 -O.
+    if not condition:
+        raise AssertionError(message)
+
+
 def self_test() -> None:
-    assert BLOCK_INTERVAL_SECONDS == Decimal("0.5")
-    assert upper_tail(Decimal(0), 0) == 0
-    assert upper_tail(Decimal(0), 32, ASSUMED_BURST_SHAPE) == 0
+    require(BLOCK_INTERVAL_SECONDS == Decimal("0.5"), "cadence")
+    require(upper_tail(Decimal(0), 0) == 0, "zero-mean Poisson")
+    require(
+        upper_tail(Decimal(0), 32, ASSUMED_BURST_SHAPE) == 0,
+        "zero-mean bursty",
+    )
     for model in (None, ASSUMED_BURST_SHAPE):
         for window in WINDOWS_SECONDS:
             mean = Decimal(window) * BLOCKS_PER_SECOND
             ks = [upper_tail(mean, k, model) for k in TRIAL_K]
-            assert all(Decimal(0) <= p <= Decimal(1) for p in ks)
-            assert all(x >= y for x, y in zip(ks, ks[1:]))
+            require(all(Decimal(0) <= p <= Decimal(1) for p in ks), "range")
+            require(all(x >= y for x, y in zip(ks, ks[1:])), "K monotonicity")
         for k in TRIAL_K:
             probs = [
                 upper_tail(Decimal(window) * BLOCKS_PER_SECOND, k, model)
                 for window in WINDOWS_SECONDS
             ]
-            assert all(x <= y for x, y in zip(probs, probs[1:]))
+            require(
+                all(x <= y for x, y in zip(probs, probs[1:])),
+                "window monotonicity",
+            )
 
-    # Independently hand-derived exact cases: NB(r=2,mean=2) uses q=1/2.
-    assert abs(upper_tail(Decimal(2), 6, Decimal(2)) - Decimal("0.03515625")) < Decimal("1e-84")
-    assert abs(upper_tail(Decimal(2), 7, Decimal(2)) - Decimal("0.01953125")) < Decimal("1e-84")
-    # Poisson K=0 identity with analytic reference.
+    # Independently hand-derived NB(r=2,mean=2) uses q=1/2.
+    tol = Decimal("1e-84")
+    require(
+        abs(upper_tail(Decimal(2), 6, Decimal(2)) - Decimal("0.03515625")) < tol,
+        "NB exact K=6 case",
+    )
+    require(
+        abs(upper_tail(Decimal(2), 7, Decimal(2)) - Decimal("0.01953125")) < tol,
+        "NB exact K=7 case",
+    )
     with localcontext() as ctx:
         ctx.prec = PRECISION
         ref = Decimal(1) - (-Decimal(1)).exp()
-        assert abs(upper_tail(Decimal(1), 0) - ref) < Decimal("1e-85")
-    assert upper_tail(Decimal(1), 32) > 0  # Never round a tiny tail to zero.
+        require(
+            abs(upper_tail(Decimal(1), 0) - ref) < Decimal("1e-85"),
+            "Poisson K=0 identity",
+        )
+    require(upper_tail(Decimal(1), 32) > 0, "small Poisson tail lost")
     rows = study()
-    assert len(rows) == len(WINDOWS_SECONDS) * len(TRIAL_K)
-    assert len({
-        (x["propagation_window_seconds_assumed"], x["trial_K_NOT_APPROVED"])
-        for x in rows
-    }) == len(rows)
+    require(len(rows) == len(WINDOWS_SECONDS) * len(TRIAL_K), "row count")
+    require(
+        len({
+            (x["propagation_window_seconds_assumed"], x["trial_K_NOT_APPROVED"])
+            for x in rows
+        }) == len(rows),
+        "unique scenario key",
+    )
 
 
 def main() -> None:
