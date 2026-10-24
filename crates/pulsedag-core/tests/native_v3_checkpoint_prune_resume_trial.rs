@@ -92,7 +92,7 @@ fn append_hypothetical_reward(state: &PreviewSet, block: &str, header: &BlockHea
 
 /// Only an in-test preauthenticated root may be used here. Never accept a
 /// network-supplied copy of the seal as proof of work/finality.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct PreauthenticatedTrialCheckpoint {
     chain: String,
     frozen_genesis: BlockId,
@@ -122,7 +122,15 @@ fn continue_from_test_checkpoint(
     join: &str,
     child: &str,
 ) -> Result<(BTreeMap<BlockId, CandidateBlockMetadata>, Vec<pulsedag_core::retarget_v3::V3RetargetSample>, PreviewSet), String> {
-    if checkpoint != externally_authenticated
+    if checkpoint.chain != externally_authenticated.chain
+        || checkpoint.frozen_genesis != externally_authenticated.frozen_genesis
+        || checkpoint.boundary != externally_authenticated.boundary
+        || checkpoint.k != externally_authenticated.k
+        || checkpoint.boundary_meta != externally_authenticated.boundary_meta
+        || checkpoint.recent_selected != externally_authenticated.recent_selected
+        || checkpoint.selected_parents != externally_authenticated.selected_parents
+        || checkpoint.preview_state_root != externally_authenticated.preview_state_root
+        || fingerprint(&checkpoint.preview_state) != fingerprint(&externally_authenticated.preview_state)
         || checkpoint.chain != CHAIN
         || checkpoint.k != K
         || checkpoint.recent_selected.len() != 20
@@ -221,9 +229,9 @@ fn continue_from_test_checkpoint(
     let mut ledger = checkpoint.preview_state.clone();
     // Parent-before-child with the candidate's proposed blue/red ordering.
     // Red blocks are not silently dropped from the bookkeeping experiment.
-    for id in [&selected, &blue, &red, &join.to_owned(), &child.to_owned()] {
+    for id in [selected, blue, red, join.to_owned(), child.to_owned()] {
         ledger = append_hypothetical_reward(
-            &ledger, id, &suffix[id], continuation[id].blue_score
+            &ledger, &id, &suffix[&id], continuation[&id].blue_score
         );
     }
     Ok((continuation, window, ledger))
