@@ -125,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --nocapture | tee /tmp/native-v3-diagnostic-budget.log
-          grep -Fq 'test result: ok. 3 passed; 0 failed; 1 ignored;' /tmp/native-v3-diagnostic-budget.log
+          grep -Fq 'test result: ok. 4 passed; 0 failed; 1 ignored;' /tmp/native-v3-diagnostic-budget.log
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --ignored --nocapture | tee /tmp/native-v3-local-cpu-rss.log
           grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-local-cpu-rss.log
           test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 7
