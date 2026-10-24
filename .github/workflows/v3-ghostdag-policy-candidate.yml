@@ -1,0 +1,160 @@
+name: v3 GHOSTDAG policy candidate symbolic self-test (non-normative)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_k_delay_sensitivity.py"
+      - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
+      - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
+      - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_crosslang_ghostdag_vectors.py"
+      - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
+      - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
+      - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
+      - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs"
+      - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "scripts/native_v3_compact_target_oracle.py"
+      - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
+      - ".github/workflows/v3-ghostdag-policy-candidate.yml"
+  push:
+    # Temporary direct SHA gate while PR #1341 head metadata lags this branch.
+    # Remove the proposal branch trigger after the PR synchronize event resumes.
+    branches: [main, proposal/v3-ghostdag-freeze-candidate-20261022]
+    paths:
+      - "scripts/native_v3_ghostdag_policy_candidate.py"
+      - "scripts/native_v3_k_delay_sensitivity.py"
+      - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
+      - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
+      - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
+      - "scripts/native_v3_crosslang_ghostdag_vectors.py"
+      - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
+      - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
+      - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
+      - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
+      - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"
+      - "crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs"
+      - "crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs"
+      - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "scripts/native_v3_kheavyhash_oracle.py"
+      - "scripts/native_v3_work_policy_candidates.py"
+      - "scripts/native_v3_compact_target_oracle.py"
+      - "docs/NATIVE_V3_GHOSTDAG_FREEZE_CANDIDATE_20261022.md"
+      - ".github/workflows/v3-ghostdag-policy-candidate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  symbolic-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact candidate SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run 120-permutation candidate with assertions enabled and optimized Python
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_policy_candidate.py
+          python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+      - name: Report 500ms trial-K propagation sensitivity (hypothetical, no policy freeze)
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_k_delay_sensitivity.py --check
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --check
+          python3 scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-normal.json
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-optimized.json
+          cmp /tmp/native-v3-k-delay-normal.json /tmp/native-v3-k-delay-optimized.json
+      - name: Check independent KHeavyHash to policy integration (header-only, no activation)
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - name: Verify frozen independent full-byte native fork vectors
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-check authenticated native Rust headers and K candidate invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- --nocapture | tee /tmp/native-v3-ghostdag-rust-probe.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-ghostdag-rust-probe.log
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- --nocapture | tee /tmp/native-v3-ghostdag-crosslang.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-ghostdag-crosslang.log
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
+          cargo test --locked -p pulsedag-core --lib native_ghostdag_policy_candidate_v3::tests:: -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_adversarial -- --nocapture | tee /tmp/native-v3-ghostdag-adversarial.log
+          grep -Fq 'test result: ok. 7 passed; 0 failed;' /tmp/native-v3-ghostdag-adversarial.log
+          cargo test --locked -p pulsedag-core --test native_v3_signed_v2_utxo_bridge -- --nocapture | tee /tmp/native-v3-signed-v2-utxo.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed;' /tmp/native-v3-signed-v2-utxo.log
+          cargo test --locked -p pulsedag-core --test native_v3_reward_policy_utxo_preview -- --nocapture | tee /tmp/native-v3-reward-policy-utxo.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-reward-policy-utxo.log
+          cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-monetary-finality-reorg.log
+          cargo test --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- --nocapture | tee /tmp/native-v3-checkpoint-differential.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-checkpoint-differential.log
+          cargo clippy --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- -D warnings
+          cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Profile bounded local native-v3 DAG math (not real-network propagation)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --nocapture | tee /tmp/native-v3-diagnostic-budget.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed; 1 ignored;' /tmp/native-v3-diagnostic-budget.log
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --ignored --nocapture | tee /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-local-cpu-rss.log
+          test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 7
+          grep -Fq 'case=linear_120_500ms' /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'case=eight_parent_K32' /tmp/native-v3-local-cpu-rss.log
+      - name: Reopen disposable real RocksDB for dormant-v3 verified frame recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-storage --test native_v3_dormant_rocksdb_roundtrip -- --nocapture | tee /tmp/native-v3-real-rocksdb-reopen.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-real-rocksdb-reopen.log
+          cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_rocksdb_roundtrip -- -D warnings
+      - name: Archive exact-run local profiling evidence (not network benchmark)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-v3-local-cpu-rss-${{ github.run_id }}
+          path: |
+            /tmp/native-v3-diagnostic-budget.log
+            /tmp/native-v3-local-cpu-rss.log
+          if-no-files-found: warn
+          retention-days: 14
+
