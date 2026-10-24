@@ -39,3 +39,13 @@ It records test chain identity, exact frozen genesis, selected tip, experimental
 5. **Operational readiness:** adversarial network propagation under 500ms with sufficient peer/worker topology, sustained CPU/RSS/IO measurements, post-pruning finality bounds, and exact release SHA CI. Only then separately request authorization of monetary-v3 mining **in an isolated, private pre-mainnet rehearsal**. Production/public network remains NO-GO without #781 approval; smart contracts remain INACTIVE in v3.0.
 
 This document is deliberately **not** a protocol freeze or authority to change consensus, the startup guard, live node storage, mining, P2P, wallet or contract execution.
+
+## Authentic derived retarget: explicit 20-sample check versus forged selection (2026-10-24)
+
+The standalone TEST-ONLY `retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cache` exercises the **existing** `retarget_context_v3::selected_parent_retarget_window_v3_ns` and `retarget_genesis_guard_v3::verify_dormant_frozen_genesis_retarget_v3_ns` rather than inventing difficulty arithmetic. It derives a selected-parent map from an entirely authenticated native-v3 KHeavyHash/GHOSTDAG trial **before** asking the real retarget adapter to produce the sample window. Any saved peer/cache map must match the fresh trial exactly, or fail. The test deliberately does not approve/freeze K nor choose difficulty for mining.
+
+For a 120-deep linear 500ms test chain, the 20 newest-first samples are exact heights 120..101; the arithmetic sees nineteen 500ms intervals. The near-genesis-only retarget guard rejects this far-from-genesis tip as intended. Truncating the old history despite retaining those twenty PoW-valid samples also **fails**, because neither those samples nor an informational prefix inventory authorizes pruned consensus.
+
+For an eight-parent K6 fork, the complete authentic DAG chooses one PoW-valid sibling deterministically, and the native retarget window and near-genesis guard agree. The test **intentionally replaces that winner** with a different real PoW-valid listed sibling: the raw retarget context adapter alone may consider that *locally structurally valid* parent map and produce a different sampling window, because it does not derive consensus choice; the new independent-trial wrapper rejects the forged parent map. Missing side ancestry and K6-to-K7 substitution also fail closed.
+
+This is a non-activating bounded *composition proof*; it DOES NOT provide the authenticated pruning boundary, an actual production selected-tip policy, signed checkpoint authority, full v3 monetary/UTXO commitment, or long-lived retarget history. All 128-header and complete-genesis requirements remain enforced.
