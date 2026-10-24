@@ -6,7 +6,7 @@
 //! Diagnostic ancestry is capped at 128 headers. This suite never connects to
 //! consensus admission, mining runtime, monetary rewards, UTXO or contracts.
 
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::{BTreeMap, BTreeSet}, time::Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -535,4 +535,180 @@ fn restart_cache_revalidation_refuses_self_attested_consensus_metadata() {
         .is_err(),
         "an invented blue/red list cannot pass even with a new digest"
     );
+}
+
+
+/// Non-normative witness *inventory* derived ONLY by complete authentic
+/// frozen-genesis history replay. Not a proof of safe pruning/finality or
+/// the normative retarget sample set. "20" is a diagnostic candidate window;
+/// the actual v3 retarget samples remain unapproved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TestOnlyResumeContextInventory {
+    chain_id: String,
+    genesis: BlockId,
+    tip: BlockId,
+    trial_k: usize,
+    /// Last up-to-20 NON-GENESIS selected-parent IDs (tip-first).
+    recent_selected_tip_first: Vec<BlockId>,
+    /// Union of every blue/red merge-side header in the complete trial graph.
+    colored_side_headers_sorted: Vec<BlockId>,
+    /// Informational, self-attestable checksum, NEVER a trust anchor.
+    complete_history_audit_hash: String,
+}
+
+fn recompute_test_only_resume_context(
+    chain_id: &str,
+    genesis: &str,
+    tip: &str,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    k: usize,
+) -> Result<TestOnlyResumeContextInventory, &'static str> {
+    if chain_id != CHAIN {
+        return Err("wrong externally frozen chain identity");
+    }
+    // Full-genesis PoW authentication remains MANDATORY; no pruned bypass.
+    let full = derive_dormant_native_v3_ghostdag_trial(
+        chain_id,
+        GENESIS_NS,
+        genesis,
+        std::slice::from_ref(&tip.to_owned()),
+        headers,
+        k,
+    )
+    .map_err(|_| "full PoW DAG ancestry is missing or invalid")?;
+    if full.blocks.len() != headers.len() {
+        return Err("unreachable/extra cache headers cannot become authority");
+    }
+    if !full.blocks.contains_key(genesis) || !full.blocks.contains_key(tip) {
+        return Err("tip or genesis omitted from fully verified history");
+    }
+    let mut current = tip.to_owned();
+    let mut walked = BTreeSet::new();
+    let mut recent = Vec::new();
+    loop {
+        if !walked.insert(current.clone()) || walked.len() > full.blocks.len() {
+            return Err("selected spine cycle/length exceeds verified history");
+        }
+        let meta = full.blocks.get(&current).ok_or("unknown selected ancestor")?;
+        if current == genesis {
+            if meta.selected_parent.is_some() {
+                return Err("genesis cannot have a selected parent");
+            }
+            break;
+        }
+        if recent.len() < 20 {
+            recent.push(current.clone());
+        }
+        current = meta
+            .selected_parent
+            .clone()
+            .ok_or("non-genesis selected ancestor has no parent")?;
+    }
+
+    let mut colored_side_headers = BTreeSet::new();
+    for meta in full.blocks.values() {
+        for hash in meta.merge_blues.iter().chain(&meta.merge_reds) {
+            if hash == genesis || !full.blocks.contains_key(hash) {
+                return Err("side header outside full PoW-authenticated prefix");
+            }
+            colored_side_headers.insert(hash.clone());
+        }
+    }
+    let audit = informational_trial_prefix_fingerprint(
+        chain_id, genesis, tip, headers, &full,
+    )?;
+    Ok(TestOnlyResumeContextInventory {
+        chain_id: chain_id.to_owned(),
+        genesis: genesis.to_owned(),
+        tip: tip.to_owned(),
+        trial_k: k,
+        recent_selected_tip_first: recent,
+        colored_side_headers_sorted: colored_side_headers.into_iter().collect(),
+        complete_history_audit_hash: audit,
+    })
+}
+
+/// The supplied inventory is UNTRUSTED and cannot attest itself. Re-derive
+/// against all authenticated headers; do not authorize compact-prune from it.
+fn verify_untrusted_resume_inventory_for_review(
+    chain_id: &str,
+    genesis: &str,
+    tip: &str,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    k: usize,
+    inventory: &TestOnlyResumeContextInventory,
+) -> Result<(), &'static str> {
+    let expected = recompute_test_only_resume_context(
+        chain_id, genesis, tip, headers, k,
+    )?;
+    if expected != *inventory {
+        return Err("proposed context inventory differs from independently derived history");
+    }
+    Ok(())
+}
+
+#[test]
+fn candidate_retention_inventory_revalidates_full_history_and_rejects_mutations() {
+    // The candidate 20-recent-selected ancestor list is NOT the frozen
+    // retarget sampling rule, nor the total required future DAG context.
+    let (g, tip, headers) = chain(120);
+    let full = recompute_test_only_resume_context(
+        CHAIN, &g, &tip, &headers, 32
+    ).unwrap();
+    assert_eq!(full.recent_selected_tip_first.len(), 20);
+    assert_eq!(full.recent_selected_tip_first.first(), Some(&tip));
+    assert!(full.colored_side_headers_sorted.is_empty());
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g, &tip, &headers, 32, &full
+    ).is_ok());
+
+    let mut forged = full.clone();
+    forged.recent_selected_tip_first.pop();
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g, &tip, &headers, 32, &forged
+    ).is_err());
+    let mut forged = full.clone();
+    forged.complete_history_audit_hash = "ff".repeat(32);
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g, &tip, &headers, 32, &forged
+    ).is_err());
+    let mut forged = full.clone();
+    forged.trial_k = 7;
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g, &tip, &headers, 32, &forged
+    ).is_err());
+    let mut truncated = headers.clone();
+    truncated.retain(|id, h| id == &g || h.height >= 80);
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g, &tip, &truncated, 32, &full
+    ).is_err(), "keeping the last 20 selected blocks is NOT sufficient proof to prune");
+
+    // Multiparent K6 creates 6 blue and 1 red side blocks; all seven
+    // remain listed even though the selected-parent spine is only two deep.
+    let (g2, tip2, multiparent) = eight_parent_fork(6);
+    let inventory = recompute_test_only_resume_context(
+        CHAIN, &g2, &tip2, &multiparent, 6
+    ).unwrap();
+    assert_eq!(inventory.recent_selected_tip_first.len(), 2);
+    assert_eq!(inventory.colored_side_headers_sorted.len(), 7);
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g2, &tip2, &multiparent, 6, &inventory
+    ).is_ok());
+
+    let mut forged_colors = inventory.clone();
+    forged_colors.colored_side_headers_sorted.pop();
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g2, &tip2, &multiparent, 6, &forged_colors
+    ).is_err(), "inventories omitting even one red/blue side header must fail");
+    let mut forged_identity = inventory.clone();
+    forged_identity.chain_id = "other-network".into();
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g2, &tip2, &multiparent, 6, &forged_identity
+    ).is_err());
+    let mut missing = multiparent.clone();
+    let doomed_side = inventory.colored_side_headers_sorted[0].clone();
+    missing.remove(&doomed_side);
+    assert!(verify_untrusted_resume_inventory_for_review(
+        CHAIN, &g2, &tip2, &missing, 6, &inventory
+    ).is_err(), "verified DAG cannot skip one missing authentic colored side block");
 }
