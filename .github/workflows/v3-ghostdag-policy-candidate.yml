@@ -15,6 +15,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
+      - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
       - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
@@ -44,6 +45,7 @@ on:
       - "crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"
       - "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
+      - "crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"
       - "crates/pulsedag-storage/tests/native_v3_dormant_rocksdb_roundtrip.rs"
       - "crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"
       - "crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"
@@ -123,6 +125,9 @@ jobs:
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-reward-policy-utxo.log
           cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-monetary-finality-reorg.log
+          cargo test --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- --nocapture | tee /tmp/native-v3-checkpoint-differential.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-checkpoint-differential.log
+          cargo clippy --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- -D warnings
           cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
       - name: Profile bounded local native-v3 DAG math (not real-network propagation)
         shell: bash
