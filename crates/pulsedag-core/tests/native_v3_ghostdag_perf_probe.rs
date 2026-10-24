@@ -20,10 +20,10 @@ use pulsedag_core::{
         derive_dormant_native_v3_ghostdag_trial, CandidateGhostdagEvaluation,
     },
     pow_v3::evaluate_v3_header_pow,
+    protocol::BLOCK_HEADER_VERSION_V3,
     retarget_context_v3::selected_parent_retarget_window_v3_ns,
     retarget_genesis_guard_v3::verify_dormant_frozen_genesis_retarget_v3_ns,
     retarget_v3::{expected_difficulty_for_v3_window_ns, V3RetargetSample},
-    protocol::BLOCK_HEADER_VERSION_V3,
     types::BlockId,
 };
 
@@ -741,7 +741,6 @@ fn candidate_retention_inventory_revalidates_full_history_and_rejects_mutations(
     );
 }
 
-
 /// TEST ONLY: an untrusted cached selected-parent map MUST match a fresh
 /// complete-genesis native GHOSTDAG trial before it is passed to the existing
 /// v3 20-sample retarget adapter. That adapter independently checks hashes,
@@ -787,7 +786,12 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
     // but it is NOT an approved pruning/finality/checkpoint witness.
     let (genesis, tip, headers) = chain(120);
     let fresh = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &genesis, std::slice::from_ref(&tip), &headers, 32
+        CHAIN,
+        GENESIS_NS,
+        &genesis,
+        std::slice::from_ref(&tip),
+        &headers,
+        32,
     )
     .unwrap();
     let selected: BTreeMap<BlockId, Option<BlockId>> = fresh
@@ -795,10 +799,9 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
         .iter()
         .map(|(id, m)| (id.clone(), m.selected_parent.clone()))
         .collect();
-    let window = trial_retarget_window_rejecting_cached_selection(
-        &genesis, &tip, &headers, 32, &selected
-    )
-    .unwrap();
+    let window =
+        trial_retarget_window_rejecting_cached_selection(&genesis, &tip, &headers, 32, &selected)
+            .unwrap();
     assert_eq!(window.len(), 20);
     assert_eq!(window[0].timestamp_ns, GENESIS_NS + 120 * 500_000_000);
     assert_eq!(window[19].timestamp_ns, GENESIS_NS + 101 * 500_000_000);
@@ -815,10 +818,8 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
     let mut cut = headers.clone();
     cut.retain(|id, h| id == &genesis || h.height >= 101);
     assert!(
-        trial_retarget_window_rejecting_cached_selection(
-            &genesis, &tip, &cut, 32, &selected
-        )
-        .is_err(),
+        trial_retarget_window_rejecting_cached_selection(&genesis, &tip, &cut, 32, &selected)
+            .is_err(),
         "having all twenty authentic retarget samples is not enough to accept a pruned prefix"
     );
 
@@ -827,7 +828,12 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
     // hash/PoW/linkage, but it cannot authenticate GHOSTDAG's actual winner.
     let (g2, join, fork_headers) = eight_parent_fork(6);
     let fork = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &g2, std::slice::from_ref(&join), &fork_headers, 6
+        CHAIN,
+        GENESIS_NS,
+        &g2,
+        std::slice::from_ref(&join),
+        &fork_headers,
+        6,
     )
     .unwrap();
     let derived_map: BTreeMap<BlockId, Option<BlockId>> = fork
@@ -836,14 +842,23 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
         .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
         .collect();
     let honest = trial_retarget_window_rejecting_cached_selection(
-        &g2, &join, &fork_headers, 6, &derived_map
+        &g2,
+        &join,
+        &fork_headers,
+        6,
+        &derived_map,
     )
     .unwrap();
     assert_eq!(honest.len(), 3);
     let expected = expected_difficulty_for_v3_window_ns(&honest).unwrap();
     assert_eq!(
         verify_dormant_frozen_genesis_retarget_v3_ns(
-            CHAIN, GENESIS_NS, &g2, &join, &fork_headers, &derived_map
+            CHAIN,
+            GENESIS_NS,
+            &g2,
+            &join,
+            &fork_headers,
+            &derived_map
         )
         .unwrap(),
         expected
@@ -861,21 +876,22 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
         .clone();
     let mut forged = derived_map.clone();
     forged.insert(join.clone(), Some(wrong_but_listed));
-    let locally_well_formed = selected_parent_retarget_window_v3_ns(
-        CHAIN, &join, &fork_headers, &forged
-    )
-    .expect("hash/PoW/linkage alone do not prove correct GHOSTDAG selection");
+    let locally_well_formed =
+        selected_parent_retarget_window_v3_ns(CHAIN, &join, &fork_headers, &forged)
+            .expect("hash/PoW/linkage alone do not prove correct GHOSTDAG selection");
     assert_ne!(honest, locally_well_formed);
     assert!(
-        trial_retarget_window_rejecting_cached_selection(
-            &g2, &join, &fork_headers, 6, &forged
-        )
-        .is_err(),
+        trial_retarget_window_rejecting_cached_selection(&g2, &join, &fork_headers, 6, &forged)
+            .is_err(),
         "re-deriving full native GHOSTDAG must reject a plausible forged winner"
     );
     assert!(
         trial_retarget_window_rejecting_cached_selection(
-            &g2, &join, &fork_headers, 7, &derived_map
+            &g2,
+            &join,
+            &fork_headers,
+            7,
+            &derived_map
         )
         .is_err(),
         "a K6 block cannot silently inherit a different trial policy's selection"
@@ -883,10 +899,8 @@ fn retarget_must_use_recomputed_genuine_kheavyhash_selected_parent_not_peer_cach
     let mut no_side = fork_headers.clone();
     no_side.remove(&genuine_parent);
     assert!(
-        trial_retarget_window_rejecting_cached_selection(
-            &g2, &join, &no_side, 6, &derived_map
-        )
-        .is_err(),
+        trial_retarget_window_rejecting_cached_selection(&g2, &join, &no_side, 6, &derived_map)
+            .is_err(),
         "valid 20-sample retarget cannot excuse missing fork-side full ancestry"
     );
 }
