@@ -9,12 +9,9 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
-    pow_v3::evaluate_v3_header_pow,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    types::BlockId,
+    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
 
 const CHAIN: &str = "pulsedag-native-v3-dormant-profiling-NON-NORMATIVE";
@@ -75,9 +72,7 @@ fn chain(non_genesis: usize) -> (BlockId, BlockId, BTreeMap<BlockId, BlockHeader
 
 /// Eight genesis siblings and one correctly scored join, with a fixed
 /// independent 500ms generation window. Proposed parent cap UNAPPROVED.
-fn eight_parent_fork(
-    trial_k: usize,
-) -> (BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>) {
+fn eight_parent_fork(trial_k: usize) -> (BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>) {
     let (g, mut headers) = genesis();
     let mut parents = Vec::with_capacity(8);
     for i in 0..8_u8 {
