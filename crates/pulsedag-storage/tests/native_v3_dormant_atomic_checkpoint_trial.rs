@@ -1,8 +1,8 @@
 //! TEST ONLY: RocksDB atomic snapshot + history trim, compared to a verified
 //! full native-v3 PoW DAG. All persisted names are isolated test-private keys.
- //! This is NOT a real checkpoint authority, consensus pruning, finality proof,
- //! transaction/fee/reward acceptance, crash injection, or live node restart.
- //! The *external* test oracle is reconstructed from full genesis BEFORE trim.
+//! This is NOT a real checkpoint authority, consensus pruning, finality proof,
+//! transaction/fee/reward acceptance, crash injection, or live node restart.
+//! The *external* test oracle is reconstructed from full genesis BEFORE trim.
 
 use std::{
     collections::BTreeMap,
@@ -90,29 +90,48 @@ fn mine(parent: &BlockEnvelopeV3, height: u64) -> BlockEnvelopeV3 {
 /// settlement. Every record has zero transactions and an unverified header
 /// state root. The actual v3 subsidy curve is used ONLY for bookkeeping.
 fn hypothetical_coins(records: &[NativeV3EnvelopeRestoreRecordV1]) -> Vec<Utxo> {
-    records.iter().map(|record| {
-        let env = record.envelope();
-        Utxo {
-            outpoint: OutPoint { txid: env.hash.clone(), index: 0 },
-            address: format!("trial-only-miner-{}", env.header.height),
-            amount: subsidy_atoms_for_score(env.header.blue_score, &PRODUCTION_CADENCE_V3).unwrap(),
-            coinbase: true,
-            height: env.header.height,
-        }
-    }).collect()
+    records
+        .iter()
+        .map(|record| {
+            let env = record.envelope();
+            Utxo {
+                outpoint: OutPoint {
+                    txid: env.hash.clone(),
+                    index: 0,
+                },
+                address: format!("trial-only-miner-{}", env.header.height),
+                amount: subsidy_atoms_for_score(env.header.blue_score, &PRODUCTION_CADENCE_V3)
+                    .unwrap(),
+                coinbase: true,
+                height: env.header.height,
+            }
+        })
+        .collect()
 }
 
 fn reconstructed_state(coins: &[Utxo]) -> Result<(String, u128), String> {
     let mut state = UtxoState::default();
     let mut supply = 0u128;
     for coin in coins {
-        if state.utxos.insert(coin.outpoint.clone(), coin.clone()).is_some() {
+        if state
+            .utxos
+            .insert(coin.outpoint.clone(), coin.clone())
+            .is_some()
+        {
             return Err("duplicate test-only output".into());
         }
-        state.address_index.entry(coin.address.clone()).or_default().push(coin.outpoint.clone());
-        supply = supply.checked_add(u128::from(coin.amount)).ok_or("supply overflow")?;
+        state
+            .address_index
+            .entry(coin.address.clone())
+            .or_default()
+            .push(coin.outpoint.clone());
+        supply = supply
+            .checked_add(u128::from(coin.amount))
+            .ok_or("supply overflow")?;
     }
-    state.validate_deterministic_indexes().map_err(|e| e.to_string())?;
+    state
+        .validate_deterministic_indexes()
+        .map_err(|e| e.to_string())?;
     let root = state.compute_state_root().map_err(|e| e.to_string())?;
     Ok((root, supply))
 }
@@ -137,17 +156,31 @@ fn full_history_oracle() -> FullHistoryOracle {
     for height in 1..=FULL_HEIGHT {
         let envelope = mine(&parent, height as u64);
         all.insert(envelope.hash.clone(), envelope.header.clone());
-        records.push(NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            envelope.clone(), CHAIN, GENESIS_NS, &genesis.hash
-        ).unwrap());
+        records.push(
+            NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+                envelope.clone(),
+                CHAIN,
+                GENESIS_NS,
+                &genesis.hash,
+            )
+            .unwrap(),
+        );
         parent = envelope;
     }
     let tip = parent.hash.clone();
     let verified = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &genesis.hash, std::slice::from_ref(&tip), &all, 1
-    ).unwrap();
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&tip),
+        &all,
+        1,
+    )
+    .unwrap();
     assert_eq!(verified.blocks.len(), FULL_HEIGHT + 1);
-    let parent_map = verified.blocks.iter()
+    let parent_map = verified
+        .blocks
+        .iter()
         .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
         .collect();
     let window = selected_parent_retarget_window_v3_ns(CHAIN, &tip, &all, &parent_map).unwrap();
@@ -158,8 +191,11 @@ fn full_history_oracle() -> FullHistoryOracle {
 
     let coins = hypothetical_coins(&records);
     let (root, supply) = reconstructed_state(&coins).unwrap();
-    let retained = records.iter().skip(FULL_HEIGHT - KEEP)
-        .map(|r| r.envelope().hash.clone()).collect::<Vec<_>>();
+    let retained = records
+        .iter()
+        .skip(FULL_HEIGHT - KEEP)
+        .map(|r| r.envelope().hash.clone())
+        .collect::<Vec<_>>();
     let manifest = serde_json::json!({
         "schema": "TEST_ONLY_not_trusted_v1",
         "chain": CHAIN,
@@ -196,12 +232,18 @@ fn trim_batch(oracle: &FullHistoryOracle) -> WriteBatch {
 }
 
 fn read_authenticated_trial_after_trim(db: &DB, oracle: &FullHistoryOracle) -> Result<(), String> {
-    let manifest = db.get(MANIFEST_KEY).map_err(|e| e.to_string())?
+    let manifest = db
+        .get(MANIFEST_KEY)
+        .map_err(|e| e.to_string())?
         .ok_or("checkpoint manifest missing")?;
-    let ledger = db.get(ECONOMIC_KEY).map_err(|e| e.to_string())?
+    let ledger = db
+        .get(ECONOMIC_KEY)
+        .map_err(|e| e.to_string())?
         .ok_or("economic snapshot missing")?;
     if manifest.as_ref() != oracle.manifest || ledger.as_ref() != oracle.coins {
-        return Err("persisted checkpoint or economic snapshot differs from full-history authority".into());
+        return Err(
+            "persisted checkpoint or economic snapshot differs from full-history authority".into(),
+        );
     }
     let coins: Vec<Utxo> = serde_json::from_slice(&ledger).map_err(|e| e.to_string())?;
     if coins.len() != FULL_HEIGHT {
@@ -216,13 +258,20 @@ fn read_authenticated_trial_after_trim(db: &DB, oracle: &FullHistoryOracle) -> R
     let mut selected = BTreeMap::new();
     let mut previous = None;
     for height in FULL_HEIGHT - KEEP + 1..=FULL_HEIGHT {
-        let raw = db.get(frame_key(height)).map_err(|e| e.to_string())?
+        let raw = db
+            .get(frame_key(height))
+            .map_err(|e| e.to_string())?
             .ok_or("mandatory 20-sample header missing")?;
         let record = NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &raw, CHAIN, GENESIS_NS, &oracle.genesis
-        ).map_err(|e| e.to_string())?;
+            &raw,
+            CHAIN,
+            GENESIS_NS,
+            &oracle.genesis,
+        )
+        .map_err(|e| e.to_string())?;
         let env = record.envelope();
-        if env.header.height != height as u64 || env.header.parents.len() != 1
+        if env.header.height != height as u64
+            || env.header.parents.len() != 1
             || env.header.timestamp_ns != GENESIS_NS + height as u64 * 500_000_000
         {
             return Err("retained header height/parent/time mismatch".into());
@@ -245,18 +294,25 @@ fn read_authenticated_trial_after_trim(db: &DB, oracle: &FullHistoryOracle) -> R
     if window != oracle.expected_window {
         return Err("post-prune retarget differs from full-genesis replay".into());
     }
-    let full_decision = expected_difficulty_for_v3_window_ns(&oracle.expected_window)
-        .map_err(|e| e.to_string())?;
-    let compact_decision = expected_difficulty_for_v3_window_ns(&window)
-        .map_err(|e| e.to_string())?;
+    let full_decision =
+        expected_difficulty_for_v3_window_ns(&oracle.expected_window).map_err(|e| e.to_string())?;
+    let compact_decision =
+        expected_difficulty_for_v3_window_ns(&window).map_err(|e| e.to_string())?;
     if full_decision != compact_decision {
         return Err("post-prune difficulty decision changed".into());
     }
     // The ordinary full-genesis trial MUST continue to reject this truncated
     // DAG. Snapshot test trust does not bypass real consensus fail-closed guards.
     if derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &oracle.genesis, std::slice::from_ref(&tip), &retained, 1
-    ).is_ok() {
+        CHAIN,
+        GENESIS_NS,
+        &oracle.genesis,
+        std::slice::from_ref(&tip),
+        &retained,
+        1,
+    )
+    .is_ok()
+    {
         return Err("TRUST BOUNDARY: truncated history became accepted consensus".into());
     }
     Ok(())
@@ -272,7 +328,9 @@ fn atomic_rocksdb_trial_snapshot_and_prune_matches_complete_v3_dag_oracle() {
         for (i, record) in oracle.records.iter().enumerate() {
             initial.put(
                 frame_key(i + 1),
-                record.encode_verified(CHAIN, GENESIS_NS, &oracle.genesis).unwrap()
+                record
+                    .encode_verified(CHAIN, GENESIS_NS, &oracle.genesis)
+                    .unwrap(),
             );
         }
         initial.put(OLD_MARKER, b"pretrim");
@@ -309,30 +367,38 @@ fn atomic_rocksdb_trial_snapshot_and_prune_matches_complete_v3_dag_oracle() {
         let mut untrusted: serde_json::Value =
             serde_json::from_slice(&db.get(MANIFEST_KEY).unwrap().unwrap()).unwrap();
         untrusted["blue_work_u512_limbs"][0] = serde_json::json!(999);
-        db.put(MANIFEST_KEY, serde_json::to_vec(&untrusted).unwrap()).unwrap();
+        db.put(MANIFEST_KEY, serde_json::to_vec(&untrusted).unwrap())
+            .unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(read_authenticated_trial_after_trim(&db, &oracle).is_err(),
-            "self-attested blue-work cannot replace independent full-history oracle");
+        assert!(
+            read_authenticated_trial_after_trim(&db, &oracle).is_err(),
+            "self-attested blue-work cannot replace independent full-history oracle"
+        );
         db.put(MANIFEST_KEY, &oracle.manifest).unwrap();
         let mut forged_coins: Vec<Utxo> = serde_json::from_slice(&oracle.coins).unwrap();
         forged_coins[0].amount += 1;
-        db.put(ECONOMIC_KEY, serde_json::to_vec(&forged_coins).unwrap()).unwrap();
+        db.put(ECONOMIC_KEY, serde_json::to_vec(&forged_coins).unwrap())
+            .unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(read_authenticated_trial_after_trim(&db, &oracle).is_err(),
-            "mutated economic state must fail even if the header PoW is valid");
+        assert!(
+            read_authenticated_trial_after_trim(&db, &oracle).is_err(),
+            "mutated economic state must fail even if the header PoW is valid"
+        );
         db.put(ECONOMIC_KEY, &oracle.coins).unwrap();
         db.delete(frame_key(FULL_HEIGHT - 10)).unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(read_authenticated_trial_after_trim(&db, &oracle).is_err(),
-            "an omitted retained PoW retarget sample must fail closed");
+        assert!(
+            read_authenticated_trial_after_trim(&db, &oracle).is_err(),
+            "an omitted retained PoW retarget sample must fail closed"
+        );
     }
 }
