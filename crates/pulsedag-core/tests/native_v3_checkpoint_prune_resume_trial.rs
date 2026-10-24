@@ -26,6 +26,7 @@ use pulsedag_core::{
 #[allow(dead_code)]
 mod detached_utxo;
 #[path = "support/native_v3_trial_order_preview.rs"]
+#[allow(dead_code)]
 mod trial_order_preview;
 
 use detached_utxo::{apply, coin, fingerprint, total_supply, HypotheticalBlockEffects, PreviewSet};
@@ -125,6 +126,12 @@ struct PreauthenticatedTrialCheckpoint {
     preview_state_root: String,
 }
 
+type ResumeOutcome = (
+    BTreeMap<BlockId, CandidateBlockMetadata>,
+    Vec<pulsedag_core::retarget_v3::V3RetargetSample>,
+    PreviewSet,
+);
+
 fn add_two_work(work: CandidateWork512) -> Result<CandidateWork512, &'static str> {
     let mut limbs = work.0;
     limbs[0] = limbs[0]
@@ -143,14 +150,7 @@ fn continue_from_test_checkpoint(
     suffix: &BTreeMap<BlockId, BlockHeaderV3>,
     join: &str,
     child: &str,
-) -> Result<
-    (
-        BTreeMap<BlockId, CandidateBlockMetadata>,
-        Vec<pulsedag_core::retarget_v3::V3RetargetSample>,
-        PreviewSet,
-    ),
-    String,
-> {
+) -> Result<ResumeOutcome, String> {
     if checkpoint.chain != externally_authenticated.chain
         || checkpoint.frozen_genesis != externally_authenticated.frozen_genesis
         || checkpoint.boundary != externally_authenticated.boundary
