@@ -11,11 +11,14 @@ use std::{collections::BTreeMap, time::Instant};
 use sha2::{Digest, Sha256};
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::{
         derive_dormant_native_v3_ghostdag_trial, CandidateGhostdagEvaluation,
     },
-    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
+    pow_v3::evaluate_v3_header_pow,
+    protocol::BLOCK_HEADER_VERSION_V3,
+    types::BlockId,
 };
 
 const CHAIN: &str = "pulsedag-native-v3-dormant-profiling-NON-NORMATIVE";
@@ -203,7 +206,6 @@ fn native_v3_real_pow_dag_work_profile_is_non_normative() {
     }
 }
 
-
 /// TEST-ONLY digest format. This is computed ONLY after *full* authenticated
 /// ancestry derivation from frozen genesis. The digest has NO intrinsic
 /// authority: it is not a checkpoint witness/proof, signature or finality
@@ -283,10 +285,8 @@ fn informational_full_prefix_hash_must_never_admit_pruned_native_v3_history() {
         32,
     )
     .expect("unpruned complete 120-block authenticated test DAG");
-    let baseline = informational_trial_prefix_fingerprint(
-        CHAIN, &genesis, &tip, &headers, &full,
-    )
-    .unwrap();
+    let baseline =
+        informational_trial_prefix_fingerprint(CHAIN, &genesis, &tip, &headers, &full).unwrap();
     let reordered: BTreeMap<_, _> = headers
         .iter()
         .rev()
@@ -328,9 +328,14 @@ fn informational_full_prefix_hash_must_never_admit_pruned_native_v3_history() {
     assert!(!truncated.values().any(|header| header.height == 59));
     assert!(
         derive_dormant_native_v3_ghostdag_trial(
-            CHAIN, GENESIS_NS, &genesis,
-            std::slice::from_ref(&tip), &truncated, 32
-        ).is_err(),
+            CHAIN,
+            GENESIS_NS,
+            &genesis,
+            std::slice::from_ref(&tip),
+            &truncated,
+            32
+        )
+        .is_err(),
         "an informational full-prefix digest MUST NOT bypass missing PoW ancestry"
     );
     assert!(
