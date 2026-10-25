@@ -252,11 +252,17 @@ fn zero_allocation_v3_test_start_cannot_accept_synthetic_funding_without_seed() 
     assert!(apply_validated_detached_transfer(&mut initially_empty, &signed, PREFIX + 1).is_err());
     assert!(initially_empty.utxo.utxos.is_empty());
     assert!(initially_empty.utxo.address_index.is_empty());
-    assert_eq!(initially_empty.utxo.compute_state_root().unwrap(), pristine_root);
+    assert_eq!(
+        initially_empty.utxo.compute_state_root().unwrap(),
+        pristine_root
+    );
 
     let mut explicitly_seeded = seeded;
     apply_validated_detached_transfer(&mut explicitly_seeded, &signed, PREFIX + 1).unwrap();
-    assert_ne!(explicitly_seeded.utxo.compute_state_root().unwrap(), pristine_root);
+    assert_ne!(
+        explicitly_seeded.utxo.compute_state_root().unwrap(),
+        pristine_root
+    );
 }
 
 #[test]
