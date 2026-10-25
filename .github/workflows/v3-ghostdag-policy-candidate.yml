@@ -6,6 +6,7 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
+      - "scripts/native_v3_ghostdag_perf_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -39,6 +40,7 @@ on:
     paths:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
+      - "scripts/native_v3_ghostdag_perf_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -146,6 +148,17 @@ jobs:
           test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 7
           grep -Fq 'case=linear_120_500ms' /tmp/native-v3-local-cpu-rss.log
           grep -Fq 'case=eight_parent_K32' /tmp/native-v3-local-cpu-rss.log
+      - name: Capture exact-SHA local CPU profile as labelled JSON (NOT network evidence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_perf_evidence.py --self-test
+          python3 -O scripts/native_v3_ghostdag_perf_evidence.py --self-test
+          python3 scripts/native_v3_ghostdag_perf_evidence.py \
+            --input /tmp/native-v3-local-cpu-rss.log \
+            --sha "$(git rev-parse HEAD)" \
+            --output /tmp/native-v3-local-cpu-rss.json
+          python3 -m json.tool /tmp/native-v3-local-cpu-rss.json >/dev/null
       - name: Reopen disposable real RocksDB for dormant-v3 verified frame recovery
         shell: bash
         run: |
@@ -170,6 +183,7 @@ jobs:
           path: |
             /tmp/native-v3-diagnostic-budget.log
             /tmp/native-v3-local-cpu-rss.log
+            /tmp/native-v3-local-cpu-rss.json
           if-no-files-found: warn
           retention-days: 14
 
