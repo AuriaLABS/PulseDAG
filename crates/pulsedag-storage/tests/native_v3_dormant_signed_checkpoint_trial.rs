@@ -153,32 +153,56 @@ fn signed_transfer(outpoint: OutPoint, key: &SigningKey, nonce: u64) -> Transact
 /// Separate, deliberately explicit one-transaction UTXO bookkeeping.
 /// Signature/funds/fee validation uses the existing genuine v2 validator,
 /// but this state application is NOT a native-v3 monetary replay engine.
+/// A self-contained test-only validation/application boundary. The real v2
+/// validator allows input totals > output+declared fee; this checkpoint trial
+/// explicitly rejects that implicit surplus instead of creating unaccounted
+/// monetary burn. Apply to a clone so ANY failure keeps prior state unchanged.
 fn apply_validated_detached_transfer(
     state: &mut ChainState,
     tx: &Transaction,
     height: u64,
 ) -> Result<(), String> {
     validate_transaction_v2(tx, state, CHAIN).map_err(|e| e.to_string())?;
+    let input_atoms = tx.inputs.iter().try_fold(0u128, |sum, input| {
+        let coin = state
+            .utxo
+            .utxos
+            .get(&input.previous_output)
+            .ok_or("validated signed input lacks a settled UTXO")?;
+        sum.checked_add(u128::from(coin.amount))
+            .ok_or("signed source amount overflow")
+    })?;
+    let output_atoms = tx.outputs.iter().try_fold(0u128, |sum, output| {
+        sum.checked_add(u128::from(output.amount))
+            .ok_or("signed destination amount overflow")
+    })?;
+    let accounted_atoms = output_atoms
+        .checked_add(u128::from(tx.fee))
+        .ok_or("signed total output plus fee overflow")?;
+    if input_atoms != accounted_atoms {
+        return Err("detached replay refuses implicit unaccounted fee/burn gap".into());
+    }
+    let mut next_state = state.clone();
     for input in &tx.inputs {
-        let source = state
+        let source = next_state
             .utxo
             .utxos
             .remove(&input.previous_output)
             .ok_or("validated input disappeared")?;
-        let indexed = state
+        let indexed = next_state
             .utxo
             .address_index
             .get_mut(&source.address)
             .ok_or("validated source index missing")?;
         indexed.retain(|id| id != &input.previous_output);
         if indexed.is_empty() {
-            state.utxo.address_index.remove(&source.address);
+            next_state.utxo.address_index.remove(&source.address);
         }
     }
     for (index, output) in tx.outputs.iter().enumerate() {
         let id = OutPoint {
             txid: tx.txid.clone(),
-            index: index as u32,
+            index: u32::try_from(index).map_err(|_| "signed output index overflow")?,
         };
         let new_coin = Utxo {
             outpoint: id.clone(),
@@ -187,20 +211,51 @@ fn apply_validated_detached_transfer(
             coinbase: false,
             height,
         };
-        if state.utxo.utxos.insert(id.clone(), new_coin).is_some() {
+        if next_state.utxo.utxos.insert(id.clone(), new_coin).is_some() {
             return Err("replay duplicate output".into());
         }
-        state
+        next_state
             .utxo
             .address_index
             .entry(output.address.clone())
             .or_default()
             .push(id);
     }
-    state
+    next_state
         .utxo
         .validate_deterministic_indexes()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    *state = next_state;
+    Ok(())
+}
+
+/// The real v2 validator allows inputs > outputs + the declared fee. Never
+/// use that to silently burn uncommitted surplus in the checkpoint preview;
+/// reject despite valid signature and txid, and leave the UTXO unchanged.
+#[test]
+fn signed_detached_checkpoint_rejects_unaccounted_surplus_and_preserves_utxo() {
+    let (funded, source, key) = funding_state();
+    let original_root = funded.utxo.compute_state_root().unwrap();
+    let mut gap = signed_transfer(source.clone(), &key, 500);
+    gap.outputs[0].amount -= 1;
+    gap.inputs[0].signature =
+        hex::encode(key.sign(&signing_message_v2(&gap, CHAIN).unwrap()).to_bytes());
+    gap.txid = compute_txid_v2(&gap, CHAIN).unwrap();
+    validate_transaction_v2(&gap, &funded, CHAIN).unwrap();
+
+    let mut still_funded = funded.clone();
+    let err = apply_validated_detached_transfer(&mut still_funded, &gap, PREFIX + 1)
+        .unwrap_err();
+    assert!(err.contains("unaccounted fee/burn gap"));
+    assert_eq!(still_funded.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(still_funded.utxo.utxos[&source].amount, 100_000);
+
+    // An honest signed transfer still succeeds against the unchanged source.
+    let valid = signed_transfer(source, &key, 501);
+    apply_validated_detached_transfer(&mut still_funded, &valid, PREFIX + 1).unwrap();
+    assert_ne!(still_funded.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(still_funded.utxo.utxos.len(), 1);
+    assert_eq!(still_funded.utxo.utxos.values().next().unwrap().amount, 98_900);
 }
 
 #[test]
