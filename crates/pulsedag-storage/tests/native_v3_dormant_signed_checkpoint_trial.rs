@@ -101,6 +101,11 @@ fn funding_state() -> (ChainState, OutPoint, SigningKey) {
         index: 0,
     };
     let mut state = init_chain_state(CHAIN.to_owned());
+    // init_chain_state provides the LEGACY v1 treasury. It is NOT the zero-
+    // allocation v3 genesis: discard its UTXOs before seeding this private
+    // externally authenticated test-only non-coinbase funding state.
+    state.utxo.utxos.clear();
+    state.utxo.address_index.clear();
     assert!(state.utxo.utxos.is_empty());
     state.utxo.utxos.insert(
         outpoint.clone(),
@@ -285,6 +290,8 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         }
         let coins: Vec<Utxo> = serde_json::from_slice(&snapshot).map_err(|e| e.to_string())?;
         let mut reconstructed = init_chain_state(CHAIN.to_owned());
+        reconstructed.utxo.utxos.clear();
+        reconstructed.utxo.address_index.clear();
         for coin in coins {
             if reconstructed.utxo.utxos.insert(coin.outpoint.clone(), coin.clone()).is_some() {
                 return Err("duplicate seeded outpoint".into());
@@ -298,6 +305,7 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         let mut retained = BTreeMap::new();
         let mut selected_map = BTreeMap::new();
         let mut transactions = Vec::new();
+        let mut previous_retained = None;
         let first_kept = PREFIX + 2 - KEEP;
         for height in first_kept..=PREFIX + 1 {
             let bytes = db.get(frame_key(height)).map_err(|e| e.to_string())?
@@ -309,11 +317,15 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
             if block.header.height != height {
                 return Err("persisted frame height incorrect".into());
             }
-            if let Some(previous_id) = retained.iter().last().map(|(id, _)| id) {
-                // Heights, not hashes, define the sequential retained order,
-                // so parent connectivity is also verified in the next loop.
-                let _ = previous_id;
+            if block.hash != frames[(height - 1) as usize].hash {
+                return Err("retained frame differs from full-genesis authenticated oracle".into());
             }
+            if let Some(previous_hash) = &previous_retained {
+                if block.header.parents != [previous_hash.clone()] {
+                    return Err("retained signed replay chain has a parent gap".into());
+                }
+            }
+            previous_retained = Some(block.hash.clone());
             retained.insert(block.hash.clone(), block.header.clone());
             selected_map.insert(block.hash.clone(), Some(block.header.parents[0].clone()));
             if height == PREFIX + 1 {
