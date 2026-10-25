@@ -1021,12 +1021,11 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
             sync.set_sync(true);
             db.write_opt(atomic, &sync).unwrap();
         };
-        let read_branch_state = |
-            db: &DB,
-            chosen_txid: &str,
-            expected_root: &str,
-            expected_bytes: &[u8],
-        | -> Result<(), String> {
+        let read_branch_state = |db: &DB,
+                                 chosen_txid: &str,
+                                 expected_root: &str,
+                                 expected_bytes: &[u8]|
+         -> Result<(), String> {
             check_reopened(db)?;
             let tx = if chosen_txid == winner.transactions[0].txid {
                 &winner.transactions[0]
@@ -1169,8 +1168,11 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
             // Simulate a torn/corrupt *postcommit store*, not a real power-loss
             // write crash: replacing only the selected txid with the old
             // branch must be rejected despite both signatures being valid.
-            db.put(checkpoint_choice_key, winner.transactions[0].txid.as_bytes())
-                .unwrap();
+            db.put(
+                checkpoint_choice_key,
+                winner.transactions[0].txid.as_bytes(),
+            )
+            .unwrap();
             db.flush_wal(true).unwrap();
         }
         {
