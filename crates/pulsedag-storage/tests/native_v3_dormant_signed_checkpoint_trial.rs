@@ -982,5 +982,225 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                 "retarget predecessor unavailable must fail"
             );
         }
+        {
+            // Restore the deliberately deleted oldest window sample before
+            // testing an independent atomic *test-state* change. Both the
+            // chosen and competing native-v3 frames remain in the pruned DB.
+            let db = temporary.open();
+            db.put(
+                signed_fork_frame_key(selected20.last().unwrap()),
+                &encoded[selected20.last().unwrap()],
+            )
+            .unwrap();
+            db.flush_wal(true).unwrap();
+            check_reopened(&db).unwrap();
+        }
+
+        // A hypothetical post-prune branch choice is externally specified by
+        // the test oracle. This is NOT a native-v3 reorg/finality election.
+        // Two settlement snapshots are calculated from the SAME original
+        // independently authenticated test-only funding UTXO, not by applying
+        // a loser transaction on top of already-spent winner funds.
+        let checkpoint_choice_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_TXID";
+        let checkpoint_root_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_ROOT";
+        let checkpoint_coins_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_UTXOS";
+        let snapshot_bytes = |state: &ChainState| {
+            let mut coins: Vec<Utxo> = state.utxo.utxos.values().cloned().collect();
+            coins.sort_by(|a, b| a.outpoint.cmp(&b.outpoint));
+            serde_json::to_vec(&coins).unwrap()
+        };
+        let winner_bytes = snapshot_bytes(&complete_winner);
+        let loser_bytes = snapshot_bytes(&alternative);
+
+        let write_branch_state = |db: &DB, txid: &str, root: &str, coins: &[u8]| {
+            let mut atomic = WriteBatch::default();
+            atomic.put(checkpoint_choice_key, txid.as_bytes());
+            atomic.put(checkpoint_root_key, root.as_bytes());
+            atomic.put(checkpoint_coins_key, coins);
+            let mut sync = WriteOptions::default();
+            sync.set_sync(true);
+            db.write_opt(atomic, &sync).unwrap();
+        };
+        let read_branch_state = |
+            db: &DB,
+            chosen_txid: &str,
+            expected_root: &str,
+            expected_bytes: &[u8],
+        | -> Result<(), String> {
+            check_reopened(db)?;
+            let tx = if chosen_txid == winner.transactions[0].txid {
+                &winner.transactions[0]
+            } else if chosen_txid == loser.transactions[0].txid {
+                &loser.transactions[0]
+            } else {
+                return Err("test-only oracle refuses an unknown signed branch".into());
+            };
+            let selected = db
+                .get(checkpoint_choice_key)
+                .map_err(|error| error.to_string())?
+                .ok_or("committed selected signed transaction missing")?;
+            let root = db
+                .get(checkpoint_root_key)
+                .map_err(|error| error.to_string())?
+                .ok_or("committed signed UTXO root missing")?;
+            let data = db
+                .get(checkpoint_coins_key)
+                .map_err(|error| error.to_string())?
+                .ok_or("committed signed UTXO contents missing")?;
+            if selected.as_ref() != chosen_txid.as_bytes()
+                || root.as_ref() != expected_root.as_bytes()
+                || data.as_ref() != expected_bytes
+            {
+                return Err("atomic branch identity, root, and UTXOs diverged".into());
+            }
+            let coins: Vec<Utxo> =
+                serde_json::from_slice(&data).map_err(|error| error.to_string())?;
+            let mut recovered = funded.clone();
+            recovered.utxo.utxos.clear();
+            recovered.utxo.address_index.clear();
+            for coin in coins {
+                if recovered
+                    .utxo
+                    .utxos
+                    .insert(coin.outpoint.clone(), coin.clone())
+                    .is_some()
+                {
+                    return Err("duplicate output in settled fork snapshot".into());
+                }
+                recovered
+                    .utxo
+                    .address_index
+                    .entry(coin.address.clone())
+                    .or_default()
+                    .push(coin.outpoint.clone());
+            }
+            if recovered
+                .utxo
+                .compute_state_root()
+                .map_err(|error| error.to_string())?
+                != expected_root
+            {
+                return Err("persisted fork UTXO state root invalid".into());
+            }
+            // Recalculate independently from test-only source funding using
+            // genuine chain-bound signature, funds and fee validation.
+            let mut oracle_replay = funded.clone();
+            apply_validated_detached_transfer(&mut oracle_replay, tx, PREFIX + 1)?;
+            if oracle_replay
+                .utxo
+                .compute_state_root()
+                .map_err(|error| error.to_string())?
+                != expected_root
+            {
+                return Err("signed branch not supported by external oracle".into());
+            }
+            let competitor = if tx.txid == winner.transactions[0].txid {
+                &loser.transactions[0]
+            } else {
+                &winner.transactions[0]
+            };
+            if apply_validated_detached_transfer(&mut recovered, competitor, PREFIX + 1).is_ok() {
+                return Err("post-recovery double settlement accepted".into());
+            }
+            if recovered
+                .utxo
+                .compute_state_root()
+                .map_err(|error| error.to_string())?
+                != expected_root
+            {
+                return Err("rejected post-recovery spend mutated economic state".into());
+            }
+            Ok(())
+        };
+        {
+            let db = temporary.open();
+            write_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            );
+        }
+        {
+            let db = temporary.open();
+            read_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            )
+            .unwrap();
+            // A dropped batch may NOT publish the other branch identity, even
+            // if it contained the alternative complete valid UTXO snapshot.
+            let mut abandoned = WriteBatch::default();
+            abandoned.put(checkpoint_choice_key, loser.transactions[0].txid.as_bytes());
+            abandoned.put(checkpoint_root_key, alternative_root.as_bytes());
+            abandoned.put(checkpoint_coins_key, &loser_bytes);
+            drop(abandoned);
+        }
+        {
+            let db = temporary.open();
+            read_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            )
+            .unwrap();
+            // This transition has no consensus authority; it only asserts
+            // that a DIFFERENT externally authenticated trial outcome cannot
+            // partially overwrite the prior durable branch/economic state.
+            write_branch_state(
+                &db,
+                &loser.transactions[0].txid,
+                &alternative_root,
+                &loser_bytes,
+            );
+        }
+        {
+            let db = temporary.open();
+            read_branch_state(
+                &db,
+                &loser.transactions[0].txid,
+                &alternative_root,
+                &loser_bytes,
+            )
+            .unwrap();
+            // Simulate a torn/corrupt *postcommit store*, not a real power-loss
+            // write crash: replacing only the selected txid with the old
+            // branch must be rejected despite both signatures being valid.
+            db.put(checkpoint_choice_key, winner.transactions[0].txid.as_bytes())
+                .unwrap();
+            db.flush_wal(true).unwrap();
+        }
+        {
+            let db = temporary.open();
+            assert!(
+                read_branch_state(
+                    &db,
+                    &loser.transactions[0].txid,
+                    &alternative_root,
+                    &loser_bytes,
+                )
+                .is_err(),
+                "mixed signed-branch identity and root must never replay"
+            );
+            write_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            );
+        }
+        {
+            let db = temporary.open();
+            read_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            )
+            .unwrap();
+        }
     }
 }
