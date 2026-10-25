@@ -238,24 +238,34 @@ fn signed_detached_checkpoint_rejects_unaccounted_surplus_and_preserves_utxo() {
     let original_root = funded.utxo.compute_state_root().unwrap();
     let mut gap = signed_transfer(source.clone(), &key, 500);
     gap.outputs[0].amount -= 1;
-    gap.inputs[0].signature =
-        hex::encode(key.sign(&signing_message_v2(&gap, CHAIN).unwrap()).to_bytes());
+    gap.inputs[0].signature = hex::encode(
+        key.sign(&signing_message_v2(&gap, CHAIN).unwrap())
+            .to_bytes(),
+    );
     gap.txid = compute_txid_v2(&gap, CHAIN).unwrap();
     validate_transaction_v2(&gap, &funded, CHAIN).unwrap();
 
     let mut still_funded = funded.clone();
-    let err = apply_validated_detached_transfer(&mut still_funded, &gap, PREFIX + 1)
-        .unwrap_err();
+    let err = apply_validated_detached_transfer(&mut still_funded, &gap, PREFIX + 1).unwrap_err();
     assert!(err.contains("unaccounted fee/burn gap"));
-    assert_eq!(still_funded.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(
+        still_funded.utxo.compute_state_root().unwrap(),
+        original_root
+    );
     assert_eq!(still_funded.utxo.utxos[&source].amount, 100_000);
 
     // An honest signed transfer still succeeds against the unchanged source.
     let valid = signed_transfer(source, &key, 501);
     apply_validated_detached_transfer(&mut still_funded, &valid, PREFIX + 1).unwrap();
-    assert_ne!(still_funded.utxo.compute_state_root().unwrap(), original_root);
+    assert_ne!(
+        still_funded.utxo.compute_state_root().unwrap(),
+        original_root
+    );
     assert_eq!(still_funded.utxo.utxos.len(), 1);
-    assert_eq!(still_funded.utxo.utxos.values().next().unwrap().amount, 98_900);
+    assert_eq!(
+        still_funded.utxo.utxos.values().next().unwrap().amount,
+        98_900
+    );
 }
 
 #[test]
