@@ -500,3 +500,215 @@ fn preauthenticated_linear_prefix_can_be_pruned_and_trial_resumed_equal_to_full_
     )
     .is_err());
 }
+
+
+/// A second deliberately bounded checkpoint case: one already-authenticated
+/// sibling (a side DAG frontier) shares the checkpoint boundary's height and
+/// parent, then a NEW two-parent merge crosses the prune frontier. Runs both
+/// K=0 (side RED) and K=1 (side BLUE); neither policy is network-approved.
+/// The candidate checkpoint is usable only after byte-for-byte comparison
+/// with a separately frozen full-genesis oracle captured before deletion.
+#[test]
+fn pruned_boundary_with_preserved_competing_side_frontier_matches_full_dag_for_k0_and_k1() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let g = genesis.hash.clone();
+    let mut full_prefix = BTreeMap::from([(g.clone(), genesis.header)]);
+    let mut linear = Vec::new();
+    let mut parent = g.clone();
+    for height in 1..=PREFIX {
+        let (id, header) = mine(
+            vec![parent], height, height,
+            GENESIS_NS + height * 500_000_000,
+            height as u8
+        );
+        full_prefix.insert(id.clone(), header);
+        linear.push(id.clone());
+        parent = id;
+    }
+    let main_boundary = linear.last().unwrap().clone();
+    let pre_boundary_parent = linear[30].clone(); // height 31, retained.
+    let (side, side_header) = mine(
+        vec![pre_boundary_parent.clone()], PREFIX, PREFIX,
+        GENESIS_NS + PREFIX * 500_000_000 + 50_000_000,
+        0xee
+    );
+    assert_ne!(side, main_boundary);
+    full_prefix.insert(side.clone(), side_header);
+    let selected = std::cmp::min(side.clone(), main_boundary.clone());
+    let other = std::cmp::max(side, main_boundary);
+    for trial_k in [0_usize, 1] {
+        // Independently derive the complete pre-trim 2-tip DAG, before
+        // any header is removed from the future resume input.
+        let prefix = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN, GENESIS_NS, &g,
+            &[selected.clone(), other.clone()],
+            &full_prefix, trial_k
+        ).unwrap();
+        assert_eq!(prefix.blocks[&selected].blue_score, PREFIX);
+        assert_eq!(prefix.blocks[&other].blue_score, PREFIX);
+        assert_eq!(prefix.blocks[&selected].blue_work.0[0], PREFIX * 2);
+        assert_eq!(prefix.blocks[&other].blue_work.0[0], PREFIX * 2);
+
+        // Trust anchor is a separate in-memory object, obtained only from
+        // COMPLETE authenticated history. No supplied peer checksum suffices.
+        let captured_selected = prefix.blocks[&selected].clone();
+        let captured_other = prefix.blocks[&other].clone();
+        let selected20: Vec<_> = std::iter::once(selected.clone())
+            .chain(linear.iter().take(31).rev().take(19).cloned())
+            .collect();
+        assert_eq!(selected20.len(), 20);
+        let selected_parents: BTreeMap<_, _> = selected20.iter()
+            .map(|id| (id.clone(), prefix.blocks[id].selected_parent.clone()))
+            .collect();
+        let retained: BTreeMap<_, _> = selected20.iter()
+            .chain(std::iter::once(&other))
+            .map(|id| (id.clone(), full_prefix[id].clone()))
+            .collect();
+        assert_eq!(retained.len(), 21);
+        assert!(!retained.contains_key(&g));
+        assert!(!retained.contains_key(&linear[0]));
+
+        let check_frontier = |headers: &BTreeMap<BlockId, BlockHeaderV3>,
+                              proposed_other: &BlockId,
+                              proposed_selected_meta: &CandidateBlockMetadata,
+                              proposed_other_meta: &CandidateBlockMetadata|
+         -> Result<(), String> {
+            if headers.len() != 21
+                || proposed_other != &other
+                || proposed_selected_meta != &captured_selected
+                || proposed_other_meta != &captured_other
+                || selected20.iter().any(|id| !headers.contains_key(id))
+            {
+                return Err("checkpoint boundary/frontier differs from preauthenticated source".into());
+            }
+            let h = headers.get(proposed_other).ok_or("side header missing")?;
+            if h.parents != [pre_boundary_parent.clone()]
+                || h.blue_score != PREFIX
+                || h.height != PREFIX
+                || h.difficulty != BITS
+                || !headers.contains_key(&pre_boundary_parent)
+            {
+                return Err("required crossing-boundary parent witness absent".into());
+            }
+            for (hash, header) in headers {
+                if compute_block_hash_v3(header, CHAIN).map_err(|e| e.to_string())? != *hash
+                    || verify_v3_header_pow(header, CHAIN).is_err()
+                {
+                    return Err("invalid retained authentic KHeavyHash context".into());
+                }
+            }
+            Ok(())
+        };
+        check_frontier(&retained, &other, &captured_selected, &captured_other).unwrap();
+
+        let (join, join_header) = mine(
+            vec![selected.clone(), other.clone()], PREFIX + 1,
+            PREFIX + 1 + trial_k as u64,
+            GENESIS_NS + (PREFIX + 1) * 500_000_000,
+            0xc8 + trial_k as u8
+        );
+        let (child, child_header) = mine(
+            vec![join.clone()], PREFIX + 2,
+            PREFIX + 2 + trial_k as u64,
+            GENESIS_NS + (PREFIX + 2) * 500_000_000,
+            0xd8 + trial_k as u8
+        );
+        let mut all = full_prefix.clone();
+        all.insert(join.clone(), join_header.clone());
+        all.insert(child.clone(), child_header.clone());
+        let full = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&child), &all, trial_k
+        ).unwrap();
+        let expected_merge_blues = if trial_k == 0 { vec![] } else { vec![other.clone()] };
+        let expected_merge_reds = if trial_k == 0 { vec![other.clone()] } else { vec![] };
+        assert_eq!(full.blocks[&join].selected_parent.as_deref(), Some(selected.as_str()));
+        assert_eq!(full.blocks[&join].merge_blues, expected_merge_blues);
+        assert_eq!(full.blocks[&join].merge_reds, expected_merge_reds);
+        assert_eq!(full.blocks[&join].blue_score, PREFIX + 1 + trial_k as u64);
+        assert_eq!(full.blocks[&join].blue_work.0[0], (PREFIX + 1 + trial_k as u64) * 2);
+        assert_eq!(full.blocks[&child].blue_score, PREFIX + 2 + trial_k as u64);
+        assert_eq!(full.blocks[&child].blue_work.0[0], (PREFIX + 2 + trial_k as u64) * 2);
+
+        // Independent checkpoint continuation (not running the whole-DAG
+        // candidate verifier on cut history); it keeps the side frontier
+        // whether RED or BLUE rather than silently dropping its effects.
+        let mut retained_and_new = retained.clone();
+        retained_and_new.insert(join.clone(), join_header.clone());
+        retained_and_new.insert(child.clone(), child_header.clone());
+        let mut resumed_selection = selected_parents.clone();
+        resumed_selection.insert(other.clone(), Some(pre_boundary_parent.clone()));
+        resumed_selection.insert(join.clone(), Some(selected.clone()));
+        resumed_selection.insert(child.clone(), Some(join.clone()));
+        let restored_window = selected_parent_retarget_window_v3_ns(
+            CHAIN, &child, &retained_and_new, &resumed_selection
+        ).unwrap();
+        let full_selection: BTreeMap<_, _> = full.blocks.iter()
+            .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
+            .collect();
+        let unpruned_window = selected_parent_retarget_window_v3_ns(
+            CHAIN, &child, &all, &full_selection
+        ).unwrap();
+        assert_eq!(restored_window, unpruned_window);
+        assert_eq!(
+            expected_difficulty_for_v3_window_ns(&restored_window).unwrap(),
+            expected_difficulty_for_v3_window_ns(&unpruned_window).unwrap()
+        );
+
+        let mut snapshot = PreviewSet::new();
+        for id in linear.iter().take(31).chain(std::iter::once(&selected)) {
+            snapshot = append_hypothetical_reward(
+                &snapshot, id, &full_prefix[id], PREFIX.min(full_prefix[id].height)
+            );
+        }
+        let independently_captured_root = state_root(&snapshot);
+        assert_ne!(independently_captured_root, state_root(&PreviewSet::new()));
+        let mut resumed = snapshot;
+        for (id, score) in [
+            (other.clone(), PREFIX), (join.clone(), PREFIX + 1 + trial_k as u64),
+            (child.clone(), PREFIX + 2 + trial_k as u64)
+        ] {
+            resumed = append_hypothetical_reward(&resumed, &id, &all[&id], score);
+        }
+
+        let order = preview_unapproved_native_v3_order(
+            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&child), &all, trial_k
+        ).unwrap();
+        let mut from_genesis = PreviewSet::new();
+        for id in order.ordered_blocks.iter().filter(|id| *id != &g) {
+            from_genesis = append_hypothetical_reward(
+                &from_genesis, id, &all[id], full.blocks[id].blue_score
+            );
+        }
+        assert_eq!(state_root(&resumed), state_root(&from_genesis));
+        assert_eq!(fingerprint(&resumed), fingerprint(&from_genesis));
+        assert_eq!(total_supply(&resumed).unwrap(), total_supply(&from_genesis).unwrap());
+
+        assert!(derive_dormant_native_v3_ghostdag_trial(
+            CHAIN, GENESIS_NS, &g, std::slice::from_ref(&child),
+            &retained_and_new, trial_k
+        ).is_err(), "full-genesis verifier must reject pruned ancestor closure");
+
+        let mut omitted = retained.clone();
+        omitted.remove(&other);
+        assert!(check_frontier(&omitted, &other, &captured_selected, &captured_other).is_err());
+        let mut missing_parent = retained.clone();
+        missing_parent.remove(&pre_boundary_parent);
+        assert!(check_frontier(&missing_parent, &other, &captured_selected, &captured_other).is_err());
+        let mut changed = retained.clone();
+        changed.get_mut(&other).unwrap().nonce ^= 1;
+        assert!(check_frontier(&changed, &other, &captured_selected, &captured_other).is_err());
+        let mut forged = captured_other.clone();
+        forged.blue_work.0[0] += 2;
+        assert!(check_frontier(&retained, &other, &captured_selected, &forged).is_err());
+
+        // A newly received real-PoW side branch based on a PRUNED ancestor
+        // is NOT authorized by a retained tip-only frontier.
+        let (old_fork, old_header) = mine(
+            vec![linear[3].clone()], 5, 5,
+            GENESIS_NS + 5 * 500_000_000 + 100_000_000, 0xf7
+        );
+        let mut without_old_past = retained.clone();
+        without_old_past.insert(old_fork, old_header);
+        assert!(check_frontier(&without_old_past, &other, &captured_selected, &captured_other).is_err());
+    }
+}
