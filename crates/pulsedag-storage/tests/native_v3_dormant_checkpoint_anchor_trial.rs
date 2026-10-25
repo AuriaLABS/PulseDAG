@@ -156,8 +156,9 @@ fn read_with_external_trust(
         || manifest.genesis_hash != trusted_genesis_hash
         || independently_rebuilt_genesis.hash != trusted_genesis_hash
         || manifest.externally_pinned_tip != trusted_tip_hash
-        || manifest.retained_block_hashes.len() != 2
-        || manifest.retained_block_hashes[1] != trusted_tip_hash
+        || manifest.retained_block_hashes.is_empty()
+        || manifest.retained_block_hashes.len() > 2
+        || manifest.retained_block_hashes.last().map(String::as_str) != Some(trusted_tip_hash)
         || manifest.claimed_empty_v3_utxo_root
             != UtxoState::default()
                 .compute_state_root()
@@ -168,7 +169,7 @@ fn read_with_external_trust(
 
     let mut encoded = Vec::new();
     let mut prior_hash = trusted_genesis_hash.to_owned();
-    for slot in 0..2 {
+    for slot in 0..manifest.retained_block_hashes.len() {
         let raw = db
             .get(frame_key(slot))
             .map_err(|e| e.to_string())?
@@ -325,5 +326,106 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
             read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash).is_err(),
             "missing required signed PoW predecessor must fail closed"
         );
+    }
+}
+
+
+/// A checkpoint signed by the REAL test fixture authority can STILL be stale.
+/// Its Ed25519 signature is mathematically genuine; it becomes unacceptable
+/// only because an independently trusted current-tip reference moved forward.
+/// If a caller voluntarily trusts the older tip again, the signature alone
+/// cannot prevent rollback. This is NOT v3 economic finality/freshness proof.
+#[test]
+fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_pin() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine_child(&genesis, 1);
+    let second = mine_child(&first, 2);
+    let frames: Vec<Vec<u8>> = [&first, &second]
+        .iter()
+        .map(|envelope| {
+            NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+                (*envelope).clone(),
+                CHAIN,
+                GENESIS_NS,
+                &genesis.hash,
+            )
+            .unwrap()
+            .encode_verified(CHAIN, GENESIS_NS, &genesis.hash)
+            .unwrap()
+        })
+        .collect();
+
+    let signer = SigningKey::from_bytes(&[73; 32]);
+    let pinned = signer.verifying_key();
+    let old_manifest = TrialManifest {
+        schema_version: 1,
+        chain_id: CHAIN.to_owned(),
+        frozen_genesis_ns: GENESIS_NS,
+        genesis_hash: genesis.hash.clone(),
+        externally_pinned_tip: first.hash.clone(),
+        retained_block_hashes: vec![first.hash.clone()],
+        retained_frame_digest: digest_frames(&frames[..1]),
+        claimed_empty_v3_utxo_root: UtxoState::default().compute_state_root().unwrap(),
+    };
+    let new_manifest = TrialManifest {
+        externally_pinned_tip: second.hash.clone(),
+        retained_block_hashes: vec![first.hash.clone(), second.hash.clone()],
+        retained_frame_digest: digest_frames(&frames),
+        ..old_manifest.clone()
+    };
+    let old_bytes = serde_json::to_vec(&old_manifest).unwrap();
+    let new_bytes = serde_json::to_vec(&new_manifest).unwrap();
+    let old_sig = signer.sign(&sign_message(&old_bytes)).to_bytes();
+    let new_sig = signer.sign(&sign_message(&new_bytes)).to_bytes();
+    let disk = DisposableDb::new();
+
+    {
+        let db = disk.open();
+        let mut batch = WriteBatch::default();
+        batch.put(frame_key(0), &frames[0]);
+        batch.put(MANIFEST_KEY, &old_bytes);
+        batch.put(SIGNATURE_KEY, old_sig);
+        let mut sync = WriteOptions::default();
+        sync.set_sync(true);
+        db.write_opt(batch, &sync).unwrap();
+    }
+    {
+        let db = disk.open();
+        // A historically correct checkpoint passes against its *then-current*
+        // externally trusted first tip, never against an unseen later tip.
+        read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).unwrap();
+        assert!(
+            read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).is_err()
+        );
+        let mut batch = WriteBatch::default();
+        batch.put(frame_key(1), &frames[1]);
+        batch.put(MANIFEST_KEY, &new_bytes);
+        batch.put(SIGNATURE_KEY, new_sig);
+        let mut sync = WriteOptions::default();
+        sync.set_sync(true);
+        db.write_opt(batch, &sync).unwrap();
+    }
+    {
+        let db = disk.open();
+        // External reference now advances and explicitly refuses older tips.
+        read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).unwrap();
+        assert!(read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).is_err());
+        let mut batch = WriteBatch::default();
+        batch.put(MANIFEST_KEY, &old_bytes);
+        batch.put(SIGNATURE_KEY, old_sig);
+        batch.delete(frame_key(1));
+        let mut sync = WriteOptions::default();
+        sync.set_sync(true);
+        db.write_opt(batch, &sync).unwrap();
+    }
+    {
+        let db = disk.open();
+        assert!(
+            read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).is_err(),
+            "a genuinely signed old checkpoint must not override a newer externally trusted tip"
+        );
+        // This intentionally succeeds to demonstrate that a signature and
+        // genesis match ALONE provide no durable high-watermark or finality.
+        read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).unwrap();
     }
 }
