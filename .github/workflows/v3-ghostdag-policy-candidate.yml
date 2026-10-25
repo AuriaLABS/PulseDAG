@@ -155,7 +155,7 @@ jobs:
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-rocksdb-atomic-checkpoint.log
           cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_atomic_checkpoint_trial -- -D warnings
           cargo test --locked -p pulsedag-storage --test native_v3_dormant_signed_checkpoint_trial -- --nocapture | tee /tmp/native-v3-signed-checkpoint.log
-          grep -Fq 'test result: ok. 3 passed; 0 failed;' /tmp/native-v3-signed-checkpoint.log
+          grep -Fq 'test result: ok. 4 passed; 0 failed;' /tmp/native-v3-signed-checkpoint.log
           cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_signed_checkpoint_trial -- -D warnings
       - name: Archive exact-run local profiling evidence (not network benchmark)
         if: always()
