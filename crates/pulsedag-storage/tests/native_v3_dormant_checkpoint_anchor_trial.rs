@@ -329,7 +329,6 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
     }
 }
 
-
 /// A checkpoint signed by the REAL test fixture authority can STILL be stale.
 /// Its Ed25519 signature is mathematically genuine; it becomes unacceptable
 /// only because an independently trusted current-tip reference moved forward.
@@ -394,9 +393,7 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
         // A historically correct checkpoint passes against its *then-current*
         // externally trusted first tip, never against an unseen later tip.
         read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).unwrap();
-        assert!(
-            read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).is_err()
-        );
+        assert!(read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).is_err());
         let mut batch = WriteBatch::default();
         batch.put(frame_key(1), &frames[1]);
         batch.put(MANIFEST_KEY, &new_bytes);
