@@ -28,7 +28,7 @@ CASES = {
 }
 PATTERN = re.compile(
     r"(?m)^NATIVE_V3_PERF_PROBE scope=local_not_network "
-    r"case=(?P<case>[a-z0-9_]+) "
+    r"case=(?P<case>[A-Za-z0-9_]+) "
     r"headers=(?P<headers>[0-9]+) K=(?P<k>[0-9]+) "
     r"samples_us=\[(?P<samples>[0-9,\s]+)\] "
     r"median_wall_us=(?P<median>[0-9]+) "
