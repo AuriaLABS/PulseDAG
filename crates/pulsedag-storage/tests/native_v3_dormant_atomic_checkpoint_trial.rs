@@ -407,7 +407,6 @@ fn atomic_rocksdb_trial_snapshot_and_prune_matches_complete_v3_dag_oracle() {
     }
 }
 
-
 /// TEST ONLY; supports one diagnostic three-way shape, not arbitrary persisted
 /// checkpoints. A later independently verified full-genesis oracle is retained
 /// exclusively in the test process and never reconstructed from stored bytes.
@@ -453,8 +452,11 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
     let full_linear = full_history_oracle();
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
     assert_eq!(genesis.hash, full_linear.genesis);
-    let linear: Vec<BlockEnvelopeV3> = full_linear.records.iter()
-        .map(|r| r.envelope().clone()).collect();
+    let linear: Vec<BlockEnvelopeV3> = full_linear
+        .records
+        .iter()
+        .map(|r| r.envelope().clone())
+        .collect();
     let other_at_boundary = mine_side_or_rejoin(&[linear[24].clone()], 26, 26, 0xa3);
     assert_ne!(other_at_boundary.hash, linear[25].hash);
     let (winner, loser) = if linear[25].hash < other_at_boundary.hash {
@@ -465,7 +467,10 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
 
     for k in [0_usize, 1] {
         let joined = mine_side_or_rejoin(
-            &[winner.clone(), loser.clone()], 27, 27 + k as u64, 0xb3 + k as u8
+            &[winner.clone(), loser.clone()],
+            27,
+            27 + k as u64,
+            0xb3 + k as u8,
         );
         let child = mine_side_or_rejoin(&[joined.clone()], 28, 28 + k as u64, 0xc3 + k as u8);
 
@@ -476,33 +481,73 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
         }
         assert_eq!(records.len(), FULL_HEIGHT + 3);
         let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header.clone())]);
-        headers.extend(records.iter().map(|(id, envelope)| (id.clone(), envelope.header.clone())));
+        headers.extend(
+            records
+                .iter()
+                .map(|(id, envelope)| (id.clone(), envelope.header.clone())),
+        );
         let verified = derive_dormant_native_v3_ghostdag_trial(
-            CHAIN, GENESIS_NS, &genesis.hash, std::slice::from_ref(&child.hash), &headers, k
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&child.hash),
+            &headers,
+            k,
+        )
+        .unwrap();
         assert_eq!(verified.blocks.len(), FULL_HEIGHT + 4);
         let selected_meta = &verified.blocks[&joined.hash];
         assert_eq!(selected_meta.selected_parent.as_ref(), Some(&winner.hash));
-        assert_eq!(selected_meta.merge_blues, if k == 1 { vec![loser.hash.clone()] } else { vec![] });
-        assert_eq!(selected_meta.merge_reds, if k == 0 { vec![loser.hash.clone()] } else { vec![] });
+        assert_eq!(
+            selected_meta.merge_blues,
+            if k == 1 {
+                vec![loser.hash.clone()]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(
+            selected_meta.merge_reds,
+            if k == 0 {
+                vec![loser.hash.clone()]
+            } else {
+                vec![]
+            }
+        );
         assert_eq!(selected_meta.blue_work.0[0], (27 + k as u64) * 2);
-        assert_eq!(verified.blocks[&child.hash].blue_work.0[0], (28 + k as u64) * 2);
+        assert_eq!(
+            verified.blocks[&child.hash].blue_work.0[0],
+            (28 + k as u64) * 2
+        );
         assert_eq!(verified.blocks[&child.hash].blue_score, 28 + k as u64);
 
         let ordered = trial_order_preview::preview_unapproved_native_v3_order(
-            CHAIN, GENESIS_NS, &genesis.hash, std::slice::from_ref(&child.hash), &headers, k
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&child.hash),
+            &headers,
+            k,
+        )
+        .unwrap();
         assert_eq!(ordered.ordered_blocks.len(), FULL_HEIGHT + 4);
-        let detached_coins: Vec<Utxo> = ordered.ordered_blocks.iter()
+        let detached_coins: Vec<Utxo> = ordered
+            .ordered_blocks
+            .iter()
             .filter(|id| *id != &genesis.hash)
             .map(|id| {
                 let block = &records[id];
                 Utxo {
-                    outpoint: OutPoint { txid: id.clone(), index: 0 },
+                    outpoint: OutPoint {
+                        txid: id.clone(),
+                        index: 0,
+                    },
                     address: format!("TEST-NOT-SPENDABLE-{id}"),
                     amount: subsidy_atoms_for_score(
-                        verified.blocks[id].blue_score, &PRODUCTION_CADENCE_V3
-                    ).unwrap(),
+                        verified.blocks[id].blue_score,
+                        &PRODUCTION_CADENCE_V3,
+                    )
+                    .unwrap(),
                     coinbase: true,
                     height: block.header.height,
                 }
@@ -510,11 +555,14 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
             .collect();
         let (expected_root, expected_supply) = reconstructed_state(&detached_coins).unwrap();
 
-        let selected_map: BTreeMap<_, _> = verified.blocks.iter()
-            .map(|(id, m)| (id.clone(), m.selected_parent.clone())).collect();
-        let full_window = selected_parent_retarget_window_v3_ns(
-            CHAIN, &child.hash, &headers, &selected_map
-        ).unwrap();
+        let selected_map: BTreeMap<_, _> = verified
+            .blocks
+            .iter()
+            .map(|(id, m)| (id.clone(), m.selected_parent.clone()))
+            .collect();
+        let full_window =
+            selected_parent_retarget_window_v3_ns(CHAIN, &child.hash, &headers, &selected_map)
+                .unwrap();
         assert_eq!(full_window.len(), KEEP);
         let full_retarget = expected_difficulty_for_v3_window_ns(&full_window).unwrap();
         let mut tip_first = Vec::new();
@@ -550,12 +598,20 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
         });
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let economic_bytes = serde_json::to_vec(&detached_coins).unwrap();
-        let all_encoded: BTreeMap<BlockId, Vec<u8>> = records.iter()
+        let all_encoded: BTreeMap<BlockId, Vec<u8>> = records
+            .iter()
             .map(|(id, envelope)| {
                 let r = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-                    envelope.clone(), CHAIN, GENESIS_NS, &genesis.hash
-                ).unwrap();
-                (id.clone(), r.encode_verified(CHAIN, GENESIS_NS, &genesis.hash).unwrap())
+                    envelope.clone(),
+                    CHAIN,
+                    GENESIS_NS,
+                    &genesis.hash,
+                )
+                .unwrap();
+                (
+                    id.clone(),
+                    r.encode_verified(CHAIN, GENESIS_NS, &genesis.hash).unwrap(),
+                )
             })
             .collect();
         let disk = DisposableDb::new();
@@ -592,25 +648,40 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
             db.write_opt(batch, &sync).unwrap();
         }
         let check_after_reopen = |db: &DB| -> Result<(), String> {
-            let persisted_manifest = db.get(manifest_key).map_err(|e| e.to_string())?
+            let persisted_manifest = db
+                .get(manifest_key)
+                .map_err(|e| e.to_string())?
                 .ok_or("missing independent checkpoint manifest")?;
-            let persisted_economic = db.get(economic_key).map_err(|e| e.to_string())?
+            let persisted_economic = db
+                .get(economic_key)
+                .map_err(|e| e.to_string())?
                 .ok_or("missing economic snapshot")?;
             if persisted_manifest != manifest_bytes || persisted_economic != economic_bytes {
-                return Err("stored manifest or detached preview differs from preauthenticated oracle".into());
+                return Err(
+                    "stored manifest or detached preview differs from preauthenticated oracle"
+                        .into(),
+                );
             }
-            let decoded_coins: Vec<Utxo> = serde_json::from_slice(&persisted_economic)
-                .map_err(|e| e.to_string())?;
+            let decoded_coins: Vec<Utxo> =
+                serde_json::from_slice(&persisted_economic).map_err(|e| e.to_string())?;
             if reconstructed_state(&decoded_coins)? != (expected_root.clone(), expected_supply) {
-                return Err("after-prune UTXO snapshot root/supply differs from full replay".into());
+                return Err(
+                    "after-prune UTXO snapshot root/supply differs from full replay".into(),
+                );
             }
             let mut bounded = BTreeMap::new();
             for id in &retained {
-                let raw = db.get(frontier_key(id)).map_err(|e| e.to_string())?
+                let raw = db
+                    .get(frontier_key(id))
+                    .map_err(|e| e.to_string())?
                     .ok_or("missing retained authentic side or selected header")?;
                 let verified_record = NativeV3EnvelopeRestoreRecordV1::decode_verified(
-                    &raw, CHAIN, GENESIS_NS, &genesis.hash
-                ).map_err(|e| e.to_string())?;
+                    &raw,
+                    CHAIN,
+                    GENESIS_NS,
+                    &genesis.hash,
+                )
+                .map_err(|e| e.to_string())?;
                 if verified_record.envelope().hash != *id {
                     return Err("stored header identity mismatches preauthenticated ID".into());
                 }
@@ -623,28 +694,46 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
             // sample; the side-parent and two-parent join remain fully linked.
             for (id, header) in &bounded {
                 if id != tip_first.last().unwrap()
-                    && header.parents.iter().any(|parent| !bounded.contains_key(parent))
+                    && header
+                        .parents
+                        .iter()
+                        .any(|parent| !bounded.contains_key(parent))
                 {
                     return Err("required retained DAG parent was pruned".into());
                 }
             }
-            let bounded_selection: BTreeMap<_, _> = selected_map.iter()
+            let bounded_selection: BTreeMap<_, _> = selected_map
+                .iter()
                 .filter(|(id, _)| bounded.contains_key(*id))
                 .map(|(id, chosen)| (id.clone(), chosen.clone()))
                 .collect();
             let resumed_window = selected_parent_retarget_window_v3_ns(
-                CHAIN, &child.hash, &bounded, &bounded_selection
-            ).map_err(|e| e.to_string())?;
-            if resumed_window != full_window ||
-                expected_difficulty_for_v3_window_ns(&resumed_window)
-                    .map_err(|e| e.to_string())? != full_retarget
+                CHAIN,
+                &child.hash,
+                &bounded,
+                &bounded_selection,
+            )
+            .map_err(|e| e.to_string())?;
+            if resumed_window != full_window
+                || expected_difficulty_for_v3_window_ns(&resumed_window)
+                    .map_err(|e| e.to_string())?
+                    != full_retarget
             {
                 return Err("cross-prune native-v3 retarget changed".into());
             }
             if derive_dormant_native_v3_ghostdag_trial(
-                CHAIN, GENESIS_NS, &genesis.hash, std::slice::from_ref(&child.hash), &bounded, k
-            ).is_ok() {
-                return Err("pruned history improperly accepted by full-genesis DAG verifier".into());
+                CHAIN,
+                GENESIS_NS,
+                &genesis.hash,
+                std::slice::from_ref(&child.hash),
+                &bounded,
+                k,
+            )
+            .is_ok()
+            {
+                return Err(
+                    "pruned history improperly accepted by full-genesis DAG verifier".into(),
+                );
             }
             Ok(())
         };
@@ -660,36 +749,52 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
         }
         {
             let db = disk.open();
-            assert!(check_after_reopen(&db).is_err(), "lost RED/BLUE frontier must fail closed");
-            db.put(frontier_key(&loser.hash), &all_encoded[&loser.hash]).unwrap();
+            assert!(
+                check_after_reopen(&db).is_err(),
+                "lost RED/BLUE frontier must fail closed"
+            );
+            db.put(frontier_key(&loser.hash), &all_encoded[&loser.hash])
+                .unwrap();
             db.delete(frontier_key(tip_first.last().unwrap())).unwrap();
             db.flush_wal(true).unwrap();
         }
         {
             let db = disk.open();
-            assert!(check_after_reopen(&db).is_err(), "lost retarget sample must fail closed");
+            assert!(
+                check_after_reopen(&db).is_err(),
+                "lost retarget sample must fail closed"
+            );
             db.put(
                 frontier_key(tip_first.last().unwrap()),
-                &all_encoded[tip_first.last().unwrap()]
-            ).unwrap();
+                &all_encoded[tip_first.last().unwrap()],
+            )
+            .unwrap();
             let mut forged_manifest: serde_json::Value =
                 serde_json::from_slice(&manifest_bytes).unwrap();
             forged_manifest["blue_work_limbs"][0] = serde_json::json!(0);
-            db.put(manifest_key, serde_json::to_vec(&forged_manifest).unwrap()).unwrap();
+            db.put(manifest_key, serde_json::to_vec(&forged_manifest).unwrap())
+                .unwrap();
             db.flush_wal(true).unwrap();
         }
         {
             let db = disk.open();
-            assert!(check_after_reopen(&db).is_err(), "untrusted work cannot self-certify");
+            assert!(
+                check_after_reopen(&db).is_err(),
+                "untrusted work cannot self-certify"
+            );
             db.put(manifest_key, &manifest_bytes).unwrap();
             let mut tampered_coins: Vec<Utxo> = serde_json::from_slice(&economic_bytes).unwrap();
             tampered_coins[0].amount += 1;
-            db.put(economic_key, serde_json::to_vec(&tampered_coins).unwrap()).unwrap();
+            db.put(economic_key, serde_json::to_vec(&tampered_coins).unwrap())
+                .unwrap();
             db.flush_wal(true).unwrap();
         }
         {
             let db = disk.open();
-            assert!(check_after_reopen(&db).is_err(), "tampered preview UTXO must fail");
+            assert!(
+                check_after_reopen(&db).is_err(),
+                "tampered preview UTXO must fail"
+            );
         }
     }
 }
