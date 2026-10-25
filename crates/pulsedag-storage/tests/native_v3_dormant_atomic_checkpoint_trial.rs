@@ -472,7 +472,12 @@ fn atomic_prune_restores_authentic_two_parent_frontier_for_k0_red_and_k1_blue() 
             27 + k as u64,
             0xb3 + k as u8,
         );
-        let child = mine_side_or_rejoin(std::slice::from_ref(&joined), 28, 28 + k as u64, 0xc3 + k as u8);
+        let child = mine_side_or_rejoin(
+            std::slice::from_ref(&joined),
+            28,
+            28 + k as u64,
+            0xc3 + k as u8,
+        );
 
         let mut records: BTreeMap<BlockId, BlockEnvelopeV3> =
             linear.iter().map(|b| (b.hash.clone(), b.clone())).collect();
