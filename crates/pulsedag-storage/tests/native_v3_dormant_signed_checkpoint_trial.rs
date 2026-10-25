@@ -17,8 +17,7 @@ use pulsedag_core::{
     address_from_public_key,
     block_envelope_v3::{build_block_envelope_v3, BlockEnvelopeV3},
     compute_txid_v2,
-    genesis::init_chain_state,
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    genesis_v3::{dormant_native_genesis_envelope_v3_ns, init_chain_state_v3},
     header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     pow_v3::evaluate_v3_header_pow,
@@ -92,6 +91,17 @@ fn mine(parent: &BlockEnvelopeV3, height: u64, transactions: Vec<Transaction>) -
     panic!("diagnostic easy-target PoW fixture did not find a nonce");
 }
 
+/// Native-v3 zero-allocation genesis economic-state fixture. The separate
+/// nanosecond BlockEnvelopeV3 identity is validated by the PoW/DAG tests;
+/// this state constructor is for v3's initially EMPTY economic state only.
+fn empty_v3_test_state() -> ChainState {
+    let state = init_chain_state_v3(CHAIN.to_owned(), GENESIS_NS / 1_000_000_000).unwrap();
+    assert!(state.utxo.utxos.is_empty());
+    assert!(state.utxo.address_index.is_empty());
+    assert!(!state.contracts.config.enabled);
+    state
+}
+
 fn funding_state() -> (ChainState, OutPoint, SigningKey) {
     let signing_key = SigningKey::from_bytes(&[27_u8; 32]);
     let public_key = hex::encode(signing_key.verifying_key().to_bytes());
@@ -100,13 +110,9 @@ fn funding_state() -> (ChainState, OutPoint, SigningKey) {
         txid: "TEST_ONLY_NON_GENESIS_NON_COINBASE_EXTERNAL_FUNDING".into(),
         index: 0,
     };
-    let mut state = init_chain_state(CHAIN.to_owned());
-    // init_chain_state provides the LEGACY v1 treasury. It is NOT the zero-
-    // allocation v3 genesis: discard its UTXOs before seeding this private
-    // externally authenticated test-only non-coinbase funding state.
-    state.utxo.utxos.clear();
-    state.utxo.address_index.clear();
-    assert!(state.utxo.utxos.is_empty());
+    // Explicitly inject TEST funding only after constructing zero-allocation
+    // native-v3 economic state. No legacy treasury is present even briefly.
+    let mut state = empty_v3_test_state();
     state.utxo.utxos.insert(
         outpoint.clone(),
         Utxo {
@@ -232,6 +238,27 @@ fn apply_validated_detached_transfer(
 /// The real v2 validator allows inputs > outputs + the declared fee. Never
 /// use that to silently burn uncommitted surplus in the checkpoint preview;
 /// reject despite valid signature and txid, and leave the UTXO unchanged.
+/// Signed chain-bound v2 transactions cannot spend from the real v3
+/// zero-allocation initial state: test funding is ONLY an explicit fixture.
+/// This checks both validator fail-closed behavior and zero mutation.
+#[test]
+fn zero_allocation_v3_test_start_cannot_accept_synthetic_funding_without_seed() {
+    let mut initially_empty = empty_v3_test_state();
+    let pristine_root = initially_empty.utxo.compute_state_root().unwrap();
+    let (seeded, external_outpoint, signer) = funding_state();
+    assert_ne!(seeded.utxo.compute_state_root().unwrap(), pristine_root);
+    let signed = signed_transfer(external_outpoint, &signer, 201);
+    assert!(validate_transaction_v2(&signed, &initially_empty, CHAIN).is_err());
+    assert!(apply_validated_detached_transfer(&mut initially_empty, &signed, PREFIX + 1).is_err());
+    assert!(initially_empty.utxo.utxos.is_empty());
+    assert!(initially_empty.utxo.address_index.is_empty());
+    assert_eq!(initially_empty.utxo.compute_state_root().unwrap(), pristine_root);
+
+    let mut explicitly_seeded = seeded;
+    apply_validated_detached_transfer(&mut explicitly_seeded, &signed, PREFIX + 1).unwrap();
+    assert_ne!(explicitly_seeded.utxo.compute_state_root().unwrap(), pristine_root);
+}
+
 #[test]
 fn signed_detached_checkpoint_rejects_unaccounted_surplus_and_preserves_utxo() {
     let (funded, source, key) = funding_state();
@@ -403,9 +430,7 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
             return Err("external UTXO snapshot was altered".into());
         }
         let coins: Vec<Utxo> = serde_json::from_slice(&snapshot).map_err(|e| e.to_string())?;
-        let mut reconstructed = init_chain_state(CHAIN.to_owned());
-        reconstructed.utxo.utxos.clear();
-        reconstructed.utxo.address_index.clear();
+        let mut reconstructed = empty_v3_test_state();
         for coin in coins {
             if reconstructed
                 .utxo
@@ -865,9 +890,7 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                 return Err("fork trust boundary differs from preauthenticated oracle".into());
             }
 
-            let mut replay = init_chain_state(CHAIN.to_owned());
-            replay.utxo.utxos.clear();
-            replay.utxo.address_index.clear();
+            let mut replay = empty_v3_test_state();
             let coins: Vec<Utxo> =
                 serde_json::from_slice(&persisted_seed).map_err(|e| e.to_string())?;
             for coin in coins {
@@ -1119,9 +1142,7 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
             }
             let coins: Vec<Utxo> =
                 serde_json::from_slice(&data).map_err(|error| error.to_string())?;
-            let mut recovered = funded.clone();
-            recovered.utxo.utxos.clear();
-            recovered.utxo.address_index.clear();
+            let mut recovered = empty_v3_test_state();
             for coin in coins {
                 if recovered
                     .utxo
