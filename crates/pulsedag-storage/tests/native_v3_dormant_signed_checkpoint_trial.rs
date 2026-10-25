@@ -368,7 +368,7 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         let mut retained = BTreeMap::new();
         let mut selected_map = BTreeMap::new();
         let mut transactions = Vec::new();
-        let mut previous_retained = None;
+        let mut previous_retained: Option<String> = None;
         let first_kept = PREFIX + 2 - KEEP;
         for height in first_kept..=PREFIX + 1 {
             let bytes = db
