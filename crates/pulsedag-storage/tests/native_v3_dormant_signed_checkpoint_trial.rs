@@ -506,3 +506,368 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         );
     }
 }
+
+
+/// Additional TEST-ONLY parent-DAG fixture. K and transaction ordering are not
+/// approved. PoW and canonical signed-v2 Merkle commitments are genuine.
+fn mine_two_parent_join(
+    parents: &[BlockEnvelopeV3],
+    height: u64,
+    score: u64,
+    tag: u64,
+) -> BlockEnvelopeV3 {
+    let mut hashes: Vec<String> = parents.iter().map(|parent| parent.hash.clone()).collect();
+    hashes.sort();
+    let mut header = BlockHeaderV3 {
+        version: BLOCK_HEADER_VERSION_V3,
+        parents: hashes,
+        timestamp_ns: GENESIS_NS + height * 500_000_000 + tag * 10_000,
+        difficulty: parents[0].header.difficulty,
+        nonce: 0,
+        merkle_root: compute_merkle_root(&[]),
+        state_root: "ab".repeat(32), // Not the validated UTXO root.
+        blue_score: score,
+        height,
+    };
+    for nonce in 0..4096_u64 {
+        header.nonce = nonce;
+        if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+            return build_block_envelope_v3(CHAIN, header, vec![]).unwrap();
+        }
+    }
+    panic!("easy PoW test fixture exhausted");
+}
+
+fn signed_fork_frame_key(hash: &str) -> Vec<u8> {
+    format!("__TEST_ONLY_SIGNED_V3_COMPETING_DAG_FRAME_{hash}").into_bytes()
+}
+
+/// A parent-DAG test of two *individually valid*, mutually conflicting signed
+/// v2 spends in competing PoW-valid v3 blocks. This test makes NO decision
+/// about eventual native-v3 blue/red monetary inclusion, fee payout, finality,
+/// rollback policy or canonical ordering. The selected-parent-FIRST choice is
+/// an explicit isolated hypothesis used only to prove fail-closed double-spend
+/// behavior after persistence, pruning, and RocksDB reopen.
+#[test]
+fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settlement() {
+    use std::collections::BTreeSet;
+
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let (funded, funding_id, signing_key) = funding_state();
+    let initial_root = funded.utxo.compute_state_root().unwrap();
+    let funding_coins: Vec<Utxo> = funded.utxo.utxos.values().cloned().collect();
+    let funding_bytes = serde_json::to_vec(&funding_coins).unwrap();
+    let tx_a = signed_transfer(funding_id.clone(), &signing_key, 301);
+    let tx_b = signed_transfer(funding_id.clone(), &signing_key, 302);
+    assert_ne!(tx_a.txid, tx_b.txid);
+    validate_transaction_v2(&tx_a, &funded, CHAIN).unwrap();
+    validate_transaction_v2(&tx_b, &funded, CHAIN).unwrap();
+
+    let mut prefix = Vec::new();
+    let mut previous = genesis.clone();
+    for height in 1..=PREFIX {
+        let env = mine(&previous, height, vec![]);
+        prefix.push(env.clone());
+        previous = env;
+    }
+    let branch_a = mine(&previous, PREFIX + 1, vec![tx_a]);
+    let branch_b = mine(&previous, PREFIX + 1, vec![tx_b]);
+    assert_ne!(branch_a.hash, branch_b.hash);
+    let (winner, loser) = if branch_a.hash < branch_b.hash {
+        (branch_a, branch_b)
+    } else {
+        (branch_b, branch_a)
+    };
+
+    for trial_k in [0_usize, 1] {
+        let join = mine_two_parent_join(
+            &[winner.clone(), loser.clone()],
+            PREFIX + 2,
+            PREFIX + 2 + trial_k as u64,
+            91 + trial_k as u64,
+        );
+        let child = mine_two_parent_join(
+            std::slice::from_ref(&join),
+            PREFIX + 3,
+            PREFIX + 3 + trial_k as u64,
+            101 + trial_k as u64,
+        );
+        let mut all_blocks: BTreeMap<String, BlockEnvelopeV3> = prefix
+            .iter()
+            .map(|block| (block.hash.clone(), block.clone()))
+            .collect();
+        for block in [&winner, &loser, &join, &child] {
+            all_blocks.insert(block.hash.clone(), block.clone());
+        }
+        assert_eq!(all_blocks.len(), (PREFIX + 4) as usize);
+        let mut all_headers = BTreeMap::from([(genesis.hash.clone(), genesis.header.clone())]);
+        all_headers.extend(all_blocks.iter().map(|(id, block)| (id.clone(), block.header.clone())));
+        let full = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&child.hash),
+            &all_headers,
+            trial_k,
+        )
+        .unwrap();
+        assert_eq!(full.blocks.len(), (PREFIX + 5) as usize);
+        assert_eq!(full.blocks[&join.hash].selected_parent.as_ref(), Some(&winner.hash));
+        assert_eq!(
+            full.blocks[&join.hash].merge_blues,
+            if trial_k == 1 { vec![loser.hash.clone()] } else { vec![] }
+        );
+        assert_eq!(
+            full.blocks[&join.hash].merge_reds,
+            if trial_k == 0 { vec![loser.hash.clone()] } else { vec![] }
+        );
+
+        // Both signed transactions are genuine individually. A hypothetical
+        // selected-parent-first replay MUST reject the second competing spend.
+        let mut complete_winner = funded.clone();
+        apply_validated_detached_transfer(
+            &mut complete_winner, &winner.transactions[0], PREFIX + 1
+        ).unwrap();
+        let winning_root = complete_winner.utxo.compute_state_root().unwrap();
+        assert_ne!(winning_root, initial_root);
+        assert!(apply_validated_detached_transfer(
+            &mut complete_winner, &loser.transactions[0], PREFIX + 1
+        ).is_err());
+        assert_eq!(complete_winner.utxo.compute_state_root().unwrap(), winning_root);
+        let mut alternative = funded.clone();
+        apply_validated_detached_transfer(
+            &mut alternative, &loser.transactions[0], PREFIX + 1
+        ).unwrap();
+        let alternative_root = alternative.utxo.compute_state_root().unwrap();
+        assert_ne!(alternative_root, winning_root);
+        assert!(apply_validated_detached_transfer(
+            &mut alternative, &winner.transactions[0], PREFIX + 1
+        ).is_err());
+        assert_eq!(alternative.utxo.compute_state_root().unwrap(), alternative_root);
+        let conditional_fee_burn = u128::from(winner.transactions[0].fee);
+        assert_eq!(conditional_fee_burn, 1_100);
+        assert_eq!(
+            complete_winner.utxo.utxos.values().map(|coin| u128::from(coin.amount)).sum::<u128>()
+                + conditional_fee_burn,
+            100_000
+        );
+
+        let selected_map: BTreeMap<_, _> = full.blocks
+            .iter()
+            .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
+            .collect();
+        let full_window = selected_parent_retarget_window_v3_ns(
+            CHAIN, &child.hash, &all_headers, &selected_map
+        ).unwrap();
+        assert_eq!(full_window.len(), KEEP as usize);
+        let full_retarget = expected_difficulty_for_v3_window_ns(&full_window).unwrap();
+        let mut selected20 = Vec::new();
+        let mut walk = child.hash.clone();
+        for _ in 0..KEEP {
+            selected20.push(walk.clone());
+            walk = full.blocks[&walk].selected_parent.clone().unwrap();
+        }
+        assert!(selected20.contains(&winner.hash));
+        assert!(!selected20.contains(&loser.hash));
+        let mut retained: BTreeSet<String> = selected20.iter().cloned().collect();
+        retained.insert(loser.hash.clone());
+        assert_eq!(retained.len(), KEEP as usize + 1);
+        assert!(!retained.contains(&genesis.hash));
+        assert!(!retained.contains(&prefix[0].hash));
+
+        // Each checkpoint manifest is informational; only the independent
+        // complete-history oracle retained by this test process authorizes a
+        // comparison. No self-signed peer checkpoint is accepted.
+        let manifest_key = b"__TEST_ONLY_SIGNED_FORK_MANIFEST";
+        let snapshot_key = b"__TEST_ONLY_SIGNED_FORK_EXTERNAL_SEED";
+        let manifest = serde_json::json!({
+            "schema": "TEST_ONLY_FORK_SIGNED_NO_FINALITY_v1",
+            "chain": CHAIN,
+            "genesis": genesis.hash,
+            "tip": child.hash,
+            "trial_k": trial_k,
+            "selected_parent": winner.hash,
+            "loser": loser.hash,
+            "selected_transaction": winner.transactions[0].txid,
+            "excluded_double_spend": loser.transactions[0].txid,
+            "side_blues": full.blocks[&join.hash].merge_blues,
+            "side_reds": full.blocks[&join.hash].merge_reds,
+            "full_tip_blue_work": full.blocks[&child.hash].blue_work.0,
+            "retarget_bits": full_retarget.expected_bits,
+            "seed_root": initial_root,
+            "winner_utxo_root": winning_root,
+            "other_utxo_root": alternative_root
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let encoded: BTreeMap<String, Vec<u8>> = all_blocks
+            .iter()
+            .map(|(id, block)| {
+                let record = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+                    block.clone(), CHAIN, GENESIS_NS, &genesis.hash
+                ).unwrap();
+                (id.clone(), record.encode_verified(CHAIN, GENESIS_NS, &genesis.hash).unwrap())
+            })
+            .collect();
+
+        let temporary = DisposableDb::new();
+        {
+            let db = temporary.open();
+            let mut batch = WriteBatch::default();
+            for (id, frame) in &encoded {
+                batch.put(signed_fork_frame_key(id), frame);
+            }
+            let mut sync = WriteOptions::default();
+            sync.set_sync(true);
+            db.write_opt(batch, &sync).unwrap();
+
+            let mut abandoned = WriteBatch::default();
+            abandoned.put(manifest_key, &manifest_bytes);
+            abandoned.delete(signed_fork_frame_key(&prefix[0].hash));
+            drop(abandoned); // Not a power-loss simulation.
+        }
+        {
+            let db = temporary.open();
+            assert!(db.get(manifest_key).unwrap().is_none());
+            assert!(db.get(signed_fork_frame_key(&prefix[0].hash)).unwrap().is_some());
+            let mut batch = WriteBatch::default();
+            for id in all_blocks.keys() {
+                if !retained.contains(id) {
+                    batch.delete(signed_fork_frame_key(id));
+                }
+            }
+            batch.put(manifest_key, &manifest_bytes);
+            batch.put(snapshot_key, &funding_bytes);
+            let mut sync = WriteOptions::default();
+            sync.set_sync(true);
+            db.write_opt(batch, &sync).unwrap();
+        }
+        let check_reopened = |db: &DB| -> Result<(), String> {
+            let persisted_manifest = db.get(manifest_key).map_err(|e| e.to_string())?
+                .ok_or("fork manifest missing")?;
+            let persisted_seed = db.get(snapshot_key).map_err(|e| e.to_string())?
+                .ok_or("fork UTXO seed missing")?;
+            if persisted_manifest != manifest_bytes || persisted_seed != funding_bytes {
+                return Err("fork trust boundary differs from preauthenticated oracle".into());
+            }
+
+            let mut replay = init_chain_state(CHAIN.to_owned());
+            replay.utxo.utxos.clear();
+            replay.utxo.address_index.clear();
+            let coins: Vec<Utxo> = serde_json::from_slice(&persisted_seed)
+                .map_err(|e| e.to_string())?;
+            for coin in coins {
+                if replay.utxo.utxos.insert(coin.outpoint.clone(), coin.clone()).is_some() {
+                    return Err("duplicate seeded outpoint".into());
+                }
+                replay.utxo.address_index
+                    .entry(coin.address.clone())
+                    .or_default()
+                    .push(coin.outpoint.clone());
+            }
+            if replay.utxo.compute_state_root().map_err(|e| e.to_string())? != initial_root {
+                return Err("fork seed UTXO root changed".into());
+            }
+
+            let mut bounded = BTreeMap::new();
+            let mut restored_blocks = BTreeMap::new();
+            for id in &retained {
+                let frame = db.get(signed_fork_frame_key(id)).map_err(|e| e.to_string())?
+                    .ok_or("retained selected or competing fork block missing")?;
+                let record = NativeV3EnvelopeRestoreRecordV1::decode_verified(
+                    &frame, CHAIN, GENESIS_NS, &genesis.hash
+                ).map_err(|e| e.to_string())?;
+                let restored = record.envelope();
+                if restored.hash != *id
+                    || restored.header != all_headers[id]
+                    || serde_json::to_vec(restored).map_err(|e| e.to_string())?
+                        != serde_json::to_vec(&all_blocks[id]).map_err(|e| e.to_string())?
+                {
+                    return Err("untrusted restored fork body differs from complete-history oracle".into());
+                }
+                bounded.insert(id.clone(), restored.header.clone());
+                restored_blocks.insert(id.clone(), restored.clone());
+            }
+            for (id, header) in &bounded {
+                if id != selected20.last().unwrap()
+                    && header.parents.iter().any(|parent| !bounded.contains_key(parent))
+                {
+                    return Err("selected or competing fork lost a required parent".into());
+                }
+            }
+            let restored_selection: BTreeMap<_, _> = selected_map.iter()
+                .filter(|(id, _)| bounded.contains_key(*id))
+                .map(|(id, selected)| (id.clone(), selected.clone()))
+                .collect();
+            let resumed_window = selected_parent_retarget_window_v3_ns(
+                CHAIN, &child.hash, &bounded, &restored_selection
+            ).map_err(|e| e.to_string())?;
+            if resumed_window != full_window
+                || expected_difficulty_for_v3_window_ns(&resumed_window)
+                    .map_err(|e| e.to_string())? != full_retarget
+            {
+                return Err("native multiparent signed retarget changed after trim".into());
+            }
+            if restored_blocks[&winner.hash].transactions.len() != 1
+                || restored_blocks[&loser.hash].transactions.len() != 1
+            {
+                return Err("signed competing fork body missing".into());
+            }
+            apply_validated_detached_transfer(
+                &mut replay,
+                &restored_blocks[&winner.hash].transactions[0],
+                PREFIX + 1
+            )?;
+            if replay.utxo.compute_state_root().map_err(|e| e.to_string())? != winning_root {
+                return Err("competing fork chosen detached UTXO root differs after trim".into());
+            }
+            if apply_validated_detached_transfer(
+                &mut replay,
+                &restored_blocks[&loser.hash].transactions[0],
+                PREFIX + 1
+            ).is_ok() {
+                return Err("duplicate signed fork spend accepted".into());
+            }
+            if replay.utxo.compute_state_root().map_err(|e| e.to_string())? != winning_root {
+                return Err("rejected spend mutated test-only monetary state".into());
+            }
+            // Do not let a truncated DAG pass the production-like full-genesis
+            // proof by merely presenting a locally matching snapshot.
+            if derive_dormant_native_v3_ghostdag_trial(
+                CHAIN, GENESIS_NS, &genesis.hash, std::slice::from_ref(&child.hash), &bounded, trial_k
+            ).is_ok() {
+                return Err("pruned signed fork became trusted genesis closure".into());
+            }
+            Ok(())
+        };
+        {
+            let db = temporary.open();
+            assert!(db.get(signed_fork_frame_key(&prefix[0].hash)).unwrap().is_none());
+            check_reopened(&db).unwrap();
+        }
+        {
+            let db = temporary.open();
+            db.delete(signed_fork_frame_key(&loser.hash)).unwrap();
+            db.flush_wal(true).unwrap();
+        }
+        {
+            let db = temporary.open();
+            assert!(check_reopened(&db).is_err(), "missing colored competing frontier must fail");
+            db.put(signed_fork_frame_key(&loser.hash), &encoded[&loser.hash]).unwrap();
+            let mut forged = serde_json::from_slice::<serde_json::Value>(&manifest_bytes).unwrap();
+            forged["full_tip_blue_work"][0] = serde_json::json!(0);
+            db.put(manifest_key, serde_json::to_vec(&forged).unwrap()).unwrap();
+            db.flush_wal(true).unwrap();
+        }
+        {
+            let db = temporary.open();
+            assert!(check_reopened(&db).is_err(), "unauthenticated side work must fail");
+            db.put(manifest_key, &manifest_bytes).unwrap();
+            db.delete(signed_fork_frame_key(selected20.last().unwrap())).unwrap();
+            db.flush_wal(true).unwrap();
+        }
+        {
+            let db = temporary.open();
+            assert!(check_reopened(&db).is_err(), "retarget predecessor unavailable must fail");
+        }
+    }
+}
