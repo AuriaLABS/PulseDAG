@@ -149,8 +149,7 @@ fn read_with_external_trust(
     let manifest: TrialManifest =
         serde_json::from_slice(&raw_manifest).map_err(|e| e.to_string())?;
     let independently_rebuilt_genesis =
-        dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS)
-            .map_err(|e| e.to_string())?;
+        dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).map_err(|e| e.to_string())?;
     if manifest.schema_version != 1
         || manifest.chain_id != CHAIN
         || manifest.frozen_genesis_ns != GENESIS_NS
@@ -160,7 +159,9 @@ fn read_with_external_trust(
         || manifest.retained_block_hashes.len() != 2
         || manifest.retained_block_hashes[1] != trusted_tip_hash
         || manifest.claimed_empty_v3_utxo_root
-            != UtxoState::default().compute_state_root().map_err(|e| e.to_string())?
+            != UtxoState::default()
+                .compute_state_root()
+                .map_err(|e| e.to_string())?
     {
         return Err("manifest conflicts with externally trusted test identity".into());
     }
@@ -211,7 +212,9 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
                 &genesis.hash,
             )
             .unwrap();
-            record.encode_verified(CHAIN, GENESIS_NS, &genesis.hash).unwrap()
+            record
+                .encode_verified(CHAIN, GENESIS_NS, &genesis.hash)
+                .unwrap()
         })
         .collect();
     let manifest = TrialManifest {
@@ -239,7 +242,10 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
         batch.put(MANIFEST_KEY, &bytes);
         batch.put(SIGNATURE_KEY, trusted_sig.to_bytes());
         // Untrusted self-asserted pubkey is intentionally ignored by reader.
-        batch.put(SELF_CLAIMED_PUBKEY, self_appointed_key.verifying_key().to_bytes());
+        batch.put(
+            SELF_CLAIMED_PUBKEY,
+            self_appointed_key.verifying_key().to_bytes(),
+        );
         let mut sync = WriteOptions::default();
         sync.set_sync(true);
         db.write_opt(batch, &sync).unwrap();
@@ -261,13 +267,8 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
             "a signed but unexpected tip cannot be accepted without trusted identity"
         );
         assert!(
-            read_with_external_trust(
-                &db,
-                Some(&pinned_key),
-                &"00".repeat(32),
-                &second.hash,
-            )
-            .is_err(),
+            read_with_external_trust(&db, Some(&pinned_key), &"00".repeat(32), &second.hash,)
+                .is_err(),
             "frozen genesis mismatch must fail"
         );
     }
@@ -283,15 +284,17 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
         let db = disk.open();
         db.put(MANIFEST_KEY, &counterfeit_bytes).unwrap();
         db.put(SIGNATURE_KEY, counterfeit_sig.to_bytes()).unwrap();
-        db.put(SELF_CLAIMED_PUBKEY, self_appointed_key.verifying_key().to_bytes())
-            .unwrap();
+        db.put(
+            SELF_CLAIMED_PUBKEY,
+            self_appointed_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
         assert!(
-            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash)
-                .is_err(),
+            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash).is_err(),
             "valid self-issued signature cannot replace externally pinned authority"
         );
         let mut batch = WriteBatch::default();
@@ -309,8 +312,7 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
     {
         let db = disk.open();
         assert!(
-            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash)
-                .is_err(),
+            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash).is_err(),
             "legitimate signature cannot bless substituted persisted PoW frame"
         );
         db.put(frame_key(1), &frames[1]).unwrap();
@@ -320,8 +322,7 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
     {
         let db = disk.open();
         assert!(
-            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash)
-                .is_err(),
+            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash).is_err(),
             "missing required signed PoW predecessor must fail closed"
         );
     }
