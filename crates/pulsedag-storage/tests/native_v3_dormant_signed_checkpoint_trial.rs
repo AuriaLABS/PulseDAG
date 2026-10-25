@@ -117,7 +117,12 @@ fn funding_state() -> (ChainState, OutPoint, SigningKey) {
             height: 1,
         },
     );
-    state.utxo.address_index.entry(address).or_default().push(outpoint.clone());
+    state
+        .utxo
+        .address_index
+        .entry(address)
+        .or_default()
+        .push(outpoint.clone());
     state.utxo.validate_deterministic_indexes().unwrap();
     (state, outpoint, signing_key)
 }
@@ -155,9 +160,15 @@ fn apply_validated_detached_transfer(
 ) -> Result<(), String> {
     validate_transaction_v2(tx, state, CHAIN).map_err(|e| e.to_string())?;
     for input in &tx.inputs {
-        let source = state.utxo.utxos.remove(&input.previous_output)
+        let source = state
+            .utxo
+            .utxos
+            .remove(&input.previous_output)
             .ok_or("validated input disappeared")?;
-        let indexed = state.utxo.address_index.get_mut(&source.address)
+        let indexed = state
+            .utxo
+            .address_index
+            .get_mut(&source.address)
             .ok_or("validated source index missing")?;
         indexed.retain(|id| id != &input.previous_output);
         if indexed.is_empty() {
@@ -165,7 +176,10 @@ fn apply_validated_detached_transfer(
         }
     }
     for (index, output) in tx.outputs.iter().enumerate() {
-        let id = OutPoint { txid: tx.txid.clone(), index: index as u32 };
+        let id = OutPoint {
+            txid: tx.txid.clone(),
+            index: index as u32,
+        };
         let new_coin = Utxo {
             outpoint: id.clone(),
             address: output.address.clone(),
@@ -176,9 +190,17 @@ fn apply_validated_detached_transfer(
         if state.utxo.utxos.insert(id.clone(), new_coin).is_some() {
             return Err("replay duplicate output".into());
         }
-        state.utxo.address_index.entry(output.address.clone()).or_default().push(id);
+        state
+            .utxo
+            .address_index
+            .entry(output.address.clone())
+            .or_default()
+            .push(id);
     }
-    state.utxo.validate_deterministic_indexes().map_err(|e| e.to_string())
+    state
+        .utxo
+        .validate_deterministic_indexes()
+        .map_err(|e| e.to_string())
 }
 
 #[test]
@@ -207,15 +229,23 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
 
     // The fully replayed, frozen-genesis chain is an independent test oracle.
     let full = derive_dormant_native_v3_ghostdag_trial(
-        CHAIN, GENESIS_NS, &genesis.hash,
-        std::slice::from_ref(&signed_block.hash), &headers, 1
-    ).unwrap();
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&signed_block.hash),
+        &headers,
+        1,
+    )
+    .unwrap();
     assert_eq!(full.blocks.len(), (PREFIX + 2) as usize);
-    let selected: BTreeMap<_, _> = full.blocks.iter()
-        .map(|(id, meta)| (id.clone(), meta.selected_parent.clone())).collect();
-    let full_window = selected_parent_retarget_window_v3_ns(
-        CHAIN, &signed_block.hash, &headers, &selected
-    ).unwrap();
+    let selected: BTreeMap<_, _> = full
+        .blocks
+        .iter()
+        .map(|(id, meta)| (id.clone(), meta.selected_parent.clone()))
+        .collect();
+    let full_window =
+        selected_parent_retarget_window_v3_ns(CHAIN, &signed_block.hash, &headers, &selected)
+            .unwrap();
     assert_eq!(full_window.len(), KEEP as usize);
     let full_difficulty = expected_difficulty_for_v3_window_ns(&full_window).unwrap();
 
@@ -224,7 +254,15 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
     let expected_root = expected.utxo.compute_state_root().unwrap();
     assert_ne!(expected_root, funding_root);
     assert_ne!(signed_block.header.state_root, expected_root);
-    assert_eq!(expected.utxo.utxos.values().map(|coin| coin.amount).sum::<u64>(), 98_900);
+    assert_eq!(
+        expected
+            .utxo
+            .utxos
+            .values()
+            .map(|coin| coin.amount)
+            .sum::<u64>(),
+        98_900
+    );
 
     let manifest = serde_json::json!({
         "schema": "TEST_ONLY_EXPLICIT_UNAPPROVED_SIGNED_V3_REPLAY",
@@ -247,11 +285,17 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         let mut batch = WriteBatch::default();
         for (height, envelope) in frames.iter().enumerate() {
             let record = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-                envelope.clone(), CHAIN, GENESIS_NS, &genesis.hash
-            ).unwrap();
+                envelope.clone(),
+                CHAIN,
+                GENESIS_NS,
+                &genesis.hash,
+            )
+            .unwrap();
             batch.put(
                 frame_key(height as u64 + 1),
-                record.encode_verified(CHAIN, GENESIS_NS, &genesis.hash).unwrap(),
+                record
+                    .encode_verified(CHAIN, GENESIS_NS, &genesis.hash)
+                    .unwrap(),
             );
         }
         let mut sync = WriteOptions::default();
@@ -278,12 +322,17 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
     }
 
     let check_reopened = |db: &DB| -> Result<(), String> {
-        if db.get(MANIFEST_KEY).map_err(|e| e.to_string())?
-            .ok_or("missing test-only manifest")? != manifest_bytes
+        if db
+            .get(MANIFEST_KEY)
+            .map_err(|e| e.to_string())?
+            .ok_or("missing test-only manifest")?
+            != manifest_bytes
         {
             return Err("checkpoint metadata differs from external full oracle".into());
         }
-        let snapshot = db.get(SNAPSHOT_KEY).map_err(|e| e.to_string())?
+        let snapshot = db
+            .get(SNAPSHOT_KEY)
+            .map_err(|e| e.to_string())?
             .ok_or("missing funding snapshot")?;
         if snapshot != funding_bytes {
             return Err("external UTXO snapshot was altered".into());
@@ -293,13 +342,27 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         reconstructed.utxo.utxos.clear();
         reconstructed.utxo.address_index.clear();
         for coin in coins {
-            if reconstructed.utxo.utxos.insert(coin.outpoint.clone(), coin.clone()).is_some() {
+            if reconstructed
+                .utxo
+                .utxos
+                .insert(coin.outpoint.clone(), coin.clone())
+                .is_some()
+            {
                 return Err("duplicate seeded outpoint".into());
             }
-            reconstructed.utxo.address_index.entry(coin.address.clone())
-                .or_default().push(coin.outpoint.clone());
+            reconstructed
+                .utxo
+                .address_index
+                .entry(coin.address.clone())
+                .or_default()
+                .push(coin.outpoint.clone());
         }
-        if reconstructed.utxo.compute_state_root().map_err(|e| e.to_string())? != funding_root {
+        if reconstructed
+            .utxo
+            .compute_state_root()
+            .map_err(|e| e.to_string())?
+            != funding_root
+        {
             return Err("initial externally anchored UTXO root changed".into());
         }
         let mut retained = BTreeMap::new();
@@ -308,11 +371,17 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         let mut previous_retained = None;
         let first_kept = PREFIX + 2 - KEEP;
         for height in first_kept..=PREFIX + 1 {
-            let bytes = db.get(frame_key(height)).map_err(|e| e.to_string())?
+            let bytes = db
+                .get(frame_key(height))
+                .map_err(|e| e.to_string())?
                 .ok_or("retarget predecessor frame missing")?;
             let record = NativeV3EnvelopeRestoreRecordV1::decode_verified(
-                &bytes, CHAIN, GENESIS_NS, &genesis.hash
-            ).map_err(|e| e.to_string())?;
+                &bytes,
+                CHAIN,
+                GENESIS_NS,
+                &genesis.hash,
+            )
+            .map_err(|e| e.to_string())?;
             let block = record.envelope();
             if block.header.height != height {
                 return Err("persisted frame height incorrect".into());
@@ -341,25 +410,40 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
             return Err("retained source incomplete".into());
         }
         let restored_window = selected_parent_retarget_window_v3_ns(
-            CHAIN, &signed_block.hash, &retained, &selected_map
-        ).map_err(|e| e.to_string())?;
+            CHAIN,
+            &signed_block.hash,
+            &retained,
+            &selected_map,
+        )
+        .map_err(|e| e.to_string())?;
         if restored_window != full_window
-            || expected_difficulty_for_v3_window_ns(&restored_window)
-                .map_err(|e| e.to_string())? != full_difficulty
+            || expected_difficulty_for_v3_window_ns(&restored_window).map_err(|e| e.to_string())?
+                != full_difficulty
         {
             return Err("retarget differs after pruning".into());
         }
         apply_validated_detached_transfer(&mut reconstructed, &transactions[0], PREFIX + 1)?;
-        if reconstructed.utxo.compute_state_root().map_err(|e| e.to_string())? != expected_root {
+        if reconstructed
+            .utxo
+            .compute_state_root()
+            .map_err(|e| e.to_string())?
+            != expected_root
+        {
             return Err("verified signed transaction replay differs from full oracle".into());
         }
         if validate_transaction_v2(&transactions[0], &reconstructed, CHAIN).is_ok() {
             return Err("spent transaction was accepted a second time".into());
         }
         if derive_dormant_native_v3_ghostdag_trial(
-            CHAIN, GENESIS_NS, &genesis.hash,
-            std::slice::from_ref(&signed_block.hash), &retained, 1
-        ).is_ok() {
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&signed_block.hash),
+            &retained,
+            1,
+        )
+        .is_ok()
+        {
             return Err("pruned history incorrectly accepted by full-genesis verifier".into());
         }
         Ok(())
@@ -387,27 +471,38 @@ fn pruned_rocksdb_replays_real_signed_v2_transfer_inside_pow_valid_v3_frame_fail
         let mut forged_manifest: serde_json::Value =
             serde_json::from_slice(&manifest_bytes).unwrap();
         forged_manifest["signed_fee"] = serde_json::json!(0);
-        db.put(MANIFEST_KEY, serde_json::to_vec(&forged_manifest).unwrap()).unwrap();
+        db.put(MANIFEST_KEY, serde_json::to_vec(&forged_manifest).unwrap())
+            .unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(check_reopened(&db).is_err(), "forged fee checkpoint must fail");
+        assert!(
+            check_reopened(&db).is_err(),
+            "forged fee checkpoint must fail"
+        );
         db.put(MANIFEST_KEY, &manifest_bytes).unwrap();
         let mut forged_coins = funding_coins.clone();
         forged_coins[0].amount += 1;
-        db.put(SNAPSHOT_KEY, serde_json::to_vec(&forged_coins).unwrap()).unwrap();
+        db.put(SNAPSHOT_KEY, serde_json::to_vec(&forged_coins).unwrap())
+            .unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(check_reopened(&db).is_err(), "tampered checkpoint UTXO must fail");
+        assert!(
+            check_reopened(&db).is_err(),
+            "tampered checkpoint UTXO must fail"
+        );
         db.put(SNAPSHOT_KEY, &funding_bytes).unwrap();
         db.delete(frame_key(PREFIX + 1 - KEEP / 2)).unwrap();
         db.flush_wal(true).unwrap();
     }
     {
         let db = disk.open();
-        assert!(check_reopened(&db).is_err(), "missing retarget frame must fail");
+        assert!(
+            check_reopened(&db).is_err(),
+            "missing retarget frame must fail"
+        );
     }
 }
