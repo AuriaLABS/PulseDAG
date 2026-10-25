@@ -1046,9 +1046,9 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                 .get(checkpoint_coins_key)
                 .map_err(|error| error.to_string())?
                 .ok_or("committed signed UTXO contents missing")?;
-            if selected.as_ref() != chosen_txid.as_bytes()
-                || root.as_ref() != expected_root.as_bytes()
-                || data.as_ref() != expected_bytes
+            if selected.as_slice() != chosen_txid.as_bytes()
+                || root.as_slice() != expected_root.as_bytes()
+                || data.as_slice() != expected_bytes
             {
                 return Err("atomic branch identity, root, and UTXOs diverged".into());
             }
