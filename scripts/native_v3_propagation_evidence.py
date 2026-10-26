@@ -149,6 +149,27 @@ def analyze(manifest: dict, rows: list[dict]) -> dict:
     percentiles = {name: quantile(delays, p, 1000)
                    for name, p in (("p50", 500), ("p95", 950),
                                    ("p99", 990), ("p999", 999))}
+    # In a partially observed network, observed-only percentiles are
+    # selection-biased: a peer that never receives a block may be precisely
+    # the slowest one. An absent reception is RIGHT-CENSORED (unknown), not 0
+    # latency, not the observed p99, and not evidence of fast convergence.
+    # Bound the full N-pair order statistic by placing all M missing samples
+    # at 0 (best case) or at +infinity (worst case); no distribution model.
+    censored_bounds: dict[str, dict[str, int | None]] = {}
+    for name, permille in (("p50", 500), ("p95", 950),
+                           ("p99", 990), ("p999", 999)):
+        rank = (total_pairs * permille + 999) // 1000  # 1-based ceil
+        minimum_possible = (delays[rank - missing - 1]
+                            if rank > missing else 0)
+        maximum_possible = (delays[rank - 1]
+                            if rank <= len(delays) else None)
+        censored_bounds[name] = {
+            "lower_ns_missing_assumed_zero": minimum_possible,
+            "upper_ns_missing_may_be_unbounded": maximum_possible,
+        }
+        require(maximum_possible is None or
+                minimum_possible <= maximum_possible,
+                f"invalid missingness quantile interval: {name}")
     return {
         "status": "OBSERVATIONS_NEED_INDEPENDENT_AUTHENTICATION_NOT_K_FREEZE",
         "run_id": run_id,
@@ -163,6 +184,10 @@ def analyze(manifest: dict, rows: list[dict]) -> dict:
         "missing_pairs_fraction": f"{missing / total_pairs:.6f}",
         "negative_delays_within_clock_uncertainty": ambiguous_early,
         "observed_delay_ns_nearest_rank": percentiles,
+        "censored_full_population_quantile_bounds_ns": censored_bounds,
+        "p999_full_population_finite_upper_bound_proven":
+            censored_bounds["p999"]["upper_ns_missing_may_be_unbounded"] is not None,
+        "all_peer_block_receptions_observed": missing == 0,
         "p999_upper_bound_with_declared_clock_uncertainty_ns":
             quantile(upper_bounded, 999, 1000),
         "not_authenticated_native_headers_or_anticone": True,
@@ -216,8 +241,38 @@ def self_test() -> None:
             raise AssertionError("invalid empirical trace admitted")
     dropped = [r for r in rows if not (r["event"] == "received" and
                                       r["node_id"] == "n24")]
-    require(analyze(manifest, dropped)["missing_peer_block_pairs"] ==
-            MIN_BLOCKS + 1, "missing receiver observations were hidden")
+    incomplete = analyze(manifest, dropped)
+    require(incomplete["missing_peer_block_pairs"] == MIN_BLOCKS + 1,
+            "missing receiver observations were hidden")
+    require(incomplete["p999_full_population_finite_upper_bound_proven"] is False,
+            "high-tail missingness incorrectly presented as finite p99.9")
+    require(incomplete["censored_full_population_quantile_bounds_ns"]
+            ["p999"]["upper_ns_missing_may_be_unbounded"] is None,
+            "unknown high-tail observations incorrectly imputed")
+    require(incomplete["all_peer_block_receptions_observed"] is False,
+            "missing peer count was lost")
+    require(result["all_peer_block_receptions_observed"] is True,
+            "complete case incorrectly marked censored")
+    require(result["censored_full_population_quantile_bounds_ns"]
+            ["p999"]["upper_ns_missing_may_be_unbounded"] ==
+            result["observed_delay_ns_nearest_rank"]["p999"],
+            "complete-population and observed p999 must coincide")
+    # Even a single unobserved extreme block-peer pair can destroy a finite
+    # p99.9 bound on a modest sample; never silently assume it was fast.
+    single_missing = analyze(manifest, rows[:-1])
+    require(single_missing["missing_peer_block_pairs"] == 1,
+            "single dropped reception was not counted")
+    require(single_missing["censored_full_population_quantile_bounds_ns"]
+            ["p999"]["upper_ns_missing_may_be_unbounded"] is not None,
+            "finite p999 with one missing and 2904 pairs miscomputed")
+    # At least 4 unobserved pairs out of 2904 make nearest-rank p99.9
+    # mathematically unbounded in the worst case.
+    four_missing = analyze(manifest, rows[:-4])
+    require(four_missing["missing_peer_block_pairs"] == 4,
+            "four missing observations were not counted")
+    require(four_missing["censored_full_population_quantile_bounds_ns"]
+            ["p999"]["upper_ns_missing_may_be_unbounded"] is None,
+            "unbounded full-population p999 accidentally imputed")
     print("PASS: synthetic-only validator scenarios (NOT measured propagation)")
 
 
