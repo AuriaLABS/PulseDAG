@@ -1,6 +1,7 @@
 name: v3 GHOSTDAG same-runner A-B-A CPU evidence (local-only)
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [proposal/v3-ghostdag-freeze-candidate-20261022]
