@@ -25,6 +25,8 @@ CASES = {
     "eight_parent_K6": (10, 6),
     "eight_parent_K7": (10, 7),
     "eight_parent_K32": (10, 32),
+    "deep_eight_parent_12x8_K0": (98, 0),
+    "deep_eight_parent_12x8_K32": (98, 32),
 }
 PATTERN = re.compile(
     r"(?m)^NATIVE_V3_PERF_PROBE scope=local_not_network "
@@ -107,7 +109,7 @@ def self_test() -> None:
         for case, (count, k) in CASES.items()
     )
     parsed = parse(raw, sha)
-    require(len(parsed["cases"]) == 7, "missing case")
+    require(len(parsed["cases"]) == 9, "missing case")
     require(parsed["cases"]["linear_120_500ms"]["median_slot_fraction"]
             == "0.000018", "wrong normalization")
     wrong = [
