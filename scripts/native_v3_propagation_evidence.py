@@ -37,12 +37,27 @@ def quantile(sorted_values: list[int], numerator: int, denominator: int) -> int:
     return sorted_values[max(0, rank - 1)]
 
 
-def analyze(manifest: dict, rows: list[dict]) -> dict:
+def analyze(manifest: dict, rows: list[dict], *, expected_sha: str,
+            expected_network_id: str, expected_genesis_hash: str) -> dict:
+    # All three pins come from the independent operator, NEVER the trace.
+    require(type(expected_sha) is str and
+            re.fullmatch(r"[0-9a-f]{40}", expected_sha) is not None,
+            "independent exact SHA pin required")
+    require(type(expected_network_id) is str and
+            re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", expected_network_id)
+            is not None, "independent network ID pin required")
+    require(type(expected_genesis_hash) is str and
+            re.fullmatch(r"[0-9a-f]{64}", expected_genesis_hash) is not None,
+            "independent frozen genesis hash pin required")
     require(type(manifest) is dict, "invalid manifest")
     require(manifest.get("schema") == "NATIVE_V3_FIRST_SEEN_V1", "wrong trace schema")
     sha = manifest.get("candidate_sha")
-    require(type(sha) is str and re.fullmatch(r"[0-9a-f]{40}", sha) is not None,
-            "exact SHA required")
+    require(type(sha) is str and sha == expected_sha,
+            "trace SHA disagrees with independently pinned exact candidate")
+    require(manifest.get("network_id") == expected_network_id,
+            "trace network ID disagrees with independently pinned network")
+    require(manifest.get("genesis_hash") == expected_genesis_hash,
+            "trace genesis hash disagrees with independently pinned genesis")
     require(manifest.get("instrumentation") == "external_native_v3_first_seen",
             "not native-v3 first-seen instrumentation")
     require(manifest.get("synthetic") is False, "synthetic trace is not observation")
@@ -174,6 +189,10 @@ def analyze(manifest: dict, rows: list[dict]) -> dict:
         "status": "OBSERVATIONS_NEED_INDEPENDENT_AUTHENTICATION_NOT_K_FREEZE",
         "run_id": run_id,
         "candidate_sha": sha,
+        "network_id": expected_network_id,
+        "genesis_hash": expected_genesis_hash,
+        "trace_identifiers_independently_pinned": True,
+        "independent_pins_do_not_authenticate_events_or_headers": True,
         "declared_nodes": len(nodes),
         "declared_distinct_hosts": len(hosts),
         "active_mining_sources": len({s for s, _ in mined.values()}),
@@ -204,6 +223,7 @@ def self_test() -> None:
               "clock_offset_ns": i * 50_000,
               "clock_uncertainty_ns": 1_000_000} for i in range(MIN_NODES)]
     manifest = {"schema": "NATIVE_V3_FIRST_SEEN_V1", "candidate_sha": "a" * 40,
+                "network_id": "TEST_ONLY_NATIVE_V3", "genesis_hash": "b" * 64,
                 "run_id": "SYNTHETIC-SELFTEST", "slot_ns": EXPECTED_INTERVAL_NS,
                 "instrumentation": "external_native_v3_first_seen",
                 "synthetic": False, "nodes": nodes}
@@ -218,7 +238,14 @@ def self_test() -> None:
                          "event": "mined" if i == origin else "received",
                          "observed_wall_ns": produced + node["clock_offset_ns"] +
                          (0 if i == origin else 35_000_000 + i * 1_000_000)})
-    result = analyze(manifest, rows)
+    # The pins model trusted operator configuration, not a manifest override.
+    pins = {"expected_sha": "a" * 40,
+            "expected_network_id": "TEST_ONLY_NATIVE_V3",
+            "expected_genesis_hash": "b" * 64}
+    def check(source_manifest: dict, events: list[dict]) -> dict:
+        return analyze(source_manifest, events, **pins)
+
+    result = check(manifest, rows)
     require(result["observed_produced_blocks"] == MIN_BLOCKS + 1, "block count")
     require(result["missing_peer_block_pairs"] == 0, "unexpected missingness")
     require(result["observed_delay_ns_nearest_rank"]["p999"] > 0, "missing p999")
@@ -226,6 +253,9 @@ def self_test() -> None:
         ({**manifest, "synthetic": True}, rows),
         ({**manifest, "nodes": nodes[:24]}, rows),
         ({**manifest, "candidate_sha": "insecure"}, rows),
+        ({**manifest, "candidate_sha": "c" * 40}, rows),
+        ({**manifest, "network_id": "OTHER_TEST_NETWORK"}, rows),
+        ({**manifest, "genesis_hash": "c" * 64}, rows),
         ({**manifest, "nodes":
           [{**nodes[0], "clock_uncertainty_ns": 7_000_000}] + nodes[1:]}, rows),
         (manifest, rows[:-1] + [rows[0]]),
@@ -234,14 +264,27 @@ def self_test() -> None:
     ]
     for bad_manifest, bad_rows in wrong:
         try:
-            analyze(bad_manifest, bad_rows)
+            check(bad_manifest, bad_rows)
         except ValueError:
             pass
         else:
             raise AssertionError("invalid empirical trace admitted")
+    for changed_pin in (
+        {"expected_sha": "c" * 40},
+        {"expected_network_id": "OTHER_NETWORK"},
+        {"expected_genesis_hash": "c" * 64},
+        {"expected_sha": ""},
+        {"expected_genesis_hash": "../" + "b" * 64},
+    ):
+        try:
+            analyze(manifest, rows, **{**pins, **changed_pin})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("untrusted or mismatching external identity pin accepted")
     dropped = [r for r in rows if not (r["event"] == "received" and
                                       r["node_id"] == "n24")]
-    incomplete = analyze(manifest, dropped)
+    incomplete = check(manifest, dropped)
     require(incomplete["missing_peer_block_pairs"] == MIN_BLOCKS + 1,
             "missing receiver observations were hidden")
     require(incomplete["p999_full_population_finite_upper_bound_proven"] is False,
@@ -259,7 +302,7 @@ def self_test() -> None:
             "complete-population and observed p999 must coincide")
     # Even a single unobserved extreme block-peer pair can destroy a finite
     # p99.9 bound on a modest sample; never silently assume it was fast.
-    single_missing = analyze(manifest, rows[:-1])
+    single_missing = check(manifest, rows[:-1])
     require(single_missing["missing_peer_block_pairs"] == 1,
             "single dropped reception was not counted")
     require(single_missing["censored_full_population_quantile_bounds_ns"]
@@ -267,7 +310,7 @@ def self_test() -> None:
             "finite p999 with one missing and 2904 pairs miscomputed")
     # At least 4 unobserved pairs out of 2904 make nearest-rank p99.9
     # mathematically unbounded in the worst case.
-    four_missing = analyze(manifest, rows[:-4])
+    four_missing = check(manifest, rows[:-4])
     require(four_missing["missing_peer_block_pairs"] == 4,
             "four missing observations were not counted")
     require(four_missing["censored_full_population_quantile_bounds_ns"]
@@ -282,18 +325,25 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--events-jsonl", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-sha")
+    parser.add_argument("--expected-network")
+    parser.add_argument("--expected-genesis")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return
-    require(args.manifest and args.events_jsonl and args.output,
-            "--manifest, --events-jsonl and --output are required")
+    require(args.manifest and args.events_jsonl and args.output and
+            args.expected_sha and args.expected_network and args.expected_genesis,
+            "--manifest, --events-jsonl, --output, and independently trusted "
+            "--expected-sha, --expected-network, --expected-genesis are required")
     require(args.manifest.is_file() and args.events_jsonl.is_file(),
             "external measured trace files were not provided")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     with args.events_jsonl.open(encoding="utf-8") as source:
         events = [json.loads(line) for line in source if line.strip()]
-    result = analyze(manifest, events)
+    result = analyze(manifest, events, expected_sha=args.expected_sha,
+                     expected_network_id=args.expected_network,
+                     expected_genesis_hash=args.expected_genesis)
     args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n",
                            encoding="utf-8")
     print("TRACE_ANALYZED_NOT_K_FREEZE: external authentication is still required")
