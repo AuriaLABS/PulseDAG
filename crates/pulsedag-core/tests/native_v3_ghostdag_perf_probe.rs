@@ -260,6 +260,19 @@ fn native_v3_real_pow_dag_work_profile_is_non_normative() {
             k,
             if k == 32 { 37 } else { 13 },
         );
+        let trial = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&tip),
+            &headers,
+            k,
+        )
+        .expect("deep native header K cluster must be authenticated");
+        let got = &trial.blocks[&tip];
+        assert_eq!(got.merge_blues.len(), if k == 32 { 24 } else { 0 });
+        assert_eq!(got.merge_reds.len(), if k == 32 { 60 } else { 84 });
+        assert_eq!(got.blue_work.decimal(), if k == 32 { "74" } else { "26" });
     }
 }
 
