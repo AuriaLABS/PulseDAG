@@ -265,6 +265,10 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
     )?;
     let mut past: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
     let mut blue_past: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
+    // Exact incomparable-blue counts per authenticated blue past. Carry these
+    // across selected-parent ancestry instead of re-scanning every pair for
+    // every pending merge candidate. This is a dormant local-only cache.
+    let mut blue_anticone_counts: BTreeMap<BlockId, BTreeMap<BlockId, usize>> = BTreeMap::new();
     let mut derived: BTreeMap<BlockId, CandidateBlockMetadata> = BTreeMap::new();
 
     for block in topo.ordered_reachable_headers {
@@ -289,6 +293,7 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
             }
             past.insert(block.clone(), ancestors);
             blue_past.insert(block.clone(), BTreeSet::from([block.clone()]));
+            blue_anticone_counts.insert(block.clone(), BTreeMap::from([(block.clone(), 0)]));
             derived.insert(
                 block,
                 CandidateBlockMetadata {
@@ -325,6 +330,13 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
         let mut blues = vec![];
         let mut reds = vec![];
         let mut accepted_blue_past = blue_past[&selected].clone();
+        let mut anticone_counts = blue_anticone_counts
+            .get(&selected)
+            .ok_or_else(|| invalid("missing selected-parent blue anticone counters"))?
+            .clone();
+        if accepted_blue_past.len() != anticone_counts.len() {
+            return Err(invalid("selected-parent anticone cache is incomplete"));
+        }
 
         while !remaining.is_empty() {
             // Kahn-ready: all parents must have left the unprocessed merge set.
@@ -340,18 +352,30 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
                 .ok_or_else(|| invalid("merge-set ordering has missing predecessors"))?
                 .clone();
             remaining.remove(&next);
-            let anticone_size = accepted_blue_past
+            // A candidate can increment only the counts of blues which are
+            // incomparable to it. Cache the preceding blue-past's exact counts
+            // instead of re-counting O(B²) pairs for EVERY merge candidate.
+            // This is algebraically identical to BOTH proposed K-cluster tests:
+            // (1) number of incomparable old blues <= K; and (2) no old blue
+            // with an increment already has K incomparable blues.
+            let incomparable_blues = accepted_blue_past
                 .iter()
-                .filter(|v| is_incomparable(&next, v, &past))
-                .count();
-            let all_prior_stay_bounded = accepted_blue_past.iter().all(|existing| {
-                let count = accepted_blue_past
-                    .iter()
-                    .filter(|other| is_incomparable(existing, other, &past))
-                    .count();
-                count + usize::from(is_incomparable(existing, &next, &past)) <= trial_k
+                .filter(|existing| is_incomparable(&next, existing, &past))
+                .cloned()
+                .collect::<Vec<_>>();
+            let all_prior_stay_bounded = incomparable_blues.iter().all(|existing| {
+                anticone_counts.get(existing).is_some_and(|count| *count < trial_k)
             });
-            if anticone_size <= trial_k && all_prior_stay_bounded {
+            if incomparable_blues.len() <= trial_k && all_prior_stay_bounded {
+                for existing in &incomparable_blues {
+                    let count = anticone_counts
+                        .get_mut(existing)
+                        .ok_or_else(|| invalid("missing existing blue anticone count"))?;
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("blue anticone count overflow"))?;
+                }
+                anticone_counts.insert(next.clone(), incomparable_blues.len());
                 accepted_blue_past.insert(next.clone());
                 blues.push(next);
             } else {
@@ -377,7 +401,14 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
             work = work.checked_add(candidate_work(headers[blue].difficulty)?)?;
         }
         past.insert(block.clone(), ancestors);
+        // The current block descends from every accepted blue in its inclusive
+        // authenticated past, so its own anticone count is always zero.
         accepted_blue_past.insert(block.clone());
+        anticone_counts.insert(block.clone(), 0);
+        if accepted_blue_past.len() != anticone_counts.len() {
+            return Err(invalid("derived blue anticone cache is incomplete"));
+        }
+        blue_anticone_counts.insert(block.clone(), anticone_counts);
         blue_past.insert(block.clone(), accepted_blue_past);
         derived.insert(
             block,
