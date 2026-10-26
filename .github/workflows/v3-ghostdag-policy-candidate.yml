@@ -7,6 +7,8 @@ on:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
       - "scripts/native_v3_ghostdag_perf_evidence.py"
+      - "scripts/native_v3_ghostdag_local_aba.py"
+      - ".github/workflows/v3-ghostdag-local-aba.yml"
       - "scripts/native_v3_propagation_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
@@ -42,6 +44,8 @@ on:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
       - "scripts/native_v3_ghostdag_perf_evidence.py"
+      - "scripts/native_v3_ghostdag_local_aba.py"
+      - ".github/workflows/v3-ghostdag-local-aba.yml"
       - "scripts/native_v3_propagation_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
@@ -199,3 +203,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  same-runner-aba-comparison:
+    # Expensive opt-in run. Only the explicitly named benchmark commit launches
+    # this 3-build comparison; ordinary candidate pushes remain fast.
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'benchmark(v3):')
+    uses: ./.github/workflows/v3-ghostdag-local-aba.yml
+    permissions:
+      contents: read
