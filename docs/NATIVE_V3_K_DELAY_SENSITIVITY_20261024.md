@@ -86,6 +86,9 @@ python3 scripts/native_v3_propagation_evidence.py --self-test
 python3 scripts/native_v3_propagation_evidence.py \
   --manifest /trusted-capture/native-v3-run-manifest.json \
   --events-jsonl /trusted-capture/native-v3-first-seen.jsonl \
+  --expected-sha '<independently_frozen_40_hex_release_commit>' \
+  --expected-network '<independently_frozen_native_v3_network_id>' \
+  --expected-genesis '<independently_frozen_64_hex_genesis_hash>' \
   --output /trusted-capture/native-v3-latency-summary.json
 ```
 
@@ -98,3 +101,9 @@ The external first-seen validator now explicitly distinguishes **observed-only**
 For each p percentile over N expected peer/block pairs, let M be missing and `r=ceil(N*p)` the nearest rank (p as a fraction). Sorting the N−M observed nonnegative delays, the minimum possible full-population p percentile treats M missing as zero: observed rank `r−M` if positive, otherwise 0. The **maximum possible** full-population p percentile treats all M missing as arbitrarily late: observed rank `r` if `r <= N−M`, otherwise **unbounded/unknown** (`null` in machine-readable output). These are deterministic bounds under missingness, not statistical confidence limits and not clock/propagation security proofs. The existing observed-only percentile and separate declared clock-uncertainty estimate remain labeled separately.
 
 CI synthetic adversarial tests explicitly remove one reception and then four (among 2,904 expected block/peer pairs): a single missing observation is still counted, while four unobserved high-tail events make any finite worst-case full-population p99.9 **unprovable**. Removing a receiver's entire 121 observations likewise requires a `null` p99.9 upper bound. This prevents a dangerously optimistic headline like “p99.9 under 500ms” when the slowest receivers have no data. The test is strictly synthetic: real propagation, PoW-authenticated anticone, node trust and K selection remain **unmeasured, unapproved and unauthorised**.
+
+## Reject self-claimed code, chain, and genesis identity (2026-10-26)
+
+The same external-latency evidence parser now **requires three independently supplied operator pins**: `--expected-sha` (full lowercase 40-hex candidate commit), `--expected-network` (frozen network ID) and `--expected-genesis` (frozen 64-hex native-v3 genesis commitment). Those three values must be obtained from an **independent release/network configuration**, never read from the untrusted trace, its metadata or the tool's own output. The manifest must also explicitly contain `candidate_sha`, `network_id` and `genesis_hash`, and all three must match the independent pins exactly or validation **fails closed**, including a well-formed *different* SHA/hash. Normal and Python `-O` CI synthetic tests exercise incorrect SHA, wrong network, fake genesis and missing/malformed caller-supplied pins.
+
+**This is merely identity matching.** An attacker can still fabricate events or lie about physical topology and NTP/PTP calibration while copying the true SHA/network/genesis. The parser does **not** reconstruct blocks or compute authentic GHOSTDAG anticone, and cannot sign or attest the observation collector. Genuine measured evidence needs a separately authenticated source, independently checked native block/envelope and per-peer identities, a preserved raw trace hash, and tamper-evident collection/custody. In the absence of those, neither a successful parser exit nor attractive p99.9 values can approve any numeric K, the parent limit, monetary mining, or mainnet.
