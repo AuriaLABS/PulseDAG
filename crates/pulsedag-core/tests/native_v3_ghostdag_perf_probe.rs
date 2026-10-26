@@ -111,6 +111,46 @@ fn eight_parent_fork(trial_k: usize) -> (BlockId, BlockId, BTreeMap<BlockId, Blo
     (g, tip, headers)
 }
 
+/// Eight fully independent twelve-block branches feeding ONE join: 98 real
+/// PoW-valid headers. Unlike the shallow 10-header fork, this stresses the
+/// repeated incomparable-blue K-cluster accounting. No network is involved.
+fn deep_eight_parent_fork(trial_k: usize) -> (BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>) {
+    assert!(trial_k == 0 || trial_k == 32, "only explicitly scored local cases");
+    let (g, mut headers) = genesis();
+    let mut parents = Vec::with_capacity(8);
+    for branch in 0..8_u8 {
+        let mut prev = g.clone();
+        for depth in 1..=12_u64 {
+            let marker = branch * 12 + (depth - 1) as u8;
+            let (id, header) = mined(
+                vec![prev],
+                GENESIS_NS + depth * 500_000_000 + u64::from(branch) * 100_000,
+                depth,
+                depth,
+                marker,
+            );
+            headers.insert(id.clone(), header);
+            prev = id;
+        }
+        parents.push(prev);
+    }
+    // Equal-work 12-block parents: K=0 admits zero merge-side blues.
+    // K=32 admits two whole, twelve-block side branches (24 blues).
+    // A third side root would have 36 incomparable prior blues (>32).
+    let selected_score = 12;
+    let accepted_side_blues = if trial_k == 32 { 24 } else { 0 };
+    let (tip, join) = mined(
+        parents,
+        GENESIS_NS + 13 * 500_000_000,
+        13,
+        selected_score + 1 + accepted_side_blues,
+        0xfe,
+    );
+    headers.insert(tip.clone(), join);
+    assert_eq!(headers.len(), 98, "full authenticated trial topology");
+    (g, tip, headers)
+}
+
 fn evaluate(
     genesis: &str,
     tip: &str,
@@ -208,6 +248,17 @@ fn native_v3_real_pow_dag_work_profile_is_non_normative() {
             &headers,
             k,
             2 + k.min(7) as u64,
+        );
+    }
+    for k in [0_usize, 32] {
+        let (g, tip, headers) = deep_eight_parent_fork(k);
+        measure(
+            &format!("deep_eight_parent_12x8_K{k}"),
+            &g,
+            &tip,
+            &headers,
+            k,
+            if k == 32 { 37 } else { 13 },
         );
     }
 }
