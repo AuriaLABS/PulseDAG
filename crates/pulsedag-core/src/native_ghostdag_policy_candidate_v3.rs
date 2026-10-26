@@ -364,7 +364,9 @@ pub fn derive_dormant_native_v3_ghostdag_trial(
                 .cloned()
                 .collect::<Vec<_>>();
             let all_prior_stay_bounded = incomparable_blues.iter().all(|existing| {
-                anticone_counts.get(existing).is_some_and(|count| *count < trial_k)
+                anticone_counts
+                    .get(existing)
+                    .is_some_and(|count| *count < trial_k)
             });
             if incomparable_blues.len() <= trial_k && all_prior_stay_bounded {
                 for existing in &incomparable_blues {
