@@ -7,6 +7,7 @@ on:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
       - "scripts/native_v3_ghostdag_perf_evidence.py"
+      - "scripts/native_v3_propagation_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -41,6 +42,7 @@ on:
       - "scripts/native_v3_ghostdag_policy_candidate.py"
       - "scripts/native_v3_k_delay_sensitivity.py"
       - "scripts/native_v3_ghostdag_perf_evidence.py"
+      - "scripts/native_v3_propagation_evidence.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -100,6 +102,14 @@ jobs:
           python3 scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-normal.json
           python3 -O scripts/native_v3_k_delay_sensitivity.py --json > /tmp/native-v3-k-delay-optimized.json
           cmp /tmp/native-v3-k-delay-normal.json /tmp/native-v3-k-delay-optimized.json
+      - name: Test read-only trace validator with synthetic-only events (NOT network K evidence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_propagation_evidence.py --self-test
+          python3 -O scripts/native_v3_propagation_evidence.py --self-test
+          # CI must never upload synthetic traces masquerading as measured
+          # 25-node/16-miner network evidence or automatically freeze K.
       - name: Check independent KHeavyHash to policy integration (header-only, no activation)
         run: |
           set -euo pipefail
