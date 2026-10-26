@@ -47,15 +47,18 @@ jobs:
       - name: A1 / New candidate complete PoW header profiling
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-candidate-target
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a1.log
           test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-a1.log)" -eq 9
+      # CRITICAL: old/new checkouts MUST NOT share one CARGO_TARGET_DIR. Rust's
+      # workspaces have the same package name and test target, and a shared
+      # target can silently execute A's cached test binary under checkout B.
       - name: B / Old exact-green reference complete PoW header profiling on same runner
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-baseline-target
         run: |
           set -euo pipefail
           cd old-native-v3
@@ -64,7 +67,7 @@ jobs:
       - name: A2 / Repeat new candidate after old reference without changing runner
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-candidate-target
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a2.log
