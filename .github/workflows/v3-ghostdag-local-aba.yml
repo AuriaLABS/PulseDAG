@@ -52,6 +52,7 @@ jobs:
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a1.log
           test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-a1.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-a1.log)" -eq 9
       # CRITICAL: old/new checkouts MUST NOT share one CARGO_TARGET_DIR. Rust's
       # workspaces have the same package name and test target, and a shared
       # target can silently execute A's cached test binary under checkout B.
@@ -76,6 +77,7 @@ jobs:
           cd old-native-v3
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-b.log
           test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-b.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-b.log)" -eq 9
       - name: A2 / Repeat new candidate after old reference without changing runner
         shell: bash
         env:
@@ -84,6 +86,7 @@ jobs:
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a2.log
           test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-a2.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-a2.log)" -eq 9
       - name: Compare same-runner nine IDENTICAL fixtures including deep fork K0/K32
         shell: bash
         run: |
