@@ -987,3 +987,100 @@ fn inherited_blue_anticone_boundary_rejects_new_merge_when_existing_blue_is_satu
         );
     }
 }
+
+#[test]
+fn multi_depth_anticone_k_threshold_matrix_mined_headers_preserves_exact_cluster_bounds() {
+    // Twenty-four full-PoW, eight-parent-or-smaller DAG evaluations. A chain
+    // of D blocks is comparable within itself but incomparable to every block
+    // on other chains. To accept an additional FULL side chain under this
+    // candidate greedy K rule, K must cover D * (accepted_side_chains + 1).
+    //
+    // The tests independently derive the expected counts from this graph
+    // structure; no cached counter, candidate blue_work, or peer metadata is
+    // used as expected authority. Trial K values are NOT protocol approval.
+    for (branches, depth) in [(3_u8, 2_u64), (5, 4), (8, 7), (8, 12)] {
+        for k in [0_usize, depth as usize - 1, depth as usize,
+                  (2 * depth) as usize - 1, (2 * depth) as usize, 32] {
+            let (g, mut headers) = genesis();
+            let mut tips = Vec::new();
+            for branch in 0..branches {
+                let mut parent = g.clone();
+                for height in 1..=depth {
+                    let marker = branch * 12 + (height - 1) as u8;
+                    let (id, header) = mine(
+                        vec![parent],
+                        height,
+                        GENESIS_NS + height * 500_000_000 + u64::from(branch) * 100_000,
+                        height,
+                        EASY_BITS,
+                        marker,
+                    );
+                    assert!(headers.insert(id.clone(), header).is_none());
+                    parent = id;
+                }
+                tips.push(parent);
+            }
+            tips.sort();
+            let side_chains_accepted =
+                usize::min(usize::from(branches) - 1, k / depth as usize);
+            let expected_blues = side_chains_accepted * depth as usize;
+            let expected_score = depth + 1 + expected_blues as u64;
+            let expected_work = expected_score * 2; // Every target work=2.
+            let (join, header) = mine(
+                tips.clone(),
+                depth + 1,
+                GENESIS_NS + (depth + 1) * 500_000_000,
+                expected_score,
+                EASY_BITS,
+                0xb0 + k as u8,
+            );
+            assert!(headers.insert(join.clone(), header).is_none());
+            let result = derive_dormant_native_v3_ghostdag_trial(
+                CHAIN,
+                GENESIS_NS,
+                &g,
+                std::slice::from_ref(&join),
+                &headers,
+                k,
+            )
+            .expect("full authenticated matrix DAG must satisfy independent K/score invariant");
+            let expected_vertices = 2 + usize::from(branches) * depth as usize;
+            assert_eq!(result.blocks.len(), expected_vertices);
+            let meta = &result.blocks[&join];
+            assert_eq!(
+                meta.selected_parent.as_deref(),
+                Some(tips[0].as_str()),
+                "heavier/earlier fork selection at branches={branches}, depth={depth}, K={k}"
+            );
+            assert_eq!(meta.blue_score, expected_score);
+            assert_eq!(meta.blue_work.decimal(), expected_work.to_string());
+            assert_eq!(
+                meta.merge_blues.len(),
+                expected_blues,
+                "inherited anticone count admitted wrong side-branch length at branches={branches}, depth={depth}, K={k}"
+            );
+            assert_eq!(
+                meta.merge_reds.len(),
+                (usize::from(branches) - 1) * depth as usize - expected_blues,
+            );
+            let repeated: BTreeMap<_, _> = headers
+                .iter()
+                .rev()
+                .map(|(id, header)| (id.clone(), header.clone()))
+                .collect();
+            assert_eq!(
+                result,
+                derive_dormant_native_v3_ghostdag_trial(
+                    CHAIN,
+                    GENESIS_NS,
+                    &g,
+                    std::slice::from_ref(&join),
+                    &repeated,
+                    k
+                )
+                .expect("authenticated DAG should not depend on map insertion"),
+                "candidate metadata changed with arrival order at K={k}"
+            );
+        }
+    }
+}
