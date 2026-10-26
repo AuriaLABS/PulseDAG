@@ -155,9 +155,11 @@ jobs:
           grep -Fq 'test result: ok. 5 passed; 0 failed; 1 ignored;' /tmp/native-v3-diagnostic-budget.log
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --ignored --nocapture | tee /tmp/native-v3-local-cpu-rss.log
           grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-local-cpu-rss.log
-          test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 7
+          test "$(grep -c 'NATIVE_V3_PERF_PROBE scope=local_not_network ' /tmp/native-v3-local-cpu-rss.log)" -eq 9
           grep -Fq 'case=linear_120_500ms' /tmp/native-v3-local-cpu-rss.log
           grep -Fq 'case=eight_parent_K32' /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'case=deep_eight_parent_12x8_K0' /tmp/native-v3-local-cpu-rss.log
+          grep -Fq 'case=deep_eight_parent_12x8_K32' /tmp/native-v3-local-cpu-rss.log
       - name: Capture exact-SHA local CPU profile as labelled JSON (NOT network evidence)
         shell: bash
         run: |
