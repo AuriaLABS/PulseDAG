@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Compare dormant native-v3 local CPU probes A(new) / B(old) / A(new).
 
+The OLD checkout must use the SAME test-only probe fixture from A (copied only
+into its test path at CI runtime), but its v3 policy algorithm implementation
+MUST remain pinned to OLD_SHA. Never compare different deep-DAG workloads.
+
 This is a SAME-RUNNER, SEQUENTIAL comparison of generated synthetic-time
 full-PoW headers. It does not control CPU load, thermals, frequency or VM
 contention. Never interpret timing ratios as network/DoS/security/K evidence.
@@ -79,11 +83,14 @@ def compare(old: str, new_first: str, new_repeat: str,
     require(re.fullmatch(r"[0-9a-f]{40}", candidate_sha) is not None,
             "exact full candidate SHA required")
     require(candidate_sha != OLD_SHA, "candidate must differ from baseline")
-    baseline = parse(old, COMMON)
-    current_cases = COMMON | NEW_ONLY
-    first, repeat = parse(new_first, current_cases), parse(new_repeat, current_cases)
+    # Same test harness is overlaid onto the old checkout at CI runtime,
+    # while the old CORE ALGORITHM SOURCE remains pinned and unmodified.
+    # This produces nine IDENTICAL native-header workloads for fair comparison.
+    common_cases = COMMON | NEW_ONLY
+    baseline = parse(old, common_cases)
+    first, repeat = parse(new_first, common_cases), parse(new_repeat, common_cases)
     comparison = {}
-    for name in sorted(COMMON):
+    for name in sorted(common_cases):
         b, a, a2 = (sample[name]["median_wall_us"]
                     for sample in (baseline, first, repeat))
         comparison[name] = {
@@ -99,8 +106,10 @@ def compare(old: str, new_first: str, new_repeat: str,
         "candidate_sha": candidate_sha,
         "baseline_sha": OLD_SHA,
         "measurement_order": ["candidate_A1", "prior_B", "candidate_A2"],
-        "common_case_count": len(COMMON),
-        "candidate_only_cases_uncomparable_to_baseline": sorted(NEW_ONLY),
+        "common_case_count": len(common_cases),
+        "same_harness_overlaid_only_in_baseline_worktree": True,
+        "baseline_algorithm_source_sha_is_pinned_not_modified": True,
+        "deep_cases_compared_on_both_algorithms": sorted(NEW_ONLY),
         "network_propagation_measured": False,
         "same_runner_does_not_control_cloud_host_cpu_noise": True,
         "not_a_consensus_500ms_latency_or_K_security_decision": True,
@@ -108,13 +117,6 @@ def compare(old: str, new_first: str, new_repeat: str,
         "numeric_K32_AND_eight_parent_cap_UNAPPROVED": True,
         "monetary_mining_and_smart_contracts_UNTOUCHED": True,
         "comparison": comparison,
-        "new_deep_case_medians_us": {
-            k: {
-                "candidate_A1": first[k]["median_wall_us"],
-                "candidate_A2": repeat[k]["median_wall_us"],
-            }
-            for k in sorted(NEW_ONLY)
-        },
     }
 
 
@@ -127,12 +129,14 @@ def self_test() -> None:
             "process_vmhwm_kib=Some(8192)"
             for case, (h, k) in cases.items()
         )
-    old, first, second = make(COMMON), make(COMMON | NEW_ONLY, 5), (
-        make(COMMON | NEW_ONLY, 10)
+    all_cases = COMMON | NEW_ONLY
+    old, first, second = make(all_cases), make(all_cases, 5), (
+        make(all_cases, 10)
     )
     r = compare(old, first, second, "a" * 40)
-    require(len(r["comparison"]) == 7, "comparison cardinality")
-    require(len(r["new_deep_case_medians_us"]) == 2, "deep case cardinality")
+    require(len(r["comparison"]) == 9, "comparison cardinality")
+    require(len(r["deep_cases_compared_on_both_algorithms"]) == 2,
+            "deep cases are required for both algorithms")
     require(r["comparison"]["eight_parent_K32"]["ratio_A1_over_B"] ==
             f"{Decimal(115) / Decimal(110):.4f}", "ratio arithmetic")
     bad_inputs = [
@@ -151,7 +155,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("invalid local A/B/A evidence accepted")
-    print("PASS: test-only local A/B/A probe ratio and provenance validator")
+    print("PASS: nine identical local workloads incl. two deep forks A/B/A")
 
 
 def main() -> None:
@@ -175,7 +179,7 @@ def main() -> None:
         args.candidate_sha,
     )
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print("PASS: seven comparable local cases, two NEW-only cases; "
+    print("PASS: nine comparable local cases incl. two deep forks; "
           "A/B/A NOT network/speedup/K approval")
 
 
