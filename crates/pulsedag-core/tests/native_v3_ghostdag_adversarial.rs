@@ -999,8 +999,14 @@ fn multi_depth_anticone_k_threshold_matrix_mined_headers_preserves_exact_cluster
     // structure; no cached counter, candidate blue_work, or peer metadata is
     // used as expected authority. Trial K values are NOT protocol approval.
     for (branches, depth) in [(3_u8, 2_u64), (5, 4), (8, 7), (8, 12)] {
-        for k in [0_usize, depth as usize - 1, depth as usize,
-                  (2 * depth) as usize - 1, (2 * depth) as usize, 32] {
+        for k in [
+            0_usize,
+            depth as usize - 1,
+            depth as usize,
+            (2 * depth) as usize - 1,
+            (2 * depth) as usize,
+            32,
+        ] {
             let (g, mut headers) = genesis();
             let mut tips = Vec::new();
             for branch in 0..branches {
@@ -1021,8 +1027,7 @@ fn multi_depth_anticone_k_threshold_matrix_mined_headers_preserves_exact_cluster
                 tips.push(parent);
             }
             tips.sort();
-            let side_chains_accepted =
-                usize::min(usize::from(branches) - 1, k / depth as usize);
+            let side_chains_accepted = usize::min(usize::from(branches) - 1, k / depth as usize);
             let expected_blues = side_chains_accepted * depth as usize;
             let expected_score = depth + 1 + expected_blues as u64;
             let expected_work = expected_score * 2; // Every target work=2.
