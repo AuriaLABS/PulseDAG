@@ -115,7 +115,10 @@ fn eight_parent_fork(trial_k: usize) -> (BlockId, BlockId, BTreeMap<BlockId, Blo
 /// PoW-valid headers. Unlike the shallow 10-header fork, this stresses the
 /// repeated incomparable-blue K-cluster accounting. No network is involved.
 fn deep_eight_parent_fork(trial_k: usize) -> (BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>) {
-    assert!(trial_k == 0 || trial_k == 32, "only explicitly scored local cases");
+    assert!(
+        trial_k == 0 || trial_k == 32,
+        "only explicitly scored local cases"
+    );
     let (g, mut headers) = genesis();
     let mut parents = Vec::with_capacity(8);
     for branch in 0..8_u8 {
