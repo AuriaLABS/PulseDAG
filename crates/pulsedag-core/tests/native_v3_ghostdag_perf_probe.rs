@@ -188,6 +188,51 @@ fn vmhwm_kib() -> Option<u64> {
         })
 }
 
+/// A deterministic test-only commitment to the FULL computed GHOSTDAG
+/// metadata for every fully PoW-authenticated vertex in the fixture.
+/// No external state, caches, snapshots, peer claims or production consensus.
+/// Its only authority is direct A/B/A test comparison on identical headers.
+fn trial_metadata_digest(
+    trial: &CandidateGhostdagEvaluation,
+    label: &str,
+    genesis: &str,
+    tip: &str,
+) -> String {
+    fn field(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"PulseDAG:NONNORMATIVE:v3-aba-full-metadata:v1");
+    field(&mut hasher, CHAIN);
+    field(&mut hasher, label);
+    field(&mut hasher, genesis);
+    field(&mut hasher, tip);
+    hasher.update((trial.k_trial as u64).to_le_bytes());
+    hasher.update((trial.blocks.len() as u64).to_le_bytes());
+    for (block, metadata) in &trial.blocks {
+        field(&mut hasher, block);
+        match &metadata.selected_parent {
+            Some(parent) => {
+                hasher.update([1]);
+                field(&mut hasher, parent);
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update(metadata.blue_score.to_le_bytes());
+        for limb in metadata.blue_work.0 {
+            hasher.update(limb.to_le_bytes());
+        }
+        for group in [&metadata.merge_blues, &metadata.merge_reds] {
+            hasher.update((group.len() as u64).to_le_bytes());
+            for member in group {
+                field(&mut hasher, member);
+            }
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
 fn measure(
     label: &str,
     genesis: &str,
@@ -208,6 +253,23 @@ fn measure(
         headers.len(),
         micros[1],
         vmhwm_kib()
+    );
+    // Measure first; compare full independently derived metadata afterwards.
+    // This fingerprint never enters the timed sample or any live runtime.
+    let verified = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        genesis,
+        std::slice::from_ref(&tip.to_owned()),
+        headers,
+        k,
+    )
+    .expect("full authenticated PoW trial required for metadata comparison");
+    assert_eq!(verified.blocks.len(), headers.len());
+    assert_eq!(verified.blocks[tip].blue_score, expected_score);
+    println!(
+        "NATIVE_V3_ABA_META_DIGEST case={label} sha256={}",
+        trial_metadata_digest(&verified, label, genesis, tip)
     );
 }
 
