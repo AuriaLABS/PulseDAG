@@ -882,3 +882,108 @@ fn eight_parent_proposed_cap_k_cluster_boundary_requires_canonical_tips() {
         );
     }
 }
+
+#[test]
+fn inherited_blue_anticone_boundary_rejects_new_merge_when_existing_blue_is_saturated() {
+    // Two joins with a reused selected-parent blue past. At K=2, the NEW
+    // merge candidate has exactly two incomparable blues (within K), but one
+    // existing blue already has two incomparable blues. The second GHOSTDAG
+    // K-cluster condition therefore MUST reject the otherwise PoW-valid
+    // merge. At K=3, it is accepted. This catches stale/incomplete counters
+    // inherited across selected-parent metadata, not just a shallow fork.
+    let (g, mut headers) = genesis();
+    let mut siblings = Vec::new();
+    for i in 0..3_u8 {
+        let (id, header) = mine(
+            vec![g.clone()],
+            1,
+            GENESIS_NS + 500_000_000 + u64::from(i) * 100_000,
+            1,
+            EASY_BITS,
+            0x91 + i,
+        );
+        headers.insert(id.clone(), header);
+        siblings.push(id);
+    }
+    siblings.sort();
+    let (d, h_d) = mine(
+        siblings[..2].to_vec(),
+        2,
+        GENESIS_NS + 800_000_000,
+        3,
+        EASY_BITS,
+        0x95,
+    );
+    headers.insert(d.clone(), h_d);
+
+    let (first_join, h_first) = mine(
+        siblings.clone(),
+        2,
+        GENESIS_NS + 1_000_000_000,
+        4,
+        EASY_BITS,
+        0x96,
+    );
+    headers.insert(first_join.clone(), h_first);
+    // Full first-join blue past: G, all three siblings, first_join. Every
+    // sibling is incomparable to the other two, so has anticone count 2.
+    for k in [2_usize, 3] {
+        let (second_join, h_second) = mine(
+            vec![first_join.clone(), d.clone()],
+            3,
+            GENESIS_NS + 1_500_000_000 + (k as u64) * 100_000,
+            if k == 2 { 5 } else { 6 },
+            EASY_BITS,
+            0x98 + k as u8,
+        );
+        headers.insert(second_join.clone(), h_second);
+
+        let result = derive_dormant_native_v3_ghostdag_trial(
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            std::slice::from_ref(&second_join),
+            &headers,
+            k,
+        )
+        .expect("both real-PoW joins must remain valid under candidate K");
+        assert_eq!(result.blocks.len(), 7);
+        let first = &result.blocks[&first_join];
+        assert_eq!(first.selected_parent.as_deref(), Some(siblings[0].as_str()));
+        assert_eq!(first.merge_blues, siblings[1..].to_vec());
+        assert!(first.merge_reds.is_empty());
+        assert_eq!(first.blue_score, 4);
+        assert_eq!(first.blue_work.decimal(), "8");
+
+        let last = &result.blocks[&second_join];
+        assert_eq!(last.selected_parent.as_deref(), Some(first_join.as_str()));
+        assert_eq!(last.blue_score, if k == 2 { 5 } else { 6 });
+        assert_eq!(last.blue_work.decimal(), if k == 2 { "10" } else { "12" });
+        if k == 2 {
+            assert!(last.merge_blues.is_empty());
+            assert_eq!(last.merge_reds, vec![d.clone()]);
+        } else {
+            assert_eq!(last.merge_blues, vec![d.clone()]);
+            assert!(last.merge_reds.is_empty());
+        }
+
+        let reversed: BTreeMap<_, _> = headers
+            .iter()
+            .rev()
+            .map(|(hash, header)| (hash.clone(), header.clone()))
+            .collect();
+        assert_eq!(
+            result,
+            derive_dormant_native_v3_ghostdag_trial(
+                CHAIN,
+                GENESIS_NS,
+                &g,
+                std::slice::from_ref(&second_join),
+                &reversed,
+                k,
+            )
+            .unwrap(),
+            "map arrival order must not change inherited K-cluster checks"
+        );
+    }
+}
