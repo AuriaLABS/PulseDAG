@@ -39,6 +39,10 @@ PATTERN = re.compile(
     r"median_wall_us=(?P<median>[0-9]+) "
     r"process_vmhwm_kib=(?P<vmhwm>Some\([0-9]+\)|None)"
 )
+META_PATTERN = re.compile(
+    r"NATIVE_V3_ABA_META_DIGEST case=(?P<case>[A-Za-z0-9_]+) "
+    r"sha256=(?P<digest>[0-9a-f]{64})"
+)
 
 
 def require(value: bool, reason: str) -> None:
@@ -48,7 +52,16 @@ def require(value: bool, reason: str) -> None:
 
 def parse(raw: str, cases: dict[str, tuple[int, int]]) -> dict[str, dict]:
     out: dict[str, dict] = {}
+    digests: dict[str, str] = {}
     for line in raw.splitlines():
+        if "NATIVE_V3_ABA_META_DIGEST case=" in line:
+            match = META_PATTERN.fullmatch(line)
+            require(match is not None, "malformed metadata fingerprint")
+            case = match["case"]
+            require(case in cases and case not in digests,
+                    f"unrecognized or duplicate metadata fingerprint {case}")
+            digests[case] = match["digest"]
+            continue
         if "NATIVE_V3_PERF_PROBE scope=local_not_network case=" not in line:
             continue
         # Unlike grep of CI commands, match ONLY real probe emissions.
@@ -75,6 +88,10 @@ def parse(raw: str, cases: dict[str, tuple[int, int]]) -> dict[str, dict]:
         }
     require(set(out) == set(cases),
             f"missing expected local profile cases: {sorted(set(cases) - set(out))}")
+    require(set(digests) == set(cases),
+            f"missing full-metadata fingerprints: {sorted(set(cases) - set(digests))}")
+    for case in out:
+        out[case]["full_metadata_sha256"] = digests[case]
     return out
 
 
@@ -91,9 +108,14 @@ def compare(old: str, new_first: str, new_repeat: str,
     first, repeat = parse(new_first, common_cases), parse(new_repeat, common_cases)
     comparison = {}
     for name in sorted(common_cases):
+        expected_metadata = baseline[name]["full_metadata_sha256"]
+        require(expected_metadata == first[name]["full_metadata_sha256"]
+                == repeat[name]["full_metadata_sha256"],
+                f"old/new derived native GHOSTDAG metadata diverges for {name}")
         b, a, a2 = (sample[name]["median_wall_us"]
                     for sample in (baseline, first, repeat))
         comparison[name] = {
+            "matching_full_metadata_sha256": expected_metadata,
             "baseline_median_us_B": b,
             "new_median_us_A1": a,
             "new_median_us_A2": a2,
@@ -110,6 +132,8 @@ def compare(old: str, new_first: str, new_repeat: str,
         "same_harness_overlaid_only_in_baseline_worktree": True,
         "baseline_algorithm_source_sha_is_pinned_not_modified": True,
         "deep_cases_compared_on_both_algorithms": sorted(NEW_ONLY),
+        "all_nine_full_derived_metadata_digests_identical_A1_B_A2": True,
+        "fingerprints_are_test_only_not_consensus_authority": True,
         "network_propagation_measured": False,
         "same_runner_does_not_control_cloud_host_cpu_noise": True,
         "not_a_consensus_500ms_latency_or_K_security_decision": True,
@@ -123,11 +147,14 @@ def compare(old: str, new_first: str, new_repeat: str,
 def self_test() -> None:
     def make(cases: dict[str, tuple[int, int]], delta: int = 0) -> str:
         return "\n".join(
-            f"NATIVE_V3_PERF_PROBE scope=local_not_network case={case} "
-            f"headers={h} K={k} samples_us=[{100+delta}, {110+delta}, "
-            f"{120+delta}] median_wall_us={110+delta} "
-            "process_vmhwm_kib=Some(8192)"
-            for case, (h, k) in cases.items()
+            (
+                f"NATIVE_V3_PERF_PROBE scope=local_not_network case={case} "
+                f"headers={h} K={k} samples_us=[{100+delta}, {110+delta}, "
+                f"{120+delta}] median_wall_us={110+delta} "
+                "process_vmhwm_kib=Some(8192)\n"
+                f"NATIVE_V3_ABA_META_DIGEST case={case} sha256={i+1:064x}"
+            )
+            for i, (case, (h, k)) in enumerate(cases.items())
         )
     all_cases = COMMON | NEW_ONLY
     old, first, second = make(all_cases), make(all_cases, 5), (
@@ -135,6 +162,8 @@ def self_test() -> None:
     )
     r = compare(old, first, second, "a" * 40)
     require(len(r["comparison"]) == 9, "comparison cardinality")
+    require(r["all_nine_full_derived_metadata_digests_identical_A1_B_A2"],
+            "metadata equivalence was not enforced")
     require(len(r["deep_cases_compared_on_both_algorithms"]) == 2,
             "deep cases are required for both algorithms")
     require(r["comparison"]["eight_parent_K32"]["ratio_A1_over_B"] ==
@@ -147,6 +176,11 @@ def self_test() -> None:
         (old, first, second.replace("K=32", "K=33", 1), "a" * 40),
         (old, first, second, OLD_SHA),
         (old, first, second, "badsha"),
+        (old, first.replace("NATIVE_V3_ABA_META_DIGEST case=linear_16_500ms sha256=000", "NATIVE_V3_ABA_META_DIGEST case=linear_16_500ms sha256=fff", 1),
+         second, "a" * 40),
+        (old, first.replace("NATIVE_V3_ABA_META_DIGEST", "OTHER_KIND", 1),
+         second, "a" * 40),
+        (old + "\n" + old.splitlines()[1], first, second, "a" * 40),
     ]
     for old_b, a_b, a2_b, sha_b in bad_inputs:
         try:
@@ -155,7 +189,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("invalid local A/B/A evidence accepted")
-    print("PASS: nine identical local workloads incl. two deep forks A/B/A")
+    print("PASS: nine full-metadata-equivalent local PoW workload comparisons")
 
 
 def main() -> None:
@@ -179,7 +213,7 @@ def main() -> None:
         args.candidate_sha,
     )
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print("PASS: nine comparable local cases incl. two deep forks; "
+    print("PASS: nine cases with exact full-metadata A/B/A parity; "
           "A/B/A NOT network/speedup/K approval")
 
 
