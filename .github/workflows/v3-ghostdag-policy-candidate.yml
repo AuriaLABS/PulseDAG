@@ -206,7 +206,7 @@ jobs:
   same-runner-aba-comparison:
     # Expensive opt-in run. Only the explicitly named benchmark commit launches
     # this 3-build comparison; ordinary candidate pushes remain fast.
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'benchmark(v3):')
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/v3-ghostdag-local-aba.yml
     permissions:
       contents: read
