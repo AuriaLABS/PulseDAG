@@ -3,7 +3,7 @@
 //! Rejects unauthenticated header/body pairings and hidden issuance before
 //! computing a wholly UNAPPROVED candidate K-cluster diagnostic.
 //! This module is NEVER called by mining, P2P, startup, storage or monetary
-//! replay. It does not verify ordinary signatures, fees, UTXO/state roots,
+//! replay. It rejects ordinary transfers pending signature, UTXO/state-root,
 //! maturity/finality, retarget or canonical monetary DAG transaction order.
 
 use std::collections::BTreeMap;
@@ -36,7 +36,7 @@ fn reject(reason: impl Into<String>) -> PulseError {
 /// checked blue scores are all verified. Fails closed on missing bodies,
 /// unrelated extra blocks, malformed side ancestry or future schema fields.
 ///
-/// Importantly, an amountless reward claim is NOT a spendable reward; this
+/// Fail-closed: any ordinary signed transfer is rejected until a fully
 /// diagnostic never creates a UTXO or decides subsidy/maturity/finality.
 pub fn inspect_dormant_native_v3_full_envelope_trial(
     chain_id: &str,
@@ -82,6 +82,17 @@ pub fn inspect_dormant_native_v3_full_envelope_trial(
             {
                 return Err(reject(
                     "additional inputless transaction creates hidden issuance",
+                ));
+            }
+            // Full Merkle/txid commitment is NOT evidence that any ordinary
+            // transfer has valid signatures, spendable UTXOs, deterministic
+            // fee treatment, finality or a correct native-DAG replay order.
+            // Fail closed until a separate fully signed, state-rooted
+            // economic validator is available. This bridge must NEVER
+            // silently upgrade a header-only trial into block admission.
+            if block.transactions.len() != 1 {
+                return Err(reject(
+                    "ordinary transfers require authoritative signed-UTXO native-v3 replay",
                 ));
             }
         }
