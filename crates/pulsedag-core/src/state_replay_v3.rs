@@ -535,7 +535,9 @@ pub fn verify_authoritative_state_snapshot_v3(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use crate::{
+        address_from_public_key, signing_message_v2,
         reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
         state::SelectedParentPolicy,
         tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
@@ -591,6 +593,33 @@ mod tests {
 
     fn claim(chain_id: &str, beneficiary: &str, nonce: u64) -> Transaction {
         build_reward_claim_transaction_v3(beneficiary, nonce, chain_id).unwrap()
+    }
+
+    fn replay_test_signer() -> SigningKey {
+        SigningKey::from_bytes(&[37_u8; 32])
+    }
+
+    fn replay_test_public_key() -> String {
+        hex::encode(replay_test_signer().verifying_key().to_bytes())
+    }
+
+    fn replay_test_address() -> String {
+        address_from_public_key(&replay_test_public_key())
+    }
+
+    fn sign_replay_transfer(tx: &mut Transaction, chain_id: &str) {
+        let signer = replay_test_signer();
+        let public_key = replay_test_public_key();
+        for input in &mut tx.inputs {
+            input.public_key = public_key.clone();
+            input.signature.clear();
+        }
+        let signed_message = signing_message_v2(tx, chain_id).unwrap();
+        let signature = hex::encode(signer.sign(&signed_message).to_bytes());
+        for input in &mut tx.inputs {
+            input.signature = signature.clone();
+        }
+        tx.txid = compute_txid_v2(tx, chain_id).unwrap();
     }
 
     fn add_sibling_block(
@@ -729,7 +758,7 @@ mod tests {
         append_linear_block(
             &mut state,
             "b1",
-            vec![claim(&chain_id, "pulse1miner", 1)],
+            vec![claim(&chain_id, &replay_test_address(), 1)],
             1,
         );
         append_linear_block(
@@ -741,8 +770,8 @@ mod tests {
 
         let reward1_claim = state.dag.blocks["b1"].transactions[0].clone();
         let reward1_outpoint = settlement_outpoint_v3(&chain_id, "b1", &reward1_claim.txid);
-        let spend = Transaction {
-            txid: "spend-reward-1".into(),
+        let mut spend = Transaction {
+            txid: String::new(),
             version: TRANSACTION_VERSION_V2,
             inputs: vec![TxInput {
                 previous_output: reward1_outpoint.clone(),
@@ -751,11 +780,12 @@ mod tests {
             }],
             outputs: vec![TxOutput {
                 address: "pulse1recipient".into(),
-                amount: 1,
+                amount: subsidy_atoms_for_score(1, &ONE_HOUR_PER_SCORE).unwrap(),
             }],
             fee: 0,
             nonce: 3,
         };
+        sign_replay_transfer(&mut spend, &chain_id);
         append_linear_block(
             &mut state,
             "b3",
@@ -833,13 +863,13 @@ mod tests {
         append_linear_block(
             &mut state,
             "b1",
-            vec![claim(&chain_id, "pulse1miner1", 31)],
+            vec![claim(&chain_id, &replay_test_address(), 31)],
             1,
         );
         append_linear_block(
             &mut state,
             "b2",
-            vec![claim(&chain_id, "pulse1miner2", 32)],
+            vec![claim(&chain_id, &replay_test_address(), 32)],
             2,
         );
         append_linear_block(
@@ -870,7 +900,7 @@ mod tests {
             fee: 5,
             nonce: 34,
         };
-        first_spend.txid = compute_txid_v2(&first_spend, &chain_id).unwrap();
+        sign_replay_transfer(&mut first_spend, &chain_id);
         append_linear_block(
             &mut state,
             "b4",
@@ -902,7 +932,7 @@ mod tests {
             fee: 99,
             nonce: 35,
         };
-        conflicting_spend.txid = compute_txid_v2(&conflicting_spend, &chain_id).unwrap();
+        sign_replay_transfer(&mut conflicting_spend, &chain_id);
         if duplicate_transaction {
             conflicting_spend = first_spend.clone();
         }
@@ -956,7 +986,7 @@ mod tests {
         );
         assert!(!replay.utxo.utxos.contains_key(&reward1));
         assert_eq!(replay.utxo.utxos[&reward2].amount, subsidy2);
-        assert_eq!(replay.utxo.address_index["pulse1miner2"], vec![reward2]);
+        assert_eq!(replay.utxo.address_index[&replay_test_address()], vec![reward2]);
         assert_eq!(replay.utxo.utxos.len(), 5);
         if !duplicate_transaction {
             assert!(!replay
