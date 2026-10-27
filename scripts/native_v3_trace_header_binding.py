@@ -68,10 +68,27 @@ def verify_full_native_pow_ancestry(
             genesis["blue_score"] == 0 and
             genesis["timestamp_ns"] == expected_genesis_ns,
             "genesis identity, timestamp or zero-score mismatch")
-    require(set(by_id) == observed_block_ids | {expected_genesis_hash},
-            "corpus block IDs differ from observed mined IDs; full ancestry required")
     require(expected_genesis_hash not in observed_block_ids,
             "genesis cannot be externally mined")
+    require(observed_block_ids.issubset(by_id.keys()),
+            "one or more observed mined IDs have no independently verified header")
+    # A 60-second observation window normally starts AFTER genesis: historical
+    # parents may be necessary even though they were mined before capture.
+    # Every supplied extra header MUST be an actual ancestor of an observed
+    # mined block, never an unrelated fork or a self-asserted pruning boundary.
+    ancestor_closure: set[str] = set()
+    pending = list(observed_block_ids)
+    while pending:
+        current = pending.pop()
+        if current in ancestor_closure:
+            continue
+        require(current in by_id, "missing complete parent ancestry")
+        ancestor_closure.add(current)
+        pending.extend(by_id[current]["parents"])
+    require(expected_genesis_hash in ancestor_closure,
+            "observed blocks are not rooted in pinned complete genesis")
+    require(ancestor_closure == set(by_id),
+            "unrelated header supplied outside observed-block ancestor closure")
     checked = 0
     for block, h in by_id.items():
         if block == expected_genesis_hash:
@@ -99,6 +116,9 @@ def verify_full_native_pow_ancestry(
         "chain_id_externally_pinned": expected_chain_id,
         "total_complete_headers": len(by_id),
         "non_genesis_full_pow_headers_checked": checked,
+        "observed_mined_headers_checked": len(observed_block_ids),
+        "historical_ancestor_headers_checked": checked - len(observed_block_ids),
+        "no_unrelated_unobserved_header_accepted": True,
         "all_first_seen_mined_ids_match_headers": True,
         "genesis_rooted_no_pruning_allowed": True,
         "blue_score_is_untrusted_not_recomputed": True,
@@ -123,6 +143,29 @@ def self_test() -> None:
     good = verify_full_native_pow_ancestry(corpus, {a_id, b_id}, **pins)
     require(good["non_genesis_full_pow_headers_checked"] == 2,
             "PoW-authenticated ancestry cardinality wrong")
+    require(good["historical_ancestor_headers_checked"] == 0,
+            "both headers should be observed in complete-window case")
+    # Correct case: observation begins AFTER first valid native-v3 mined
+    # block, so the first block is historical but must still be authenticated.
+    delayed_window = verify_full_native_pow_ancestry(
+        corpus, {b_id}, **pins)
+    require(delayed_window["observed_mined_headers_checked"] == 1 and
+            delayed_window["historical_ancestor_headers_checked"] == 1 and
+            delayed_window["non_genesis_full_pow_headers_checked"] == 2,
+            "historical native header ancestry was rejected or left unauthenticated")
+    # But a valid PoW header unrelated to ALL observed ancestors is NEVER
+    # allowed to inflate or dilute the committed header capture.
+    detached, detached_id, _ = mine(
+        header([g_id], genesis["timestamp_ns"] + 500_000_005, 1, 1, "3"))
+    try:
+        verify_full_native_pow_ancestry(
+            corpus + [{"block_hash": detached_id, "header": detached}],
+            {b_id}, **pins)
+    except ValueError as error:
+        require("unrelated header" in str(error),
+                "unexpected failure mode for detached valid-PoW header")
+    else:
+        raise AssertionError("unrelated actual-PoW header accepted")
     # A nonce can have a perfectly consistent SHA256 native header ID yet
     # INVALID KHeavyHash PoW. Ensure the verifier checks the actual digest,
     # not just structural identity or compact-target canonicality.
@@ -181,8 +224,9 @@ def self_test() -> None:
             "header corpus lost canonical identity during bounded parsing")
     require(verify_full_native_pow_ancestry(decoded, {a_id, b_id}, **pins) == good,
             "header JSONL decoding changes authentication result")
-    print("PASS: 2 genuine Python KHeavyHash headers, pinned complete genesis "
-          "and strict negative fixtures (TEST ONLY, not network evidence)")
+    print("PASS: 2 genuine Python KHeavyHash observed/historical headers, "
+          "pinned genesis, detached-PoW rejection and strict negative fixtures "
+          "(TEST ONLY, not network evidence)")
 
 
 def main() -> None:
