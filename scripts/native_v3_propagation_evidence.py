@@ -9,9 +9,12 @@ synthetic unit tests ONLY, never empirical evidence.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import re
 from pathlib import Path
+from typing import BinaryIO
 
 MIN_NODES = 25
 MIN_MINERS = 16
@@ -19,6 +22,15 @@ MIN_BLOCKS = 120
 MIN_DURATION_NS = 60_000_000_000
 MAX_CLOCK_UNCERTAINTY_NS = 5_000_000
 EXPECTED_INTERVAL_NS = 500_000_000
+
+# Hard local parser budgets checked WHILE consuming bytes, before JSON
+# decoding/allocating the potentially untrusted first-seen event rows.
+# 200,000 rows permit 25-peer coverage for up to ~8,000 mined blocks; this
+# is NOT a 500ms network performance assumption or consensus limit.
+MAX_TRACE_ROWS = 200_000
+MAX_TRACE_BYTES = 64 * 1024 * 1024
+MAX_EVENT_LINE_BYTES = 4 * 1024
+MAX_MANIFEST_BYTES = 128 * 1024
 
 
 def require(ok: bool, message: str) -> None:
@@ -28,6 +40,49 @@ def require(ok: bool, message: str) -> None:
 
 def integer(value: object) -> bool:
     return type(value) is int
+
+
+def parse_bounded_manifest(source: BinaryIO) -> tuple[dict, str]:
+    # Do not trust Path.stat(): the input may change between stat and read.
+    raw = source.read(MAX_MANIFEST_BYTES + 1)
+    require(len(raw) <= MAX_MANIFEST_BYTES,
+            "manifest exceeds bounded 128-KiB byte budget")
+    manifest = json.loads(raw)
+    require(type(manifest) is dict, "manifest must be a JSON object")
+    return manifest, hashlib.sha256(raw).hexdigest()
+
+
+def parse_bounded_events(
+    source: BinaryIO, *, max_rows: int = MAX_TRACE_ROWS,
+    max_total_bytes: int = MAX_TRACE_BYTES,
+    max_line_bytes: int = MAX_EVENT_LINE_BYTES,
+) -> tuple[list[dict], str, int]:
+    # Every line must be one JSON object; reject blank lines and overlong
+    # lines BEFORE allocating full untrusted input. These test-only optional
+    # lower budgets exercise the same invariants without huge allocations.
+    require(0 < max_rows <= MAX_TRACE_ROWS and
+            0 < max_total_bytes <= MAX_TRACE_BYTES and
+            0 < max_line_bytes <= MAX_EVENT_LINE_BYTES,
+            "invalid trace parser resource budget")
+    rows: list[dict] = []
+    digest = hashlib.sha256()
+    consumed = 0
+    while True:
+        line = source.readline(max_line_bytes + 1)
+        if not line:
+            break
+        require(len(line) <= max_line_bytes,
+                "JSONL record exceeds bounded 4-KiB line budget")
+        consumed += len(line)
+        require(consumed <= max_total_bytes,
+                "JSONL trace exceeds bounded total byte budget")
+        require(len(rows) < max_rows, "JSONL trace row budget exceeded")
+        require(bool(line.strip()), "blank JSONL record is invalid")
+        digest.update(line)
+        row = json.loads(line)
+        require(type(row) is dict, "JSONL record must be a JSON object")
+        rows.append(row)
+    return rows, digest.hexdigest(), consumed
 
 
 def quantile(sorted_values: list[int], numerator: int, denominator: int) -> int:
@@ -98,8 +153,8 @@ def analyze(manifest: dict, rows: list[dict], *, expected_sha: str,
         if node["miner"]:
             miners.add(nid)
     require(len(miners) >= MIN_MINERS, "need 16+ distinct miners")
-    require(type(rows) is list and len(rows) <= 2_000_000,
-            "trace absent or oversized")
+    require(type(rows) is list and len(rows) <= MAX_TRACE_ROWS,
+            "trace absent or exceeds 200,000-row bounded analysis budget")
     events: dict[tuple[str, str], dict] = {}
     mined: dict[str, tuple[str, int]] = {}
     for row in rows:
@@ -300,6 +355,47 @@ def self_test() -> None:
             ["p999"]["upper_ns_missing_may_be_unbounded"] ==
             result["observed_delay_ns_nearest_rank"]["p999"],
             "complete-population and observed p999 must coincide")
+    # Bounds must survive regular Python and -O. Never parse unlimited data
+    # first and reject only inside analyze() after memory was allocated.
+    bounded = b'{"block_hash":"abc"}\\n'.replace(b"\\n", b"\n")
+    parsed_rows, raw_digest, raw_size = parse_bounded_events(io.BytesIO(bounded))
+    require(len(parsed_rows) == 1 and raw_size == len(bounded),
+            "bounded JSONL event parsing failed")
+    require(raw_digest == hashlib.sha256(bounded).hexdigest(),
+            "raw trace digest was not byte-accurate")
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+    parsed_manifest, manifest_digest = parse_bounded_manifest(io.BytesIO(manifest_bytes))
+    require(parsed_manifest == manifest and
+            manifest_digest == hashlib.sha256(manifest_bytes).hexdigest(),
+            "bounded manifest parser does not preserve exact input")
+    malicious_lines = [
+        (b" " * 33 + b"{}", {"max_line_bytes": 32}),
+        (b"{}\n" * 4, {"max_rows": 3}),
+        (b"{}\n" * 4, {"max_total_bytes": 11}),
+        (b"{}\n\n", {}),
+        (b"[]\n", {}),
+        (b"null\n", {}),
+        (b"{no-json}\n", {}),
+    ]
+    for malicious, lower_budget in malicious_lines:
+        try:
+            parse_bounded_events(io.BytesIO(malicious), **lower_budget)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("oversized/malformed JSONL admitted")
+    try:
+        parse_bounded_manifest(io.BytesIO(b"x" * (MAX_MANIFEST_BYTES + 1)))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("oversized manifest admitted")
+    try:
+        parse_bounded_events(io.BytesIO(b"{}\n"), max_rows=MAX_TRACE_ROWS + 1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unbounded configured row budget admitted")
     # Even a single unobserved extreme block-peer pair can destroy a finite
     # p99.9 bound on a modest sample; never silently assume it was fast.
     single_missing = check(manifest, rows[:-1])
@@ -338,12 +434,19 @@ def main() -> None:
             "--expected-sha, --expected-network, --expected-genesis are required")
     require(args.manifest.is_file() and args.events_jsonl.is_file(),
             "external measured trace files were not provided")
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    with args.events_jsonl.open(encoding="utf-8") as source:
-        events = [json.loads(line) for line in source if line.strip()]
+    with args.manifest.open("rb") as source:
+        manifest, manifest_sha256 = parse_bounded_manifest(source)
+    with args.events_jsonl.open("rb") as source:
+        events, events_sha256, event_bytes = parse_bounded_events(source)
     result = analyze(manifest, events, expected_sha=args.expected_sha,
                      expected_network_id=args.expected_network,
                      expected_genesis_hash=args.expected_genesis)
+    # Digests are reproducible byte checksums, NOT signatures, independent
+    # collector authentication or proof of native header validity.
+    result["manifest_raw_sha256_untrusted"] = manifest_sha256
+    result["events_jsonl_raw_sha256_untrusted"] = events_sha256
+    result["events_jsonl_bytes"] = event_bytes
+    result["bounded_trace_reader_applied"] = True
     args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n",
                            encoding="utf-8")
     print("TRACE_ANALYZED_NOT_K_FREEZE: external authentication is still required")
