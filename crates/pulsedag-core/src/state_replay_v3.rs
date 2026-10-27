@@ -1035,7 +1035,12 @@ mod tests {
         // Modifying a miner reward in the restored UTXO set must fail even
         // when the stored claimed root and DAG ordering remain unchanged.
         let mut corrupted_amount = snapshot.clone();
-        corrupted_amount.utxo.utxos.get_mut(&b4_reward).unwrap().amount += 1;
+        corrupted_amount
+            .utxo
+            .utxos
+            .get_mut(&b4_reward)
+            .unwrap()
+            .amount += 1;
         assert!(
             verify_authoritative_state_snapshot_v3(&corrupted_amount, &ONE_HOUR_PER_SCORE)
                 .unwrap_err()
@@ -1053,7 +1058,10 @@ mod tests {
         );
 
         let mut omitted_conflict = snapshot;
-        omitted_conflict.dag.ordered_dag_conflict_diagnostics.clear();
+        omitted_conflict
+            .dag
+            .ordered_dag_conflict_diagnostics
+            .clear();
         assert!(
             verify_authoritative_state_snapshot_v3(&omitted_conflict, &ONE_HOUR_PER_SCORE)
                 .unwrap_err()
