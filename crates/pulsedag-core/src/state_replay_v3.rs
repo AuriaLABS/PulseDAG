@@ -1023,6 +1023,93 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_replay_rejects_bad_signature_and_implicit_fee_gap_before_state_mutation() {
+        let mut state = init_chain_state_v3("reward-replay-v3-signature-gate".into(), 1_800_000_045)
+            .unwrap();
+        let chain_id = state.chain_id.clone();
+        append_linear_block(
+            &mut state,
+            "b1",
+            vec![claim(&chain_id, &replay_test_address(), 71)],
+            1,
+        );
+        append_linear_block(
+            &mut state,
+            "b2",
+            vec![claim(&chain_id, "pulse1other-reward", 72)],
+            2,
+        );
+        let reward_claim = state.dag.blocks["b1"].transactions[0].clone();
+        let mature_source = settlement_outpoint_v3(&chain_id, "b1", &reward_claim.txid);
+        let subsidy = subsidy_atoms_for_score(1, &ONE_HOUR_PER_SCORE).unwrap();
+        assert!(subsidy > 10);
+
+        let mut signed_spend = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: mature_source,
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1legitimate-recipient".into(),
+                amount: subsidy - 5,
+            }],
+            fee: 5,
+            nonce: 73,
+        };
+        sign_replay_transfer(&mut signed_spend, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b3",
+            vec![claim(&chain_id, "pulse1third-reward", 73), signed_spend.clone()],
+            3,
+        );
+
+        let baseline = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(baseline.diagnostics.applied_transactions, 1);
+        assert_eq!(baseline.diagnostics.skipped_conflicting_transactions, 0);
+        assert_eq!(baseline.eligible_fees_by_score[3], 5);
+        assert!(baseline.utxo.utxos.keys().any(|outpoint| outpoint.txid == signed_spend.txid));
+
+        let mut forged_signature = signed_spend.clone();
+        forged_signature.inputs[0].signature = "00".repeat(64);
+        forged_signature.txid = compute_txid_v2(&forged_signature, &chain_id).unwrap();
+        let mut mutated = state.clone();
+        mutated.dag.blocks.get_mut("b3").unwrap().transactions[1] = forged_signature;
+        let error = rebuild_authoritative_state_v3(&mutated, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid signed transfer"), "{error}");
+
+        // Rehashing txid and block commitment is NOT a substitute for
+        // authenticating the transaction signing message.
+        let mut forged_output = signed_spend.clone();
+        forged_output.outputs[0].address = "pulse1signature-hijack".into();
+        forged_output.txid = compute_txid_v2(&forged_output, &chain_id).unwrap();
+        let mut altered = state.clone();
+        altered.dag.blocks.get_mut("b3").unwrap().transactions[1] = forged_output;
+        assert!(rebuild_authoritative_state_v3(&altered, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid signed transfer"));
+
+        // Even a fully valid v2 signature/txid may hide an implicit extra
+        // burn: v2 admits input >= output + claimed fee. Monetary v3 requires
+        // EXACT conservation so the only fee counted is the one claimed.
+        let mut unclaimed_gap = signed_spend.clone();
+        unclaimed_gap.outputs[0].amount = subsidy - 8;
+        sign_replay_transfer(&mut unclaimed_gap, &chain_id);
+        let mut gap_state = state;
+        gap_state.dag.blocks.get_mut("b3").unwrap().transactions[1] = unclaimed_gap;
+        let error = rebuild_authoritative_state_v3(&gap_state, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nonconservation"), "{error}");
+    }
+
+    #[test]
     fn additional_inputless_transaction_fails_closed() {
         let mut state =
             init_chain_state_v3("reward-replay-v3-hidden".into(), 1_800_000_020).unwrap();
