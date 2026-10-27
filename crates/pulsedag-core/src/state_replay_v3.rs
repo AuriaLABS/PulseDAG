@@ -1022,6 +1022,44 @@ mod tests {
             scheduled
         );
         assert_insertion_order_independent(&state, &replay);
+
+        // An unpruned monetary snapshot must match a fresh full-history
+        // replay even when a signed sibling spend is skipped. Re-check both
+        // duplicate-txid and different-txid conflict variants.
+        let snapshot = materialize_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(
+            verify_authoritative_state_snapshot_v3(&snapshot, &ONE_HOUR_PER_SCORE).unwrap(),
+            replay.diagnostics
+        );
+
+        // Modifying a miner reward in the restored UTXO set must fail even
+        // when the stored claimed root and DAG ordering remain unchanged.
+        let mut corrupted_amount = snapshot.clone();
+        corrupted_amount.utxo.utxos.get_mut(&b4_reward).unwrap().amount += 1;
+        assert!(
+            verify_authoritative_state_snapshot_v3(&corrupted_amount, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string()
+                .contains("snapshot UTXO root does not match")
+        );
+
+        let mut corrupted_commitment = snapshot.clone();
+        corrupted_commitment.dag.ordered_dag_state_root = Some("forged-state-root".into());
+        assert!(
+            verify_authoritative_state_snapshot_v3(&corrupted_commitment, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string()
+                .contains("snapshot recorded state root does not match")
+        );
+
+        let mut omitted_conflict = snapshot;
+        omitted_conflict.dag.ordered_dag_conflict_diagnostics.clear();
+        assert!(
+            verify_authoritative_state_snapshot_v3(&omitted_conflict, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string()
+                .contains("snapshot conflict diagnostics do not match")
+        );
     }
 
     #[test]
