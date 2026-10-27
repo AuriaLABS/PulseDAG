@@ -31,6 +31,9 @@ MAX_TRACE_ROWS = 200_000
 MAX_TRACE_BYTES = 64 * 1024 * 1024
 MAX_EVENT_LINE_BYTES = 4 * 1024
 MAX_MANIFEST_BYTES = 128 * 1024
+# A sparse high-node trace with many mined blocks can otherwise trigger
+# O(blocks * declared nodes) CPU even if its file has very few records.
+MAX_POTENTIAL_PEER_BLOCK_PAIRS = 1_000_000
 
 
 def require(ok: bool, message: str) -> None:
@@ -188,6 +191,8 @@ def analyze(manifest: dict, rows: list[dict], *, expected_sha: str,
             "received event without origin")
 
     total_pairs = len(mined) * (len(nodes) - 1)
+    require(total_pairs <= MAX_POTENTIAL_PEER_BLOCK_PAIRS,
+            "sparse trace exceeds bounded potential peer-block comparisons")
     delays: list[int] = []
     upper_bounded: list[int] = []
     missing = 0
@@ -396,6 +401,31 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("unbounded configured row budget admitted")
+    # Sparse traces must not amplify to O(blocks * nodes) work above the
+    # independently declared resource cap merely by omitting receptions.
+    # Input is small: 2,000 mine rows, but 2,000 * 511 peer comparisons.
+    sparse_nodes = [{
+        "id": f"s{i:03d}", "host_id": f"sh{i:03d}",
+        "miner": i < MIN_MINERS,
+        "clock_offset_ns": 0, "clock_uncertainty_ns": 0
+    } for i in range(512)]
+    sparse_manifest = {**manifest, "nodes": sparse_nodes}
+    sparse_rows = [{
+        "block_hash": f"{i+1000:064x}", "node_id": f"s{i % MIN_MINERS:03d}",
+        "event": "mined",
+        "observed_wall_ns": 1_800_000_000_000_000_000 + i * EXPECTED_INTERVAL_NS
+    } for i in range(2_000)]
+    require(len(sparse_rows) < MAX_TRACE_ROWS and
+            len(sparse_rows) * (len(sparse_nodes) - 1) >
+            MAX_POTENTIAL_PEER_BLOCK_PAIRS,
+            "adversarial peer-pair fixture fails to exceed budget")
+    try:
+        check(sparse_manifest, sparse_rows)
+    except ValueError as error:
+        require("potential peer-block comparisons" in str(error),
+                "resource-limit case rejected for the wrong reason")
+    else:
+        raise AssertionError("sparse many-node trace bypassed CPU pair limit")
     # Even a single unobserved extreme block-peer pair can destroy a finite
     # p99.9 bound on a modest sample; never silently assume it was fast.
     single_missing = check(manifest, rows[:-1])
