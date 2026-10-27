@@ -123,6 +123,33 @@ def self_test() -> None:
     good = verify_full_native_pow_ancestry(corpus, {a_id, b_id}, **pins)
     require(good["non_genesis_full_pow_headers_checked"] == 2,
             "PoW-authenticated ancestry cardinality wrong")
+    # A nonce can have a perfectly consistent SHA256 native header ID yet
+    # INVALID KHeavyHash PoW. Ensure the verifier checks the actual digest,
+    # not just structural identity or compact-target canonicality.
+    invalid_tip = None
+    invalid_tip_id = None
+    for nonce in range(256):
+        bad = {**second, "nonce": nonce}
+        preimage = canonical_header(bad, CHAIN, False)
+        if int(kheavy_stages(preimage, nonce)["kheavyhash"], 16) > expand(EASY_BITS):
+            invalid_tip = bad
+            invalid_tip_id = hashlib.sha256(
+                canonical_header(bad, CHAIN, True)).hexdigest()
+            break
+    require(invalid_tip is not None and invalid_tip_id != b_id,
+            "failed to construct a genuinely invalid full-PoW header")
+    invalid_pow_corpus = [
+        {"block_hash": invalid_tip_id, "header": invalid_tip},
+        corpus[1], corpus[2],
+    ]
+    try:
+        verify_full_native_pow_ancestry(
+            invalid_pow_corpus, {a_id, invalid_tip_id}, **pins)
+    except ValueError as error:
+        require("KHeavyHash digest fails" in str(error),
+                "invalid PoW must fail for actual full-target digest, not metadata")
+    else:
+        raise AssertionError("forged SHA-valid but PoW-invalid tip accepted")
     malformed = [
         ([corpus[0], corpus[1]], {a_id, b_id}, pins),
         (corpus + [corpus[0]], {a_id, b_id}, pins),
