@@ -672,7 +672,13 @@ mod tests {
         let again = rebuild_authoritative_state_v3(&reordered, &ONE_HOUR_PER_SCORE).unwrap();
         assert_eq!(again.ordered_dag, replay.ordered_dag);
         assert_eq!(again.diagnostics, replay.diagnostics);
+        // A different in-memory insertion order cannot alter monetary replay:
+        // fees, reward outpoints, amounts, and the authenticated UTXO root
+        // must all match, including when sibling spends conflict.
+        assert_eq!(again.eligible_fees_by_score, replay.eligible_fees_by_score);
+        assert_eq!(again.utxo.utxos, replay.utxo.utxos);
         assert_eq!(again.utxo.address_index, replay.utxo.address_index);
+        assert_eq!(again.utxo.compute_state_root().unwrap(), replay.utxo.compute_state_root().unwrap());
     }
 
     #[test]
