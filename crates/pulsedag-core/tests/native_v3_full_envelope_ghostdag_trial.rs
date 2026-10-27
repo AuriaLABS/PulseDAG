@@ -13,7 +13,7 @@ use pulsedag_core::{
     protocol::BLOCK_HEADER_VERSION_V3,
     reward_settlement_v3::build_reward_claim_transaction_v3,
     state::UtxoState,
-    types::{compute_merkle_root, BlockId, Transaction},
+    types::{compute_merkle_root, BlockId, OutPoint, Transaction, TxInput, TxOutput},
 };
 
 const CHAIN: &str = "dormant-v3-native-envelopes-full-claim-audit";
@@ -52,6 +52,26 @@ fn mine(
         }
     }
     panic!("native header has not mined easy-target PoW");
+}
+
+// This fixture deliberately creates a bad-signature ordinary transaction
+// with a VALID canonical chain-bound txid, Merkle root and native KHeavyHash.
+// The inspector must reject it because no native signed-UTXO authority exists.
+fn mine_with_ordinary_transfer(
+    join: &BlockEnvelopeV3,
+    claim: &Transaction,
+    ordinary: &Transaction,
+) -> BlockEnvelopeV3 {
+    let transactions = vec![claim.clone(), ordinary.clone()];
+    let mut header = join.header.clone();
+    header.merkle_root = compute_merkle_root(&transactions);
+    for nonce in 0..1_024u64 {
+        header.nonce = nonce;
+        if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+            return build_block_envelope_v3(CHAIN, header, transactions).unwrap();
+        }
+    }
+    panic!("native PoW transfer-body fixture could not mine easy-target header");
 }
 
 fn fork() -> (BlockEnvelopeV3, BlockEnvelopeV3, BlockEnvelopeV3) {
@@ -189,6 +209,45 @@ fn full_native_envelope_guard_rejects_hidden_issuance_missing_body_and_bad_score
     let error = check(&hidden, &extra_claim.hash).unwrap_err().to_string();
     assert!(
         error.contains("additional inputless transaction"),
+        "{error}"
+    );
+
+    // Block shape alone cannot verify a signed transfer. Here the ordinary
+    // spend is structurally committed by v2 txid, native Merkle and valid PoW,
+    // but intentionally has a bogus signature and nonexistent source UTXO.
+    let mut unverified_transfer = Transaction {
+        txid: String::new(),
+        version: pulsedag_core::tx::TRANSACTION_VERSION_V2,
+        inputs: vec![TxInput {
+            previous_output: OutPoint {
+                txid: "ab".repeat(32),
+                index: 0,
+            },
+            public_key: "cd".repeat(32),
+            signature: "ef".repeat(64),
+        }],
+        outputs: vec![TxOutput {
+            address: "pulse1unverified-destination".into(),
+            amount: 1,
+        }],
+        fee: 0,
+        nonce: 99,
+    };
+    unverified_transfer.txid =
+        pulsedag_core::compute_txid_v2(&unverified_transfer, CHAIN).unwrap();
+    let committed_unverified =
+        mine_with_ordinary_transfer(&join, &join.transactions[0], &unverified_transfer);
+    let unverified = indexed([
+        g.clone(),
+        a.clone(),
+        b.clone(),
+        committed_unverified.clone(),
+    ]);
+    let error = check(&unverified, &committed_unverified.hash)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("ordinary transfers require authoritative signed-UTXO"),
         "{error}"
     );
 
