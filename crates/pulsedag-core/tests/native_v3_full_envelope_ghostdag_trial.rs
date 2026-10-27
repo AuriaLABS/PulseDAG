@@ -233,8 +233,7 @@ fn full_native_envelope_guard_rejects_hidden_issuance_missing_body_and_bad_score
         fee: 0,
         nonce: 99,
     };
-    unverified_transfer.txid =
-        pulsedag_core::compute_txid_v2(&unverified_transfer, CHAIN).unwrap();
+    unverified_transfer.txid = pulsedag_core::compute_txid_v2(&unverified_transfer, CHAIN).unwrap();
     let committed_unverified =
         mine_with_ordinary_transfer(&join, &join.transactions[0], &unverified_transfer);
     let unverified = indexed([
