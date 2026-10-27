@@ -79,7 +79,10 @@ fn fork() -> (BlockEnvelopeV3, BlockEnvelopeV3, BlockEnvelopeV3) {
 fn indexed(
     blocks: impl IntoIterator<Item = BlockEnvelopeV3>,
 ) -> BTreeMap<BlockId, BlockEnvelopeV3> {
-    blocks.into_iter().map(|block| (block.hash.clone(), block)).collect()
+    blocks
+        .into_iter()
+        .map(|block| (block.hash.clone(), block))
+        .collect()
 }
 
 #[test]
@@ -107,9 +110,15 @@ fn complete_full_native_envelopes_and_amountless_claims_match_trial_k0_k1() {
         )
         .expect("full native PoW and valid body/amountless claims");
         assert_eq!(trial.blocks.len(), 4);
-        assert_eq!(trial.blocks[&join.hash].selected_parent.as_deref(), Some(parents[0].as_str()));
+        assert_eq!(
+            trial.blocks[&join.hash].selected_parent.as_deref(),
+            Some(parents[0].as_str())
+        );
         assert_eq!(trial.blocks[&join.hash].blue_score, committed_score);
-        assert_eq!(trial.blocks[&join.hash].blue_work.decimal(), (4 + k * 2).to_string());
+        assert_eq!(
+            trial.blocks[&join.hash].blue_work.decimal(),
+            (4 + k * 2).to_string()
+        );
         assert_eq!(trial.blocks[&join.hash].merge_blues.len(), k);
         assert_eq!(trial.blocks[&join.hash].merge_reds.len(), 1 - k);
         assert_eq!(trial.blocks[&a.hash].blue_work.decimal(), "2");
@@ -178,7 +187,10 @@ fn full_native_envelope_guard_rejects_hidden_issuance_missing_body_and_bad_score
     );
     let hidden = indexed([g.clone(), a.clone(), b.clone(), extra_claim.clone()]);
     let error = check(&hidden, &extra_claim.hash).unwrap_err().to_string();
-    assert!(error.contains("additional inputless transaction"), "{error}");
+    assert!(
+        error.contains("additional inputless transaction"),
+        "{error}"
+    );
 
     let bad_score = mine(
         parents,
