@@ -45,12 +45,31 @@ def integer(value: object) -> bool:
     return type(value) is int
 
 
+def strict_object_pairs(pairs: list[tuple[str, object]]) -> dict:
+    fields: dict[str, object] = {}
+    for name, value in pairs:
+        require(name not in fields, f"ambiguous duplicate JSON field: {name}")
+        fields[name] = value
+    return fields
+
+
+def reject_nonstandard_json(token: str) -> None:
+    raise ValueError(f"nonstandard non-finite JSON token: {token}")
+
+
+def canonical_trace_json(raw: bytes) -> object:
+    # Object-pairs enforcement also applies to NESTED manifest objects.
+    # Reject Python's permissive NaN/Infinity extensions as non-JSON.
+    return json.loads(raw, object_pairs_hook=strict_object_pairs,
+                      parse_constant=reject_nonstandard_json)
+
+
 def parse_bounded_manifest(source: BinaryIO) -> tuple[dict, str]:
     # Do not trust Path.stat(): the input may change between stat and read.
     raw = source.read(MAX_MANIFEST_BYTES + 1)
     require(len(raw) <= MAX_MANIFEST_BYTES,
             "manifest exceeds bounded 128-KiB byte budget")
-    manifest = json.loads(raw)
+    manifest = canonical_trace_json(raw)
     require(type(manifest) is dict, "manifest must be a JSON object")
     return manifest, hashlib.sha256(raw).hexdigest()
 
@@ -82,7 +101,7 @@ def parse_bounded_events(
         require(len(rows) < max_rows, "JSONL trace row budget exceeded")
         require(bool(line.strip()), "blank JSONL record is invalid")
         digest.update(line)
-        row = json.loads(line)
+        row = canonical_trace_json(line)
         require(type(row) is dict, "JSONL record must be a JSON object")
         rows.append(row)
     return rows, digest.hexdigest(), consumed
@@ -381,6 +400,10 @@ def self_test() -> None:
         (b"[]\n", {}),
         (b"null\n", {}),
         (b"{no-json}\n", {}),
+        (b'{"node_id":"A","node_id":"B"}\n', {}),
+        (b'{"event":NaN}\n', {}),
+        (b'{"event":Infinity}\n', {}),
+        (b'{"nested":{"foo":1,"foo":2}}\n', {}),
     ]
     for malicious, lower_budget in malicious_lines:
         try:
@@ -389,12 +412,18 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("oversized/malformed JSONL admitted")
-    try:
-        parse_bounded_manifest(io.BytesIO(b"x" * (MAX_MANIFEST_BYTES + 1)))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("oversized manifest admitted")
+    for bad_manifest in [
+        b"x" * (MAX_MANIFEST_BYTES + 1),
+        b'{"schema":"x","schema":"y"}',
+        b'{"nodes":[{"id":"a","id":"b"}]}',
+        b'{"clock_offset_ns":NaN}',
+    ]:
+        try:
+            parse_bounded_manifest(io.BytesIO(bad_manifest))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("ambiguous/malformed/oversized manifest admitted")
     try:
         parse_bounded_events(io.BytesIO(b"{}\n"), max_rows=MAX_TRACE_ROWS + 1)
     except ValueError:
