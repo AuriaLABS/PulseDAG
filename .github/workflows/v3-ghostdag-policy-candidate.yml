@@ -10,6 +10,7 @@ on:
       - "scripts/native_v3_ghostdag_local_aba.py"
       - ".github/workflows/v3-ghostdag-local-aba.yml"
       - "scripts/native_v3_propagation_evidence.py"
+      - "scripts/native_v3_trace_header_binding.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -47,6 +48,7 @@ on:
       - "scripts/native_v3_ghostdag_local_aba.py"
       - ".github/workflows/v3-ghostdag-local-aba.yml"
       - "scripts/native_v3_propagation_evidence.py"
+      - "scripts/native_v3_trace_header_binding.py"
       - "docs/NATIVE_V3_K_DELAY_SENSITIVITY_20261024.md"
       - "docs/NATIVE_V3_CHECKPOINT_RESUME_CONTEXT_CANDIDATE_20261024.md"
       - "scripts/native_v3_ghostdag_kheavyhash_bridge.py"
@@ -114,6 +116,13 @@ jobs:
           python3 -O scripts/native_v3_propagation_evidence.py --self-test
           # CI must never upload synthetic traces masquerading as measured
           # 25-node/16-miner network evidence or automatically freeze K.
+      - name: Bind bounded local first-seen IDs to full native-v3 KHeavyHash PoW headers (synthetic-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_trace_header_binding.py --self-test
+          python3 -O scripts/native_v3_trace_header_binding.py --self-test
+          # No real captured physical trace is supplied by this synthetic test.
       - name: Check independent KHeavyHash to policy integration (header-only, no activation)
         run: |
           set -euo pipefail
