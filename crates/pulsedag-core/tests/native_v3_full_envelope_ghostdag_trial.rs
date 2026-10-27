@@ -215,7 +215,8 @@ fn full_native_envelope_guard_rejects_hidden_issuance_missing_body_and_bad_score
     assert!(error.contains("unrelated full block"), "{error}");
 
     let mut wrong_key = full.clone();
-    wrong_key.insert("ff".repeat(32), wrong_key.remove(&a.hash).unwrap());
+    let removed_envelope = wrong_key.remove(&a.hash).unwrap();
+    wrong_key.insert("ff".repeat(32), removed_envelope);
     assert!(check(&wrong_key, &join.hash).is_err());
 
     let mut altered_body = full.clone();
