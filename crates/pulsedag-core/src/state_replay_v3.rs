@@ -535,14 +535,15 @@ pub fn verify_authoritative_state_snapshot_v3(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
     use crate::{
-        address_from_public_key, signing_message_v2,
+        address_from_public_key,
         reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
+        signing_message_v2,
         state::SelectedParentPolicy,
         tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
         types::{compute_merkle_root, Block, BlockHeader, Transaction, TxInput, TxOutput},
     };
+    use ed25519_dalek::{Signer, SigningKey};
 
     const ONE_HOUR_PER_SCORE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
         activation_score: 0,
@@ -986,7 +987,10 @@ mod tests {
         );
         assert!(!replay.utxo.utxos.contains_key(&reward1));
         assert_eq!(replay.utxo.utxos[&reward2].amount, subsidy2);
-        assert_eq!(replay.utxo.address_index[&replay_test_address()], vec![reward2]);
+        assert_eq!(
+            replay.utxo.address_index[&replay_test_address()],
+            vec![reward2]
+        );
         assert_eq!(replay.utxo.utxos.len(), 5);
         if !duplicate_transaction {
             assert!(!replay
@@ -1024,8 +1028,8 @@ mod tests {
 
     #[test]
     fn authoritative_replay_rejects_bad_signature_and_implicit_fee_gap_before_state_mutation() {
-        let mut state = init_chain_state_v3("reward-replay-v3-signature-gate".into(), 1_800_000_045)
-            .unwrap();
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-signature-gate".into(), 1_800_000_045).unwrap();
         let chain_id = state.chain_id.clone();
         append_linear_block(
             &mut state,
@@ -1063,7 +1067,10 @@ mod tests {
         append_linear_block(
             &mut state,
             "b3",
-            vec![claim(&chain_id, "pulse1third-reward", 73), signed_spend.clone()],
+            vec![
+                claim(&chain_id, "pulse1third-reward", 73),
+                signed_spend.clone(),
+            ],
             3,
         );
 
@@ -1071,7 +1078,11 @@ mod tests {
         assert_eq!(baseline.diagnostics.applied_transactions, 1);
         assert_eq!(baseline.diagnostics.skipped_conflicting_transactions, 0);
         assert_eq!(baseline.eligible_fees_by_score[3], 5);
-        assert!(baseline.utxo.utxos.keys().any(|outpoint| outpoint.txid == signed_spend.txid));
+        assert!(baseline
+            .utxo
+            .utxos
+            .keys()
+            .any(|outpoint| outpoint.txid == signed_spend.txid));
 
         let mut forged_signature = signed_spend.clone();
         forged_signature.inputs[0].signature = "00".repeat(64);
@@ -1090,10 +1101,12 @@ mod tests {
         forged_output.txid = compute_txid_v2(&forged_output, &chain_id).unwrap();
         let mut altered = state.clone();
         altered.dag.blocks.get_mut("b3").unwrap().transactions[1] = forged_output;
-        assert!(rebuild_authoritative_state_v3(&altered, &ONE_HOUR_PER_SCORE)
-            .unwrap_err()
-            .to_string()
-            .contains("invalid signed transfer"));
+        assert!(
+            rebuild_authoritative_state_v3(&altered, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid signed transfer")
+        );
 
         // Even a fully valid v2 signature/txid may hide an implicit extra
         // burn: v2 admits input >= output + claimed fee. Monetary v3 requires
