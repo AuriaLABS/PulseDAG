@@ -678,7 +678,10 @@ mod tests {
         assert_eq!(again.eligible_fees_by_score, replay.eligible_fees_by_score);
         assert_eq!(again.utxo.utxos, replay.utxo.utxos);
         assert_eq!(again.utxo.address_index, replay.utxo.address_index);
-        assert_eq!(again.utxo.compute_state_root().unwrap(), replay.utxo.compute_state_root().unwrap());
+        assert_eq!(
+            again.utxo.compute_state_root().unwrap(),
+            replay.utxo.compute_state_root().unwrap()
+        );
     }
 
     #[test]
