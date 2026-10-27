@@ -11,6 +11,7 @@ use crate::{
     reward_settlement_v3::{settlement_outpoint_v3, validate_reward_claim_transaction_v3},
     state::{ChainState, UtxoState},
     types::{Hash, Utxo},
+    validation_v2::validate_transaction_v2,
 };
 
 /// Candidate v3.0.0 reward-settlement rule.
@@ -278,6 +279,50 @@ fn replay_authoritative_prefix_v3(
         validated_reward_claims = validated_reward_claims.saturating_add(1);
 
         for tx in block.transactions.iter().skip(1) {
+            // Only an actual AVAILABLE set of signed spend inputs is eligible
+            // to alter monetary UTXO state or contribute a miner fee. A Merkle
+            // commitment / chain-bound txid alone is never spend authority.
+            // Preserve the existing deterministic skip for inputs that lost
+            // an earlier canonical conflict; their fees never accrue.
+            let all_inputs_available = !tx.inputs.is_empty()
+                && tx
+                    .inputs
+                    .iter()
+                    .all(|input| rebuilt.utxo.utxos.contains_key(&input.previous_output));
+            if all_inputs_available {
+                validate_transaction_v2(tx, &rebuilt, &state.chain_id).map_err(|error| {
+                    invalid_replay(format!(
+                        "ordered_pos={ordered_pos} block={hash} invalid signed transfer {}: {error}",
+                        tx.txid
+                    ))
+                })?;
+                // Legacy v2 admission allows input > output + stated fee,
+                // but v3 replay must never silently destroy the difference
+                // or credit fees unsupported by signed spend value. Require
+                // EXACT conservation with checked u128 intermediate sums.
+                let inputs = tx.inputs.iter().try_fold(0_u128, |sum, input| {
+                    let coin = rebuilt
+                        .utxo
+                        .utxos
+                        .get(&input.previous_output)
+                        .ok_or_else(|| invalid_replay("signed input vanished before replay"))?;
+                    sum.checked_add(u128::from(coin.amount))
+                        .ok_or_else(|| invalid_replay("signed input amount overflow"))
+                })?;
+                let outputs = tx.outputs.iter().try_fold(0_u128, |sum, output| {
+                    sum.checked_add(u128::from(output.amount))
+                        .ok_or_else(|| invalid_replay("signed output amount overflow"))
+                })?;
+                let outputs_plus_fee = outputs
+                    .checked_add(u128::from(tx.fee))
+                    .ok_or_else(|| invalid_replay("signed transfer fee overflow"))?;
+                if inputs != outputs_plus_fee {
+                    return Err(invalid_replay(format!(
+                        "ordered_pos={ordered_pos} block={hash} signed input/output/fee nonconservation for {}",
+                        tx.txid
+                    )));
+                }
+            }
             let mut candidate = rebuilt.clone();
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
