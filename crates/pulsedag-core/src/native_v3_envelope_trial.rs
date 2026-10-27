@@ -62,7 +62,9 @@ pub fn inspect_dormant_native_v3_full_envelope_trial(
     let mut headers = BTreeMap::new();
     for (key, block) in envelopes {
         if key != &block.hash {
-            return Err(reject("envelope index key differs from canonical block hash"));
+            return Err(reject(
+                "envelope index key differs from canonical block hash",
+            ));
         }
         validate_block_envelope_v3(block, chain_id)?;
         if key != frozen_genesis_hash {
@@ -78,7 +80,9 @@ pub fn inspect_dormant_native_v3_full_envelope_trial(
                 .skip(1)
                 .any(|transaction| transaction.inputs.is_empty())
             {
-                return Err(reject("additional inputless transaction creates hidden issuance"));
+                return Err(reject(
+                    "additional inputless transaction creates hidden issuance",
+                ));
             }
         }
         if headers.insert(key.clone(), block.header.clone()).is_some() {
