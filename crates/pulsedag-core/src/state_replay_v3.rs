@@ -516,9 +516,7 @@ fn replay_authoritative_prefix_v3(
             let archived_inputs = if in_place_safe {
                 tx.inputs
                     .iter()
-                    .filter(|input| {
-                        repeated_input_references.contains_key(&input.previous_output)
-                    })
+                    .filter(|input| repeated_input_references.contains_key(&input.previous_output))
                     .map(|input| {
                         let coin = rebuilt
                             .utxo
