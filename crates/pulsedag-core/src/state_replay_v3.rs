@@ -1049,6 +1049,48 @@ mod tests {
             replay.diagnostics
         );
 
+        // A detached serialized monetary checkpoint needs independently
+        // verified fees and conflicts AS WELL AS its UTXO root. The source
+        // below is the full-history signed-transfer replay; the test does not
+        // grant peer-provided or pruned snapshots independent authority.
+        let mut coins: Vec<Utxo> = snapshot.utxo.utxos.values().cloned().collect();
+        coins.sort_by_key(|coin| (coin.outpoint.txid.clone(), coin.outpoint.index));
+        let checkpoint_bytes = serde_json::to_vec(&(
+            coins,
+            replay.eligible_fees_by_score.clone(),
+            replay.diagnostics.conflict_diagnostics.clone(),
+        ))
+        .unwrap();
+        let (decoded_coins, decoded_fees, decoded_conflicts):
+            (Vec<Utxo>, Vec<u64>, Vec<String>) =
+            serde_json::from_slice(&checkpoint_bytes).unwrap();
+        let mut restored = UtxoState::default();
+        for coin in decoded_coins {
+            let outpoint = coin.outpoint.clone();
+            let address = coin.address.clone();
+            assert!(restored.utxos.insert(outpoint.clone(), coin).is_none());
+            restored.address_index.entry(address).or_default().push(outpoint);
+        }
+        assert_eq!(
+            restored.compute_state_root().unwrap(),
+            replay.diagnostics.state_root
+        );
+        assert_eq!(decoded_fees, replay.eligible_fees_by_score);
+        assert_eq!(decoded_conflicts, replay.diagnostics.conflict_diagnostics);
+        assert_eq!(decoded_fees[4], first_spend.fee);
+        assert_eq!(decoded_fees[5], 0);
+
+        // An unchanged UTXO root does not authenticate a forged fee ledger.
+        // This must be checked against independent complete replay, not a
+        // self-declared checkpoint hash or a miner's asserted total.
+        let mut forged_fees = decoded_fees;
+        forged_fees[5] = conflicting_spend.fee;
+        assert_ne!(forged_fees, replay.eligible_fees_by_score);
+        assert_eq!(
+            restored.compute_state_root().unwrap(),
+            replay.diagnostics.state_root
+        );
+
         // Modifying a miner reward in the restored UTXO set must fail even
         // when the stored claimed root and DAG ordering remain unchanged.
         let mut corrupted_amount = snapshot.clone();
