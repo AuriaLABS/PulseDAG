@@ -623,6 +623,42 @@ mod tests {
         tx.txid = compute_txid_v2(tx, chain_id).unwrap();
     }
 
+    // Test-only checkpoint verifier. The expected replay MUST come from an
+    // independently authenticated complete history, never from the checkpoint
+    // itself. In particular, a UTXO state root does not commit fee provenance
+    // or conflict decisions on its own.
+    fn verify_detached_checkpoint_against_full_replay(
+        encoded: &[u8],
+        expected: &StateReplayV3,
+    ) -> Result<UtxoState, String> {
+        let (coins, fees, conflicts): (Vec<Utxo>, Vec<u64>, Vec<String>) =
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        let mut restored = UtxoState::default();
+        for coin in coins {
+            let outpoint = coin.outpoint.clone();
+            let address = coin.address.clone();
+            if restored.utxos.insert(outpoint.clone(), coin).is_some() {
+                return Err("duplicate checkpoint outpoint".into());
+            }
+            restored
+                .address_index
+                .entry(address)
+                .or_default()
+                .push(outpoint);
+        }
+        let root = restored.compute_state_root().map_err(|error| error.to_string())?;
+        if root != expected.diagnostics.state_root {
+            return Err("detached checkpoint UTXO root differs from full replay".into());
+        }
+        if fees != expected.eligible_fees_by_score {
+            return Err("detached checkpoint fees differ from full replay".into());
+        }
+        if conflicts != expected.diagnostics.conflict_diagnostics {
+            return Err("detached checkpoint conflicts differ from full replay".into());
+        }
+        Ok(restored)
+    }
+
     fn add_sibling_block(
         state: &mut ChainState,
         label: &str,
@@ -1061,37 +1097,42 @@ mod tests {
             replay.diagnostics.conflict_diagnostics.clone(),
         ))
         .unwrap();
-        let (decoded_coins, decoded_fees, decoded_conflicts): (Vec<Utxo>, Vec<u64>, Vec<String>) =
-            serde_json::from_slice(&checkpoint_bytes).unwrap();
-        let mut restored = UtxoState::default();
-        for coin in decoded_coins {
-            let outpoint = coin.outpoint.clone();
-            let address = coin.address.clone();
-            assert!(restored.utxos.insert(outpoint.clone(), coin).is_none());
-            restored
-                .address_index
-                .entry(address)
-                .or_default()
-                .push(outpoint);
-        }
+        let restored =
+            verify_detached_checkpoint_against_full_replay(&checkpoint_bytes, &replay).unwrap();
         assert_eq!(
             restored.compute_state_root().unwrap(),
             replay.diagnostics.state_root
         );
-        assert_eq!(decoded_fees, replay.eligible_fees_by_score);
-        assert_eq!(decoded_conflicts, replay.diagnostics.conflict_diagnostics);
-        assert_eq!(decoded_fees[4], first_spend.fee);
-        assert_eq!(decoded_fees[5], 0);
+        assert_eq!(replay.eligible_fees_by_score[4], first_spend.fee);
+        assert_eq!(replay.eligible_fees_by_score[5], 0);
 
-        // An unchanged UTXO root does not authenticate a forged fee ledger.
-        // This must be checked against independent complete replay, not a
-        // self-declared checkpoint hash or a miner's asserted total.
-        let mut forged_fees = decoded_fees;
+        // A forged fee ledger MUST be rejected, even when its UTXO root has
+        // not changed. Both conflicting sibling variants are exercised here.
+        let mut forged_fees = replay.eligible_fees_by_score.clone();
         forged_fees[5] = conflicting_spend.fee;
-        assert_ne!(forged_fees, replay.eligible_fees_by_score);
-        assert_eq!(
-            restored.compute_state_root().unwrap(),
-            replay.diagnostics.state_root
+        let forged_fee_bytes = serde_json::to_vec(&(
+            snapshot.utxo.utxos.values().cloned().collect::<Vec<_>>(),
+            forged_fees,
+            replay.diagnostics.conflict_diagnostics.clone(),
+        ))
+        .unwrap();
+        assert!(
+            verify_detached_checkpoint_against_full_replay(&forged_fee_bytes, &replay)
+                .unwrap_err()
+                .contains("fees differ")
+        );
+
+        // Omitting a conflict can otherwise keep the UTXO root unchanged.
+        let forged_conflict_bytes = serde_json::to_vec(&(
+            snapshot.utxo.utxos.values().cloned().collect::<Vec<_>>(),
+            replay.eligible_fees_by_score.clone(),
+            Vec::<String>::new(),
+        ))
+        .unwrap();
+        assert!(
+            verify_detached_checkpoint_against_full_replay(&forged_conflict_bytes, &replay)
+                .unwrap_err()
+                .contains("conflicts differ")
         );
 
         // Modifying a miner reward in the restored UTXO set must fail even
