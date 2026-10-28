@@ -1323,7 +1323,7 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                     &db,
                     &winner.transactions[0].txid,
                     &winning_root,
-                    &winner_bytes
+                    &winner_bytes,
                 )
                 .is_err(),
                 "forged persisted fee must fail closed"
@@ -1341,7 +1341,7 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                     &db,
                     &winner.transactions[0].txid,
                     &winning_root,
-                    &winner_bytes
+                    &winner_bytes,
                 )
                 .is_err(),
                 "omitted competing transaction must fail closed"
