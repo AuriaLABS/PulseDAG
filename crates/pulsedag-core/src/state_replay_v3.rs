@@ -406,7 +406,7 @@ fn replay_authoritative_prefix_v3(
                             .utxo
                             .utxos
                             .get(&input.previous_output)
-                            .ok_or_else(|| invalid_replay("accepted transfer input missing before commit"))?;
+                            .ok_or_else(|| invalid_replay("accepted transfer input missing"))?;
                         spent_by_accepted_transfer
                             .insert(input.previous_output.clone(), coin.clone());
                     }
