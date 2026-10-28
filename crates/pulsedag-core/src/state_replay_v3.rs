@@ -393,15 +393,16 @@ fn replay_authoritative_prefix_v3(
                         None
                     };
                     if let Some(coin) = coin {
-                        if !historical.utxo.utxos.contains_key(outpoint) {
-                            historical.utxo.utxos.insert(outpoint.clone(), coin.clone());
-                            historical
-                                .utxo
-                                .address_index
-                                .entry(coin.address.clone())
-                                .or_default()
-                                .push(outpoint.clone());
+                        if historical.utxo.utxos.contains_key(outpoint) {
+                            continue;
                         }
+                        historical.utxo.utxos.insert(outpoint.clone(), coin.clone());
+                        historical
+                            .utxo
+                            .address_index
+                            .entry(coin.address.clone())
+                            .or_default()
+                            .push(outpoint.clone());
                     }
                 }
                 if has_immature_reward {
@@ -1068,7 +1069,10 @@ mod tests {
         let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("invalid immature signed transfer"), "{error}");
+        assert!(
+            error.contains("invalid immature signed transfer"),
+            "{error}"
+        );
     }
 
     fn assert_conflicting_sibling_fees_are_not_settled(
