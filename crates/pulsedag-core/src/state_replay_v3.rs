@@ -1080,8 +1080,7 @@ mod tests {
         let mut missing_ancestor = snapshot.clone();
         missing_ancestor.dag.blocks.remove("b1");
         assert!(
-            verify_authoritative_state_snapshot_v3(&missing_ancestor, &ONE_HOUR_PER_SCORE)
-                .is_err()
+            verify_authoritative_state_snapshot_v3(&missing_ancestor, &ONE_HOUR_PER_SCORE).is_err()
         );
 
         let mut omitted_conflict = snapshot;
