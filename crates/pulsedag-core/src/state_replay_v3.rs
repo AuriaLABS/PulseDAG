@@ -360,13 +360,7 @@ fn replay_authoritative_prefix_v3(
                 }
             }
             if all_inputs_available {
-                validate_signed_replay_spend(
-                    tx,
-                    &rebuilt,
-                    &state.chain_id,
-                    ordered_pos,
-                    hash,
-                )?;
+                validate_signed_replay_spend(tx, &rebuilt, &state.chain_id, ordered_pos, hash)?;
             } else if tx.inputs.iter().all(|input| {
                 rebuilt.utxo.utxos.contains_key(&input.previous_output)
                     || spent_by_accepted_transfer.contains_key(&input.previous_output)
@@ -390,13 +384,7 @@ fn replay_authoritative_prefix_v3(
                             .push(input.previous_output.clone());
                     }
                 }
-                validate_signed_replay_spend(
-                    tx,
-                    &historical,
-                    &state.chain_id,
-                    ordered_pos,
-                    hash,
-                )?;
+                validate_signed_replay_spend(tx, &historical, &state.chain_id, ordered_pos, hash)?;
             }
             let mut candidate = rebuilt.clone();
             match apply_transaction(tx, &mut candidate, block.header.height) {
@@ -1112,8 +1100,7 @@ mod tests {
             // chain-bound signature, rather than hiding behind UtxoNotFound.
             let peer = state.dag.blocks.get_mut("b4-peer").unwrap();
             peer.transactions[1].inputs[0].signature = "00".repeat(64);
-            peer.transactions[1].txid =
-                compute_txid_v2(&peer.transactions[1], &chain_id).unwrap();
+            peer.transactions[1].txid = compute_txid_v2(&peer.transactions[1], &chain_id).unwrap();
             let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
                 .unwrap_err()
                 .to_string();
