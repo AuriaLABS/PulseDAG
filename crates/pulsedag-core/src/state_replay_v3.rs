@@ -114,7 +114,7 @@ fn materialize_reward_at_score(
     reward_score: u64,
     eligible_fees_atoms: u64,
     cadence_segments: &[MonetaryCadenceSegment],
-) -> Result<(), PulseError> {
+) -> Result<OutPoint, PulseError> {
     let index = usize::try_from(reward_score)
         .map_err(|_| invalid_replay("reward score exceeds platform index width"))?;
     let block_hash = ordered
@@ -162,13 +162,14 @@ fn materialize_reward_at_score(
     insert_reward_utxo(
         &mut rebuilt.utxo,
         Utxo {
-            outpoint,
+            outpoint: outpoint.clone(),
             address: beneficiary,
             amount,
             coinbase: true,
             height: block.header.height,
         },
-    )
+    )?;
+    Ok(outpoint)
 }
 
 /// Rebuild authoritative v3 UTXO state from the exact ordered DAG while
@@ -547,7 +548,7 @@ fn replay_authoritative_prefix_v3(
         mature_reward_prefix_score =
             mature_reward_prefix_score_v3(current_score, cadence_segments)?;
         while next_reward_score <= mature_reward_prefix_score {
-            materialize_reward_at_score(
+            let matured_outpoint = materialize_reward_at_score(
                 &mut rebuilt,
                 state,
                 ordered_dag,
@@ -556,6 +557,10 @@ fn replay_authoritative_prefix_v3(
                     .map_err(|_| invalid_replay("reward score exceeds platform index width"))?],
                 cadence_segments,
             )?;
+            // Once the claim has materialized, only the live UTXO (or a
+            // repeated-input spent provenance record) may authorize a spend.
+            // Discard its temporary unspendable signer placeholder.
+            validated_reward_outpoints.remove(&matured_outpoint);
             materialized_rewards = materialized_rewards.saturating_add(1);
             next_reward_score = next_reward_score.saturating_add(1);
         }
