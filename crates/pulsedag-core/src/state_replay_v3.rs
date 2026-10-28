@@ -495,34 +495,80 @@ fn replay_authoritative_prefix_v3(
                     )?;
                 }
             }
-            let mut candidate = rebuilt.clone();
-            match apply_transaction(tx, &mut candidate, block.header.height) {
-                Ok(()) => {
-                    for input in &tx.inputs {
-                        if repeated_input_references.contains_key(&input.previous_output) {
-                            let coin =
-                                rebuilt.utxo.utxos.get(&input.previous_output).ok_or_else(
-                                    || invalid_replay("accepted transfer input missing"),
-                                )?;
-                            spent_by_accepted_transfer
-                                .insert(input.previous_output.clone(), coin.clone());
-                        }
+            // A signed transfer with distinct, currently live inputs has
+            // already passed the v2 duplicate-input/signature checks and the
+            // stricter v3 exact-conservation check above. The legacy apply
+            // function checks created outpoints *before* removing any inputs.
+            // Preflight that last possible collision to use the in-place path
+            // without copying the entire chain/UTXO set on every accepted tx.
+            // Retain the cloned path for conflict/immature inputs and duplicate
+            // created outpoints: failure must never partially change replay.
+            let in_place_safe = all_inputs_available
+                && u32::try_from(tx.outputs.len()).is_ok()
+                && tx.outputs.iter().enumerate().all(|(index, _)| {
+                    !rebuilt.utxo.utxos.contains_key(&OutPoint {
+                        txid: tx.txid.clone(),
+                        index: index as u32,
+                    })
+                });
+            // Collect only historically needed coins before an in-place
+            // mutation consumes them; commit these to provenance on success.
+            let archived_inputs = if in_place_safe {
+                tx.inputs
+                    .iter()
+                    .filter(|input| {
+                        repeated_input_references.contains_key(&input.previous_output)
+                    })
+                    .map(|input| {
+                        let coin = rebuilt
+                            .utxo
+                            .utxos
+                            .get(&input.previous_output)
+                            .ok_or_else(|| invalid_replay("accepted transfer input missing"))?;
+                        Ok((input.previous_output.clone(), coin.clone()))
+                    })
+                    .collect::<Result<Vec<_>, PulseError>>()?
+            } else {
+                Vec::new()
+            };
+            let applied = if in_place_safe {
+                // All apply_transaction fallible preconditions have already
+                // been checked against this exact immutable pre-state. An
+                // unexpected failure is terminal, never a partially committed
+                // skippable conflict.
+                apply_transaction(tx, &mut rebuilt, block.header.height).map_err(|error| {
+                    invalid_replay(format!(
+                        "validated in-place transfer {} unexpectedly failed: {error}",
+                        tx.txid
+                    ))
+                })?;
+                true
+            } else {
+                let mut candidate = rebuilt.clone();
+                match apply_transaction(tx, &mut candidate, block.header.height) {
+                    Ok(()) => {
+                        rebuilt = candidate;
+                        true
                     }
-                    rebuilt = candidate;
-                    eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
-                        .checked_add(tx.fee)
-                        .ok_or_else(|| invalid_replay("eligible fee arithmetic overflow"))?;
-                    applied_transactions = applied_transactions.saturating_add(1);
+                    Err(PulseError::UtxoNotFound | PulseError::DuplicateUtxoOutpoint(_)) => false,
+                    Err(error) => return Err(error),
                 }
-                Err(PulseError::UtxoNotFound | PulseError::DuplicateUtxoOutpoint(_)) => {
-                    skipped_conflicting_transactions =
-                        skipped_conflicting_transactions.saturating_add(1);
-                    conflict_diagnostics.push(format!(
-                        "ordered_pos={ordered_pos} block={} tx={} skipped_conflict_atomic",
-                        block.hash, tx.txid
-                    ));
+            };
+            if applied {
+                for (outpoint, coin) in archived_inputs {
+                    spent_by_accepted_transfer.insert(outpoint, coin);
                 }
-                Err(error) => return Err(error),
+                eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
+                    .checked_add(tx.fee)
+                    .ok_or_else(|| invalid_replay("eligible fee arithmetic overflow"))?;
+                applied_transactions = applied_transactions.saturating_add(1);
+            } else {
+                skipped_conflicting_transactions =
+                    skipped_conflicting_transactions.saturating_add(1);
+                conflict_diagnostics.push(format!(
+                    "ordered_pos={ordered_pos} block={} tx={} skipped_conflict_atomic",
+                    block.hash, tx.txid
+                ));
             }
             // Drop the historical coin as soon as its final reference has
             // been examined. Only still-relevant conflict provenance survives
