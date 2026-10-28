@@ -501,6 +501,28 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
                 .is_err()
         );
 
+        // CRITICAL NEGATIVE CONTROL: the other RocksDB is independent, not
+        // tamper-proof. If an attacker also rolls back its trusted tip to the
+        // older correctly signed point, this test-only reader WILL accept
+        // that stale snapshot. A production checkpoint requires a separately
+        // protected, monotonic authority and real consensus/finality rules.
+        independent
+            .put(EXTERNAL_TIP_WITNESS, first.hash.as_bytes())
+            .unwrap();
+        independent.flush_wal(true).unwrap();
+        read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash)
+            .expect("rollback of the independent tip defeats this test-only freshness witness");
+
+        // Reestablishing a genuinely newer independent tip restores denial.
+        independent
+            .put(EXTERNAL_TIP_WITNESS, second.hash.as_bytes())
+            .unwrap();
+        independent.flush_wal(true).unwrap();
+        assert!(
+            read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash)
+                .is_err()
+        );
+
         // This intentionally succeeds to demonstrate that a signature and
         // genesis match ALONE provide no durable high-watermark or finality.
         read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).unwrap();
