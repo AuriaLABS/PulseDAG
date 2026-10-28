@@ -10,6 +10,7 @@ use crate::{
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2},
     reward_settlement_v3::{settlement_outpoint_v3, validate_reward_claim_transaction_v3},
     state::{ChainState, UtxoState},
+    tx::{compute_txid_v2, verify_transaction_signatures_v2},
     types::{Hash, OutPoint, Transaction, Utxo},
     validation_v2::validate_transaction_v2,
 };
@@ -292,7 +293,7 @@ fn replay_authoritative_prefix_v3(
     // Full-replay provenance only: reject arbitrary missing outpoints rather
     // than treating every nonexistent input as a legitimate DAG conflict.
     let mut spent_by_accepted_transfer: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
-    let mut validated_reward_outpoints: BTreeSet<OutPoint> = BTreeSet::new();
+    let mut validated_reward_outpoints: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
 
     for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate().take(end_exclusive) {
         if hash == &state.dag.genesis_hash {
@@ -323,11 +324,25 @@ fn replay_authoritative_prefix_v3(
         }
 
         validated_reward_claims = validated_reward_claims.saturating_add(1);
-        validated_reward_outpoints.insert(settlement_outpoint_v3(
-            &state.chain_id,
-            hash,
-            &claim.txid,
-        ));
+        let reward_outpoint = settlement_outpoint_v3(&state.chain_id, hash, &claim.txid);
+        let reward_address = claim
+            .outputs
+            .first()
+            .ok_or_else(|| invalid_replay("validated claim lost its beneficiary"))?
+            .address
+            .clone();
+        validated_reward_outpoints.insert(
+            reward_outpoint.clone(),
+            Utxo {
+                outpoint: reward_outpoint,
+                address: reward_address,
+                // No actual coins: only authenticated signer provenance.
+                // Economic value is unknown until reward maturity.
+                amount: 0,
+                coinbase: true,
+                height: block.header.height,
+            },
+        );
 
         for tx in block.transactions.iter().skip(1) {
             // Only an actual AVAILABLE set of signed spend inputs is eligible
@@ -350,7 +365,7 @@ fn replay_authoritative_prefix_v3(
                     let outpoint = &input.previous_output;
                     if !rebuilt.utxo.utxos.contains_key(outpoint)
                         && !spent_by_accepted_transfer.contains_key(outpoint)
-                        && !validated_reward_outpoints.contains(outpoint)
+                        && !validated_reward_outpoints.contains_key(outpoint)
                     {
                         return Err(invalid_replay(format!(
                             "ordered_pos={ordered_pos} block={hash} transfer {} references outpoint {}:{} without authenticated replay provenance",
@@ -361,30 +376,80 @@ fn replay_authoritative_prefix_v3(
             }
             if all_inputs_available {
                 validate_signed_replay_spend(tx, &rebuilt, &state.chain_id, ordered_pos, hash)?;
-            } else if tx.inputs.iter().all(|input| {
-                rebuilt.utxo.utxos.contains_key(&input.previous_output)
-                    || spent_by_accepted_transfer.contains_key(&input.previous_output)
-            }) {
-                // Restore ONLY input provenance from previously accepted
-                // transactions into a throwaway validation snapshot. No UTXO
-                // is reinstated in the actual candidate/replay state, and
-                // loser fees remain ineligible for reward settlement.
+            } else {
+                // Missing inputs must have authenticated provenance from
+                // previously accepted spends or already validated reward
+                // claims. Never resurrect any of them in the real replay.
                 let mut historical = rebuilt.clone();
+                let mut has_immature_reward = false;
                 for input in &tx.inputs {
-                    if let Some(coin) = spent_by_accepted_transfer.get(&input.previous_output) {
-                        historical
-                            .utxo
-                            .utxos
-                            .insert(input.previous_output.clone(), coin.clone());
-                        historical
-                            .utxo
-                            .address_index
-                            .entry(coin.address.clone())
-                            .or_default()
-                            .push(input.previous_output.clone());
+                    let outpoint = &input.previous_output;
+                    let coin = if let Some(coin) = spent_by_accepted_transfer.get(outpoint) {
+                        Some(coin)
+                    } else if let Some(coin) = validated_reward_outpoints.get(outpoint) {
+                        has_immature_reward = true;
+                        Some(coin)
+                    } else {
+                        None
+                    };
+                    if let Some(coin) = coin {
+                        if !historical.utxo.utxos.contains_key(outpoint) {
+                            historical.utxo.utxos.insert(outpoint.clone(), coin.clone());
+                            historical
+                                .utxo
+                                .address_index
+                                .entry(coin.address.clone())
+                                .or_default()
+                                .push(outpoint.clone());
+                        }
                     }
                 }
-                validate_signed_replay_spend(tx, &historical, &state.chain_id, ordered_pos, hash)?;
+                if has_immature_reward {
+                    // The claim proves the beneficiary address, but not a
+                    // spendable balance or fee entitlement yet. Authenticate
+                    // all signatures and the exact chain-bound txid before
+                    // discarding this immature transaction; DO NOT settle it.
+                    if tx.outputs.is_empty()
+                        || tx.outputs.iter().any(|output| output.amount == 0)
+                        || tx
+                            .inputs
+                            .iter()
+                            .map(|input| &input.previous_output)
+                            .collect::<BTreeSet<_>>()
+                            .len()
+                            != tx.inputs.len()
+                    {
+                        return Err(invalid_replay(format!(
+                            "ordered_pos={ordered_pos} block={hash} malformed immature signed transfer {}",
+                            tx.txid
+                        )));
+                    }
+                    let expected_txid = compute_txid_v2(tx, &state.chain_id)
+                        .map_err(|error| invalid_replay(error.to_string()))?;
+                    if expected_txid != tx.txid {
+                        return Err(invalid_replay(format!(
+                            "ordered_pos={ordered_pos} block={hash} invalid immature signed transfer txid {}",
+                            tx.txid
+                        )));
+                    }
+                    verify_transaction_signatures_v2(tx, &historical, &state.chain_id)
+                        .map_err(|error| {
+                            invalid_replay(format!(
+                                "ordered_pos={ordered_pos} block={hash} invalid immature signed transfer {}: {error}",
+                                tx.txid
+                            ))
+                        })?;
+                } else {
+                    // A true spent-input conflict must also conserve amounts.
+                    // The historical copy is never committed or fee-credited.
+                    validate_signed_replay_spend(
+                        tx,
+                        &historical,
+                        &state.chain_id,
+                        ordered_pos,
+                        hash,
+                    )?;
+                }
             }
             let mut candidate = rebuilt.clone();
             match apply_transaction(tx, &mut candidate, block.header.height) {
@@ -960,18 +1025,18 @@ mod tests {
         append_linear_block(
             &mut state,
             "b1",
-            vec![claim(&chain_id, "pulse1miner", 11)],
+            vec![claim(&chain_id, &replay_test_address(), 11)],
             1,
         );
         let claim1 = state.dag.blocks["b1"].transactions[0].clone();
         let reward1 = settlement_outpoint_v3(&chain_id, "b1", &claim1.txid);
-        let early_spend = Transaction {
-            txid: "same-score-spend".into(),
+        let mut early_spend = Transaction {
+            txid: String::new(),
             version: TRANSACTION_VERSION_V2,
             inputs: vec![TxInput {
                 previous_output: reward1.clone(),
-                public_key: "pk".into(),
-                signature: "sig".into(),
+                public_key: String::new(),
+                signature: String::new(),
             }],
             outputs: vec![TxOutput {
                 address: "pulse1recipient".into(),
@@ -980,10 +1045,11 @@ mod tests {
             fee: 0,
             nonce: 12,
         };
+        sign_replay_transfer(&mut early_spend, &chain_id);
         append_linear_block(
             &mut state,
             "b2",
-            vec![claim(&chain_id, "pulse1miner2", 12), early_spend],
+            vec![claim(&chain_id, "pulse1miner2", 12), early_spend.clone()],
             2,
         );
 
@@ -992,6 +1058,17 @@ mod tests {
         assert_eq!(replay.diagnostics.materialized_rewards, 1);
         assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
         assert!(replay.utxo.utxos.contains_key(&reward1));
+
+        // An immature outpoint is not a free pass for fraudulent signatures.
+        // Even rehashing the altered transaction must fail before conflict skip.
+        let mut forged = early_spend;
+        forged.inputs[0].signature = "00".repeat(64);
+        forged.txid = compute_txid_v2(&forged, &chain_id).unwrap();
+        state.dag.blocks.get_mut("b2").unwrap().transactions[1] = forged;
+        let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid immature signed transfer"), "{error}");
     }
 
     fn assert_conflicting_sibling_fees_are_not_settled(
