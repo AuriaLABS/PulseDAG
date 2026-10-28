@@ -2001,6 +2001,111 @@ mod tests {
         );
     }
 
+    /// Opt-in local arithmetic/UTXO application probe ONLY. This is NOT a
+    /// native-v3 consensus benchmark or an authoritative monetary replay
+    /// throughput claim: it isolates the old cloned-ChainState apply path from
+    /// the new direct apply path under the SAME valid, chain-bound Ed25519
+    /// spends, with equal initial states and an identical final UTXO root.
+    /// Times are observations, never admission or CI pass thresholds.
+    #[test]
+    #[ignore = "opt-in local timing evidence; not full replay, network or 500ms proof"]
+    fn accepted_spend_clone_vs_in_place_trial_probe() {
+        const FUNDED_UTXOS: usize = 512;
+        const SIGNED_SPENDS: usize = 128;
+        let mut initial =
+            init_chain_state_v3("v3-test-only-accepted-spend-profile".into(), 1_800_000_000)
+                .unwrap();
+        let chain_id = initial.chain_id.clone();
+        let signer = replay_test_address();
+        let mut transactions = Vec::with_capacity(SIGNED_SPENDS);
+        for index in 0..FUNDED_UTXOS {
+            let source = OutPoint {
+                txid: format!("trial-only-source-{index}"),
+                index: 0,
+            };
+            initial.utxo.utxos.insert(
+                source.clone(),
+                Utxo {
+                    outpoint: source.clone(),
+                    address: signer.clone(),
+                    amount: 10,
+                    coinbase: false,
+                    height: 1,
+                },
+            );
+            initial
+                .utxo
+                .address_index
+                .entry(signer.clone())
+                .or_default()
+                .push(source.clone());
+            if index < SIGNED_SPENDS {
+                let mut tx = Transaction {
+                    txid: String::new(),
+                    version: TRANSACTION_VERSION_V2,
+                    inputs: vec![TxInput {
+                        previous_output: source,
+                        public_key: String::new(),
+                        signature: String::new(),
+                    }],
+                    outputs: vec![TxOutput {
+                        address: format!("pulse1probe-recipient-{index}"),
+                        amount: 9,
+                    }],
+                    fee: 1,
+                    nonce: index as u64 + 1,
+                };
+                sign_replay_transfer(&mut tx, &chain_id);
+                transactions.push(tx);
+            }
+        }
+
+        let trial = |clone_before_apply: bool| {
+            // The initial clone is outside the timed loop for both modes.
+            let mut rebuilt = initial.clone();
+            let start = std::time::Instant::now();
+            for (position, tx) in transactions.iter().enumerate() {
+                validate_signed_replay_spend(
+                    tx,
+                    &rebuilt,
+                    &chain_id,
+                    position,
+                    "test-only-trial",
+                )
+                .unwrap();
+                if clone_before_apply {
+                    let mut candidate = rebuilt.clone();
+                    apply_transaction(tx, &mut candidate, 2).unwrap();
+                    rebuilt = candidate;
+                } else {
+                    apply_transaction(tx, &mut rebuilt, 2).unwrap();
+                }
+            }
+            let elapsed_us = start.elapsed().as_micros();
+            let root = rebuilt.utxo.compute_state_root().unwrap();
+            (elapsed_us, root, rebuilt.utxo.utxos.len())
+        };
+        // ABA on the SAME process/hardware permits checking order bias.
+        // Do not assert that one noisy wall-time sample is necessarily faster.
+        let cloned_a = trial(true);
+        let direct = trial(false);
+        let cloned_b = trial(true);
+        assert_eq!(cloned_a.1, direct.1);
+        assert_eq!(cloned_b.1, direct.1);
+        assert_eq!(cloned_a.2, FUNDED_UTXOS);
+        assert_eq!(direct.2, FUNDED_UTXOS);
+        assert_eq!(cloned_b.2, FUNDED_UTXOS);
+        println!(
+            "v3_trial_accepted_apply_time_us clone_a={} in_place={} clone_b={} signed_spends={} funded_utxos={} identical_root={}",
+            cloned_a.0,
+            direct.0,
+            cloned_b.0,
+            SIGNED_SPENDS,
+            FUNDED_UTXOS,
+            direct.1
+        );
+    }
+
     #[test]
     fn entirely_unknown_input_is_not_an_authenticated_conflict_loser() {
         let mut state =
