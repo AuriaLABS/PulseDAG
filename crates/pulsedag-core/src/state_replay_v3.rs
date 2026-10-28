@@ -623,18 +623,37 @@ mod tests {
         tx.txid = compute_txid_v2(tx, chain_id).unwrap();
     }
 
-    // Test-only checkpoint verifier. The expected replay MUST come from an
-    // independently authenticated complete history, never from the checkpoint
-    // itself. In particular, a UTXO state root does not commit fee provenance
-    // or conflict decisions on its own.
+    #[derive(Clone, Serialize, Deserialize)]
+    struct DetachedTestCheckpointV3 {
+        chain_id: String,
+        ordered_dag_digest: String,
+        ordered_dag_tip: Option<Hash>,
+        mature_reward_prefix_score: u64,
+        coins: Vec<Utxo>,
+        fees: Vec<u64>,
+        conflicts: Vec<String>,
+    }
+
+    // Test-only checkpoint verifier. Expected facts MUST be derived from
+    // independently authenticated complete history. UTXO roots alone do not
+    // bind DAG order, maturity, fee provenance, or conflict decisions.
     fn verify_detached_checkpoint_against_full_replay(
         encoded: &[u8],
+        state: &ChainState,
         expected: &StateReplayV3,
     ) -> Result<UtxoState, String> {
-        let (coins, fees, conflicts): (Vec<Utxo>, Vec<u64>, Vec<String>) =
+        let checkpoint: DetachedTestCheckpointV3 =
             serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        if checkpoint.chain_id != state.chain_id
+            || checkpoint.ordered_dag_digest != expected.diagnostics.ordered_dag_digest
+            || checkpoint.ordered_dag_tip != expected.diagnostics.ordered_dag_tip
+            || checkpoint.mature_reward_prefix_score
+                != expected.diagnostics.mature_reward_prefix_score
+        {
+            return Err("detached checkpoint chain/order/maturity differs from full replay".into());
+        }
         let mut restored = UtxoState::default();
-        for coin in coins {
+        for coin in checkpoint.coins {
             let outpoint = coin.outpoint.clone();
             let address = coin.address.clone();
             if restored.utxos.insert(outpoint.clone(), coin).is_some() {
@@ -652,10 +671,10 @@ mod tests {
         if root != expected.diagnostics.state_root {
             return Err("detached checkpoint UTXO root differs from full replay".into());
         }
-        if fees != expected.eligible_fees_by_score {
+        if checkpoint.fees != expected.eligible_fees_by_score {
             return Err("detached checkpoint fees differ from full replay".into());
         }
-        if conflicts != expected.diagnostics.conflict_diagnostics {
+        if checkpoint.conflicts != expected.diagnostics.conflict_diagnostics {
             return Err("detached checkpoint conflicts differ from full replay".into());
         }
         Ok(restored)
@@ -1087,20 +1106,23 @@ mod tests {
             replay.diagnostics
         );
 
-        // A detached serialized monetary checkpoint needs independently
-        // verified fees and conflicts AS WELL AS its UTXO root. The source
-        // below is the full-history signed-transfer replay; the test does not
-        // grant peer-provided or pruned snapshots independent authority.
+        // A detached serialized checkpoint has to bind economic facts to
+        // the independently verified chain, canonical order, and maturity
+        // boundary. This is NOT an independently trusted pruned checkpoint.
         let mut coins: Vec<Utxo> = snapshot.utxo.utxos.values().cloned().collect();
         coins.sort_by_key(|coin| (coin.outpoint.txid.clone(), coin.outpoint.index));
-        let checkpoint_bytes = serde_json::to_vec(&(
+        let checkpoint = DetachedTestCheckpointV3 {
+            chain_id: state.chain_id.clone(),
+            ordered_dag_digest: replay.diagnostics.ordered_dag_digest.clone(),
+            ordered_dag_tip: replay.diagnostics.ordered_dag_tip.clone(),
+            mature_reward_prefix_score: replay.diagnostics.mature_reward_prefix_score,
             coins,
-            replay.eligible_fees_by_score.clone(),
-            replay.diagnostics.conflict_diagnostics.clone(),
-        ))
-        .unwrap();
+            fees: replay.eligible_fees_by_score.clone(),
+            conflicts: replay.diagnostics.conflict_diagnostics.clone(),
+        };
+        let encoded = serde_json::to_vec(&checkpoint).unwrap();
         let restored =
-            verify_detached_checkpoint_against_full_replay(&checkpoint_bytes, &replay).unwrap();
+            verify_detached_checkpoint_against_full_replay(&encoded, &state, &replay).unwrap();
         assert_eq!(
             restored.compute_state_root().unwrap(),
             replay.diagnostics.state_root
@@ -1108,33 +1130,68 @@ mod tests {
         assert_eq!(replay.eligible_fees_by_score[4], first_spend.fee);
         assert_eq!(replay.eligible_fees_by_score[5], 0);
 
-        // A forged fee ledger MUST be rejected, even when its UTXO root has
-        // not changed. Both conflicting sibling variants are exercised here.
-        let mut forged_fees = replay.eligible_fees_by_score.clone();
-        forged_fees[5] = conflicting_spend.fee;
-        let forged_fee_bytes = serde_json::to_vec(&(
-            snapshot.utxo.utxos.values().cloned().collect::<Vec<_>>(),
-            forged_fees,
-            replay.diagnostics.conflict_diagnostics.clone(),
-        ))
-        .unwrap();
+        // A forged fee or missing conflict cannot pass simply by preserving
+        // the exact same UTXO state root.
+        let mut forged_fees = checkpoint.clone();
+        forged_fees.fees[5] = conflicting_spend.fee;
         assert!(
-            verify_detached_checkpoint_against_full_replay(&forged_fee_bytes, &replay)
-                .unwrap_err()
-                .contains("fees differ")
+            verify_detached_checkpoint_against_full_replay(
+                &serde_json::to_vec(&forged_fees).unwrap(),
+                &state,
+                &replay
+            )
+            .unwrap_err()
+            .contains("fees differ")
         );
 
-        // Omitting a conflict can otherwise keep the UTXO root unchanged.
-        let forged_conflict_bytes = serde_json::to_vec(&(
-            snapshot.utxo.utxos.values().cloned().collect::<Vec<_>>(),
-            replay.eligible_fees_by_score.clone(),
-            Vec::<String>::new(),
-        ))
-        .unwrap();
+        let mut forged_conflicts = checkpoint.clone();
+        forged_conflicts.conflicts.clear();
         assert!(
-            verify_detached_checkpoint_against_full_replay(&forged_conflict_bytes, &replay)
-                .unwrap_err()
-                .contains("conflicts differ")
+            verify_detached_checkpoint_against_full_replay(
+                &serde_json::to_vec(&forged_conflicts).unwrap(),
+                &state,
+                &replay
+            )
+            .unwrap_err()
+            .contains("conflicts differ")
+        );
+
+        // Consensus identity and reward maturity cannot be replaced with
+        // values from another fork or chain, even if the UTXO root matches.
+        let mut forged_order = checkpoint.clone();
+        forged_order.ordered_dag_digest = "forged-ordered-dag".into();
+        assert!(
+            verify_detached_checkpoint_against_full_replay(
+                &serde_json::to_vec(&forged_order).unwrap(),
+                &state,
+                &replay
+            )
+            .unwrap_err()
+            .contains("chain/order/maturity differs")
+        );
+
+        let mut forged_maturity = checkpoint.clone();
+        forged_maturity.mature_reward_prefix_score += 1;
+        assert!(
+            verify_detached_checkpoint_against_full_replay(
+                &serde_json::to_vec(&forged_maturity).unwrap(),
+                &state,
+                &replay
+            )
+            .unwrap_err()
+            .contains("chain/order/maturity differs")
+        );
+
+        let mut forged_chain = checkpoint;
+        forged_chain.chain_id = "wrong-checkpoint-chain".into();
+        assert!(
+            verify_detached_checkpoint_against_full_replay(
+                &serde_json::to_vec(&forged_chain).unwrap(),
+                &state,
+                &replay
+            )
+            .unwrap_err()
+            .contains("chain/order/maturity differs")
         );
 
         // Modifying a miner reward in the restored UTXO set must fail even
