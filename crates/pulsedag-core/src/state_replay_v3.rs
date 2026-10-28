@@ -276,11 +276,11 @@ fn repeated_replay_input_counts_v3(
         if hash == &state.dag.genesis_hash {
             continue;
         }
-        let block = state
-            .dag
-            .blocks
-            .get(hash)
-            .ok_or_else(|| invalid_replay(format!("ordered block {hash} missing during input preindex")))?;
+        let block = state.dag.blocks.get(hash).ok_or_else(|| {
+            invalid_replay(format!(
+                "ordered block {hash} missing during input preindex"
+            ))
+        })?;
         for tx in block.transactions.iter().skip(1) {
             for input in &tx.inputs {
                 let outpoint = &input.previous_output;
@@ -500,11 +500,10 @@ fn replay_authoritative_prefix_v3(
                 Ok(()) => {
                     for input in &tx.inputs {
                         if repeated_input_references.contains_key(&input.previous_output) {
-                            let coin = rebuilt
-                                .utxo
-                                .utxos
-                                .get(&input.previous_output)
-                                .ok_or_else(|| invalid_replay("accepted transfer input missing"))?;
+                            let coin =
+                                rebuilt.utxo.utxos.get(&input.previous_output).ok_or_else(
+                                    || invalid_replay("accepted transfer input missing"),
+                                )?;
                             spent_by_accepted_transfer
                                 .insert(input.previous_output.clone(), coin.clone());
                         }
@@ -530,7 +529,8 @@ fn replay_authoritative_prefix_v3(
             // into the next score.
             for input in &tx.inputs {
                 let outpoint = &input.previous_output;
-                let finished = if let Some(remaining) = repeated_input_references.get_mut(outpoint) {
+                let finished = if let Some(remaining) = repeated_input_references.get_mut(outpoint)
+                {
                     *remaining = remaining
                         .checked_sub(1)
                         .ok_or_else(|| invalid_replay("input reference count underflow"))?;
@@ -1283,9 +1283,12 @@ mod tests {
             &replay.ordered_dag.blocks[1..],
             &["b1", "b2", "b3", "b4", "b4-peer", "b5"]
         );
-        let repeated =
-            repeated_replay_input_counts_v3(&state, &replay.ordered_dag, replay.ordered_dag.blocks.len())
-                .unwrap();
+        let repeated = repeated_replay_input_counts_v3(
+            &state,
+            &replay.ordered_dag,
+            replay.ordered_dag.blocks.len(),
+        )
+        .unwrap();
         // Only the genuinely competing reward1 input needs historical UTXO
         // retention; reward2 has a single input reference in this full order.
         assert_eq!(repeated.len(), 1);
