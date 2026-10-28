@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, BTreeSet};
+use std::collections::{hash_map::Entry, BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use crate::{
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2},
     reward_settlement_v3::{settlement_outpoint_v3, validate_reward_claim_transaction_v3},
     state::{ChainState, UtxoState},
-    types::{Hash, OutPoint, Utxo},
+    types::{Hash, OutPoint, Transaction, Utxo},
     validation_v2::validate_transaction_v2,
 };
 
@@ -218,6 +218,48 @@ struct ReplayPrefixV3 {
     eligible_fees_by_score: Vec<u64>,
 }
 
+/// Verify the chain-bound signature and exact monetary conservation against
+/// an explicitly reconstructed spendable-input view.  A spent *conflict loser*
+/// is validated against its authenticated historical UTXOs, not silently
+/// accepted solely because its inputs are absent from the current live set.
+fn validate_signed_replay_spend(
+    tx: &Transaction,
+    input_state: &ChainState,
+    chain_id: &str,
+    ordered_pos: usize,
+    block_hash: &Hash,
+) -> Result<(), PulseError> {
+    validate_transaction_v2(tx, input_state, chain_id).map_err(|error| {
+        invalid_replay(format!(
+            "ordered_pos={ordered_pos} block={block_hash} invalid signed transfer {}: {error}",
+            tx.txid
+        ))
+    })?;
+    let inputs = tx.inputs.iter().try_fold(0_u128, |sum, input| {
+        let coin = input_state
+            .utxo
+            .utxos
+            .get(&input.previous_output)
+            .ok_or_else(|| invalid_replay("signed input vanished before replay"))?;
+        sum.checked_add(u128::from(coin.amount))
+            .ok_or_else(|| invalid_replay("signed input amount overflow"))
+    })?;
+    let outputs = tx.outputs.iter().try_fold(0_u128, |sum, output| {
+        sum.checked_add(u128::from(output.amount))
+            .ok_or_else(|| invalid_replay("signed output amount overflow"))
+    })?;
+    let outputs_plus_fee = outputs
+        .checked_add(u128::from(tx.fee))
+        .ok_or_else(|| invalid_replay("signed transfer fee overflow"))?;
+    if inputs != outputs_plus_fee {
+        return Err(invalid_replay(format!(
+            "ordered_pos={ordered_pos} block={block_hash} signed input/output/fee nonconservation for {}",
+            tx.txid
+        )));
+    }
+    Ok(())
+}
+
 fn replay_authoritative_prefix_v3(
     state: &ChainState,
     cadence_segments: &[MonetaryCadenceSegment],
@@ -249,7 +291,7 @@ fn replay_authoritative_prefix_v3(
     let mut eligible_fees_by_score = vec![0_u64; ordered_dag.blocks.len()];
     // Full-replay provenance only: reject arbitrary missing outpoints rather
     // than treating every nonexistent input as a legitimate DAG conflict.
-    let mut spent_by_accepted_transfer: BTreeSet<OutPoint> = BTreeSet::new();
+    let mut spent_by_accepted_transfer: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
     let mut validated_reward_outpoints: BTreeSet<OutPoint> = BTreeSet::new();
 
     for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate().take(end_exclusive) {
@@ -307,7 +349,7 @@ fn replay_authoritative_prefix_v3(
                 for input in &tx.inputs {
                     let outpoint = &input.previous_output;
                     if !rebuilt.utxo.utxos.contains_key(outpoint)
-                        && !spent_by_accepted_transfer.contains(outpoint)
+                        && !spent_by_accepted_transfer.contains_key(outpoint)
                         && !validated_reward_outpoints.contains(outpoint)
                     {
                         return Err(invalid_replay(format!(
@@ -318,44 +360,55 @@ fn replay_authoritative_prefix_v3(
                 }
             }
             if all_inputs_available {
-                validate_transaction_v2(tx, &rebuilt, &state.chain_id).map_err(|error| {
-                    invalid_replay(format!(
-                        "ordered_pos={ordered_pos} block={hash} invalid signed transfer {}: {error}",
-                        tx.txid
-                    ))
-                })?;
-                // Legacy v2 admission allows input > output + stated fee,
-                // but v3 replay must never silently destroy the difference
-                // or credit fees unsupported by signed spend value. Require
-                // EXACT conservation with checked u128 intermediate sums.
-                let inputs = tx.inputs.iter().try_fold(0_u128, |sum, input| {
-                    let coin = rebuilt
-                        .utxo
-                        .utxos
-                        .get(&input.previous_output)
-                        .ok_or_else(|| invalid_replay("signed input vanished before replay"))?;
-                    sum.checked_add(u128::from(coin.amount))
-                        .ok_or_else(|| invalid_replay("signed input amount overflow"))
-                })?;
-                let outputs = tx.outputs.iter().try_fold(0_u128, |sum, output| {
-                    sum.checked_add(u128::from(output.amount))
-                        .ok_or_else(|| invalid_replay("signed output amount overflow"))
-                })?;
-                let outputs_plus_fee = outputs
-                    .checked_add(u128::from(tx.fee))
-                    .ok_or_else(|| invalid_replay("signed transfer fee overflow"))?;
-                if inputs != outputs_plus_fee {
-                    return Err(invalid_replay(format!(
-                        "ordered_pos={ordered_pos} block={hash} signed input/output/fee nonconservation for {}",
-                        tx.txid
-                    )));
+                validate_signed_replay_spend(
+                    tx,
+                    &rebuilt,
+                    &state.chain_id,
+                    ordered_pos,
+                    hash,
+                )?;
+            } else if tx.inputs.iter().all(|input| {
+                rebuilt.utxo.utxos.contains_key(&input.previous_output)
+                    || spent_by_accepted_transfer.contains_key(&input.previous_output)
+            }) {
+                // Restore ONLY input provenance from previously accepted
+                // transactions into a throwaway validation snapshot. No UTXO
+                // is reinstated in the actual candidate/replay state, and
+                // loser fees remain ineligible for reward settlement.
+                let mut historical = rebuilt.clone();
+                for input in &tx.inputs {
+                    if let Some(coin) = spent_by_accepted_transfer.get(&input.previous_output) {
+                        historical
+                            .utxo
+                            .utxos
+                            .insert(input.previous_output.clone(), coin.clone());
+                        historical
+                            .utxo
+                            .address_index
+                            .entry(coin.address.clone())
+                            .or_default()
+                            .push(input.previous_output.clone());
+                    }
                 }
+                validate_signed_replay_spend(
+                    tx,
+                    &historical,
+                    &state.chain_id,
+                    ordered_pos,
+                    hash,
+                )?;
             }
             let mut candidate = rebuilt.clone();
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
                     for input in &tx.inputs {
-                        spent_by_accepted_transfer.insert(input.previous_output.clone());
+                        let coin = rebuilt
+                            .utxo
+                            .utxos
+                            .get(&input.previous_output)
+                            .ok_or_else(|| invalid_replay("accepted transfer input missing before commit"))?;
+                        spent_by_accepted_transfer
+                            .insert(input.previous_output.clone(), coin.clone());
                     }
                     rebuilt = candidate;
                     eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
@@ -953,7 +1006,10 @@ mod tests {
         assert!(replay.utxo.utxos.contains_key(&reward1));
     }
 
-    fn assert_conflicting_sibling_fees_are_not_settled(duplicate_transaction: bool) {
+    fn assert_conflicting_sibling_fees_are_not_settled(
+        duplicate_transaction: bool,
+        corrupt_loser_signature: bool,
+    ) {
         let mut state = init_chain_state_v3("reward-replay-v3-fees".into(), 1_800_000_015).unwrap();
         let chain_id = state.chain_id.clone();
 
@@ -1049,6 +1105,21 @@ mod tests {
                 conflicting_spend.clone(),
             ],
         );
+
+        if corrupt_loser_signature {
+            // The missing input was authentically spent by the earlier
+            // accepted winner. Its competitor still must have a valid
+            // chain-bound signature, rather than hiding behind UtxoNotFound.
+            let peer = state.dag.blocks.get_mut("b4-peer").unwrap();
+            peer.transactions[1].inputs[0].signature = "00".repeat(64);
+            peer.transactions[1].txid =
+                compute_txid_v2(&peer.transactions[1], &chain_id).unwrap();
+            let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("invalid signed transfer"), "{error}");
+            return;
+        }
 
         let b4_claim = state.dag.blocks["b4"].transactions[0].clone();
         let b4_reward = settlement_outpoint_v3(&chain_id, "b4", &b4_claim.txid);
@@ -1264,12 +1335,17 @@ mod tests {
 
     #[test]
     fn conflict_skipped_transaction_fee_is_not_paid_to_miner() {
-        assert_conflicting_sibling_fees_are_not_settled(false);
+        assert_conflicting_sibling_fees_are_not_settled(false, false);
     }
 
     #[test]
     fn duplicate_outpoint_transaction_fee_is_not_paid_twice() {
-        assert_conflicting_sibling_fees_are_not_settled(true);
+        assert_conflicting_sibling_fees_are_not_settled(true, false);
+    }
+
+    #[test]
+    fn conflict_loser_with_invalid_signature_is_not_silently_discarded() {
+        assert_conflicting_sibling_fees_are_not_settled(false, true);
     }
 
     #[test]
