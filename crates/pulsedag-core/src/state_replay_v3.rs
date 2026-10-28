@@ -1613,6 +1613,82 @@ mod tests {
     }
 
     #[test]
+    fn repeated_input_preindex_remains_sparse_across_many_independent_spends() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-sparse-provenance".into(), 1_800_000_000)
+                .unwrap();
+        let chain_id = state.chain_id.clone();
+        let mut first_spend = None;
+        let mut first_source = None;
+
+        // The first two rewards must mature before any ordinary transfer can
+        // execute. Subsequent scores spend distinct mature reward outputs,
+        // except for the final intentionally conflicting sibling.
+        for score in 1_u64..=18 {
+            let mut transactions = vec![claim(&chain_id, &replay_test_address(), 100 + score)];
+            if score >= 3 {
+                let reward_score = score - 2;
+                let block_hash = format!("b{reward_score}");
+                let reward_claim = &state.dag.blocks[&block_hash].transactions[0];
+                let source =
+                    settlement_outpoint_v3(&chain_id, &block_hash, &reward_claim.txid);
+                let subsidy =
+                    subsidy_atoms_for_score(reward_score, &ONE_HOUR_PER_SCORE).unwrap();
+                let mut spend = Transaction {
+                    txid: String::new(),
+                    version: TRANSACTION_VERSION_V2,
+                    inputs: vec![TxInput {
+                        previous_output: source.clone(),
+                        public_key: String::new(),
+                        signature: String::new(),
+                    }],
+                    outputs: vec![TxOutput {
+                        address: format!("pulse1recipient{score}"),
+                        amount: subsidy - 1,
+                    }],
+                    fee: 1,
+                    nonce: score + 200,
+                };
+                sign_replay_transfer(&mut spend, &chain_id);
+                if score == 3 {
+                    first_source = Some(source);
+                    first_spend = Some(spend.clone());
+                }
+                transactions.push(spend);
+            }
+            append_linear_block(&mut state, &format!("b{score}"), transactions, score);
+        }
+
+        let mut loser = first_spend.unwrap();
+        loser.nonce = 999;
+        loser.outputs[0].address = "pulse1lateconflict".into();
+        sign_replay_transfer(&mut loser, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b19",
+            vec![claim(&chain_id, "pulse1lastminer", 119), loser],
+            19,
+        );
+
+        let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        let references = repeated_replay_input_counts_v3(
+            &state,
+            &replay.ordered_dag,
+            replay.ordered_dag.blocks.len(),
+        )
+        .unwrap();
+        // Sixteen accepted ordinary transfers, yet only one historically
+        // consumed outpoint needs a retained value for the late conflict.
+        assert_eq!(references.len(), 1);
+        assert_eq!(references.get(&first_source.unwrap()), Some(&2));
+        assert_eq!(replay.diagnostics.applied_transactions, 16);
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
+        assert!(replay.eligible_fees_by_score[3..19].iter().all(|fee| *fee == 1));
+        assert_eq!(replay.eligible_fees_by_score[19], 0);
+        assert_insertion_order_independent(&state, &replay);
+    }
+
+    #[test]
     fn entirely_unknown_input_is_not_an_authenticated_conflict_loser() {
         let mut state =
             init_chain_state_v3("reward-replay-v3-unknown-input".into(), 1_800_000_046).unwrap();
