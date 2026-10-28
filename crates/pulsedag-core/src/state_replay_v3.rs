@@ -1831,6 +1831,169 @@ mod tests {
     }
 
     #[test]
+    fn signed_multi_input_fast_path_preserves_fees_and_late_conflict_provenance() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-multi-input".into(), 1_800_000_000).unwrap();
+        let chain_id = state.chain_id.clone();
+        let signer = replay_test_address();
+        for score in 1_u64..=3 {
+            let beneficiary = if score < 3 {
+                signer.as_str()
+            } else {
+                "pulse1otherminer"
+            };
+            append_linear_block(
+                &mut state,
+                &format!("b{score}"),
+                vec![claim(&chain_id, beneficiary, 100 + score)],
+                score,
+            );
+        }
+
+        // Both claims are mature before b4. Two independently authenticated
+        // signed inputs, two new outpoints and a nonzero miner fee exercise
+        // the in-place path without skipping output collision preflights.
+        let sources: Vec<OutPoint> = (1_u64..=2)
+            .map(|score| {
+                let hash = format!("b{score}");
+                settlement_outpoint_v3(
+                    &chain_id,
+                    &hash,
+                    &state.dag.blocks[&hash].transactions[0].txid,
+                )
+            })
+            .collect();
+        let combined = subsidy_atoms_for_score(1, &ONE_HOUR_PER_SCORE)
+            .unwrap()
+            .checked_add(subsidy_atoms_for_score(2, &ONE_HOUR_PER_SCORE).unwrap())
+            .unwrap();
+        let fee = 5_u64;
+        let first_amount = (combined - fee) / 3;
+        let mut combined_spend = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: sources
+                .iter()
+                .map(|outpoint| TxInput {
+                    previous_output: outpoint.clone(),
+                    public_key: String::new(),
+                    signature: String::new(),
+                })
+                .collect(),
+            outputs: vec![
+                TxOutput {
+                    address: signer.clone(),
+                    amount: first_amount,
+                },
+                TxOutput {
+                    address: signer.clone(),
+                    amount: combined - fee - first_amount,
+                },
+            ],
+            fee,
+            nonce: 104,
+        };
+        sign_replay_transfer(&mut combined_spend, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b4",
+            vec![claim(&chain_id, "pulse1miner4", 104), combined_spend.clone()],
+            4,
+        );
+
+        // Spend one of the created outputs in the next score. The other must
+        // remain untouched, and each accepted fee must be paid exactly once.
+        let first_created = OutPoint {
+            txid: combined_spend.txid.clone(),
+            index: 0,
+        };
+        let second_created = OutPoint {
+            txid: combined_spend.txid.clone(),
+            index: 1,
+        };
+        let mut follow_on = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: first_created.clone(),
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1finalrecipient".into(),
+                amount: first_amount - 2,
+            }],
+            fee: 2,
+            nonce: 105,
+        };
+        sign_replay_transfer(&mut follow_on, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b5",
+            vec![claim(&chain_id, "pulse1miner5", 105), follow_on.clone()],
+            5,
+        );
+
+        // Signed, exactly conserving loser has TWO already consumed inputs.
+        // Neither its output nor its larger claimed fee may be materialized.
+        let mut loser = combined_spend.clone();
+        loser.nonce = 999;
+        loser.fee = 9;
+        loser.outputs[1].amount -= 4;
+        sign_replay_transfer(&mut loser, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b6",
+            vec![claim(&chain_id, "pulse1miner6", 106), loser.clone()],
+            6,
+        );
+
+        let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        let refs = repeated_replay_input_counts_v3(
+            &state,
+            &replay.ordered_dag,
+            replay.ordered_dag.blocks.len(),
+        )
+        .unwrap();
+        assert_eq!(refs.len(), 2);
+        for source in &sources {
+            assert_eq!(refs.get(source), Some(&2));
+            assert!(!replay.utxo.utxos.contains_key(source));
+        }
+        assert!(!replay.utxo.utxos.contains_key(&first_created));
+        assert_eq!(
+            replay.utxo.utxos[&second_created].amount,
+            combined - fee - first_amount
+        );
+        assert!(replay.utxo.utxos.contains_key(&OutPoint {
+            txid: follow_on.txid.clone(),
+            index: 0,
+        }));
+        assert!(!replay.utxo.utxos.contains_key(&OutPoint {
+            txid: loser.txid,
+            index: 0,
+        }));
+        assert_eq!(replay.diagnostics.applied_transactions, 2);
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
+        assert_eq!(replay.eligible_fees_by_score[4], 5);
+        assert_eq!(replay.eligible_fees_by_score[5], 2);
+        assert_eq!(replay.eligible_fees_by_score[6], 0);
+        let expected_supply: u64 = (1..=5)
+            .map(|score| subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap())
+            .sum();
+        assert_eq!(
+            replay.utxo.utxos.values().map(|utxo| utxo.amount).sum::<u64>(),
+            expected_supply
+        );
+        assert_insertion_order_independent(&state, &replay);
+        let materialized = materialize_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(
+            verify_authoritative_state_snapshot_v3(&materialized, &ONE_HOUR_PER_SCORE).unwrap(),
+            replay.diagnostics
+        );
+    }
+
+    #[test]
     fn entirely_unknown_input_is_not_an_authenticated_conflict_loser() {
         let mut state =
             init_chain_state_v3("reward-replay-v3-unknown-input".into(), 1_800_000_046).unwrap();
