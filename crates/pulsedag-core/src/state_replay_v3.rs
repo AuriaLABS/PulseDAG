@@ -646,7 +646,9 @@ mod tests {
                 .or_default()
                 .push(outpoint);
         }
-        let root = restored.compute_state_root().map_err(|error| error.to_string())?;
+        let root = restored
+            .compute_state_root()
+            .map_err(|error| error.to_string())?;
         if root != expected.diagnostics.state_root {
             return Err("detached checkpoint UTXO root differs from full replay".into());
         }
