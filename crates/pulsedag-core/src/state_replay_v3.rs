@@ -997,7 +997,7 @@ mod tests {
         assert_eq!(replay.utxo.utxos[&reward2].amount, subsidy2);
         assert_eq!(
             replay.utxo.address_index[&replay_test_address()],
-            vec![reward2]
+            vec![reward2.clone()]
         );
         assert_eq!(replay.utxo.utxos.len(), 5);
         if !duplicate_transaction {
