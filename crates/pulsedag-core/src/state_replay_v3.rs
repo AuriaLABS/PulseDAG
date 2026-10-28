@@ -1630,10 +1630,8 @@ mod tests {
                 let reward_score = score - 2;
                 let block_hash = format!("b{reward_score}");
                 let reward_claim = &state.dag.blocks[&block_hash].transactions[0];
-                let source =
-                    settlement_outpoint_v3(&chain_id, &block_hash, &reward_claim.txid);
-                let subsidy =
-                    subsidy_atoms_for_score(reward_score, &ONE_HOUR_PER_SCORE).unwrap();
+                let source = settlement_outpoint_v3(&chain_id, &block_hash, &reward_claim.txid);
+                let subsidy = subsidy_atoms_for_score(reward_score, &ONE_HOUR_PER_SCORE).unwrap();
                 // From b3 onward each reward also contains exactly one fee
                 // earned by the accepted spend in that reward's own block.
                 let earned_fee = u64::from(reward_score >= 3);
@@ -1687,7 +1685,9 @@ mod tests {
         assert_eq!(references.get(&first_source.unwrap()), Some(&2));
         assert_eq!(replay.diagnostics.applied_transactions, 16);
         assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
-        assert!(replay.eligible_fees_by_score[3..19].iter().all(|fee| *fee == 1));
+        assert!(replay.eligible_fees_by_score[3..19]
+            .iter()
+            .all(|fee| *fee == 1));
         assert_eq!(replay.eligible_fees_by_score[19], 0);
         assert_insertion_order_independent(&state, &replay);
     }
