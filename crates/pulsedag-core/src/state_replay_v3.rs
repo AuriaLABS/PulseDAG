@@ -1,4 +1,4 @@
-use std::collections::hash_map::Entry;
+use std::collections::{hash_map::Entry, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use crate::{
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2},
     reward_settlement_v3::{settlement_outpoint_v3, validate_reward_claim_transaction_v3},
     state::{ChainState, UtxoState},
-    types::{Hash, Utxo},
+    types::{Hash, OutPoint, Utxo},
     validation_v2::validate_transaction_v2,
 };
 
@@ -247,6 +247,10 @@ fn replay_authoritative_prefix_v3(
     let mut next_reward_score = 1_u64;
     let mut mature_reward_prefix_score = 0_u64;
     let mut eligible_fees_by_score = vec![0_u64; ordered_dag.blocks.len()];
+    // Full-replay provenance only: reject arbitrary missing outpoints rather
+    // than treating every nonexistent input as a legitimate DAG conflict.
+    let mut spent_by_accepted_transfer: BTreeSet<OutPoint> = BTreeSet::new();
+    let mut validated_reward_outpoints: BTreeSet<OutPoint> = BTreeSet::new();
 
     for (ordered_pos, hash) in ordered_dag.blocks.iter().enumerate().take(end_exclusive) {
         if hash == &state.dag.genesis_hash {
@@ -277,6 +281,11 @@ fn replay_authoritative_prefix_v3(
         }
 
         validated_reward_claims = validated_reward_claims.saturating_add(1);
+        validated_reward_outpoints.insert(settlement_outpoint_v3(
+            &state.chain_id,
+            hash,
+            &claim.txid,
+        ));
 
         for tx in block.transactions.iter().skip(1) {
             // Only an actual AVAILABLE set of signed spend inputs is eligible
@@ -289,6 +298,25 @@ fn replay_authoritative_prefix_v3(
                     .inputs
                     .iter()
                     .all(|input| rebuilt.utxo.utxos.contains_key(&input.previous_output));
+            if !all_inputs_available {
+                // A previously consumed accepted transfer is a concrete
+                // conflict. An already validated reward claim may exist yet be
+                // economically immature (legacy compatibility behavior).
+                // Anything else is an unauthenticated phantom outpoint, NOT
+                // evidence of a valid conflict loser.
+                for input in &tx.inputs {
+                    let outpoint = &input.previous_output;
+                    if !rebuilt.utxo.utxos.contains_key(outpoint)
+                        && !spent_by_accepted_transfer.contains(outpoint)
+                        && !validated_reward_outpoints.contains(outpoint)
+                    {
+                        return Err(invalid_replay(format!(
+                            "ordered_pos={ordered_pos} block={hash} transfer {} references outpoint {}:{} without authenticated replay provenance",
+                            tx.txid, outpoint.txid, outpoint.index
+                        )));
+                    }
+                }
+            }
             if all_inputs_available {
                 validate_transaction_v2(tx, &rebuilt, &state.chain_id).map_err(|error| {
                     invalid_replay(format!(
@@ -326,6 +354,9 @@ fn replay_authoritative_prefix_v3(
             let mut candidate = rebuilt.clone();
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
+                    for input in &tx.inputs {
+                        spent_by_accepted_transfer.insert(input.previous_output.clone());
+                    }
                     rebuilt = candidate;
                     eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
                         .checked_add(tx.fee)
@@ -1335,6 +1366,48 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("nonconservation"), "{error}");
+    }
+
+    #[test]
+    fn entirely_unknown_input_is_not_an_authenticated_conflict_loser() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-unknown-input".into(), 1_800_000_046).unwrap();
+        let chain_id = state.chain_id.clone();
+        append_linear_block(
+            &mut state,
+            "b1",
+            vec![claim(&chain_id, "pulse1miner", 81)],
+            1,
+        );
+        let phantom = Transaction {
+            txid: "not-an-authenticated-conflict".into(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "never-minted-or-created".into(),
+                    index: 0,
+                },
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1phantom".into(),
+                amount: 1,
+            }],
+            fee: 99,
+            nonce: 82,
+        };
+        append_linear_block(
+            &mut state,
+            "b2",
+            vec![claim(&chain_id, "pulse1miner2", 82), phantom],
+            2,
+        );
+
+        let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("without authenticated replay provenance"), "{error}");
     }
 
     #[test]
