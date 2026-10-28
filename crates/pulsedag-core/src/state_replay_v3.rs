@@ -1061,15 +1061,18 @@ mod tests {
             replay.diagnostics.conflict_diagnostics.clone(),
         ))
         .unwrap();
-        let (decoded_coins, decoded_fees, decoded_conflicts):
-            (Vec<Utxo>, Vec<u64>, Vec<String>) =
+        let (decoded_coins, decoded_fees, decoded_conflicts): (Vec<Utxo>, Vec<u64>, Vec<String>) =
             serde_json::from_slice(&checkpoint_bytes).unwrap();
         let mut restored = UtxoState::default();
         for coin in decoded_coins {
             let outpoint = coin.outpoint.clone();
             let address = coin.address.clone();
             assert!(restored.utxos.insert(outpoint.clone(), coin).is_none());
-            restored.address_index.entry(address).or_default().push(outpoint);
+            restored
+                .address_index
+                .entry(address)
+                .or_default()
+                .push(outpoint);
         }
         assert_eq!(
             restored.compute_state_root().unwrap(),
