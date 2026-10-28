@@ -384,6 +384,13 @@ fn replay_authoritative_prefix_v3(
                 let mut has_immature_reward = false;
                 for input in &tx.inputs {
                     let outpoint = &input.previous_output;
+                    // An available reward is already mature and spendable.
+                    // Only MISSING reward outputs may take the immature-claim
+                    // signature-only path. Otherwise a mixed spent/live input
+                    // conflict could bypass exact monetary conservation.
+                    if historical.utxo.utxos.contains_key(outpoint) {
+                        continue;
+                    }
                     let coin = if let Some(coin) = spent_by_accepted_transfer.get(outpoint) {
                         Some(coin)
                     } else if let Some(coin) = validated_reward_outpoints.get(outpoint) {
@@ -393,9 +400,6 @@ fn replay_authoritative_prefix_v3(
                         None
                     };
                     if let Some(coin) = coin {
-                        if historical.utxo.utxos.contains_key(outpoint) {
-                            continue;
-                        }
                         historical.utxo.utxos.insert(outpoint.clone(), coin.clone());
                         historical
                             .utxo
