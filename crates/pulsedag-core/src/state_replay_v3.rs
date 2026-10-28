@@ -1023,6 +1023,23 @@ mod tests {
         );
         assert_insertion_order_independent(&state, &replay);
 
+        // The pre-candidate monetary overlay must contain only already-mature
+        // rewards and must not re-credit a conflicting sibling fee. This is
+        // the same boundary used by candidate validation and template logic.
+        let pre_merge = materialize_authoritative_pre_candidate_state_v3(
+            &state,
+            &"b5".to_string(),
+            &ONE_HOUR_PER_SCORE,
+        )
+        .unwrap();
+        assert_eq!(pre_merge.dag.ordered_dag, replay.ordered_dag.blocks[..6]);
+        assert_eq!(
+            pre_merge.utxo.utxos[&b4_reward].amount,
+            subsidy_atoms_for_score(4, &ONE_HOUR_PER_SCORE).unwrap() + first_spend.fee
+        );
+        assert!(!pre_merge.utxo.utxos.contains_key(&peer_reward));
+        assert_eq!(pre_merge.utxo.utxos[&reward2].amount, subsidy2);
+
         // An unpruned monetary snapshot must match a fresh full-history
         // replay even when a signed sibling spend is skipped. Re-check both
         // duplicate-txid and different-txid conflict variants.
@@ -1055,6 +1072,16 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("snapshot recorded state root does not match")
+        );
+
+        // A snapshot with the advertised UTXO state but missing historical
+        // ancestry is NOT a verified compact checkpoint. Reject rather than
+        // trusting the saved monetary root as independent history authority.
+        let mut missing_ancestor = snapshot.clone();
+        missing_ancestor.dag.blocks.remove("b1");
+        assert!(
+            verify_authoritative_state_snapshot_v3(&missing_ancestor, &ONE_HOUR_PER_SCORE)
+                .is_err()
         );
 
         let mut omitted_conflict = snapshot;
