@@ -770,6 +770,7 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
         );
         let conditional_fee_burn = u128::from(winner.transactions[0].fee);
         assert_eq!(conditional_fee_burn, 1_100);
+        assert_eq!(winner.transactions[0].fee, loser.transactions[0].fee);
         assert_eq!(
             complete_winner
                 .utxo
@@ -1098,6 +1099,8 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
         let checkpoint_choice_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_TXID";
         let checkpoint_root_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_ROOT";
         let checkpoint_coins_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_UTXOS";
+        let checkpoint_fee_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_ELIGIBLE_FEE";
+        let checkpoint_conflict_key = b"__TEST_ONLY_SIGNED_FORK_COMMITTED_SKIPPED_CONFLICTS";
         let snapshot_bytes = |state: &ChainState| {
             let mut coins: Vec<Utxo> = state.utxo.utxos.values().cloned().collect();
             coins.sort_by(|a, b| a.outpoint.cmp(&b.outpoint));
@@ -1111,6 +1114,10 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
             atomic.put(checkpoint_choice_key, txid.as_bytes());
             atomic.put(checkpoint_root_key, root.as_bytes());
             atomic.put(checkpoint_coins_key, coins);
+            // Test-only sidecar: the chosen spend contributes exactly one
+            // fee, while its conflicting sibling contributes no second fee.
+            atomic.put(checkpoint_fee_key, winner.transactions[0].fee.to_le_bytes());
+            atomic.put(checkpoint_conflict_key, 1_u64.to_le_bytes());
             let mut sync = WriteOptions::default();
             sync.set_sync(true);
             db.write_opt(atomic, &sync).unwrap();
@@ -1145,6 +1152,19 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                 || data.as_slice() != expected_bytes
             {
                 return Err("atomic branch identity, root, and UTXOs diverged".into());
+            }
+            let persisted_fee = db
+                .get(checkpoint_fee_key)
+                .map_err(|error| error.to_string())?
+                .ok_or("committed eligible fee missing")?;
+            let persisted_conflicts = db
+                .get(checkpoint_conflict_key)
+                .map_err(|error| error.to_string())?
+                .ok_or("committed conflict count missing")?;
+            if persisted_fee.as_slice() != tx.fee.to_le_bytes().as_slice()
+                || persisted_conflicts.as_slice() != 1_u64.to_le_bytes().as_slice()
+            {
+                return Err("signed fork fee or conflict provenance differs from oracle".into());
             }
             let coins: Vec<Utxo> =
                 serde_json::from_slice(&data).map_err(|error| error.to_string())?;
@@ -1295,6 +1315,24 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
                 &winner_bytes,
             )
             .unwrap();
+            // A forged fee cannot be accepted merely because the authenticated
+            // UTXO root is unchanged. Likewise for omitted conflict records.
+            db.put(checkpoint_fee_key, 2_200_u64.to_le_bytes()).unwrap();
+            assert!(
+                read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
+                    .is_err(),
+                "forged persisted fee must fail closed"
+            );
+            write_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes);
+            db.put(checkpoint_conflict_key, 0_u64.to_le_bytes()).unwrap();
+            assert!(
+                read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
+                    .is_err(),
+                "omitted competing transaction must fail closed"
+            );
+            write_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes);
+            read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
+                .unwrap();
         }
     }
 }
