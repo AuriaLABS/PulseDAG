@@ -261,6 +261,41 @@ fn validate_signed_replay_spend(
     Ok(())
 }
 
+/// Preindex only the outpoints used more than once in this exact ordered
+/// prefix. The temporary all-input set is dropped after this pass; ordinary
+/// one-time spends need no long-lived consumed-UTXO archive.
+fn repeated_replay_input_counts_v3(
+    state: &ChainState,
+    ordered_dag: &OrderedDagV2,
+    end_exclusive: usize,
+) -> Result<BTreeMap<OutPoint, usize>, PulseError> {
+    let mut seen_once = BTreeSet::new();
+    let mut repeated = BTreeMap::new();
+    for hash in ordered_dag.blocks.iter().take(end_exclusive) {
+        if hash == &state.dag.genesis_hash {
+            continue;
+        }
+        let block = state
+            .dag
+            .blocks
+            .get(hash)
+            .ok_or_else(|| invalid_replay(format!("ordered block {hash} missing during input preindex")))?;
+        for tx in block.transactions.iter().skip(1) {
+            for input in &tx.inputs {
+                let outpoint = &input.previous_output;
+                if let Some(count) = repeated.get_mut(outpoint) {
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid_replay("input reference count overflow"))?;
+                } else if !seen_once.insert(outpoint.clone()) {
+                    repeated.insert(outpoint.clone(), 2_usize);
+                }
+            }
+        }
+    }
+    Ok(repeated)
+}
+
 fn replay_authoritative_prefix_v3(
     state: &ChainState,
     cadence_segments: &[MonetaryCadenceSegment],
@@ -290,8 +325,11 @@ fn replay_authoritative_prefix_v3(
     let mut next_reward_score = 1_u64;
     let mut mature_reward_prefix_score = 0_u64;
     let mut eligible_fees_by_score = vec![0_u64; ordered_dag.blocks.len()];
-    // Full-replay provenance only: reject arbitrary missing outpoints rather
-    // than treating every nonexistent input as a legitimate DAG conflict.
+    // Only archive consumed UTXOs needed for an actual repeated input in the
+    // authenticated ordered prefix. An ordinary one-time accepted spend does
+    // not require a historical clone for every later replay step.
+    let mut repeated_input_references =
+        repeated_replay_input_counts_v3(state, ordered_dag, end_exclusive)?;
     let mut spent_by_accepted_transfer: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
     let mut validated_reward_outpoints: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
 
@@ -460,13 +498,15 @@ fn replay_authoritative_prefix_v3(
             match apply_transaction(tx, &mut candidate, block.header.height) {
                 Ok(()) => {
                     for input in &tx.inputs {
-                        let coin = rebuilt
-                            .utxo
-                            .utxos
-                            .get(&input.previous_output)
-                            .ok_or_else(|| invalid_replay("accepted transfer input missing"))?;
-                        spent_by_accepted_transfer
-                            .insert(input.previous_output.clone(), coin.clone());
+                        if repeated_input_references.contains_key(&input.previous_output) {
+                            let coin = rebuilt
+                                .utxo
+                                .utxos
+                                .get(&input.previous_output)
+                                .ok_or_else(|| invalid_replay("accepted transfer input missing"))?;
+                            spent_by_accepted_transfer
+                                .insert(input.previous_output.clone(), coin.clone());
+                        }
                     }
                     rebuilt = candidate;
                     eligible_fees_by_score[ordered_pos] = eligible_fees_by_score[ordered_pos]
@@ -483,6 +523,24 @@ fn replay_authoritative_prefix_v3(
                     ));
                 }
                 Err(error) => return Err(error),
+            }
+            // Drop the historical coin as soon as its final reference has
+            // been examined. Only still-relevant conflict provenance survives
+            // into the next score.
+            for input in &tx.inputs {
+                let outpoint = &input.previous_output;
+                let finished = if let Some(remaining) = repeated_input_references.get_mut(outpoint) {
+                    *remaining = remaining
+                        .checked_sub(1)
+                        .ok_or_else(|| invalid_replay("input reference count underflow"))?;
+                    *remaining == 0
+                } else {
+                    false
+                };
+                if finished {
+                    repeated_input_references.remove(outpoint);
+                    spent_by_accepted_transfer.remove(outpoint);
+                }
             }
         }
 
@@ -1220,6 +1278,14 @@ mod tests {
             &replay.ordered_dag.blocks[1..],
             &["b1", "b2", "b3", "b4", "b4-peer", "b5"]
         );
+        let repeated =
+            repeated_replay_input_counts_v3(&state, &replay.ordered_dag, replay.ordered_dag.blocks.len())
+                .unwrap();
+        // Only the genuinely competing reward1 input needs historical UTXO
+        // retention; reward2 has a single input reference in this full order.
+        assert_eq!(repeated.len(), 1);
+        assert_eq!(repeated.get(&reward1), Some(&2));
+        assert!(!repeated.contains_key(&reward2));
         assert_eq!(replay.diagnostics.validated_reward_claims, 6);
         assert_eq!(replay.diagnostics.applied_transactions, 1);
         assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 1);
