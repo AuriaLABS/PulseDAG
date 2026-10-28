@@ -271,7 +271,7 @@ fn repeated_replay_input_counts_v3(
     end_exclusive: usize,
 ) -> Result<BTreeMap<OutPoint, usize>, PulseError> {
     let mut seen_once = BTreeSet::new();
-    let mut repeated = BTreeMap::new();
+    let mut repeated: BTreeMap<OutPoint, usize> = BTreeMap::new();
     for hash in ordered_dag.blocks.iter().take(end_exclusive) {
         if hash == &state.dag.genesis_hash {
             continue;
