@@ -1721,6 +1721,22 @@ mod tests {
             replay.diagnostics.state_root
         );
 
+        // Holding a plausible materialized UTXO root is not sufficient for
+        // compact restore authority. A snapshot with missing early ancestry
+        // still fails the production-facing full-history verifier.
+        let mut pruned_without_authority = snapshot.clone();
+        pruned_without_authority.dag.blocks.remove("b1");
+        pruned_without_authority.dag.blocks.remove("b2");
+        assert_eq!(
+            pruned_without_authority.utxo.compute_state_root().unwrap(),
+            replay.diagnostics.state_root
+        );
+        assert!(verify_authoritative_state_snapshot_v3(
+            &pruned_without_authority,
+            &ONE_HOUR_PER_SCORE
+        )
+        .is_err());
+
         // The competing spend's omitted fee must remain independently
         // falsifiable even if a peer leaves the UTXO root untouched.
         let mut forged_fees = checkpoint.clone();
