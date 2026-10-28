@@ -199,6 +199,36 @@ fn read_with_external_trust(
     Ok(())
 }
 
+/// Test-only trust adapter: the tip must come from a separately provided
+/// witness store. Missing, corrupt or malformed bytes are terminal; never
+/// replace them with the checkpoint manifest's own claimed tip.
+fn read_with_independent_tip_witness(
+    checkpoint: &DB,
+    witness: &DB,
+    externally_pinned_key: Option<&VerifyingKey>,
+    trusted_genesis_hash: &str,
+) -> Result<(), String> {
+    let raw_tip = witness
+        .get(EXTERNAL_TIP_WITNESS)
+        .map_err(|error| error.to_string())?
+        .ok_or("missing independent trusted tip")?;
+    let tip = std::str::from_utf8(raw_tip.as_ref())
+        .map_err(|_| "non-UTF8 independent trusted tip")?;
+    if tip.len() != 64
+        || !tip
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("invalid independent trusted tip format".into());
+    }
+    read_with_external_trust(
+        checkpoint,
+        externally_pinned_key,
+        trusted_genesis_hash,
+        tip,
+    )
+}
+
 #[test]
 fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksdb_reopen() {
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
@@ -439,11 +469,55 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
         let independent = independent_pin_disk.open();
         let last_trusted_tip = independent.get(EXTERNAL_TIP_WITNESS).unwrap().unwrap();
         assert_eq!(last_trusted_tip.as_slice(), second.hash.as_bytes());
-        let trusted_tip = std::str::from_utf8(last_trusted_tip.as_ref()).unwrap();
         assert!(
-            read_with_external_trust(&db, Some(&pinned), &genesis.hash, trusted_tip).is_err(),
+            read_with_independent_tip_witness(
+                &db,
+                &independent,
+                Some(&pinned),
+                &genesis.hash,
+            )
+            .is_err(),
             "a correctly signed older checkpoint must be rejected using a separately persisted newer tip after cold reopen"
         );
+
+        // Losing the independent anchor is fatal: neither an empty nor a
+        // corrupted witness may fall back to the older signed manifest's tip.
+        independent.delete(EXTERNAL_TIP_WITNESS).unwrap();
+        assert!(read_with_independent_tip_witness(
+            &db,
+            &independent,
+            Some(&pinned),
+            &genesis.hash,
+        )
+        .is_err());
+        independent.put(EXTERNAL_TIP_WITNESS, [0xff_u8]).unwrap();
+        assert!(read_with_independent_tip_witness(
+            &db,
+            &independent,
+            Some(&pinned),
+            &genesis.hash,
+        )
+        .is_err());
+        independent.put(EXTERNAL_TIP_WITNESS, b"bad").unwrap();
+        assert!(read_with_independent_tip_witness(
+            &db,
+            &independent,
+            Some(&pinned),
+            &genesis.hash,
+        )
+        .is_err());
+        independent
+            .put(EXTERNAL_TIP_WITNESS, second.hash.as_bytes())
+            .unwrap();
+        independent.flush_wal(true).unwrap();
+        assert!(read_with_independent_tip_witness(
+            &db,
+            &independent,
+            Some(&pinned),
+            &genesis.hash,
+        )
+        .is_err());
+
         // This intentionally succeeds to demonstrate that a signature and
         // genesis match ALONE provide no durable high-watermark or finality.
         read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).unwrap();
