@@ -1134,65 +1134,55 @@ mod tests {
         // the exact same UTXO state root.
         let mut forged_fees = checkpoint.clone();
         forged_fees.fees[5] = conflicting_spend.fee;
-        assert!(
-            verify_detached_checkpoint_against_full_replay(
-                &serde_json::to_vec(&forged_fees).unwrap(),
-                &state,
-                &replay
-            )
-            .unwrap_err()
-            .contains("fees differ")
-        );
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_fees).unwrap(),
+            &state,
+            &replay
+        )
+        .unwrap_err()
+        .contains("fees differ"));
 
         let mut forged_conflicts = checkpoint.clone();
         forged_conflicts.conflicts.clear();
-        assert!(
-            verify_detached_checkpoint_against_full_replay(
-                &serde_json::to_vec(&forged_conflicts).unwrap(),
-                &state,
-                &replay
-            )
-            .unwrap_err()
-            .contains("conflicts differ")
-        );
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_conflicts).unwrap(),
+            &state,
+            &replay
+        )
+        .unwrap_err()
+        .contains("conflicts differ"));
 
         // Consensus identity and reward maturity cannot be replaced with
         // values from another fork or chain, even if the UTXO root matches.
         let mut forged_order = checkpoint.clone();
         forged_order.ordered_dag_digest = "forged-ordered-dag".into();
-        assert!(
-            verify_detached_checkpoint_against_full_replay(
-                &serde_json::to_vec(&forged_order).unwrap(),
-                &state,
-                &replay
-            )
-            .unwrap_err()
-            .contains("chain/order/maturity differs")
-        );
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_order).unwrap(),
+            &state,
+            &replay
+        )
+        .unwrap_err()
+        .contains("chain/order/maturity differs"));
 
         let mut forged_maturity = checkpoint.clone();
         forged_maturity.mature_reward_prefix_score += 1;
-        assert!(
-            verify_detached_checkpoint_against_full_replay(
-                &serde_json::to_vec(&forged_maturity).unwrap(),
-                &state,
-                &replay
-            )
-            .unwrap_err()
-            .contains("chain/order/maturity differs")
-        );
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_maturity).unwrap(),
+            &state,
+            &replay
+        )
+        .unwrap_err()
+        .contains("chain/order/maturity differs"));
 
         let mut forged_chain = checkpoint;
         forged_chain.chain_id = "wrong-checkpoint-chain".into();
-        assert!(
-            verify_detached_checkpoint_against_full_replay(
-                &serde_json::to_vec(&forged_chain).unwrap(),
-                &state,
-                &replay
-            )
-            .unwrap_err()
-            .contains("chain/order/maturity differs")
-        );
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_chain).unwrap(),
+            &state,
+            &replay
+        )
+        .unwrap_err()
+        .contains("chain/order/maturity differs"));
 
         // Modifying a miner reward in the restored UTXO set must fail even
         // when the stored claimed root and DAG ordering remain unchanged.
