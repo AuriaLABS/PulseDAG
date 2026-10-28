@@ -1634,6 +1634,10 @@ mod tests {
                     settlement_outpoint_v3(&chain_id, &block_hash, &reward_claim.txid);
                 let subsidy =
                     subsidy_atoms_for_score(reward_score, &ONE_HOUR_PER_SCORE).unwrap();
+                // From b3 onward each reward also contains exactly one fee
+                // earned by the accepted spend in that reward's own block.
+                let earned_fee = u64::from(reward_score >= 3);
+                let settled_amount = subsidy.checked_add(earned_fee).unwrap();
                 let mut spend = Transaction {
                     txid: String::new(),
                     version: TRANSACTION_VERSION_V2,
@@ -1644,7 +1648,7 @@ mod tests {
                     }],
                     outputs: vec![TxOutput {
                         address: format!("pulse1recipient{score}"),
-                        amount: subsidy - 1,
+                        amount: settled_amount - 1,
                     }],
                     fee: 1,
                     nonce: score + 200,
