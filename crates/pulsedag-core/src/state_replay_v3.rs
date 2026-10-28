@@ -2065,14 +2065,8 @@ mod tests {
             let mut rebuilt = initial.clone();
             let start = std::time::Instant::now();
             for (position, tx) in transactions.iter().enumerate() {
-                validate_signed_replay_spend(
-                    tx,
-                    &rebuilt,
-                    &chain_id,
-                    position,
-                    "test-only-trial",
-                )
-                .unwrap();
+                validate_signed_replay_spend(tx, &rebuilt, &chain_id, position, "test-only-trial")
+                    .unwrap();
                 if clone_before_apply {
                     let mut candidate = rebuilt.clone();
                     apply_transaction(tx, &mut candidate, 2).unwrap();
