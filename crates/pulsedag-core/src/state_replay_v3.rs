@@ -1690,6 +1690,86 @@ mod tests {
             .all(|fee| *fee == 1));
         assert_eq!(replay.eligible_fees_by_score[19], 0);
         assert_insertion_order_independent(&state, &replay);
+
+        // In this test the full DAG is the independently available oracle.
+        // Verify the monetary checkpoint's UTXO root, complete fee vector,
+        // ordered identity and conflict evidence, not only its stored digest.
+        // This does NOT grant authority to a checkpoint after pruning.
+        let snapshot = materialize_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        let verified =
+            verify_authoritative_state_snapshot_v3(&snapshot, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(verified, replay.diagnostics);
+        let mut coins: Vec<Utxo> = snapshot.utxo.utxos.values().cloned().collect();
+        coins.sort_by_key(|coin| (coin.outpoint.txid.clone(), coin.outpoint.index));
+        let checkpoint = DetachedTestCheckpointV3 {
+            chain_id: chain_id.clone(),
+            ordered_dag_digest: replay.diagnostics.ordered_dag_digest.clone(),
+            ordered_dag_tip: replay.diagnostics.ordered_dag_tip.clone(),
+            mature_reward_prefix_score: replay.diagnostics.mature_reward_prefix_score,
+            coins,
+            fees: replay.eligible_fees_by_score.clone(),
+            conflicts: replay.diagnostics.conflict_diagnostics.clone(),
+        };
+        let restored = verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&checkpoint).unwrap(),
+            &state,
+            &replay,
+        )
+        .unwrap();
+        assert_eq!(
+            restored.compute_state_root().unwrap(),
+            replay.diagnostics.state_root
+        );
+
+        // The competing spend's omitted fee must remain independently
+        // falsifiable even if a peer leaves the UTXO root untouched.
+        let mut forged_fees = checkpoint.clone();
+        forged_fees.fees[19] = 1;
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_fees).unwrap(),
+            &state,
+            &replay,
+        )
+        .unwrap_err()
+        .contains("fees differ"));
+
+        let mut forged_conflicts = checkpoint;
+        forged_conflicts.conflicts.clear();
+        assert!(verify_detached_checkpoint_against_full_replay(
+            &serde_json::to_vec(&forged_conflicts).unwrap(),
+            &state,
+            &replay,
+        )
+        .unwrap_err()
+        .contains("conflicts differ"));
+
+        // A pre-candidate replay from complete ancestry excludes b19's claim
+        // and its conflicting transaction, and matches the prefix oracle.
+        let pre_candidate = materialize_authoritative_pre_candidate_state_v3(
+            &state,
+            &"b19".to_string(),
+            &ONE_HOUR_PER_SCORE,
+        )
+        .unwrap();
+        let (genesis, order) = validate_v3_replay_source(&state).unwrap();
+        let prefix = replay_authoritative_prefix_v3(
+            &state,
+            &ONE_HOUR_PER_SCORE,
+            genesis.header.timestamp,
+            &order,
+            order.blocks.len() - 1,
+        )
+        .unwrap();
+        assert_eq!(
+            pre_candidate.utxo.compute_state_root().unwrap(),
+            prefix.rebuilt.utxo.compute_state_root().unwrap()
+        );
+        assert_eq!(
+            pre_candidate.dag.ordered_dag,
+            order.blocks[..order.blocks.len() - 1]
+        );
+        assert_eq!(prefix.applied_transactions, 16);
+        assert_eq!(prefix.skipped_conflicting_transactions, 0);
     }
 
     #[test]
