@@ -472,6 +472,26 @@ fn preauthenticated_linear_prefix_can_be_pruned_and_trial_resumed_equal_to_full_
         continue_from_test_checkpoint(&forged, &trusted_cp, &retained, &suffix, &join, &tip)
             .is_err()
     );
+    // A matching *self-computed* root cannot give a forged monetary ledger
+    // checkpoint authority. The independent full-prefix snapshot remains the
+    // source of truth, even if a tampered checkpoint recomputes its own seal.
+    let mut forged_economics = cp.clone();
+    let first_coin = forged_economics.preview_state.values_mut().next().unwrap();
+    first_coin.amount = first_coin.amount.checked_add(1).unwrap();
+    forged_economics.preview_state_root = state_root(&forged_economics.preview_state);
+    assert_ne!(forged_economics.preview_state_root, trusted_cp.preview_state_root);
+    assert!(
+        continue_from_test_checkpoint(
+            &forged_economics,
+            &trusted_cp,
+            &retained,
+            &suffix,
+            &join,
+            &tip
+        )
+        .is_err(),
+        "a self-consistent counterfeit ledger cannot authorize pruning"
+    );
     let mut missing = retained.clone();
     missing.remove(&selected20[16]); // In the 20-sample suffix window.
     assert!(
