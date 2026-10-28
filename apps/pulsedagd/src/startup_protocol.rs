@@ -298,6 +298,13 @@ mod tests {
         for invalid in ["enabled", "truee", "2", "automatic"] {
             assert!(validate_inactive_contract_env(Some(invalid)).is_err());
         }
-        assert!(validate_inactive_contract_env(Some("true")).is_err());
+
+        // Exercise the actual daemon entry gate, not just its pure parser.
+        std::env::set_var(CONTRACTS_ENABLED_ENV, "true");
+        let err = enforce_inactive_contracts_for_task31()
+            .expect_err("daemon must reject contract execution even in feature-on builds");
+        assert!(err.to_string().contains("forbidden for v3.0.0"));
+        std::env::remove_var(CONTRACTS_ENABLED_ENV);
+        enforce_inactive_contracts_for_task31().unwrap();
     }
 }
