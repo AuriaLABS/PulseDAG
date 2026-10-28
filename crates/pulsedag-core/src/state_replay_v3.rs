@@ -1731,11 +1731,11 @@ mod tests {
             pruned_without_authority.utxo.compute_state_root().unwrap(),
             replay.diagnostics.state_root
         );
-        assert!(verify_authoritative_state_snapshot_v3(
+        let rejected = verify_authoritative_state_snapshot_v3(
             &pruned_without_authority,
-            &ONE_HOUR_PER_SCORE
-        )
-        .is_err());
+            &ONE_HOUR_PER_SCORE,
+        );
+        assert!(rejected.is_err());
 
         // The competing spend's omitted fee must remain independently
         // falsifiable even if a peer leaves the UTXO root untouched.
