@@ -997,6 +997,7 @@ mod tests {
     fn assert_conflicting_sibling_fees_are_not_settled(
         duplicate_transaction: bool,
         corrupt_loser_signature: bool,
+        corrupt_loser_balance: bool,
     ) {
         let mut state = init_chain_state_v3("reward-replay-v3-fees".into(), 1_800_000_015).unwrap();
         let chain_id = state.chain_id.clone();
@@ -1105,6 +1106,22 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("invalid signed transfer"), "{error}");
+            return;
+        }
+
+        if corrupt_loser_balance {
+            // A conflict loser with a VALID Ed25519 signature must not hide
+            // an undeclared monetary burn behind the missing spent input.
+            // Re-sign after changing its output so the signature and txid are
+            // genuine; only exact input = output + fee conservation can fail.
+            let peer = state.dag.blocks.get_mut("b4-peer").unwrap();
+            let losing_tx = &mut peer.transactions[1];
+            losing_tx.outputs[0].amount -= 1;
+            sign_replay_transfer(losing_tx, &chain_id);
+            let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("nonconservation"), "{error}");
             return;
         }
 
@@ -1322,17 +1339,22 @@ mod tests {
 
     #[test]
     fn conflict_skipped_transaction_fee_is_not_paid_to_miner() {
-        assert_conflicting_sibling_fees_are_not_settled(false, false);
+        assert_conflicting_sibling_fees_are_not_settled(false, false, false);
     }
 
     #[test]
     fn duplicate_outpoint_transaction_fee_is_not_paid_twice() {
-        assert_conflicting_sibling_fees_are_not_settled(true, false);
+        assert_conflicting_sibling_fees_are_not_settled(true, false, false);
     }
 
     #[test]
     fn conflict_loser_with_invalid_signature_is_not_silently_discarded() {
-        assert_conflicting_sibling_fees_are_not_settled(false, true);
+        assert_conflicting_sibling_fees_are_not_settled(false, true, false);
+    }
+
+    #[test]
+    fn conflict_loser_with_valid_signature_and_implicit_fee_gap_is_rejected() {
+        assert_conflicting_sibling_fees_are_not_settled(false, false, true);
     }
 
     #[test]
