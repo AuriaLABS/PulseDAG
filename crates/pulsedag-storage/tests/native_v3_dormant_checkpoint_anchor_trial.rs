@@ -212,8 +212,8 @@ fn read_with_independent_tip_witness(
         .get(EXTERNAL_TIP_WITNESS)
         .map_err(|error| error.to_string())?
         .ok_or("missing independent trusted tip")?;
-    let tip = std::str::from_utf8(raw_tip.as_ref())
-        .map_err(|_| "non-UTF8 independent trusted tip")?;
+    let tip =
+        std::str::from_utf8(raw_tip.as_ref()).map_err(|_| "non-UTF8 independent trusted tip")?;
     if tip.len() != 64
         || !tip
             .bytes()
@@ -221,12 +221,7 @@ fn read_with_independent_tip_witness(
     {
         return Err("invalid independent trusted tip format".into());
     }
-    read_with_external_trust(
-        checkpoint,
-        externally_pinned_key,
-        trusted_genesis_hash,
-        tip,
-    )
+    read_with_external_trust(checkpoint, externally_pinned_key, trusted_genesis_hash, tip)
 }
 
 #[test]
@@ -483,40 +478,28 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
         // Losing the independent anchor is fatal: neither an empty nor a
         // corrupted witness may fall back to the older signed manifest's tip.
         independent.delete(EXTERNAL_TIP_WITNESS).unwrap();
-        assert!(read_with_independent_tip_witness(
-            &db,
-            &independent,
-            Some(&pinned),
-            &genesis.hash,
-        )
-        .is_err());
+        assert!(
+            read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
+                .is_err()
+        );
         independent.put(EXTERNAL_TIP_WITNESS, [0xff_u8]).unwrap();
-        assert!(read_with_independent_tip_witness(
-            &db,
-            &independent,
-            Some(&pinned),
-            &genesis.hash,
-        )
-        .is_err());
+        assert!(
+            read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
+                .is_err()
+        );
         independent.put(EXTERNAL_TIP_WITNESS, b"bad").unwrap();
-        assert!(read_with_independent_tip_witness(
-            &db,
-            &independent,
-            Some(&pinned),
-            &genesis.hash,
-        )
-        .is_err());
+        assert!(
+            read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
+                .is_err()
+        );
         independent
             .put(EXTERNAL_TIP_WITNESS, second.hash.as_bytes())
             .unwrap();
         independent.flush_wal(true).unwrap();
-        assert!(read_with_independent_tip_witness(
-            &db,
-            &independent,
-            Some(&pinned),
-            &genesis.hash,
-        )
-        .is_err());
+        assert!(
+            read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
+                .is_err()
+        );
 
         // This intentionally succeeds to demonstrate that a signature and
         // genesis match ALONE provide no durable high-watermark or finality.
