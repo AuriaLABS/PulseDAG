@@ -1407,7 +1407,10 @@ mod tests {
         let error = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("without authenticated replay provenance"), "{error}");
+        assert!(
+            error.contains("without authenticated replay provenance"),
+            "{error}"
+        );
     }
 
     #[test]
