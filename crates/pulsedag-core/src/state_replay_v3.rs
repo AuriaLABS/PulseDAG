@@ -1731,10 +1731,8 @@ mod tests {
             pruned_without_authority.utxo.compute_state_root().unwrap(),
             replay.diagnostics.state_root
         );
-        let rejected = verify_authoritative_state_snapshot_v3(
-            &pruned_without_authority,
-            &ONE_HOUR_PER_SCORE,
-        );
+        let rejected =
+            verify_authoritative_state_snapshot_v3(&pruned_without_authority, &ONE_HOUR_PER_SCORE);
         assert!(rejected.is_err());
 
         // The competing spend's omitted fee must remain independently
