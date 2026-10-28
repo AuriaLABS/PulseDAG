@@ -31,6 +31,7 @@ const GENESIS_NS: u64 = 1_800_000_041_000_000_000;
 const MANIFEST_KEY: &[u8] = b"__TEST_ONLY_V3_PINNED_CHECKPOINT_MANIFEST";
 const SIGNATURE_KEY: &[u8] = b"__TEST_ONLY_V3_PINNED_CHECKPOINT_SIGNATURE";
 const SELF_CLAIMED_PUBKEY: &[u8] = b"__TEST_ONLY_V3_UNTRUSTED_SIGNER_ID";
+const EXTERNAL_TIP_WITNESS: &[u8] = b"__TEST_ONLY_INDEPENDENT_TIP_WITNESS";
 const DOMAIN: &[u8] = b"PulseDAG:TEST-ONLY:v3-checkpoint-signature:v1";
 const FRAMES_DOMAIN: &[u8] = b"PulseDAG:TEST-ONLY:v3-retained-frames:v1";
 
@@ -377,6 +378,17 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
     let old_sig = signer.sign(&sign_message(&old_bytes)).to_bytes();
     let new_sig = signer.sign(&sign_message(&new_bytes)).to_bytes();
     let disk = DisposableDb::new();
+    // A separate disposable DB represents a test-provided trust witness.
+    // It is deliberately NOT stored alongside attacker-restorable checkpoint
+    // frames. Mere separation does NOT supply a production monotonic anchor.
+    let independent_pin_disk = DisposableDb::new();
+    {
+        let independent = independent_pin_disk.open();
+        independent
+            .put(EXTERNAL_TIP_WITNESS, first.hash.as_bytes())
+            .unwrap();
+        independent.flush_wal(true).unwrap();
+    }
 
     {
         let db = disk.open();
@@ -407,6 +419,13 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
         // External reference now advances and explicitly refuses older tips.
         read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).unwrap();
         assert!(read_with_external_trust(&db, Some(&pinned), &genesis.hash, &first.hash).is_err());
+        // Store the independently observed later tip in the OTHER database,
+        // sync it, and keep it out of the following checkpoint rollback batch.
+        let independent = independent_pin_disk.open();
+        independent
+            .put(EXTERNAL_TIP_WITNESS, second.hash.as_bytes())
+            .unwrap();
+        independent.flush_wal(true).unwrap();
         let mut batch = WriteBatch::default();
         batch.put(MANIFEST_KEY, &old_bytes);
         batch.put(SIGNATURE_KEY, old_sig);
@@ -417,9 +436,13 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
     }
     {
         let db = disk.open();
+        let independent = independent_pin_disk.open();
+        let last_trusted_tip = independent.get(EXTERNAL_TIP_WITNESS).unwrap().unwrap();
+        assert_eq!(last_trusted_tip.as_slice(), second.hash.as_bytes());
+        let trusted_tip = std::str::from_utf8(last_trusted_tip.as_ref()).unwrap();
         assert!(
-            read_with_external_trust(&db, Some(&pinned), &genesis.hash, &second.hash).is_err(),
-            "a genuinely signed old checkpoint must not override a newer externally trusted tip"
+            read_with_external_trust(&db, Some(&pinned), &genesis.hash, trusted_tip).is_err(),
+            "a correctly signed older checkpoint must be rejected using a separately persisted newer tip after cold reopen"
         );
         // This intentionally succeeds to demonstrate that a signature and
         // genesis match ALONE provide no durable high-watermark or finality.
