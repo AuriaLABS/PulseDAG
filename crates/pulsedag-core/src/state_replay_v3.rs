@@ -1897,7 +1897,10 @@ mod tests {
         append_linear_block(
             &mut state,
             "b4",
-            vec![claim(&chain_id, "pulse1miner4", 104), combined_spend.clone()],
+            vec![
+                claim(&chain_id, "pulse1miner4", 104),
+                combined_spend.clone(),
+            ],
             4,
         );
 
@@ -1982,7 +1985,12 @@ mod tests {
             .map(|score| subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap())
             .sum();
         assert_eq!(
-            replay.utxo.utxos.values().map(|utxo| utxo.amount).sum::<u64>(),
+            replay
+                .utxo
+                .utxos
+                .values()
+                .map(|utxo| utxo.amount)
+                .sum::<u64>(),
             expected_supply
         );
         assert_insertion_order_independent(&state, &replay);
