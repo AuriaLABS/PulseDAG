@@ -1319,20 +1319,46 @@ fn competing_signed_spends_reopen_from_pruned_rocksdb_and_refuse_double_settleme
             // UTXO root is unchanged. Likewise for omitted conflict records.
             db.put(checkpoint_fee_key, 2_200_u64.to_le_bytes()).unwrap();
             assert!(
-                read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
-                    .is_err(),
+                read_branch_state(
+                    &db,
+                    &winner.transactions[0].txid,
+                    &winning_root,
+                    &winner_bytes
+                )
+                .is_err(),
                 "forged persisted fee must fail closed"
             );
-            write_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes);
-            db.put(checkpoint_conflict_key, 0_u64.to_le_bytes()).unwrap();
+            write_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            );
+            db.put(checkpoint_conflict_key, 0_u64.to_le_bytes())
+                .unwrap();
             assert!(
-                read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
-                    .is_err(),
+                read_branch_state(
+                    &db,
+                    &winner.transactions[0].txid,
+                    &winning_root,
+                    &winner_bytes
+                )
+                .is_err(),
                 "omitted competing transaction must fail closed"
             );
-            write_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes);
-            read_branch_state(&db, &winner.transactions[0].txid, &winning_root, &winner_bytes)
-                .unwrap();
+            write_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            );
+            read_branch_state(
+                &db,
+                &winner.transactions[0].txid,
+                &winning_root,
+                &winner_bytes,
+            )
+            .unwrap();
         }
     }
 }
