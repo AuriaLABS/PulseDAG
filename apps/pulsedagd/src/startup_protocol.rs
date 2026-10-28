@@ -37,28 +37,34 @@ impl StartupProtocolMode {
     }
 }
 
-fn env_flag_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+/// A compiled offline VM is not permission to run contracts on v3.0.0 nodes.
+/// Reject malformed environment values rather than silently interpreting them as false.
+fn validate_inactive_contract_env(raw: Option<&str>) -> Result<()> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" | "off" => Ok(()),
+        "1" | "true" | "yes" | "on" => bail!(
+            "{CONTRACTS_ENABLED_ENV}=true is forbidden for v3.0.0 daemon startup, even with an executable-contracts build (identity: {}, compiled: {})",
+            contracts_compile_identity(),
+            contracts_compile_time_executable()
+        ),
+        _ => bail!(
+            "invalid {CONTRACTS_ENABLED_ENV}: expected false/0/no/off (v3.0.0 contracts are INACTIVE)"
+        ),
+    }
 }
 
-/// Task31 fail-closed: runtime enablement cannot bypass the compile gate (#1131).
+/// Fail closed for every v3.0.0 daemon profile; offline contract tests remain available.
 pub fn enforce_inactive_contracts_for_task31() -> Result<()> {
-    let env_enabled = env_flag_truthy(CONTRACTS_ENABLED_ENV);
-    if env_enabled && !contracts_compile_time_executable() {
-        bail!(
-            "{CONTRACTS_ENABLED_ENV}=true is rejected: this binary was built without the executable-contracts Cargo feature ({})",
-            contracts_compile_identity()
-        );
+    match std::env::var(CONTRACTS_ENABLED_ENV) {
+        Ok(raw) => validate_inactive_contract_env(Some(&raw)),
+        Err(std::env::VarError::NotPresent) => validate_inactive_contract_env(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("invalid non-UTF8 {CONTRACTS_ENABLED_ENV} value")
+        }
     }
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -279,16 +285,19 @@ mod tests {
     }
 
     #[test]
-    fn contracts_env_cannot_bypass_compile_gate() {
-        std::env::set_var(CONTRACTS_ENABLED_ENV, "true");
-        let result = enforce_inactive_contracts_for_task31();
-        if contracts_compile_time_executable() {
-            result.expect("feature-on builds may accept the env flag");
-        } else {
-            let err = result.expect_err("feature-off builds must reject the env flag");
-            assert!(err.to_string().contains("executable-contracts"));
+    fn contracts_env_is_inactive_even_with_executable_feature() {
+        for enabled in ["true", "TRUE", "1", "yes", "on"] {
+            let err = validate_inactive_contract_env(Some(enabled))
+                .expect_err("v3 daemon must refuse contract enablement in all build profiles");
+            assert!(err.to_string().contains("forbidden for v3.0.0"));
         }
-        std::env::remove_var(CONTRACTS_ENABLED_ENV);
-        enforce_inactive_contracts_for_task31().unwrap();
+        for disabled in ["", "false", "FALSE", "0", "no", "off"] {
+            validate_inactive_contract_env(Some(disabled)).unwrap();
+        }
+        validate_inactive_contract_env(None).unwrap();
+        for invalid in ["enabled", "truee", "2", "automatic"] {
+            assert!(validate_inactive_contract_env(Some(invalid)).is_err());
+        }
+        assert!(validate_inactive_contract_env(Some("true")).is_err());
     }
 }
