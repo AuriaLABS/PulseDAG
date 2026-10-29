@@ -75,6 +75,13 @@ jobs:
       - name: Multi-node transaction propagation and canonical inclusion parity
         run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
 
+      - name: Dormant native-v3 signed prestate exact-fee and fail-closed regressions (NOT network authority)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib native_v3_signed_prestate_trial::tests:: -- --nocapture | tee /tmp/native-v3-signed-prestate-trial.log
+          grep -Fq 'test result: ok. 3 passed; 0 failed;' /tmp/native-v3-signed-prestate-trial.log
+
       - name: Protocol-bound mempool reconciliation
         run: 'cargo test --locked -p pulsedag-core mempool_protocol::tests::'
 

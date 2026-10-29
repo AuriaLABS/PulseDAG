@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "crates/pulsedag-core/src/contracts_gate.rs"
+      - "apps/pulsedagd/src/startup_protocol.rs"
+      - "apps/pulsedagd/Cargo.toml"
       - "crates/pulsedag-core/src/programmability_activation_v1.rs"
       - "crates/pulsedag-core/src/contract_v3.rs"
       - "crates/pulsedag-core/src/contract_state_v1.rs"
@@ -18,6 +20,8 @@ on:
       - main
     paths:
       - "crates/pulsedag-core/src/contracts_gate.rs"
+      - "apps/pulsedagd/src/startup_protocol.rs"
+      - "apps/pulsedagd/Cargo.toml"
       - "crates/pulsedag-core/src/programmability_activation_v1.rs"
       - "crates/pulsedag-core/src/contract_v3.rs"
       - "crates/pulsedag-core/src/contract_state_v1.rs"
@@ -81,6 +85,19 @@ jobs:
             cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
             grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "/tmp/dormant-contract-$module.log"
           done
+
+      - name: Prove daemon startup rejects contract env under both compile profiles
+        shell: bash
+        env:
+          FEATURE_PROFILE: ${{ matrix.feature_profile }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$FEATURE_PROFILE" == "executable-contracts" ]]; then
+            args=(--features executable-contracts)
+          fi
+          cargo test --locked -p pulsedagd "${args[@]}" startup_protocol::tests::contracts_env_is_inactive_even_with_executable_feature -- --nocapture
+          cargo clippy --locked -p pulsedagd "${args[@]}" --all-targets -- -D warnings
 
       - name: Strict clippy on tested core/profile
         shell: bash

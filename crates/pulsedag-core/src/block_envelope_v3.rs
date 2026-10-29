@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::PulseError,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
+    reward_settlement_v3::validate_reward_claim_transaction_v3,
     tx::{compute_txid_v2, TRANSACTION_VERSION_V2},
     types::{compute_merkle_root, BlockId, Transaction},
 };
@@ -84,6 +85,51 @@ pub fn validate_block_envelope_v3(
     }
     if candidate.header.merkle_root != compute_merkle_root(&candidate.transactions) {
         return Err(invalid("v3 envelope transaction Merkle root mismatch"));
+    }
+    Ok(())
+}
+
+/**
+ * Stateless monetary-v3 body guard for a native nanosecond envelope.
+ *
+ * This rejects missing/invalid amountless reward claims and any additional
+ * inputless transaction which could otherwise become a hidden issuance path.
+ * Unlike the legacy `types::Block` staging guard, it takes a genuine
+ * `BlockEnvelopeV3`, NOT a seconds-based block.
+ *
+ * This is an INERT prerequisite, NOT monetary consensus admission. It does
+ * NOT verify PoW, ancestry, K, selected-parent, retarget, ordinary Ed25519
+ * signatures, UTXO availability, fees, reward settlement, state roots or
+ * contract inactivity. Neither mining nor P2P calls this function.
+ */
+pub fn validate_dormant_native_v3_monetary_body_preflight(
+    candidate: &BlockEnvelopeV3,
+    expected_chain_id: &str,
+) -> Result<(), PulseError> {
+    validate_block_envelope_v3(candidate, expected_chain_id)?;
+    if candidate.header.height == 0 {
+        // The envelope validator has already enforced zero-allocation genesis.
+        return Ok(());
+    }
+    let claim = candidate
+        .transactions
+        .first()
+        .ok_or_else(|| invalid("native-v3 monetary block lacks its reward claim"))?;
+    validate_reward_claim_transaction_v3(claim, expected_chain_id).map_err(|error| {
+        invalid(format!(
+            "invalid native-v3 amountless reward claim: {error}"
+        ))
+    })?;
+    if let Some(hidden) = candidate
+        .transactions
+        .iter()
+        .skip(1)
+        .find(|tx| tx.inputs.is_empty())
+    {
+        return Err(invalid(format!(
+            "native-v3 block has additional inputless transaction {}",
+            hidden.txid
+        )));
     }
     Ok(())
 }
@@ -258,6 +304,105 @@ mod tests {
         block.header = header(1, &txs);
         block.hash = compute_block_hash_v3(&block.header, CHAIN).unwrap();
         assert!(validate_block_envelope_v3(&block, CHAIN).is_err());
+    }
+
+    #[test]
+    fn dormant_native_monetary_body_preflight_refuses_missing_or_hidden_issuance() {
+        use crate::reward_settlement_v3::build_reward_claim_transaction_v3;
+
+        let claim = build_reward_claim_transaction_v3("pulse1native-miner", 10, CHAIN).unwrap();
+        let body = |transactions: Vec<Transaction>| {
+            build_block_envelope_v3(CHAIN, header(1, &transactions), transactions).unwrap()
+        };
+        let valid = body(vec![claim.clone()]);
+        validate_dormant_native_v3_monetary_body_preflight(&valid, CHAIN).unwrap();
+        assert!(
+            validate_dormant_native_v3_monetary_body_preflight(&valid, "foreign-chain").is_err()
+        );
+
+        let missing_claim = body(vec![]);
+        let error = validate_dormant_native_v3_monetary_body_preflight(&missing_claim, CHAIN)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("lacks its reward claim"), "{error}");
+
+        let double_claim = body(vec![
+            claim.clone(),
+            build_reward_claim_transaction_v3("pulse1hidden-miner", 11, CHAIN).unwrap(),
+        ]);
+        let error = validate_dormant_native_v3_monetary_body_preflight(&double_claim, CHAIN)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("additional inputless transaction"),
+            "{error}"
+        );
+
+        let mut minted = claim.clone();
+        minted.outputs[0].amount = 999;
+        minted.txid = compute_txid_v2(&minted, CHAIN).unwrap();
+        let invalid_coinbase = body(vec![minted]);
+        let error = validate_dormant_native_v3_monetary_body_preflight(&invalid_coinbase, CHAIN)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reward claim"), "{error}");
+
+        // A different inputless shape is not a legitimate ordinary spend.
+        let hidden_no_input = body(vec![claim.clone(), transaction(121)]);
+        assert!(
+            validate_dormant_native_v3_monetary_body_preflight(&hidden_no_input, CHAIN)
+                .unwrap_err()
+                .to_string()
+                .contains("additional inputless transaction")
+        );
+
+        // Explicitly independent of PoW or finality: genesis can be empty,
+        // but no positive-height block can skip its amountless reward claim.
+        let genesis = build_block_envelope_v3(CHAIN, header(0, &[]), vec![]).unwrap();
+        validate_dormant_native_v3_monetary_body_preflight(&genesis, CHAIN).unwrap();
+    }
+
+    #[test]
+    fn dormant_native_monetary_body_preflight_is_not_signed_utxo_admission() {
+        use crate::{
+            reward_settlement_v3::build_reward_claim_transaction_v3,
+            types::{OutPoint, TxInput, TxOutput},
+        };
+
+        let claim = build_reward_claim_transaction_v3("pulse1native-miner", 12, CHAIN).unwrap();
+        // Intentionally invalid signature and nonexistent UTXO: the stateless
+        // shape/issuance preflight CANNOT authenticate this spend. A separate
+        // native-v3 monetary replay MUST reject it before any live admission.
+        let mut unverified = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "ff".repeat(32),
+                    index: 0,
+                },
+                public_key: "aa".repeat(32),
+                signature: "bb".repeat(64),
+            }],
+            outputs: vec![TxOutput {
+                address: "pulse1unverified".into(),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 21,
+        };
+        unverified.txid = compute_txid_v2(&unverified, CHAIN).unwrap();
+        let transactions = vec![claim, unverified];
+        let envelope =
+            build_block_envelope_v3(CHAIN, header(1, &transactions), transactions).unwrap();
+        validate_dormant_native_v3_monetary_body_preflight(&envelope, CHAIN).unwrap();
+        assert_eq!(envelope.transactions.len(), 2);
+
+        // Malformed commitment must fail even if the reward claim is valid.
+        let mut bad_merkle = envelope;
+        bad_merkle.header.merkle_root = "00".repeat(32);
+        bad_merkle.hash = compute_block_hash_v3(&bad_merkle.header, CHAIN).unwrap();
+        assert!(validate_dormant_native_v3_monetary_body_preflight(&bad_merkle, CHAIN).is_err());
     }
 
     #[test]
