@@ -174,6 +174,7 @@ jobs:
           cargo test --locked -p pulsedag-core --lib state_replay_v3::tests::accepted_spend_clone_vs_in_place_trial_probe -- --ignored --exact --nocapture | tee /tmp/native-v3-accepted-apply-aba-trial.log
           grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/native-v3-accepted-apply-aba-trial.log
           grep -Fq 'v3_trial_accepted_apply_time_us clone_a=' /tmp/native-v3-accepted-apply-aba-trial.log
+          grep -Fq 'validation_once_us=' /tmp/native-v3-accepted-apply-aba-trial.log
           cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture | tee /tmp/native-v3-monetary-finality-reorg.log
           grep -Fq 'test result: ok. 2 passed; 0 failed;' /tmp/native-v3-monetary-finality-reorg.log
           cargo test --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- --nocapture | tee /tmp/native-v3-checkpoint-differential.log
@@ -229,6 +230,7 @@ jobs:
             /tmp/native-v3-diagnostic-budget.log
             /tmp/native-v3-local-cpu-rss.log
             /tmp/native-v3-local-cpu-rss.json
+            /tmp/native-v3-accepted-apply-aba-trial.log
           if-no-files-found: warn
           retention-days: 14
 
