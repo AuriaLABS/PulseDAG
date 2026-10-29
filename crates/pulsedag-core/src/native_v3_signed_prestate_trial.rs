@@ -44,7 +44,9 @@ fn apply_one_explicit_native_envelope(
 ) -> Result<(usize, u64), PulseError> {
     validate_dormant_native_v3_monetary_body_preflight(envelope, &working.chain_id)?;
     if envelope.header.height == 0 {
-        return Err(invalid("genesis is not a signed-spend monetary trial block"));
+        return Err(invalid(
+            "genesis is not a signed-spend monetary trial block",
+        ));
     }
     if working.contracts.config.enabled {
         return Err(invalid("smart contracts must remain INACTIVE"));
@@ -54,7 +56,9 @@ fn apply_one_explicit_native_envelope(
     let mut signed_transactions = 0_usize;
     for tx in envelope.transactions.iter().skip(1) {
         if !seen_txids.insert(tx.txid.clone()) {
-            return Err(invalid("repeated ordinary transaction ID across explicit order"));
+            return Err(invalid(
+                "repeated ordinary transaction ID across explicit order",
+            ));
         }
         if u32::try_from(tx.outputs.len()).is_err() {
             return Err(invalid("transaction output indices exceed u32"));
@@ -149,7 +153,9 @@ pub fn inspect_dormant_native_v3_explicit_order_trial(
     prestate: &ChainState,
 ) -> Result<DormantNativeV3ExplicitOrderResult, PulseError> {
     if ordered_envelopes.is_empty() || ordered_envelopes.len() > MAX_EXPLICIT_NATIVE_TRIAL_BLOCKS {
-        return Err(invalid("explicit order exceeds bounded non-consensus diagnostic"));
+        return Err(invalid(
+            "explicit order exceeds bounded non-consensus diagnostic",
+        ));
     }
     if prestate.contracts.config.enabled {
         return Err(invalid("smart contracts must remain INACTIVE"));
@@ -337,14 +343,15 @@ mod tests {
         let first = native_envelope(vec![tx.clone()]);
         let mut second = native_envelope(vec![tx]);
         second.header.height = 2;
-        second.hash =
-            crate::header_v3::compute_block_hash_v3(&second.header, CHAIN).unwrap();
+        second.hash = crate::header_v3::compute_block_hash_v3(&second.header, CHAIN).unwrap();
         let root_before = state.utxo.compute_state_root().unwrap();
-        let error =
-            inspect_dormant_native_v3_explicit_order_trial(&[first, second], &state)
-                .unwrap_err()
-                .to_string();
-        assert!(error.contains("repeated ordinary transaction ID"), "{error}");
+        let error = inspect_dormant_native_v3_explicit_order_trial(&[first, second], &state)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("repeated ordinary transaction ID"),
+            "{error}"
+        );
         assert_eq!(state.utxo.compute_state_root().unwrap(), root_before);
     }
 
@@ -356,13 +363,13 @@ mod tests {
         b.header.height = 2;
         b.hash = crate::header_v3::compute_block_hash_v3(&b.header, CHAIN).unwrap();
         assert!(inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b], &state).is_err());
-        let repeated = inspect_dormant_native_v3_explicit_order_trial(
-            &[a.clone(), a],
-            &state,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(repeated.contains("duplicate native-v3 envelope"), "{repeated}");
+        let repeated = inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), a], &state)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            repeated.contains("duplicate native-v3 envelope"),
+            "{repeated}"
+        );
         assert!(inspect_dormant_native_v3_explicit_order_trial(&[], &state).is_err());
     }
 
