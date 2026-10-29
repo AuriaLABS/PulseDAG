@@ -32,4 +32,4 @@ jobs:
       - name: Regress all protocol mining partition and canonical verifier tests
         run: cargo test --locked -p pulsedag-miner --lib protocol_backend::tests -- --nocapture
       - name: Advisory same-run throughput comparison (not a pass-by-speed criterion)
-        run: cargo test --locked -p pulsedag-miner --lib prepared_kheavyhash_advisory_throughput_sample -- --ignored --nocapture
+        run: cargo test --locked --release -p pulsedag-miner --lib prepared_kheavyhash_advisory_throughput_sample -- --ignored --nocapture
