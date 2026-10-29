@@ -1,0 +1,41 @@
+name: Task30 bounded miner PoW taxonomy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - scripts/lib/patch_task30_v24_runtime_compat.py
+      - scripts/lib/test_task30_miner_no_pow_taxonomy.py
+      - .github/workflows/task30-miner-pow-taxonomy.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/pulsedag-miner/src/main.rs
+      - scripts/lib/patch_task30_v24_runtime_compat.py
+      - scripts/lib/test_task30_miner_no_pow_taxonomy.py
+      - .github/workflows/task30-miner-pow-taxonomy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-false-invalid-pow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+      - name: Python retry taxonomy contract (does not start a miner)
+        run: python3 -m unittest discover -s scripts/lib -p 'test_task30_miner_no_pow_taxonomy.py' -v
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Enforce formatting
+        run: cargo fmt --all -- --check
+      - name: Miner bounded-search telemetry must not fake invalid-PoW rejection
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-miner bounded_nonce_exhaustion_is_not_a_backend_failure_or_invalid_pow -- --exact
+      - name: Backend accepted/verified mismatch remains fail-closed
+        run: cargo test --locked -p pulsedag-miner --bin pulsedag-miner backend_claim_mismatch_remains_fail_closed_and_distinct_from_exhaustion
