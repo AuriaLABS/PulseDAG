@@ -51,6 +51,7 @@ pub mod native_anticone_matrix_v3;
 pub mod native_dag_relation_v3;
 pub mod native_merge_set_v3;
 pub mod native_parent_dag_context_v3;
+pub mod native_v3_signed_prestate_trial;
 pub mod native_topological_evaluation_v3;
 pub mod network_block_v2;
 pub mod network_block_v3;
