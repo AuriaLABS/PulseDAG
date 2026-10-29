@@ -319,7 +319,7 @@ def patch_prune(text: str) -> str:
           mined=1
           break
         fi
-        if grep -Eq 'backend_verification_failed:.*hash_above_target|backend_verification_failed.*hash_above_target' "$attempt_log"; then
+        if grep -Eq 'nonce_search_exhausted:.*reason=no_valid_pow_within_budget' "$attempt_log"; then
           _v230_prune_log "no PoW solution within 1000000 tries for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
           sleep "$retry_wait"
           continue
