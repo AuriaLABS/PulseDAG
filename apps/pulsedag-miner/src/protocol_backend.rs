@@ -438,18 +438,23 @@ mod tests {
     fn prepared_kheavyhash_matches_canonical_legacy_and_chain_bound_v2_vectors() {
         for (version, identity) in [
             (BLOCK_HEADER_VERSION_V1, legacy_identity()),
-            (BLOCK_HEADER_VERSION_V2, activated_identity("pulsedag-testnet-v2")),
+            (
+                BLOCK_HEADER_VERSION_V2,
+                activated_identity("pulsedag-testnet-v2"),
+            ),
         ] {
             let header = header(version, 0x207f_ffff);
             let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity))
                 .expect("valid prepared work");
-            let prepared = pulsedag_core::pow::PreparedKHeavyHasher::new(
-                &work.material.pre_pow_bytes,
-            );
+            let prepared =
+                pulsedag_core::pow::PreparedKHeavyHasher::new(&work.material.pre_pow_bytes);
             for nonce in [0, 1, 2, 3, 17, 255, 1024, u64::MAX] {
                 let canonical = work.evaluate_nonce(nonce);
                 let raw = prepared.hash_nonce(nonce);
-                assert_eq!(raw, canonical.final_hash.hash, "version={version}, nonce={nonce}");
+                assert_eq!(
+                    raw, canonical.final_hash.hash,
+                    "version={version}, nonce={nonce}"
+                );
                 assert_eq!(
                     pulsedag_core::pow::compare_pow_hash_to_target(
                         &raw,
@@ -471,9 +476,7 @@ mod tests {
         let identity = activated_identity("pulsedag-task30-private-benchmark");
         let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity))
             .expect("valid chain-bound work");
-        let prepared = pulsedag_core::pow::PreparedKHeavyHasher::new(
-            &work.material.pre_pow_bytes,
-        );
+        let prepared = pulsedag_core::pow::PreparedKHeavyHasher::new(&work.material.pre_pow_bytes);
         let sample = 4_096u64;
 
         let old_start = Instant::now();
