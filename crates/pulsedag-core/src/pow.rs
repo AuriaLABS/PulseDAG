@@ -515,7 +515,9 @@ impl PreparedKHeavyHasher {
 
     /// Raw canonical 256-bit digest. Target checks remain exact byte comparisons.
     pub fn hash_nonce(&self, nonce: u64) -> [u8; 32] {
-        let digest = self.matrix.heavy_hash(self.hasher.clone().finalize_with_nonce(nonce));
+        let digest = self
+            .matrix
+            .heavy_hash(self.hasher.clone().finalize_with_nonce(nonce));
         *digest.as_bytes()
     }
 }
