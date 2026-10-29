@@ -518,7 +518,7 @@ impl PreparedKHeavyHasher {
         let digest = self
             .matrix
             .heavy_hash(self.hasher.clone().finalize_with_nonce(nonce));
-        *digest.as_bytes()
+        digest.as_bytes()
     }
 }
 
