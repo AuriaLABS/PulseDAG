@@ -1,0 +1,35 @@
+name: Task30 prepared PoW exact-equivalence and throughput
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/pow.rs
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - .github/workflows/task30-prepared-pow.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepared-pow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Check rustfmt (must not silently repair CI)
+        run: cargo fmt --all -- --check
+      - name: Compare prepared KHeavyHash nonce hashes to canonical legacy and v2
+        run: cargo test --locked -p pulsedag-miner --lib prepared_kheavyhash_matches_canonical_legacy_and_chain_bound_v2_vectors -- --nocapture
+      - name: Regress all protocol mining partition and canonical verifier tests
+        run: cargo test --locked -p pulsedag-miner --lib protocol_backend::tests -- --nocapture
+      - name: Advisory same-run throughput comparison (not a pass-by-speed criterion)
+        run: cargo test --locked -p pulsedag-miner --lib prepared_kheavyhash_advisory_throughput_sample -- --ignored --nocapture
