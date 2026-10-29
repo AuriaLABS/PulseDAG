@@ -89,7 +89,6 @@ pub fn validate_block_envelope_v3(
     Ok(())
 }
 
-
 /**
  * Stateless monetary-v3 body guard for a native nanosecond envelope.
  *
@@ -116,8 +115,11 @@ pub fn validate_dormant_native_v3_monetary_body_preflight(
         .transactions
         .first()
         .ok_or_else(|| invalid("native-v3 monetary block lacks its reward claim"))?;
-    validate_reward_claim_transaction_v3(claim, expected_chain_id)
-        .map_err(|error| invalid(format!("invalid native-v3 amountless reward claim: {error}")))?;
+    validate_reward_claim_transaction_v3(claim, expected_chain_id).map_err(|error| {
+        invalid(format!(
+            "invalid native-v3 amountless reward claim: {error}"
+        ))
+    })?;
     if let Some(hidden) = candidate
         .transactions
         .iter()
@@ -331,7 +333,10 @@ mod tests {
         let error = validate_dormant_native_v3_monetary_body_preflight(&double_claim, CHAIN)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("additional inputless transaction"), "{error}");
+        assert!(
+            error.contains("additional inputless transaction"),
+            "{error}"
+        );
 
         let mut minted = claim.clone();
         minted.outputs[0].amount = 999;
@@ -344,10 +349,12 @@ mod tests {
 
         // A different inputless shape is not a legitimate ordinary spend.
         let hidden_no_input = body(vec![claim.clone(), transaction(121)]);
-        assert!(validate_dormant_native_v3_monetary_body_preflight(&hidden_no_input, CHAIN)
-            .unwrap_err()
-            .to_string()
-            .contains("additional inputless transaction"));
+        assert!(
+            validate_dormant_native_v3_monetary_body_preflight(&hidden_no_input, CHAIN)
+                .unwrap_err()
+                .to_string()
+                .contains("additional inputless transaction")
+        );
 
         // Explicitly independent of PoW or finality: genesis can be empty,
         // but no positive-height block can skip its amountless reward claim.
@@ -386,12 +393,8 @@ mod tests {
         };
         unverified.txid = compute_txid_v2(&unverified, CHAIN).unwrap();
         let transactions = vec![claim, unverified];
-        let envelope = build_block_envelope_v3(
-            CHAIN,
-            header(1, &transactions),
-            transactions,
-        )
-        .unwrap();
+        let envelope =
+            build_block_envelope_v3(CHAIN, header(1, &transactions), transactions).unwrap();
         validate_dormant_native_v3_monetary_body_preflight(&envelope, CHAIN).unwrap();
         assert_eq!(envelope.transactions.len(), 2);
 
