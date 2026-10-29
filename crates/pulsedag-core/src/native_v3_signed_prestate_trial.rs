@@ -10,7 +10,7 @@
 //! This is not a monetary-v3 block admission function and cannot be used to
 //! authorize mining or final settlement. Contract execution stays inactive.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     apply::apply_transaction,
@@ -35,42 +35,33 @@ pub struct DormantNativeV3SignedPrestateResult {
     pub resulting_utxo_root: String,
 }
 
-/// Validate chain-bound Ed25519 v2 transfers in one native-v3 envelope.
-/// An externally selected, *trusted* prestate is an input, never derived here.
-/// All input/output state mutation occurs on a private clone, so failure
-/// never modifies the supplied state. A nonzero coinbase-origin input is
-/// deliberately rejected: reward maturity/finality is not implemented here.
-///
-/// This deliberately does NOT compare against `header.state_root`: the
-/// native-v3 finality, cumulative rewards and DAG total ordering remain
-/// unfrozen (#1309), so the trial root MUST NOT be treated as authority.
-pub fn inspect_dormant_native_v3_signed_prestate_trial(
+/// One isolated native envelope's signed transfer effects. Only called on a
+/// disposable state clone: errors may leave that clone partly updated.
+fn apply_one_explicit_native_envelope(
     envelope: &BlockEnvelopeV3,
-    prestate: &ChainState,
-) -> Result<DormantNativeV3SignedPrestateResult, PulseError> {
-    validate_dormant_native_v3_monetary_body_preflight(envelope, &prestate.chain_id)?;
-    if envelope.chain_id != prestate.chain_id {
-        return Err(PulseError::ChainIdMismatch);
+    working: &mut ChainState,
+    seen_txids: &mut BTreeSet<String>,
+) -> Result<(usize, u64), PulseError> {
+    validate_dormant_native_v3_monetary_body_preflight(envelope, &working.chain_id)?;
+    if envelope.header.height == 0 {
+        return Err(invalid("genesis is not a signed-spend monetary trial block"));
     }
-    if prestate.contracts.config.enabled {
+    if working.contracts.config.enabled {
         return Err(invalid("smart contracts must remain INACTIVE"));
     }
 
-    let mut working = prestate.clone();
-    let mut seen_txids = BTreeSet::new();
     let mut candidate_fees = 0_u64;
     let mut signed_transactions = 0_usize;
     for tx in envelope.transactions.iter().skip(1) {
         if !seen_txids.insert(tx.txid.clone()) {
-            return Err(invalid("repeated ordinary transaction ID"));
+            return Err(invalid("repeated ordinary transaction ID across explicit order"));
         }
         if u32::try_from(tx.outputs.len()).is_err() {
             return Err(invalid("transaction output indices exceed u32"));
         }
 
-        // Require actual settled UTXOs. v2's mempool-aware validator can
-        // inspect unconfirmed output candidates, which is not enough for
-        // an offline native monetary prestate trial.
+        // V2's general validator can consider unconfirmed mempool outputs.
+        // This local-only native trial requires actual settled UTXOs.
         let mut inputs_seen = BTreeSet::new();
         let mut total_inputs = 0_u64;
         for input in &tx.inputs {
@@ -91,7 +82,7 @@ pub fn inspect_dormant_native_v3_signed_prestate_trial(
                 .checked_add(coin.amount)
                 .ok_or_else(|| invalid("input sum overflow"))?;
         }
-        validate_transaction_v2(tx, &working, &envelope.chain_id)?;
+        validate_transaction_v2(tx, working, &envelope.chain_id)?;
         let total_outputs = tx.outputs.iter().try_fold(0_u64, |sum, output| {
             sum.checked_add(output.amount)
                 .ok_or_else(|| invalid("output sum overflow"))
@@ -103,18 +94,92 @@ pub fn inspect_dormant_native_v3_signed_prestate_trial(
             return Err(invalid("inputs must equal outputs plus explicit fee"));
         }
 
-        // This is a disposable state only; a double-spend within the same
-        // envelope will not find its already-spent UTXO on the next iteration.
-        apply_transaction(tx, &mut working, envelope.header.height)?;
+        // The private state clone consumes UTXOs in the caller-supplied order;
+        // no duplicate/conflicting transfer can claim a second fee.
+        apply_transaction(tx, working, envelope.header.height)?;
         candidate_fees = candidate_fees
             .checked_add(tx.fee)
             .ok_or_else(|| invalid("candidate fee sum overflow"))?;
         signed_transactions += 1;
     }
+    Ok((signed_transactions, candidate_fees))
+}
 
+/// Validate signed v2-wire transfers in one native-v3 envelope, using a
+/// caller-supplied trusted prestate. The result is NOT a consensus state root.
+pub fn inspect_dormant_native_v3_signed_prestate_trial(
+    envelope: &BlockEnvelopeV3,
+    prestate: &ChainState,
+) -> Result<DormantNativeV3SignedPrestateResult, PulseError> {
+    let mut working = prestate.clone();
+    let (signed_transactions, candidate_fees) =
+        apply_one_explicit_native_envelope(envelope, &mut working, &mut BTreeSet::new())?;
     Ok(DormantNativeV3SignedPrestateResult {
         signed_transactions,
         candidate_fees,
+        resulting_utxo_root: working.utxo.compute_state_root()?,
+    })
+}
+
+/// A bounded *conditional* replay of a caller-provided sequence. No DAG
+/// ancestry or selected-parent authority is implied by the input order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeV3ExplicitOrderResult {
+    pub signed_transactions: usize,
+    pub candidate_fees: u64,
+    pub fees_by_block: BTreeMap<String, u64>,
+    pub resulting_utxo_root: String,
+}
+
+// Resource cap for a disposable local diagnostic, NOT a network consensus
+// parent/merge-set budget or an adopted GHOSTDAG policy parameter.
+const MAX_EXPLICIT_NATIVE_TRIAL_BLOCKS: usize = 32;
+
+/// Compare hypotheses about ordering without accepting either as consensus.
+///
+/// Each claimed block must have a distinct native-v3 envelope hash and a
+/// valid amountless claim, and every ordinary transaction must have a unique
+/// chain-bound txid across the supplied sequence. Repeated spends fail the
+/// *whole* trial; they are NOT silently skipped nor paid fees. Incoming
+/// blocks, order and prestate are NOT authenticated as a DAG or checkpoint.
+/// The resulting root is intentionally NOT checked against any header root.
+/// The supplied prestate is immutable even when a later block fails.
+pub fn inspect_dormant_native_v3_explicit_order_trial(
+    ordered_envelopes: &[BlockEnvelopeV3],
+    prestate: &ChainState,
+) -> Result<DormantNativeV3ExplicitOrderResult, PulseError> {
+    if ordered_envelopes.is_empty() || ordered_envelopes.len() > MAX_EXPLICIT_NATIVE_TRIAL_BLOCKS {
+        return Err(invalid("explicit order exceeds bounded non-consensus diagnostic"));
+    }
+    if prestate.contracts.config.enabled {
+        return Err(invalid("smart contracts must remain INACTIVE"));
+    }
+    let mut working = prestate.clone();
+    let mut seen_blocks = BTreeSet::new();
+    let mut seen_txids = BTreeSet::new();
+    let mut fees_by_block = BTreeMap::new();
+    let mut signed_transactions = 0_usize;
+    let mut candidate_fees = 0_u64;
+    for block in ordered_envelopes {
+        if !seen_blocks.insert(block.hash.clone()) {
+            return Err(invalid("duplicate native-v3 envelope in explicit order"));
+        }
+        let (count, fees) =
+            apply_one_explicit_native_envelope(block, &mut working, &mut seen_txids)?;
+        signed_transactions = signed_transactions
+            .checked_add(count)
+            .ok_or_else(|| invalid("signed transaction count overflow"))?;
+        candidate_fees = candidate_fees
+            .checked_add(fees)
+            .ok_or_else(|| invalid("candidate aggregate fees overflow"))?;
+        if fees_by_block.insert(block.hash.clone(), fees).is_some() {
+            return Err(invalid("repeated containing block fee attribution"));
+        }
+    }
+    Ok(DormantNativeV3ExplicitOrderResult {
+        signed_transactions,
+        candidate_fees,
+        fees_by_block,
         resulting_utxo_root: working.utxo.compute_state_root()?,
     })
 }
@@ -224,6 +289,106 @@ mod tests {
         // Header deliberately is not mined: prestate preview is NOT PoW
         // verification or a live block acceptance/settlement oracle.
         build_block_envelope_v3(CHAIN, header, txs).unwrap()
+    }
+
+    #[test]
+    fn two_native_envelopes_apply_signed_chain_and_attribute_fees_once() {
+        let (state, funding) = funded_state();
+        let first = signed(funding.clone(), address(), 90, 10, 1);
+        let second = signed(
+            OutPoint {
+                txid: first.txid.clone(),
+                index: 0,
+            },
+            "pulse1recipient".into(),
+            80,
+            10,
+            2,
+        );
+        let a = native_envelope(vec![first.clone()]);
+        let mut b = native_envelope(vec![second.clone()]);
+        b.header.height = 2;
+        b.header.timestamp_ns += 500_000_000;
+        b.hash = crate::header_v3::compute_block_hash_v3(&b.header, CHAIN).unwrap();
+        let root_before = state.utxo.compute_state_root().unwrap();
+        let result =
+            inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state)
+                .unwrap();
+        assert_eq!(result.signed_transactions, 2);
+        assert_eq!(result.candidate_fees, 20);
+        assert_eq!(result.fees_by_block.get(&a.hash), Some(&10));
+        assert_eq!(result.fees_by_block.get(&b.hash), Some(&10));
+        let mut expected = state.clone();
+        apply_transaction(&first, &mut expected, 1).unwrap();
+        apply_transaction(&second, &mut expected, 2).unwrap();
+        assert_eq!(
+            result.resulting_utxo_root,
+            expected.utxo.compute_state_root().unwrap()
+        );
+        assert_eq!(state.utxo.compute_state_root().unwrap(), root_before);
+        // This is an explicitly supplied order, NOT inferred consensus.
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&[b, a], &state).is_err());
+    }
+
+    #[test]
+    fn explicit_order_rejects_same_txid_across_distinct_native_envelopes() {
+        let (state, funding) = funded_state();
+        let tx = signed(funding, address(), 90, 10, 1);
+        let first = native_envelope(vec![tx.clone()]);
+        let mut second = native_envelope(vec![tx]);
+        second.header.height = 2;
+        second.hash =
+            crate::header_v3::compute_block_hash_v3(&second.header, CHAIN).unwrap();
+        let root_before = state.utxo.compute_state_root().unwrap();
+        let error =
+            inspect_dormant_native_v3_explicit_order_trial(&[first, second], &state)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("repeated ordinary transaction ID"), "{error}");
+        assert_eq!(state.utxo.compute_state_root().unwrap(), root_before);
+    }
+
+    #[test]
+    fn explicit_order_rejects_distinct_double_spend_and_duplicate_envelope() {
+        let (state, funding) = funded_state();
+        let a = native_envelope(vec![signed(funding.clone(), address(), 90, 10, 1)]);
+        let mut b = native_envelope(vec![signed(funding, address(), 80, 20, 2)]);
+        b.header.height = 2;
+        b.hash = crate::header_v3::compute_block_hash_v3(&b.header, CHAIN).unwrap();
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b], &state).is_err());
+        let repeated = inspect_dormant_native_v3_explicit_order_trial(
+            &[a.clone(), a],
+            &state,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(repeated.contains("duplicate native-v3 envelope"), "{repeated}");
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&[], &state).is_err());
+    }
+
+    #[test]
+    fn explicit_order_rejects_forged_later_block_without_mutating_prestate() {
+        let (state, funding) = funded_state();
+        let first = signed(funding, address(), 90, 10, 1);
+        let mut forged = signed(
+            OutPoint {
+                txid: first.txid.clone(),
+                index: 0,
+            },
+            "pulse1recipient".into(),
+            80,
+            10,
+            2,
+        );
+        forged.inputs[0].signature = "00".repeat(64);
+        forged.txid = compute_txid_v2(&forged, CHAIN).unwrap();
+        let a = native_envelope(vec![first]);
+        let mut b = native_envelope(vec![forged]);
+        b.header.height = 2;
+        b.hash = crate::header_v3::compute_block_hash_v3(&b.header, CHAIN).unwrap();
+        let original_root = state.utxo.compute_state_root().unwrap();
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&[a, b], &state).is_err());
+        assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
     }
 
     #[test]
