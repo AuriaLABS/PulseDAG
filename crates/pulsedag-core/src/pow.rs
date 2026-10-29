@@ -493,6 +493,33 @@ pub fn canonical_pow_adapter() -> CanonicalPowAdapter {
     CanonicalPowAdapter::new()
 }
 
+/// Nonce-search preparation for one immutable PoW preimage.
+///
+/// This caches only the Keccak prehash, initialized PowHash and KHeavyHash
+/// matrix. Its nonce digest must exactly match the existing canonical
+/// `kheavyhash_digest`; validation and consensus continue using that path.
+/// Do not reuse across distinct headers, chain identities or timestamps.
+pub struct PreparedKHeavyHasher {
+    hasher: PowHash,
+    matrix: Matrix,
+}
+
+impl PreparedKHeavyHasher {
+    pub fn new(pre_pow_bytes: &[u8]) -> Self {
+        let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(pre_pow_bytes).into());
+        Self {
+            hasher: PowHash::new(pre_pow_hash, 0),
+            matrix: Matrix::generate(pre_pow_hash),
+        }
+    }
+
+    /// Raw canonical 256-bit digest. Target checks remain exact byte comparisons.
+    pub fn hash_nonce(&self, nonce: u64) -> [u8; 32] {
+        let digest = self.matrix.heavy_hash(self.hasher.clone().finalize_with_nonce(nonce));
+        *digest.as_bytes()
+    }
+}
+
 fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> KaspaHash {
     let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(pre_pow_bytes).into());
     let hasher = PowHash::new(pre_pow_hash, 0);
