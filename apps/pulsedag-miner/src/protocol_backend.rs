@@ -463,6 +463,39 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "advisory local throughput comparison; never a consensus or GO gate"]
+    fn prepared_kheavyhash_advisory_throughput_sample() {
+        use std::time::Instant;
+
+        let header = header(BLOCK_HEADER_VERSION_V2, 0x0101_0000);
+        let identity = activated_identity("pulsedag-task30-private-benchmark");
+        let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity))
+            .expect("valid chain-bound work");
+        let prepared = pulsedag_core::pow::PreparedKHeavyHasher::new(
+            &work.material.pre_pow_bytes,
+        );
+        let sample = 4_096u64;
+
+        let old_start = Instant::now();
+        let reference = (0..sample)
+            .map(|nonce| work.evaluate_nonce(nonce).final_hash.hash)
+            .collect::<Vec<_>>();
+        let old_secs = old_start.elapsed().as_secs_f64();
+        let new_start = Instant::now();
+        for (nonce, expected) in reference.iter().enumerate() {
+            assert_eq!(prepared.hash_nonce(nonce as u64), *expected);
+        }
+        let new_secs = new_start.elapsed().as_secs_f64();
+        println!(
+            "task30_prepared_pow_benchmark samples={} baseline_hps={:.1} prepared_hps={:.1} estimated_speedup={:.2} (advisory only)",
+            sample,
+            sample as f64 / old_secs.max(f64::MIN_POSITIVE),
+            sample as f64 / new_secs.max(f64::MIN_POSITIVE),
+            old_secs / new_secs.max(f64::MIN_POSITIVE),
+        );
+    }
+
+    #[test]
     fn legacy_protocol_search_matches_existing_single_worker_path() {
         let target_bits = 0x0100_0001;
         let header = header(BLOCK_HEADER_VERSION_V1, target_bits);
