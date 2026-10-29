@@ -2060,14 +2060,25 @@ mod tests {
             }
         }
 
+        // These signed spends consume distinct independently funded UTXOs,
+        // so the common initial pre-state authenticates all of them. Perform
+        // signature/txid/exact-value validation ONCE, outside each timed trial.
+        // This keeps the A/B/A observation focused on clone-vs-direct UTXO
+        // application instead of the comparatively expensive Ed25519 checks.
+        let trial_block_hash = "test-only-trial".to_string();
+        let validate_start = std::time::Instant::now();
+        for (position, tx) in transactions.iter().enumerate() {
+            validate_signed_replay_spend(tx, &initial, &chain_id, position, &trial_block_hash)
+                .unwrap();
+        }
+        let validation_us = validate_start.elapsed().as_micros();
+
         let trial = |clone_before_apply: bool| {
-            // The initial clone is outside the timed loop for both modes.
+            // The initial state clone and signed-spend verification are
+            // outside the timed loop for BOTH modes; roots are compared below.
             let mut rebuilt = initial.clone();
             let start = std::time::Instant::now();
-            let trial_block_hash = "test-only-trial".to_string();
-            for (position, tx) in transactions.iter().enumerate() {
-                validate_signed_replay_spend(tx, &rebuilt, &chain_id, position, &trial_block_hash)
-                    .unwrap();
+            for tx in &transactions {
                 if clone_before_apply {
                     let mut candidate = rebuilt.clone();
                     apply_transaction(tx, &mut candidate, 2).unwrap();
@@ -2091,12 +2102,13 @@ mod tests {
         assert_eq!(direct.2, FUNDED_UTXOS);
         assert_eq!(cloned_b.2, FUNDED_UTXOS);
         println!(
-            "v3_trial_accepted_apply_time_us clone_a={} in_place={} clone_b={} signed_spends={} funded_utxos={} identical_root={}",
+            "v3_trial_accepted_apply_time_us clone_a={} in_place={} clone_b={} signed_spends={} funded_utxos={} validation_once_us={} identical_root={}",
             cloned_a.0,
             direct.0,
             cloned_b.0,
             SIGNED_SPENDS,
             FUNDED_UTXOS,
+            validation_us,
             direct.1
         );
     }
