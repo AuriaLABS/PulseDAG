@@ -14,9 +14,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     apply::apply_transaction,
-    block_envelope_v3::{
-        validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3,
-    },
+    block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
     errors::PulseError,
     state::ChainState,
     validation_v2::validate_transaction_v2,
@@ -201,8 +199,11 @@ mod tests {
     }
 
     fn resign(tx: &mut Transaction) {
-        tx.inputs[0].signature =
-            hex::encode(signer().sign(&signing_message_v2(tx, CHAIN).unwrap()).to_bytes());
+        tx.inputs[0].signature = hex::encode(
+            signer()
+                .sign(&signing_message_v2(tx, CHAIN).unwrap())
+                .to_bytes(),
+        );
         tx.txid = compute_txid_v2(tx, CHAIN).unwrap();
     }
 
@@ -249,7 +250,10 @@ mod tests {
         let mut expected = state.clone();
         apply_transaction(&first, &mut expected, 1).unwrap();
         apply_transaction(&second, &mut expected, 1).unwrap();
-        assert_eq!(trial.resulting_utxo_root, expected.utxo.compute_state_root().unwrap());
+        assert_eq!(
+            trial.resulting_utxo_root,
+            expected.utxo.compute_state_root().unwrap()
+        );
         assert_eq!(state.utxo.compute_state_root().unwrap(), root_before);
         assert!(state.utxo.utxos.contains_key(&funding));
     }
@@ -261,19 +265,25 @@ mod tests {
         let mut forged = good.clone();
         forged.inputs[0].signature = "00".repeat(64);
         forged.txid = compute_txid_v2(&forged, CHAIN).unwrap();
-        assert!(
-            inspect_dormant_native_v3_signed_prestate_trial(&native_envelope(vec![forged]), &state)
-                .is_err()
-        );
+        assert!(inspect_dormant_native_v3_signed_prestate_trial(
+            &native_envelope(vec![forged]),
+            &state
+        )
+        .is_err());
 
         let mut fee_gap = good.clone();
         fee_gap.outputs[0].amount = 89;
         resign(&mut fee_gap);
-        let error =
-            inspect_dormant_native_v3_signed_prestate_trial(&native_envelope(vec![fee_gap]), &state)
-                .unwrap_err()
-                .to_string();
-        assert!(error.contains("inputs must equal outputs plus explicit fee"), "{error}");
+        let error = inspect_dormant_native_v3_signed_prestate_trial(
+            &native_envelope(vec![fee_gap]),
+            &state,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("inputs must equal outputs plus explicit fee"),
+            "{error}"
+        );
 
         let phantom = signed(
             OutPoint {
@@ -285,10 +295,11 @@ mod tests {
             10,
             3,
         );
-        assert!(
-            inspect_dormant_native_v3_signed_prestate_trial(&native_envelope(vec![phantom]), &state)
-                .is_err()
-        );
+        assert!(inspect_dormant_native_v3_signed_prestate_trial(
+            &native_envelope(vec![phantom]),
+            &state
+        )
+        .is_err());
     }
 
     #[test]
@@ -296,13 +307,19 @@ mod tests {
         let (state, funding) = funded_state();
         let a = signed(funding.clone(), address(), 90, 10, 1);
         let b = signed(funding.clone(), address(), 80, 20, 2);
-        assert!(
-            inspect_dormant_native_v3_signed_prestate_trial(&native_envelope(vec![a, b]), &state)
-                .is_err()
-        );
+        assert!(inspect_dormant_native_v3_signed_prestate_trial(
+            &native_envelope(vec![a, b]),
+            &state
+        )
+        .is_err());
 
         let mut coinbase_state = state.clone();
-        coinbase_state.utxo.utxos.get_mut(&funding).unwrap().coinbase = true;
+        coinbase_state
+            .utxo
+            .utxos
+            .get_mut(&funding)
+            .unwrap()
+            .coinbase = true;
         let spend = signed(funding.clone(), address(), 90, 10, 1);
         assert!(inspect_dormant_native_v3_signed_prestate_trial(
             &native_envelope(vec![spend.clone()]),
@@ -314,12 +331,10 @@ mod tests {
 
         let mut wrong_chain_state = state.clone();
         wrong_chain_state.chain_id = "other-network".into();
-        assert!(
-            inspect_dormant_native_v3_signed_prestate_trial(
-                &native_envelope(vec![spend]),
-                &wrong_chain_state
-            )
-            .is_err()
-        );
+        assert!(inspect_dormant_native_v3_signed_prestate_trial(
+            &native_envelope(vec![spend]),
+            &wrong_chain_state
+        )
+        .is_err());
     }
 }
