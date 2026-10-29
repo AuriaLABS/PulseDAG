@@ -2064,8 +2064,9 @@ mod tests {
             // The initial clone is outside the timed loop for both modes.
             let mut rebuilt = initial.clone();
             let start = std::time::Instant::now();
+            let trial_block_hash = "test-only-trial".to_string();
             for (position, tx) in transactions.iter().enumerate() {
-                validate_signed_replay_spend(tx, &rebuilt, &chain_id, position, "test-only-trial")
+                validate_signed_replay_spend(tx, &rebuilt, &chain_id, position, &trial_block_hash)
                     .unwrap();
                 if clone_before_apply {
                     let mut candidate = rebuilt.clone();
