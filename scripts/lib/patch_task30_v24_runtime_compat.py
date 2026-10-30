@@ -310,17 +310,19 @@ def patch_prune(text: str) -> str:
       tail -80 "$miner_log" >&2 || true
       return 1
     }'''
+    # Task30 runtime-only 10M nonce attempts (60 attempts = 600M per block).
+    # Canonical PoW target, public difficulty and 64-block recovery gate remain unchanged.
     new_mining = r'''    for ((attempt=1; attempt<=max_attempts; attempt++)); do
       local attempt_log="$miner_dir/$label-attempt-$attempt.log"
       printf '\n[%s] miner attempt %d/%d\n' "$(date -u +%FT%TZ)" "$attempt" "$max_attempts" >> "$miner_log"
-      if "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 1000000 > "$attempt_log" 2>&1; then
+      if "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 10000000 > "$attempt_log" 2>&1; then
         cat "$attempt_log" >> "$miner_log"
         if grep -q 'submit_result: accepted=true' "$attempt_log"; then
           mined=1
           break
         fi
-        if grep -Eq 'backend_verification_failed:.*hash_above_target|backend_verification_failed.*hash_above_target' "$attempt_log"; then
-          _v230_prune_log "no PoW solution within 1000000 tries for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
+        if grep -Eq 'nonce_search_exhausted:.*reason=no_valid_pow_within_budget' "$attempt_log"; then
+          _v230_prune_log "no PoW solution within 10000000 tries for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
           sleep "$retry_wait"
           continue
         fi
