@@ -1,0 +1,54 @@
+name: Task30 isolated PoW budget diagnostic (non-consensus)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/private_testnet/task30_pow_budget_diagnostic.py
+      - scripts/private_testnet/test_task30_pow_budget_diagnostic.py
+      - .github/workflows/task30-pow-budget-diagnostic.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/private_testnet/task30_pow_budget_diagnostic.py
+      - scripts/private_testnet/test_task30_pow_budget_diagnostic.py
+      - .github/workflows/task30-pow-budget-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-work-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+      - name: Verify model and fail-closed invalid-input tests
+        run: python3 -m unittest discover -s scripts/private_testnet -p 'test_task30_pow_budget_diagnostic.py' -v
+      - name: Produce illustrative prior failing private rehearsal risk JSON
+        run: |
+          python3 scripts/private_testnet/task30_pow_budget_diagnostic.py \
+            --target-hex 00000172ef000000000000000000000000000000000000000000000000000000 \
+            --hash-rate 33000 \
+            --tries-per-batch 1000000 \
+            --batches-per-block 60 \
+            --blocks 64 \
+            --timeout-minutes 240 \
+            > "$RUNNER_TEMP/task30-pow-budget-example.json"
+          python3 - "$RUNNER_TEMP/task30-pow-budget-example.json" <<'PY'
+          import json
+          import sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert d["non_consensus"] is True
+          assert d["expected_mining_time_exceeds_workflow_timeout"] is True
+          assert d["requires_real_pow_for_every_block"] is True
+          print("PoW risk model diagnostic only: reproduced, NO CI mining authorization")
+          PY
+      - name: Upload risk calculation as advisory evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-pow-budget-advisory
+          path: ${{ runner.temp }}/task30-pow-budget-example.json
+          retention-days: 14
