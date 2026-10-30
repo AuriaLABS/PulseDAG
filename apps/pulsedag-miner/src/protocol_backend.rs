@@ -1,6 +1,7 @@
 use crate::protocol_pow::{build_protocol_pow_work, ProtocolPowWork};
 use crate::{BackendVerification, CpuMiningBackend, NonceSearchResult};
 use anyhow::{anyhow, Result};
+use pulsedag_core::pow::{compare_pow_hash_to_target, PreparedKHeavyHasher};
 use pulsedag_core::types::BlockHeader;
 use pulsedag_core::ProtocolActivationIdentity;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -218,6 +219,10 @@ pub fn mine_header_strided_for_protocol(
         let thread_header = header.clone();
 
         let handle = std::thread::spawn(move || -> Result<()> {
+            // Precompute nonce-independent KHeavyHash material once per lane.
+            // Never cache across templates or protocol/chain identities.
+            let prepared = PreparedKHeavyHasher::new(&work.material.pre_pow_bytes);
+            let target = work.material.target.target;
             let mut local_tries = 0u64;
             let mut iteration = 0u64;
 
@@ -230,11 +235,22 @@ pub fn mine_header_strided_for_protocol(
                     break;
                 };
 
-                let (candidate, accepted, hash_hex) =
-                    evaluate_candidate(&work, &thread_header, nonce);
+                let digest = prepared.hash_nonce(nonce);
+                let accepted = compare_pow_hash_to_target(&digest, &target);
                 local_tries = local_tries.saturating_add(1);
 
                 if accepted {
+                    // No prepared result may be submitted without exact canonical
+                    // re-verification on the unchanged original work material.
+                    let canonical = work.evaluate_nonce(nonce);
+                    if !canonical.comparison.accepted() || canonical.final_hash.hash != digest {
+                        return Err(anyhow!(
+                            "prepared PoW disagrees with canonical verification at nonce {nonce}"
+                        ));
+                    }
+                    let mut candidate = thread_header.clone();
+                    candidate.nonce = nonce;
+                    let hash_hex = canonical.final_hash.hash_hex;
                     let already_found = found.swap(true, Ordering::SeqCst);
                     if !already_found {
                         let mut guard = winner.lock().map_err(|_| {
@@ -416,6 +432,70 @@ mod tests {
         let multiplication_overflow = ProtocolNoncePartition::new(0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(multiplication_overflow.nonce_at(1).unwrap(), None);
         assert!(multiplication_overflow.nonce_at(2).is_err());
+    }
+
+    #[test]
+    fn prepared_kheavyhash_matches_canonical_legacy_and_chain_bound_v2_vectors() {
+        for (version, identity) in [
+            (BLOCK_HEADER_VERSION_V1, legacy_identity()),
+            (
+                BLOCK_HEADER_VERSION_V2,
+                activated_identity("pulsedag-testnet-v2"),
+            ),
+        ] {
+            let header = header(version, 0x207f_ffff);
+            let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity))
+                .expect("valid prepared work");
+            let prepared =
+                pulsedag_core::pow::PreparedKHeavyHasher::new(&work.material.pre_pow_bytes);
+            for nonce in [0, 1, 2, 3, 17, 255, 1024, u64::MAX] {
+                let canonical = work.evaluate_nonce(nonce);
+                let raw = prepared.hash_nonce(nonce);
+                assert_eq!(
+                    raw, canonical.final_hash.hash,
+                    "version={version}, nonce={nonce}"
+                );
+                assert_eq!(
+                    pulsedag_core::pow::compare_pow_hash_to_target(
+                        &raw,
+                        &work.material.target.target,
+                    ),
+                    canonical.comparison.accepted(),
+                    "version={version}, nonce={nonce}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "advisory local throughput comparison; never a consensus or GO gate"]
+    fn prepared_kheavyhash_advisory_throughput_sample() {
+        use std::time::Instant;
+
+        let header = header(BLOCK_HEADER_VERSION_V2, 0x0101_0000);
+        let identity = activated_identity("pulsedag-task30-private-benchmark");
+        let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity))
+            .expect("valid chain-bound work");
+        let prepared = pulsedag_core::pow::PreparedKHeavyHasher::new(&work.material.pre_pow_bytes);
+        let sample = 4_096u64;
+
+        let old_start = Instant::now();
+        let reference = (0..sample)
+            .map(|nonce| work.evaluate_nonce(nonce).final_hash.hash)
+            .collect::<Vec<_>>();
+        let old_secs = old_start.elapsed().as_secs_f64();
+        let new_start = Instant::now();
+        for (nonce, expected) in reference.iter().enumerate() {
+            assert_eq!(prepared.hash_nonce(nonce as u64), *expected);
+        }
+        let new_secs = new_start.elapsed().as_secs_f64();
+        println!(
+            "task30_prepared_pow_benchmark samples={} baseline_hps={:.1} prepared_hps={:.1} estimated_speedup={:.2} (advisory only)",
+            sample,
+            sample as f64 / old_secs.max(f64::MIN_POSITIVE),
+            sample as f64 / new_secs.max(f64::MIN_POSITIVE),
+            old_secs / new_secs.max(f64::MIN_POSITIVE),
+        );
     }
 
     #[test]

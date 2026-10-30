@@ -327,6 +327,7 @@ struct MinerTelemetry {
     node_stale_rejections: u64,
     invalid_pow_rejections: u64,
     backend_verification_failures: u64,
+    nonce_search_exhaustions: u64,
     reject_breakdown: BTreeMap<String, u64>,
 }
 
@@ -352,6 +353,7 @@ impl MinerTelemetry {
             node_stale_rejections: 0,
             invalid_pow_rejections: 0,
             backend_verification_failures: 0,
+            nonce_search_exhaustions: 0,
             reject_breakdown: BTreeMap::new(),
         }
     }
@@ -423,6 +425,11 @@ impl MinerTelemetry {
         self.last_reject_code = Some("submit_finality_still_unknown".to_string());
     }
 
+    fn record_nonce_search_exhausted(&mut self) {
+        self.nonce_search_exhaustions = self.nonce_search_exhaustions.saturating_add(1);
+        // Exhaustion neither submits nor rejects an invalid PoW candidate.
+    }
+
     fn record_backend_verification_failed(&mut self) {
         self.backend_verification_failures = self.backend_verification_failures.saturating_add(1);
         self.invalid_pow_rejections = self.invalid_pow_rejections.saturating_add(1);
@@ -450,7 +457,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} nonce_search_exhaustions={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -466,6 +473,7 @@ impl MinerTelemetry {
             self.submits_reconciled_rejected,
             self.submits_still_unknown,
             self.backend_verification_failures,
+            self.nonce_search_exhaustions,
             self.last_reject_code.as_deref().unwrap_or("-"),
             self.reject_breakdown,
             self.last_template_height
@@ -480,6 +488,7 @@ impl MinerTelemetry {
 
 struct MiningResult {
     header: BlockHeader,
+    accepted: bool,
     tries: u64,
     elapsed_ms: u128,
     hashes_per_sec: f64,
@@ -492,7 +501,27 @@ enum MineOnceOutcome {
     SkippedStaleTemplate,
     NodeRejectedStaleTemplate,
     BackendVerificationRejected,
+    NonceSpaceExhausted,
     SubmitFinalityStillUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedMiningDisposition {
+    ValidSolution,
+    BoundedSearchExhausted,
+    BackendClaimMismatch,
+}
+
+/// This classification never authorizes submission; only ValidSolution can.
+fn classify_verified_mining_result(
+    backend_claimed_accepted: bool,
+    canonical_accepted: bool,
+) -> VerifiedMiningDisposition {
+    match (backend_claimed_accepted, canonical_accepted) {
+        (true, true) => VerifiedMiningDisposition::ValidSolution,
+        (false, false) => VerifiedMiningDisposition::BoundedSearchExhausted,
+        (true, false) | (false, true) => VerifiedMiningDisposition::BackendClaimMismatch,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1222,15 +1251,38 @@ async fn mine_once(
             return Ok(MineOnceOutcome::BackendVerificationRejected);
         }
     };
-    if !verification.accepted {
-        println!(
-            "backend_verification_failed: backend={} nonce={} pow_hash={} target_hex={} reason=hash_above_target",
-            backend_name, block.header.nonce, verification.final_hash_hex, verification.target_hex
-        );
-        telemetry.record_backend_verification_failed();
-        telemetry.log("backend_verification_failed");
-        send_worker_heartbeat(client, cfg, telemetry).await;
-        return Ok(MineOnceOutcome::BackendVerificationRejected);
+    match classify_verified_mining_result(mining.accepted, verification.accepted) {
+        VerifiedMiningDisposition::BoundedSearchExhausted => {
+            println!(
+                "nonce_search_exhausted: backend={} height={} nonce={} attempts={} pow_hash={} target_hex={} reason=no_valid_pow_within_budget",
+                backend_name,
+                block.header.height,
+                block.header.nonce,
+                mining.tries,
+                verification.final_hash_hex,
+                verification.target_hex
+            );
+            telemetry.record_nonce_search_exhausted();
+            telemetry.log("nonce_search_exhausted");
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::NonceSpaceExhausted);
+        }
+        VerifiedMiningDisposition::BackendClaimMismatch => {
+            println!(
+                "backend_verification_failed: backend={} nonce={} pow_hash={} target_hex={} reason=backend_claim_mismatches_canonical_pow backend_accepted={} canonical_accepted={}",
+                backend_name,
+                block.header.nonce,
+                verification.final_hash_hex,
+                verification.target_hex,
+                mining.accepted,
+                verification.accepted
+            );
+            telemetry.record_backend_verification_failed();
+            telemetry.log("backend_verification_failed");
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::BackendVerificationRejected);
+        }
+        VerifiedMiningDisposition::ValidSolution => {}
     }
 
     println!(
@@ -1461,6 +1513,7 @@ async fn mine_header_with_backend(
     .await
     .context("mining worker task panicked")??;
 
+    let accepted = result.accepted;
     let final_header = result.header;
     let tries = result.tries;
 
@@ -1474,6 +1527,7 @@ async fn mine_header_with_backend(
 
     Ok(MiningResult {
         header: final_header,
+        accepted,
         tries,
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
@@ -1491,7 +1545,8 @@ mod tests {
         evaluate_template_freshness, loop_refresh_decision_after_outcome, mining_backend,
         parse_args_from, should_skip_stale_submit, submit_rejection_action, usage, BackendKind,
         Block, BlockHeader, Config, LoopControlState, LoopRefreshDecision, MineOnceOutcome,
-        MinerTelemetry, SubmitRequest, TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
+        MinerTelemetry, SubmitRequest, TemplateSkipReason, VerifiedMiningDisposition,
+        SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
     use std::path::{Path, PathBuf};
@@ -1846,6 +1901,45 @@ mod tests {
         assert_eq!(telemetry.submits_total, 1);
         assert_eq!(telemetry.submits_rejected, 0);
         assert_eq!(telemetry.submits_still_unknown, 1);
+    }
+
+    #[test]
+    fn bounded_nonce_exhaustion_is_not_a_backend_failure_or_invalid_pow() {
+        let mut telemetry = MinerTelemetry::new("cpu", 4);
+        telemetry.record_mining_result(1_000_000, 33_000.0);
+        telemetry.record_nonce_search_exhausted();
+        assert_eq!(telemetry.nonce_search_exhaustions, 1);
+        assert_eq!(telemetry.backend_verification_failures, 0);
+        assert_eq!(telemetry.invalid_pow_rejections, 0);
+        assert_eq!(telemetry.submits_total, 0);
+        assert!(telemetry.reject_breakdown.is_empty());
+        assert!(telemetry.last_reject_code.is_none());
+        let heartbeat = telemetry.heartbeat_payload(&telemetry_test_config());
+        assert_eq!(heartbeat.invalid_pow_rejections, 0);
+        assert_eq!(heartbeat.blocks_submitted, 0);
+    }
+
+    #[test]
+    fn backend_claim_mismatch_remains_fail_closed_and_distinct_from_exhaustion() {
+        use super::classify_verified_mining_result;
+        assert_eq!(
+            classify_verified_mining_result(false, false),
+            VerifiedMiningDisposition::BoundedSearchExhausted
+        );
+        assert_eq!(
+            classify_verified_mining_result(true, true),
+            VerifiedMiningDisposition::ValidSolution
+        );
+        for (backend_claim, canonical_accept) in [(true, false), (false, true)] {
+            assert_eq!(
+                classify_verified_mining_result(backend_claim, canonical_accept),
+                VerifiedMiningDisposition::BackendClaimMismatch
+            );
+        }
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::NonceSpaceExhausted),
+            LoopRefreshDecision::RefreshWork
+        );
     }
 
     #[test]

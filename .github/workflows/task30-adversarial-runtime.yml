@@ -23,6 +23,8 @@ on:
       - crates/pulsedag-p2p/**
       - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - crates/pulsedag-core/src/pow.rs
   pull_request:
     branches:
       - main
@@ -44,6 +46,8 @@ on:
       - crates/pulsedag-p2p/**
       - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
+      - apps/pulsedag-miner/src/protocol_backend.rs
+      - crates/pulsedag-core/src/pow.rs
 
 permissions:
   contents: read
@@ -389,6 +393,10 @@ jobs:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       MIN_OFFLINE_ADVANCE_BLOCKS: 64
       V2_3_0_MINER_429_MAX_ATTEMPTS: 60
+      # Private full-runtime rehearsal uses real time between accepted blocks.
+      # Matches the existing consensus 60-second selected-chain target.
+      # No block timestamp override or target/difficulty relaxation.
+      TASK30_MIN_SELECTED_BLOCK_INTERVAL_SECS: 60
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
