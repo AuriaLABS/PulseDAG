@@ -312,7 +312,23 @@ def patch_prune(text: str) -> str:
     }'''
     # Task30 runtime-only 10M nonce attempts (60 attempts = 600M per block).
     # Canonical PoW target, public difficulty and 64-block recovery gate remain unchanged.
-    new_mining = r'''    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    new_mining = r'''    # Task30-only wall-clock pacing: no fabricated block timestamps or retarget overrides.
+    # The consensus policy observes 60-second selected-chain intervals.
+    local task30_interval="${TASK30_MIN_SELECTED_BLOCK_INTERVAL_SECS:-0}"
+    [[ "$task30_interval" =~ ^[0-9]+$ ]] || {
+      echo "invalid Task30 selected-block interval: $task30_interval" >&2
+      return 1
+    }
+    if (( task30_interval > 0 )) && [[ -n "${task30_last_accepted_epoch:-}" ]]; then
+      local task30_now task30_wait
+      task30_now="$(date +%s)"
+      task30_wait=$((task30_last_accepted_epoch + task30_interval - task30_now))
+      if (( task30_wait > 0 )); then
+        _v230_prune_log "Task30 real wall-clock pacing: waiting ${task30_wait}s before $label; interval=${task30_interval}s"
+        sleep "$task30_wait"
+      fi
+    fi
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
       local attempt_log="$miner_dir/$label-attempt-$attempt.log"
       printf '\n[%s] miner attempt %d/%d\n' "$(date -u +%FT%TZ)" "$attempt" "$max_attempts" >> "$miner_log"
       if "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 10000000 > "$attempt_log" 2>&1; then
@@ -348,7 +364,9 @@ def patch_prune(text: str) -> str:
       echo "external miner failed to produce an accepted block for $label after $max_attempts bounded attempts" >&2
       tail -80 "$miner_log" >&2 || true
       return 1
-    }'''
+    }
+    # This is the accepted submit's real wall time; never edit consensus timestamps.
+    task30_last_accepted_epoch="$(date +%s)"'''
     return replace_once(text, old_mining, new_mining, "prune accepted-submit bounded retry")
 
 
