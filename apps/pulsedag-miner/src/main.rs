@@ -2030,7 +2030,10 @@ mod tests {
         assert_eq!(record["block_height"], 119);
         assert_eq!(record["compact_target_bits"], 0x207f_ffff);
         assert_eq!(record["canonical_target_hex"], "012345");
-        assert_eq!(record["protocol_identity_fingerprint"], "testnet-fingerprint");
+        assert_eq!(
+            record["protocol_identity_fingerprint"],
+            "testnet-fingerprint"
+        );
         assert_eq!(record["attempted_hashes"], 64);
         assert_eq!(record["configured_hash_budget"], 64);
         assert_eq!(record["nonce_domain"], "cpu_protocol_strided_full_budget");
