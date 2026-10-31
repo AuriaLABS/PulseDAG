@@ -512,6 +512,54 @@ enum VerifiedMiningDisposition {
     BackendClaimMismatch,
 }
 
+/// Machine-readable evidence for a single bounded failed PoW search.
+/// This record is diagnostic only and cannot authorize a block submission.
+#[derive(Debug, Serialize)]
+struct BoundedNonceExhaustionEvidence<'a> {
+    schema_version: u8,
+    event: &'static str,
+    reason: &'static str,
+    backend: &'a str,
+    template_id: &'a str,
+    template_hash: &'a str,
+    block_height: u64,
+    compact_target_bits: u32,
+    canonical_target_hex: &'a str,
+    protocol_identity_fingerprint: Option<&'a str>,
+    attempted_hashes: u64,
+    configured_hash_budget: u64,
+    checked_nonce_not_a_solution: u64,
+    nonce_domain: &'static str,
+    nonce_start_inclusive: Option<u64>,
+    nonce_end_exclusive: Option<u64>,
+    backend_claimed_accepted: bool,
+    canonical_accepted: bool,
+}
+
+/// Only the proven CPU chain-bound strided search can attest a complete
+/// 0..budget nonce domain. Never fabricate coverage for accelerator backends
+/// or a partial search; the checked fallback nonce is not a winning nonce.
+fn bounded_nonce_domain(
+    backend: &str,
+    protocol_bound: bool,
+    attempted_hashes: u64,
+    configured_hash_budget: u64,
+) -> (&'static str, Option<u64>, Option<u64>) {
+    if backend == "cpu"
+        && protocol_bound
+        && configured_hash_budget > 0
+        && attempted_hashes == configured_hash_budget
+    {
+        (
+            "cpu_protocol_strided_full_budget",
+            Some(0),
+            Some(configured_hash_budget),
+        )
+    } else {
+        ("backend_specific_or_partial_unattested", None, None)
+    }
+}
+
 /// This classification never authorizes submission; only ValidSolution can.
 fn classify_verified_mining_result(
     backend_claimed_accepted: bool,
@@ -1262,6 +1310,36 @@ async fn mine_once(
                 verification.final_hash_hex,
                 verification.target_hex
             );
+            let (nonce_domain, nonce_start_inclusive, nonce_end_exclusive) = bounded_nonce_domain(
+                backend_name,
+                protocol_identity.is_some(),
+                mining.tries,
+                cfg.max_tries.max(1),
+            );
+            let evidence = BoundedNonceExhaustionEvidence {
+                schema_version: 1,
+                event: "nonce_search_exhausted",
+                reason: "no_valid_pow_within_budget",
+                backend: backend_name,
+                template_id: &template_id,
+                template_hash: &block.hash,
+                block_height: block.header.height,
+                compact_target_bits: target_bits,
+                canonical_target_hex: &verification.target_hex,
+                protocol_identity_fingerprint: protocol_identity_fingerprint.as_deref(),
+                attempted_hashes: mining.tries,
+                configured_hash_budget: cfg.max_tries.max(1),
+                checked_nonce_not_a_solution: block.header.nonce,
+                nonce_domain,
+                nonce_start_inclusive,
+                nonce_end_exclusive,
+                backend_claimed_accepted: mining.accepted,
+                canonical_accepted: verification.accepted,
+            };
+            println!(
+                "nonce_search_evidence_json: {}",
+                serde_json::to_string(&evidence)?
+            );
             telemetry.record_nonce_search_exhausted();
             telemetry.log("nonce_search_exhausted");
             send_worker_heartbeat(client, cfg, telemetry).await;
@@ -1917,6 +1995,68 @@ mod tests {
         let heartbeat = telemetry.heartbeat_payload(&telemetry_test_config());
         assert_eq!(heartbeat.invalid_pow_rejections, 0);
         assert_eq!(heartbeat.blocks_submitted, 0);
+    }
+
+    #[test]
+    fn bounded_nonce_evidence_preserves_template_target_and_attested_cpu_domain() {
+        use super::{bounded_nonce_domain, BoundedNonceExhaustionEvidence};
+        let (nonce_domain, nonce_start_inclusive, nonce_end_exclusive) =
+            bounded_nonce_domain("cpu", true, 64, 64);
+        let evidence = BoundedNonceExhaustionEvidence {
+            schema_version: 1,
+            event: "nonce_search_exhausted",
+            reason: "no_valid_pow_within_budget",
+            backend: "cpu",
+            template_id: "template-unique-42",
+            template_hash: "template-preimage-hash",
+            block_height: 119,
+            compact_target_bits: 0x207f_ffff,
+            canonical_target_hex: "012345",
+            protocol_identity_fingerprint: Some("testnet-fingerprint"),
+            attempted_hashes: 64,
+            configured_hash_budget: 64,
+            checked_nonce_not_a_solution: 63,
+            nonce_domain,
+            nonce_start_inclusive,
+            nonce_end_exclusive,
+            backend_claimed_accepted: false,
+            canonical_accepted: false,
+        };
+        let record = serde_json::to_value(evidence).expect("stable JSON");
+        assert_eq!(record["event"], "nonce_search_exhausted");
+        assert_eq!(record["reason"], "no_valid_pow_within_budget");
+        assert_eq!(record["template_id"], "template-unique-42");
+        assert_eq!(record["template_hash"], "template-preimage-hash");
+        assert_eq!(record["block_height"], 119);
+        assert_eq!(record["compact_target_bits"], 0x207f_ffff);
+        assert_eq!(record["canonical_target_hex"], "012345");
+        assert_eq!(record["protocol_identity_fingerprint"], "testnet-fingerprint");
+        assert_eq!(record["attempted_hashes"], 64);
+        assert_eq!(record["configured_hash_budget"], 64);
+        assert_eq!(record["nonce_domain"], "cpu_protocol_strided_full_budget");
+        assert_eq!(record["nonce_start_inclusive"], 0);
+        assert_eq!(record["nonce_end_exclusive"], 64);
+        assert_eq!(record["checked_nonce_not_a_solution"], 63);
+        assert_eq!(record["backend_claimed_accepted"], false);
+        assert_eq!(record["canonical_accepted"], false);
+    }
+
+    #[test]
+    fn bounded_nonce_domain_never_invents_accelerator_or_partial_coverage() {
+        use super::bounded_nonce_domain;
+        for (backend, bound, attempts, budget) in [
+            ("cuda", true, 64, 64),
+            ("gpu", true, 64, 64),
+            ("mixed", true, 64, 64),
+            ("cpu", false, 64, 64),
+            ("cpu", true, 63, 64),
+            ("cpu", true, 0, 0),
+        ] {
+            let (domain, start, end) = bounded_nonce_domain(backend, bound, attempts, budget);
+            assert_eq!(domain, "backend_specific_or_partial_unattested");
+            assert_eq!(start, None);
+            assert_eq!(end, None);
+        }
     }
 
     #[test]
