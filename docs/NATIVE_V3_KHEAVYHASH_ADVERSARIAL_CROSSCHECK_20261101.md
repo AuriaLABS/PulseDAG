@@ -22,3 +22,7 @@ cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_k_pow_boundarie
 ```
 
 **Merge ordering:** #1358 has merged into `main` as `636a2daedd483c16a74cec10684e8bf42720ec64` after its 29/29 exact-head workflows passed (including monetary reachability after rerunning the disk-exhausted job). This candidate is re-anchored on that merged `main` and needs its own full exact-head CI before being merged. The ongoing policy freeze #1309, 500ms measured 25-node/16-miner propagation, trial K=32/8 cap safety and v3 monetary DAG state authority remain unproven. Monetary mining OFF; contracts INACTIVE; mainnet #781 NO-GO.
+
+### Post-#1358 main integration CI binding
+
+This PR branch has been reconstructed on merged `main@636a2daedd483c16a74cec10684e8bf42720ec64` using a GitHub ref update protected by the former head SHA lease. The changed-file list against `main` is limited to this documentation, one independent adversarial integration test, and its exact-head workflow extension. Because changing the PR base alone does not guarantee a new `pull_request/synchronize` check, this documentation commit deliberately triggers fresh **post-integration** CI. The required pass must be on the resulting *new PR head*, not a parent PR's green result, and the unapproved K/parent values remain inactive.
