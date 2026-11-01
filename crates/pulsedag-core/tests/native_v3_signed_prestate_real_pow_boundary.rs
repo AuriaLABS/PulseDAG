@@ -91,8 +91,10 @@ fn signed_spend(
         fee,
         nonce,
     };
-    tx.inputs[0].signature =
-        hex::encode(key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+    tx.inputs[0].signature = hex::encode(
+        key.sign(&signing_message_v2(&tx, CHAIN).unwrap())
+            .to_bytes(),
+    );
     tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
     tx
 }
@@ -232,6 +234,9 @@ fn mined_bad_signature_hidden_claim_and_enabled_contracts_fail_closed() {
     let error = inspect_dormant_native_v3_signed_prestate_trial(&valid, &enabled)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("smart contracts must remain INACTIVE"), "{error}");
+    assert!(
+        error.contains("smart contracts must remain INACTIVE"),
+        "{error}"
+    );
     assert!(!state.contracts.config.enabled);
 }
