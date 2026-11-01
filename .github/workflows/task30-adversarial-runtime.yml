@@ -437,6 +437,18 @@ jobs:
           bash -n "$patched_driver"
           PRUNE_RESTART_REJOIN_TASK04_HARNESS="$patched_harness" bash "$patched_driver"
 
+      - name: Capture per-process PoW attempts even when the 5N drill fails
+        if: always()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
+        run: |
+          set -euo pipefail
+          python3 scripts/private_testnet/task30_pow_attempt_accounting.py \
+            --miner-dir "$OUT_DIR/miners" \
+            --jsonl "$OUT_DIR/pow-attempts.jsonl" \
+            --summary "$OUT_DIR/pow-attempts-summary.json"
+          cat "$OUT_DIR/pow-attempts-summary.json"
+
       - name: Enforce recovery evidence
         if: success()
         env:
@@ -457,6 +469,15 @@ jobs:
             .final_storage_memory_consistent == true and
             .public_testnet_ready == false
           ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+          # An accepted header and actual height advance remain the authority.
+          # This accounting is a lower bound, never an independent PoW verifier.
+          jq -e '
+            .non_consensus == true and
+            .offline_node_accepted_block_count >= 64 and
+            .attempt_logs_seen >= 64 and
+            .hashes_observed_lower_bound > 0 and
+            .cannot_authorize_mining_or_mainnet == true
+          ' "$OUT_DIR/pow-attempts-summary.json" >/dev/null
 
       - name: Upload prune and rejoin evidence
         if: always()

@@ -7,12 +7,16 @@ on:
     paths:
       - scripts/private_testnet/task30_pow_budget_diagnostic.py
       - scripts/private_testnet/test_task30_pow_budget_diagnostic.py
+      - scripts/private_testnet/task30_pow_attempt_accounting.py
+      - scripts/private_testnet/test_task30_pow_attempt_accounting.py
       - .github/workflows/task30-pow-budget-diagnostic.yml
   push:
     branches: [main]
     paths:
       - scripts/private_testnet/task30_pow_budget_diagnostic.py
       - scripts/private_testnet/test_task30_pow_budget_diagnostic.py
+      - scripts/private_testnet/task30_pow_attempt_accounting.py
+      - scripts/private_testnet/test_task30_pow_attempt_accounting.py
       - .github/workflows/task30-pow-budget-diagnostic.yml
 
 permissions:
@@ -27,6 +31,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Verify model and fail-closed invalid-input tests
         run: python3 -m unittest discover -s scripts/private_testnet -p 'test_task30_pow_budget_diagnostic.py' -v
+      - name: Verify independent per-process hash accounting and reject fabricated ranges
+        run: python3 -m unittest discover -s scripts/private_testnet -p 'test_task30_pow_attempt_accounting.py' -v
       - name: Produce illustrative prior failing private rehearsal risk JSON
         run: |
           python3 scripts/private_testnet/task30_pow_budget_diagnostic.py \
