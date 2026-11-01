@@ -1,0 +1,89 @@
+name: v3 native GHOSTDAG authenticated dormant Rust candidate (UNAPPROVED)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
+      - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - .github/workflows/v3-dormant-ghostdag-core-probe.yml
+      - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
+      - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - .github/workflows/v3-dormant-ghostdag-core-probe.yml
+      - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+
+permissions:
+  contents: read
+
+jobs:
+  dormant-rust-crosscheck:
+    name: Cross-language native v3 PoW/blue-work, no activation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact SHA and clean source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Verify dormant candidate has no production Rust call sites
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          expected = {
+              Path("crates/pulsedag-core/src/lib.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"),
+          }
+          found = set()
+          for root in (Path("crates"), Path("apps")):
+              for path in root.rglob("*.rs"):
+                  if "native_ghostdag_policy_candidate_v3" in path.read_text(encoding="utf-8"):
+                      found.add(path)
+          assert Path("crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs").is_file()
+          unexpected = found - expected
+          assert not unexpected, f"unexpected active or trial-call-site paths: {sorted(map(str, unexpected))}"
+          assert expected <= found, f"required dormant files missing: {expected - found}"
+          print("PASS: native-v3 GHOSTDAG Rust candidate has only dormant module and probe references")
+          PY
+      - name: Verify independent Python canonical native-v3 PoW fixture
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+          python3 -O scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify exact candidate Rust core arithmetic and independent DAG/PoW vectors
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --lib native_ghostdag_policy_candidate_v3::tests:: -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- --nocapture
+          cargo clippy --locked -p pulsedag-core --lib -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
