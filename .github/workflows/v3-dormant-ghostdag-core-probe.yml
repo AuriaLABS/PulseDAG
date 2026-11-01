@@ -12,6 +12,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs
       - crates/pulsedag-core/src/native_v3_envelope_trial.rs
       - crates/pulsedag-core/tests/native_v3_full_envelope_ghostdag_trial.rs
+      - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
@@ -26,6 +27,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs
       - crates/pulsedag-core/src/native_v3_envelope_trial.rs
       - crates/pulsedag-core/tests/native_v3_full_envelope_ghostdag_trial.rs
+      - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
@@ -94,8 +96,10 @@ jobs:
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_ghostdag_k_pow_boundaries -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- --nocapture
           cargo clippy --locked -p pulsedag-core --lib -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_k_pow_boundaries -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- -D warnings
