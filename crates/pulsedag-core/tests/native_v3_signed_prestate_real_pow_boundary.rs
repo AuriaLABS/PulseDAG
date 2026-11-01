@@ -68,7 +68,13 @@ fn trusted_test_prestate() -> (ChainState, OutPoint) {
     (state, source)
 }
 
-fn signed_spend(source: OutPoint, destination: &str, amount: u64, fee: u64, nonce: u64) -> Transaction {
+fn signed_spend(
+    source: OutPoint,
+    destination: &str,
+    amount: u64,
+    fee: u64,
+    nonce: u64,
+) -> Transaction {
     let key = signer();
     let mut tx = Transaction {
         txid: String::new(),
@@ -195,7 +201,9 @@ fn competing_pow_valid_siblings_cannot_double_spend_in_either_candidate_order() 
         20
     );
     let state_before = state.utxo.compute_state_root().unwrap();
-    assert!(inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state).is_err());
+    assert!(
+        inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state).is_err()
+    );
     assert!(inspect_dormant_native_v3_explicit_order_trial(&[b, a], &state).is_err());
     assert_eq!(state.utxo.compute_state_root().unwrap(), state_before);
     assert!(state.utxo.utxos.contains_key(&source));
