@@ -1,0 +1,77 @@
+name: v3 native GHOSTDAG symbolic freeze preflight (UNAPPROVED)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/native_v3_ghostdag_policy_candidate.py
+      - scripts/native_v3_k_delay_sensitivity.py
+      - scripts/test_native_v3_ghostdag_policy_stress.py
+      - docs/NATIVE_V3_SYMBOLIC_POLICY_EVIDENCE.md
+      - .github/workflows/v3-native-ghostdag-symbolic-preflight.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/native_v3_ghostdag_policy_candidate.py
+      - scripts/native_v3_k_delay_sensitivity.py
+      - scripts/test_native_v3_ghostdag_policy_stress.py
+      - docs/NATIVE_V3_SYMBOLIC_POLICY_EVIDENCE.md
+      - .github/workflows/v3-native-ghostdag-symbolic-preflight.yml
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-symbolic-policy:
+    name: Policy proposal, 8-parent K boundary, delay proxy (non-consensus)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Reject unexpected commit or dirty checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Existing symbolic K=0/1/2 reference in ordinary and -O Python
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_policy_candidate.py
+          python3 -O scripts/native_v3_ghostdag_policy_candidate.py
+      - name: Independent bounded 8-parent trial K=31/32/35 adversarial assertions
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts -p 'test_native_v3_ghostdag_policy_stress.py' -v
+          python3 -O -m unittest discover -s scripts -p 'test_native_v3_ghostdag_policy_stress.py' -v
+      - name: Delay sensitivity under disclosed assumptions (NOT observed propagation)
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_k_delay_sensitivity.py --check
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --check
+          python3 scripts/native_v3_k_delay_sensitivity.py --json > "$RUNNER_TEMP/native-v3-delay-normal.json"
+          python3 -O scripts/native_v3_k_delay_sensitivity.py --json > "$RUNNER_TEMP/native-v3-delay-optimized.json"
+          cmp "$RUNNER_TEMP/native-v3-delay-normal.json" "$RUNNER_TEMP/native-v3-delay-optimized.json"
+          python3 - "$RUNNER_TEMP/native-v3-delay-normal.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as f:
+              data = json.load(f)
+          assert data["status"] == "TEST_ONLY_UNAPPROVED"
+          assert data["peer_delay_empirical_evidence"] is False
+          assert data["not_ghostdag_K_security_probability"] is True
+          assert len(data["rows"]) == 20
+          print("PASS: no model-based protocol/K approval inferred")
+          PY
+      - name: Preserve explicitly non-empirical delay model output
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-v3-assumed-delay-proxy-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/native-v3-delay-normal.json
+          retention-days: 14
