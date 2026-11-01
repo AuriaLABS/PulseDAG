@@ -53,7 +53,6 @@ jobs:
           from pathlib import Path
           expected = {
               Path("crates/pulsedag-core/src/lib.rs"),
-              Path("crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"),
               Path("crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"),
           }
           found = set()
@@ -61,6 +60,7 @@ jobs:
               for path in root.rglob("*.rs"):
                   if "native_ghostdag_policy_candidate_v3" in path.read_text(encoding="utf-8"):
                       found.add(path)
+          assert Path("crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs").is_file()
           unexpected = found - expected
           assert not unexpected, f"unexpected active or trial-call-site paths: {sorted(map(str, unexpected))}"
           assert expected <= found, f"required dormant files missing: {expected - found}"
