@@ -15,6 +15,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
       - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
+      - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
@@ -32,6 +33,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
       - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
+      - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
@@ -104,6 +106,7 @@ jobs:
           cargo test --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- --nocapture
           cargo clippy --locked -p pulsedag-core --lib -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
@@ -111,3 +114,4 @@ jobs:
           cargo clippy --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- -D warnings
