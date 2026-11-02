@@ -29,6 +29,10 @@ use pulsedag_core::{
     types::{compute_merkle_root, OutPoint, Transaction, TxInput, TxOutput, Utxo},
 };
 
+#[path = "support/native_v3_trial_order_preview.rs"]
+#[allow(dead_code)]
+mod trial_order_preview;
+
 const CHAIN: &str = "pulsedag-dormant-native-v3-pow-signed-prestate-bridge";
 const GENESIS_NS: u64 = 1_800_000_015_000_000_000;
 const EASY_BITS: u32 = 0x207f_ffff;
@@ -127,6 +131,33 @@ fn mine_full_native_envelope(
         }
     }
     panic!("test-only easy-target KHeavyHash nonce search exhausted");
+}
+
+/// An authentic KHeavyHash multiparent merge, still NOT an approved DAG order
+/// or monetary block. The value-zero claim cannot credit rewards.
+fn mine_amountless_join(parents: Vec<String>, trial_k: usize) -> BlockEnvelopeV3 {
+    let mut parents = parents;
+    parents.sort();
+    let txs = vec![claim(100 + trial_k as u64)];
+    let mut header = BlockHeaderV3 {
+        version: BLOCK_HEADER_VERSION_V3,
+        parents,
+        timestamp_ns: GENESIS_NS + 1_000_000_000 + trial_k as u64 * 100_000,
+        difficulty: EASY_BITS,
+        nonce: 0,
+        merkle_root: compute_merkle_root(&txs),
+        state_root: "33".repeat(32), // Deliberately not a monetary root.
+        blue_score: 2 + trial_k as u64,
+        height: 2,
+    };
+    for nonce in 0..4_096u64 {
+        header.nonce = nonce;
+        if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+            verify_v3_header_pow(&header, CHAIN).unwrap();
+            return build_block_envelope_v3(CHAIN, header, txs).unwrap();
+        }
+    }
+    panic!("test-only KHeavyHash merge nonce search exhausted");
 }
 
 #[test]
@@ -239,4 +270,94 @@ fn mined_bad_signature_hidden_claim_and_enabled_contracts_fail_closed() {
         "{error}"
     );
     assert!(!state.contracts.config.enabled);
+}
+
+#[test]
+fn red_inclusive_real_pow_merge_does_not_create_a_double_spend_or_second_fee() {
+    let (state, source) = trusted_test_prestate();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let a = mine_full_native_envelope(
+        &genesis.hash,
+        vec![
+            claim(20),
+            signed_spend(source.clone(), "pulse1blue-candidate", 90, 10, 20),
+        ],
+        20,
+    );
+    let b = mine_full_native_envelope(
+        &genesis.hash,
+        vec![
+            claim(21),
+            signed_spend(source.clone(), "pulse1red-candidate", 80, 20, 21),
+        ],
+        21,
+    );
+    let root_before = state.utxo.compute_state_root().unwrap();
+    assert_eq!(
+        inspect_dormant_native_v3_signed_prestate_trial(&a, &state)
+            .unwrap()
+            .candidate_fees,
+        10
+    );
+    assert_eq!(
+        inspect_dormant_native_v3_signed_prestate_trial(&b, &state)
+            .unwrap()
+            .candidate_fees,
+        20
+    );
+
+    for trial_k in [0_usize, 1] {
+        let join = mine_amountless_join(vec![b.hash.clone(), a.hash.clone()], trial_k);
+        let headers = BTreeMap::from([
+            (genesis.hash.clone(), genesis.header.clone()),
+            (a.hash.clone(), a.header.clone()),
+            (b.hash.clone(), b.header.clone()),
+            (join.hash.clone(), join.header.clone()),
+        ]);
+        // Only inspect trial metadata. Do not use its ordering to choose
+        // monetary replay, which remains UNAPPROVED for signed native DAGs.
+        let preview = trial_order_preview::preview_unapproved_native_v3_order(
+            CHAIN,
+            GENESIS_NS,
+            &genesis.hash,
+            std::slice::from_ref(&join.hash),
+            &headers,
+            trial_k,
+        )
+        .unwrap();
+        assert_eq!(preview.ordered_blocks.len(), 4);
+        assert_eq!(preview.ordered_blocks.first(), Some(&genesis.hash));
+        assert_eq!(preview.ordered_blocks.last(), Some(&join.hash));
+        assert!(preview.ordered_blocks.contains(&a.hash));
+        assert!(preview.ordered_blocks.contains(&b.hash));
+        assert_eq!(preview.side_reds.len(), 1 - trial_k);
+        assert_eq!(preview.side_blues.len(), trial_k);
+        assert!(preview.side_reds.iter().all(|id| id == &a.hash || id == &b.hash));
+        for hash in &preview.ordered_blocks {
+            let position = preview
+                .ordered_blocks
+                .iter()
+                .position(|id| id == hash)
+                .unwrap();
+            assert!(headers[hash].parents.iter().all(|parent| {
+                preview.ordered_blocks[..position].contains(parent)
+            }));
+        }
+
+        // Caller-specified A/B orders are independent of the trial DAG
+        // preview. Neither may validate two conflicting spends, even if
+        // one transaction sits inside a trial-red block.
+        assert!(inspect_dormant_native_v3_explicit_order_trial(
+            &[a.clone(), b.clone(), join.clone()],
+            &state,
+        )
+        .is_err());
+        assert!(inspect_dormant_native_v3_explicit_order_trial(
+            &[b.clone(), a.clone(), join],
+            &state,
+        )
+        .is_err());
+        assert_eq!(state.utxo.compute_state_root().unwrap(), root_before);
+        assert!(state.utxo.utxos.contains_key(&source));
+    }
 }
