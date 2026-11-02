@@ -332,16 +332,20 @@ fn red_inclusive_real_pow_merge_does_not_create_a_double_spend_or_second_fee() {
         assert!(preview.ordered_blocks.contains(&b.hash));
         assert_eq!(preview.side_reds.len(), 1 - trial_k);
         assert_eq!(preview.side_blues.len(), trial_k);
-        assert!(preview.side_reds.iter().all(|id| id == &a.hash || id == &b.hash));
+        assert!(preview
+            .side_reds
+            .iter()
+            .all(|id| id == &a.hash || id == &b.hash));
         for hash in &preview.ordered_blocks {
             let position = preview
                 .ordered_blocks
                 .iter()
                 .position(|id| id == hash)
                 .unwrap();
-            assert!(headers[hash].parents.iter().all(|parent| {
-                preview.ordered_blocks[..position].contains(parent)
-            }));
+            assert!(headers[hash]
+                .parents
+                .iter()
+                .all(|parent| { preview.ordered_blocks[..position].contains(parent) }));
         }
 
         // Caller-specified A/B orders are independent of the trial DAG
