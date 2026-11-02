@@ -173,7 +173,10 @@ fn true_pow_parent_chain_and_two_linked_ed25519_spends_conserve_fees_and_utxos()
         authenticated.ordered_reachable_headers,
         vec![genesis.hash.clone(), a.hash.clone(), b.hash.clone()]
     );
-    assert_eq!(authenticated.verified_dag.authenticated_non_genesis_headers, 2);
+    assert_eq!(
+        authenticated.verified_dag.authenticated_non_genesis_headers,
+        2
+    );
 
     // This explicit list is supplied by the test: NOT derived as economic
     // authority from the height/hash-only topological diagnostic above.
@@ -207,7 +210,11 @@ fn two_independent_pow_siblings_have_equal_conditional_roots_in_both_explicit_or
     let mut tips = vec![a.hash.clone(), b.hash.clone()];
     tips.sort();
     let topo = derive_dormant_native_v3_topological_evaluation(
-        CHAIN, GENESIS_NS, &genesis.hash, &tips, &headers,
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        &tips,
+        &headers,
     )
     .unwrap();
     assert_eq!(topo.ordered_reachable_headers.len(), 3);
@@ -215,8 +222,8 @@ fn two_independent_pow_siblings_have_equal_conditional_roots_in_both_explicit_or
     // This topo walk is intentionally NEVER consumed by the monetary trial:
     // independent nonconflicting spends happen to commute, not because there
     // is a frozen network consensus on a canonical blue/red monetary order.
-    let ab = inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state)
-        .unwrap();
+    let ab =
+        inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state).unwrap();
     let ba = inspect_dormant_native_v3_explicit_order_trial(&[b, a], &state).unwrap();
     assert_eq!(ab.candidate_fees, 15);
     assert_eq!(ab.signed_transactions, 2);
@@ -237,8 +244,9 @@ fn signed_state_preview_does_not_authenticate_missing_or_wrong_network_ancestry(
 
     // The old explicit-order fee/UTXO diagnostic does not authenticate PoW,
     // the DAG or the pinned genesis: it is only a disposable state hypothesis.
-    assert!(inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state)
-        .is_ok());
+    assert!(
+        inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), b.clone()], &state).is_ok()
+    );
     let mut missing = authenticated_headers(&genesis, &[a.clone(), b.clone()]);
     missing.remove(&a.hash);
     assert!(derive_dormant_native_v3_topological_evaluation(
