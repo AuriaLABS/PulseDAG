@@ -435,6 +435,7 @@ fn replay_authoritative_prefix_v3(
                     }
                 }
             }
+            let mut has_immature_reward = false;
             if all_inputs_available {
                 validate_signed_replay_spend(tx, &rebuilt, &state.chain_id, ordered_pos, hash)?;
             } else {
@@ -442,7 +443,6 @@ fn replay_authoritative_prefix_v3(
                 // previously accepted spends or already validated reward
                 // claims. Never resurrect any of them in the real replay.
                 let mut historical = rebuilt.clone();
-                let mut has_immature_reward = false;
                 for input in &tx.inputs {
                     let outpoint = &input.previous_output;
                     // An available reward is already mature and spendable.
