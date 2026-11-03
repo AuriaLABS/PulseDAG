@@ -4,12 +4,10 @@
 use std::collections::BTreeMap;
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     pow_v3::{evaluate_v3_header_pow, verify_v3_header_pow},
-    protocol::BLOCK_HEADER_VERSION_V3,
-    types::BlockId,
+    protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
 
 const CHAIN: &str = "native-v3-unapproved-mixed-target-real-pow";
@@ -116,11 +114,11 @@ fn harder_shorter_branch_wins_over_easy_taller_branch_and_all_k_boundaries_match
         assert_eq!(trial.blocks[&join].merge_reds.len(), 2 - blue_count);
         assert_eq!(
             trial.blocks[&join].merge_blues,
-            [easy1.clone(), easy2.clone()][..blue_count]
+            [easy1.clone(), easy2.clone()][..blue_count].to_vec()
         );
         assert_eq!(
             trial.blocks[&join].merge_reds,
-            [easy1.clone(), easy2.clone()][blue_count..]
+            [easy1.clone(), easy2.clone()][blue_count..].to_vec()
         );
 
         // One missing, unselected ancestor invalidates the WHOLE trial even
