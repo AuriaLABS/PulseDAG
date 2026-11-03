@@ -94,10 +94,12 @@ def self_test(known: dict, golden: dict) -> None:
         tip = known["blocks"][name]["id"]
         expected = golden["expected"][name]
         digest = full_history_digest(known["blocks"], tip, CHAIN, GENESIS_NS, GENESIS)
-        assert digest == expected, (name, digest, expected)
+        if digest != expected:
+            raise AssertionError(f"full-history fingerprint mismatch: {(name, digest, expected)}")
         results.append(digest)
         reverse = dict(reversed(list(known["blocks"].items())))
-        assert full_history_digest(reverse, tip, CHAIN, GENESIS_NS, GENESIS) == digest
+        if full_history_digest(reverse, tip, CHAIN, GENESIS_NS, GENESIS) != digest:
+            raise AssertionError(f"block-map insertion order changed the {name} fingerprint")
         without_side = {key: value for key, value in known["blocks"].items() if key != "A"}
         try:
             full_history_digest(without_side, tip, CHAIN, GENESIS_NS, GENESIS)
@@ -105,7 +107,8 @@ def self_test(known: dict, golden: dict) -> None:
             pass
         else:
             raise AssertionError("missing off-selected side history accepted")
-    assert results[0] != results[1]
+    if results[0] == results[1]:
+        raise AssertionError("distinct complete-DAG tips unexpectedly share a fingerprint")
     for chain, ns, genesis in [
         (CHAIN + "-foreign", GENESIS_NS, GENESIS),
         (CHAIN, GENESIS_NS + 1, GENESIS),
