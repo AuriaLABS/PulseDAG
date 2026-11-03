@@ -171,5 +171,8 @@ fn verified_trial_tip_beyond_genesis_window_still_fails_without_prune_proof() {
     let err = preview_candidate_derived_retarget(&genesis.hash, &tip, &headers, 0)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("outside the verified retarget window"), "{err}");
+    assert!(
+        err.contains("outside the verified retarget window"),
+        "{err}"
+    );
 }
