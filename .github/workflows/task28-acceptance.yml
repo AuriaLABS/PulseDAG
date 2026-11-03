@@ -100,19 +100,38 @@ jobs:
       - name: Wallet activated-v2 non-custodial flow
         run: cargo test --locked -p pulsedag-wallet
 
+      # All RPC filters below are LIBRARY unit tests, not integration targets.
+      # The previous unscoped cargo test linked every RPC integration binary
+      # repeatedly and triggered linker SIGBUS on CI, even with retry.
       - name: RPC protocol-bound signed transaction submission
+        env:
+          CARGO_BUILD_JOBS: "2"
         run: |
-          cargo test --locked -p pulsedag-rpc tx_rejection::tests::
-          cargo test --locked -p pulsedag-rpc tx_protocol::tests::
+          set -euo pipefail
+          cargo test --locked -p pulsedag-rpc --lib -- --list > /tmp/task28-rpc-unit-tests.txt
+          # Fail rather than silently accepting an obsolete filter with 0 tests.
+          grep -Fq 'tx_rejection::tests::' /tmp/task28-rpc-unit-tests.txt
+          grep -Fq 'handlers::tx::tests::' /tmp/task28-rpc-unit-tests.txt
+          grep -Fq 'activated_identity_rejects_legacy_submit_preflight' /tmp/task28-rpc-unit-tests.txt
+          grep -Fq 'activated_identity_builds_chain_bound_v2_rpc_template' /tmp/task28-rpc-unit-tests.txt
+          grep -Fq 'v2_rpc_template_serializes_identity_and_fingerprint_together' /tmp/task28-rpc-unit-tests.txt
+          grep -Fq 'canonical_sync::tests::' /tmp/task28-rpc-unit-tests.txt
+          cargo test --locked -p pulsedag-rpc --lib tx_rejection::tests::
+          cargo test --locked -p pulsedag-rpc --lib handlers::tx::tests::
 
       - name: RPC protocol-bound mining submit and template
+        env:
+          CARGO_BUILD_JOBS: "2"
         run: |
-          cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
-          cargo test --locked -p pulsedag-rpc activated_identity_builds_chain_bound_v2_rpc_template
-          cargo test --locked -p pulsedag-rpc v2_rpc_template_serializes_identity_and_fingerprint_together
+          set -euo pipefail
+          cargo test --locked -p pulsedag-rpc --lib activated_identity_rejects_legacy_submit_preflight
+          cargo test --locked -p pulsedag-rpc --lib activated_identity_builds_chain_bound_v2_rpc_template
+          cargo test --locked -p pulsedag-rpc --lib v2_rpc_template_serializes_identity_and_fingerprint_together
 
       - name: RPC final-quiescence selected-segment parity
-        run: 'cargo test --locked -p pulsedag-rpc canonical_sync::tests::'
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: 'cargo test --locked -p pulsedag-rpc --lib canonical_sync::tests::'
 
       - name: Standalone miner protocol-bound backend
         run: 'cargo test --locked -p pulsedag-miner protocol_backend::tests::'
