@@ -98,8 +98,8 @@ fn independent_python_and_rust_full_genesis_header_closures_match() {
     let x1 = frozen["blocks"]["X1"]["id"].as_str().unwrap().to_owned();
     let actual_0 = reference_digest(&genesis, &x0, &headers);
     let actual_1 = reference_digest(&genesis, &x1, &headers);
-    assert_eq!(actual_0, golden["expected"]["X0"]);
-    assert_eq!(actual_1, golden["expected"]["X1"]);
+    assert_eq!(actual_0, golden["expected"]["X0"].as_str().unwrap());
+    assert_eq!(actual_1, golden["expected"]["X1"].as_str().unwrap());
     assert_ne!(actual_0, actual_1);
 
     // An unrelated PoW-valid alternative tip does not silently enter the
