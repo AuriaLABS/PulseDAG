@@ -176,3 +176,123 @@ fn verified_trial_tip_beyond_genesis_window_still_fails_without_prune_proof() {
         "{err}"
     );
 }
+
+#[test]
+fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header)]);
+    let (side, side_header) = mine(
+        vec![genesis.hash.clone()],
+        1,
+        1,
+        GENESIS_NS + 500_000_000,
+        EASY_BITS,
+        0x31,
+    );
+    headers.insert(side.clone(), side_header);
+    let (heavy, heavy_header) = mine(
+        vec![genesis.hash.clone()],
+        1,
+        1,
+        GENESIS_NS + 600_000_000,
+        HARD_BITS,
+        0x32,
+    );
+    headers.insert(heavy.clone(), heavy_header);
+    let (join, join_header) = mine(
+        vec![side.clone(), heavy.clone()],
+        2,
+        2, // Experimental K=0: the lower-work sibling remains a red ancestor.
+        GENESIS_NS + 1_500_000_000,
+        EASY_BITS,
+        0x33,
+    );
+    headers.insert(join.clone(), join_header);
+
+    let mut tip = join.clone();
+    for height in 3..=21_u64 {
+        let (next, header) = mine(
+            vec![tip],
+            height,
+            height,
+            GENESIS_NS + (height + 1) * 500_000_000,
+            EASY_BITS,
+            height as u8,
+        );
+        headers.insert(next.clone(), header);
+        tip = next;
+    }
+
+    // Derive the trial's selected spine only after authenticating the entire
+    // PoW DAG, including the side ancestor that is red for this unapproved K.
+    let trial = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&tip),
+        &headers,
+        0,
+    )
+    .unwrap();
+    let derived: BTreeMap<BlockId, Option<BlockId>> = trial
+        .blocks
+        .iter()
+        .map(|(hash, metadata)| (hash.clone(), metadata.selected_parent.clone()))
+        .collect();
+    assert_eq!(derived[&join], Some(heavy));
+    let complete_window =
+        selected_parent_retarget_window_v3_ns(CHAIN, &tip, &headers, &derived).unwrap();
+    assert_eq!(complete_window.len(), 20);
+    assert_eq!(
+        complete_window.last().unwrap().timestamp_ns,
+        GENESIS_NS + 1_500_000_000
+    );
+
+    // The 20 most recent selected-parent PoW headers still verify after
+    // deleting a *required nonselected ancestor*. Hence a successful
+    // retarget-window check alone is NEVER a prune/checkpoint trust proof.
+    let mut pruned_side = headers.clone();
+    assert!(pruned_side.remove(&side).is_some());
+    assert_eq!(
+        selected_parent_retarget_window_v3_ns(CHAIN, &tip, &pruned_side, &derived).unwrap(),
+        complete_window
+    );
+    assert!(derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&tip),
+        &pruned_side,
+        0,
+    )
+    .is_err());
+
+    // The same window also cannot authenticate the frozen genesis outside
+    // its horizon, even if every retained selected header has valid PoW.
+    let mut pruned_genesis = headers.clone();
+    assert!(pruned_genesis.remove(&genesis.hash).is_some());
+    assert_eq!(
+        selected_parent_retarget_window_v3_ns(CHAIN, &tip, &pruned_genesis, &derived).unwrap(),
+        complete_window
+    );
+    assert!(derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        std::slice::from_ref(&tip),
+        &pruned_genesis,
+        0,
+    )
+    .is_err());
+    let error = verify_dormant_frozen_genesis_retarget_v3_ns(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        &tip,
+        &headers,
+        &derived,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("outside the verified retarget window"), "{error}");
+}
