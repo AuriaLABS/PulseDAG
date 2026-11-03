@@ -1767,8 +1767,8 @@ mod tests {
             .unwrap()
             .transactions
             .push(loser.clone());
-        let repeated = rebuild_authoritative_state_v3(&duplicate_loser, &ONE_HOUR_PER_SCORE)
-            .unwrap();
+        let repeated =
+            rebuild_authoritative_state_v3(&duplicate_loser, &ONE_HOUR_PER_SCORE).unwrap();
         assert_eq!(repeated.diagnostics.applied_transactions, 1);
         assert_eq!(repeated.diagnostics.skipped_conflicting_transactions, 4);
         assert_eq!(repeated.eligible_fees_by_score[5], 0);
