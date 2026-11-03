@@ -294,5 +294,8 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("outside the verified retarget window"), "{error}");
+    assert!(
+        error.contains("outside the verified retarget window"),
+        "{error}"
+    );
 }
