@@ -1,0 +1,12 @@
+{
+  "schema": "pulsedag.dormant-v3-full-history-reference-fingerprint-v1",
+  "status": "TEST_ONLY_NOT_CHECKPOINT_AUTHORITY",
+  "chain_id": "pulsedag-dormant-ghostdag-rust-policy-probe",
+  "genesis_ns": 1800000000500000000,
+  "genesis_hash": "8897ac04d1ace55caf6c8660f7b0fcff19179b2ea046fb80c9cd3b543c1d65ae",
+  "domain": "PulseDAG:dormant-v3-full-history-reference:v1",
+  "expected": {
+    "X0": "e86075be1831d4ba453861aeadd67124e1929e98210c022bcb09c414fa9c1467",
+    "X1": "14fbdce48347cb5624d6a074b47b53e132f429eee993b95784828b18c46720b1"
+  }
+}
