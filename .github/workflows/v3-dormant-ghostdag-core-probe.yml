@@ -17,11 +17,15 @@ on:
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
       - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
       - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - scripts/native_v3_full_history_reference_fingerprint.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
       - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+      - docs/fixtures/native_v3_full_history_reference_trial.json
+      - docs/NATIVE_V3_FULL_HISTORY_REFERENCE_FINGERPRINT_20261103.md
   pull_request:
     branches: [main]
     paths:
@@ -37,11 +41,15 @@ on:
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
       - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
       - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - scripts/native_v3_full_history_reference_fingerprint.py
       - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
       - .github/workflows/v3-dormant-ghostdag-core-probe.yml
       - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+      - docs/fixtures/native_v3_full_history_reference_trial.json
+      - docs/NATIVE_V3_FULL_HISTORY_REFERENCE_FINGERPRINT_20261103.md
 
 permissions:
   contents: read
@@ -95,6 +103,8 @@ jobs:
           set -euo pipefail
           python3 scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
           python3 -O scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+          python3 scripts/native_v3_full_history_reference_fingerprint.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json --golden docs/fixtures/native_v3_full_history_reference_trial.json
+          python3 -O scripts/native_v3_full_history_reference_fingerprint.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json --golden docs/fixtures/native_v3_full_history_reference_trial.json
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -115,6 +125,7 @@ jobs:
           cargo test --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_mixed_target_real_pow_selection -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_full_history_reference_fingerprint -- --nocapture
           cargo test --locked -p pulsedag-core --test native_v3_derived_selected_retarget_genesis -- --nocapture
           cargo clippy --locked -p pulsedag-core --lib -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
@@ -125,4 +136,5 @@ jobs:
           cargo clippy --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_mixed_target_real_pow_selection -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_full_history_reference_fingerprint -- -D warnings
           cargo clippy --locked -p pulsedag-core --test native_v3_derived_selected_retarget_genesis -- -D warnings
