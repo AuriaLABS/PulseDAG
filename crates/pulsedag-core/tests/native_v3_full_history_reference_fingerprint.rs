@@ -18,8 +18,7 @@ use sha2::{Digest, Sha256};
 const CHAIN: &str = "pulsedag-dormant-ghostdag-rust-policy-probe";
 const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
 const DOMAIN: &[u8] = b"PulseDAG:dormant-v3-full-history-reference:v1";
-const FROZEN: &str =
-    include_str!("../../../docs/fixtures/native_v3_ghostdag_fork_crosslang.json");
+const FROZEN: &str = include_str!("../../../docs/fixtures/native_v3_ghostdag_fork_crosslang.json");
 const GOLDEN: &str =
     include_str!("../../../docs/fixtures/native_v3_full_history_reference_trial.json");
 
@@ -80,10 +79,9 @@ fn corpus() -> (String, BTreeMap<BlockId, BlockHeaderV3>, Value, Value) {
         let block_hash = block["id"].as_str().unwrap().to_owned();
         assert_eq!(compute_block_hash_v3(&header, CHAIN).unwrap(), block_hash);
         assert_eq!(
-            hex::encode(pulsedag_core::header_v3::canonical_block_header_bytes_v3(
-                &header, CHAIN
-            )
-            .unwrap()),
+            hex::encode(
+                pulsedag_core::header_v3::canonical_block_header_bytes_v3(&header, CHAIN).unwrap()
+            ),
             block["header_bytes_hex"].as_str().unwrap()
         );
         assert!(headers.insert(block_hash, header).is_none());
@@ -106,7 +104,10 @@ fn independent_python_and_rust_full_genesis_header_closures_match() {
     // selected candidate's full authenticated ancestor closure.
     let mut without_other_tip = headers.clone();
     without_other_tip.remove(&x1);
-    assert_eq!(reference_digest(&genesis, &x0, &without_other_tip), actual_0);
+    assert_eq!(
+        reference_digest(&genesis, &x0, &without_other_tip),
+        actual_0
+    );
 
     // A missing SIDE parent invalidates full history, even when all
     // selected-branch retarget samples could still be present.
