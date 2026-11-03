@@ -1,0 +1,44 @@
+name: v3 native first-seen trace parser (research, no network)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/native_v3_propagation_evidence.py"
+      - "docs/NATIVE_V3_FIRST_SEEN_TRACE_VALIDATOR_RESEARCH_20261103.md"
+      - ".github/workflows/v3-native-firstseen-trace-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-only-parser-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Reject unexpected checkout head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Test bounded first-seen trace parser, normal and Python optimized
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/native_v3_propagation_evidence.py
+          python3 scripts/native_v3_propagation_evidence.py --self-test
+          python3 -O scripts/native_v3_propagation_evidence.py --self-test
+      - name: Ensure missing trusted pins cannot produce evidence
+        run: |
+          set -euo pipefail
+          if python3 -O scripts/native_v3_propagation_evidence.py; then
+            echo "Unpinned traces must not produce K evidence" >&2
+            exit 1
+          fi
+          echo "PASS: missing source/chain/genesis pins rejected"
