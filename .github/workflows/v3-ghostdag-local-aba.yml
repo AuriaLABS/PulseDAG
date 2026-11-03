@@ -1,0 +1,123 @@
+name: v3 GHOSTDAG same-runner A-B-A CPU evidence (local-only)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [proposal/v3-ghostdag-freeze-candidate-20261022]
+    paths:
+      - ".github/workflows/v3-ghostdag-local-aba.yml"
+      - "scripts/native_v3_ghostdag_local_aba.py"
+
+permissions:
+  contents: read
+
+jobs:
+  same-runner-aba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout exact dormant candidate A
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify candidate SHA is the requested exact head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Checkout FULLY GREEN before-change baseline B (fixed SHA)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: f26cf7e976e09334a9035535d355041e21b0866c
+          path: old-native-v3
+      - name: Verify baseline SHA independently
+        run: test "$(git -C old-native-v3 rev-parse HEAD)" = "f26cf7e976e09334a9035535d355041e21b0866c"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check local probe comparison parser invariants (normal and optimized Python)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_local_aba.py --self-test
+          python3 -O scripts/native_v3_ghostdag_local_aba.py --self-test
+      - name: A1 / New candidate complete PoW header profiling
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-candidate-target
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a1.log
+          test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-a1.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-a1.log)" -eq 9
+      # CRITICAL: old/new checkouts MUST NOT share one CARGO_TARGET_DIR. Rust's
+      # workspaces have the same package name and test target, and a shared
+      # target can silently execute A's cached test binary under checkout B.
+      - name: Overlay IDENTICAL non-normative profiler fixture into old checkout; never modify old core source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C old-native-v3 rev-parse HEAD)" = "f26cf7e976e09334a9035535d355041e21b0866c"
+          cp crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs \
+            old-native-v3/crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs
+          git -C old-native-v3 diff --quiet HEAD -- crates/pulsedag-core/src/
+          test "$(git -C old-native-v3 diff --name-only | wc -l)" -eq 1
+          test "$(git -C old-native-v3 diff --name-only)" = "crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"
+          sha256sum crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs \
+            old-native-v3/crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs
+      - name: B / Old exact-green reference complete PoW header profiling on same runner
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-baseline-target
+        run: |
+          set -euo pipefail
+          cd old-native-v3
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-b.log
+          test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-b.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-b.log)" -eq 9
+      - name: A2 / Repeat new candidate after old reference without changing runner
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/native-v3-aba-candidate-target
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe native_v3_real_pow_dag_work_profile_is_non_normative -- --ignored --nocapture | tee /tmp/native-v3-aba-a2.log
+          test "$(grep -c '^NATIVE_V3_PERF_PROBE scope=local_not_network case=' /tmp/native-v3-aba-a2.log)" -eq 9
+          test "$(grep -c '^NATIVE_V3_ABA_META_DIGEST case=' /tmp/native-v3-aba-a2.log)" -eq 9
+      - name: Compare same-runner nine IDENTICAL fixtures including deep fork K0/K32
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_ghostdag_local_aba.py \
+            --baseline /tmp/native-v3-aba-b.log \
+            --candidate-first /tmp/native-v3-aba-a1.log \
+            --candidate-repeat /tmp/native-v3-aba-a2.log \
+            --candidate-sha "$(git rev-parse HEAD)" \
+            --output /tmp/native-v3-aba.json
+          python3 -m json.tool /tmp/native-v3-aba.json >/dev/null
+          python3 - <<'PY'
+          import json
+          with open("/tmp/native-v3-aba.json", encoding="utf-8") as h:
+              result = json.load(h)
+          print("LOCAL A/B/A ONLY. Nine identical fixtures; CPU/VM noise NOT controlled. K NOT APPROVED.")
+          for case, data in result["comparison"].items():
+              print(case, "before_us", data["baseline_median_us_B"],
+                    "after_A1_us", data["new_median_us_A1"],
+                    "after_A2_us", data["new_median_us_A2"],
+                    "ratios", data["ratio_A1_over_B"], data["ratio_A2_over_B"])
+          PY
+      - name: Archive raw A1/B/A2 logs and machine-readable ratios
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-v3-aba-local-only-${{ github.run_id }}
+          path: |
+            /tmp/native-v3-aba-a1.log
+            /tmp/native-v3-aba-b.log
+            /tmp/native-v3-aba-a2.log
+            /tmp/native-v3-aba.json
+          if-no-files-found: warn
+          retention-days: 14
