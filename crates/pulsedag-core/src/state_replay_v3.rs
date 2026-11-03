@@ -615,7 +615,14 @@ fn replay_authoritative_prefix_v3(
                             has_immature_reward,
                         );
                         if let Some(existing) = skipped_signed_outputs.get(&outpoint) {
-                            if existing != &provenance {
+                            // Utxo intentionally has no blanket PartialEq.
+                            // Compare every authenticated field explicitly.
+                            if existing.0.address != provenance.0.address
+                                || existing.0.amount != provenance.0.amount
+                                || existing.0.coinbase != provenance.0.coinbase
+                                || existing.0.height != provenance.0.height
+                                || existing.1 != provenance.1
+                            {
                                 return Err(invalid_replay(
                                     "conflicting authenticated skipped output provenance",
                                 ));
