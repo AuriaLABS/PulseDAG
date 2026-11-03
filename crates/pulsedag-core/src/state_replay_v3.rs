@@ -342,11 +342,9 @@ fn replay_authoritative_prefix_v3(
         if hash == &state.dag.genesis_hash {
             continue;
         }
-        let block = state
-            .dag
-            .blocks
-            .get(hash)
-            .ok_or_else(|| invalid_replay(format!("ordered block {hash} missing during input scan")))?;
+        let block = state.dag.blocks.get(hash).ok_or_else(|| {
+            invalid_replay(format!("ordered block {hash} missing during input scan"))
+        })?;
         for tx in block.transactions.iter().skip(1) {
             referenced_inputs.extend(tx.inputs.iter().map(|input| input.previous_output.clone()));
         }
@@ -457,7 +455,8 @@ fn replay_authoritative_prefix_v3(
                     } else if let Some(coin) = validated_reward_outpoints.get(outpoint) {
                         has_immature_reward = true;
                         Some(coin)
-                    } else if let Some((coin, unknown_value)) = skipped_signed_outputs.get(outpoint) {
+                    } else if let Some((coin, unknown_value)) = skipped_signed_outputs.get(outpoint)
+                    {
                         has_immature_reward |= *unknown_value;
                         Some(coin)
                     } else {
@@ -1611,19 +1610,13 @@ mod tests {
         );
     }
 
-
     #[test]
     fn authenticated_descendants_of_skipped_conflicts_do_not_create_money_or_fees() {
         let mut state =
             init_chain_state_v3("reward-replay-v3-skipped-lineage".into(), 1_800_000_052).unwrap();
         let chain_id = state.chain_id.clone();
         let signer = replay_test_address();
-        append_linear_block(
-            &mut state,
-            "b1",
-            vec![claim(&chain_id, &signer, 201)],
-            1,
-        );
+        append_linear_block(&mut state, "b1", vec![claim(&chain_id, &signer, 201)], 1);
         append_linear_block(
             &mut state,
             "b2",
@@ -1730,7 +1723,10 @@ mod tests {
         append_linear_block(
             &mut state,
             "b6",
-            vec![claim(&chain_id, "pulse1grandchild", 206), grandchild.clone()],
+            vec![
+                claim(&chain_id, "pulse1grandchild", 206),
+                grandchild.clone(),
+            ],
             6,
         );
 
@@ -1738,10 +1734,16 @@ mod tests {
         assert_eq!(replay.diagnostics.applied_transactions, 1);
         assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 3);
         assert_eq!(replay.eligible_fees_by_score[3], 3);
-        assert!(replay.eligible_fees_by_score[4..].iter().all(|fee| *fee == 0));
+        assert!(replay.eligible_fees_by_score[4..]
+            .iter()
+            .all(|fee| *fee == 0));
         for tx in [&loser, &child, &grandchild] {
             assert!(
-                !replay.utxo.utxos.keys().any(|outpoint| outpoint.txid == tx.txid),
+                !replay
+                    .utxo
+                    .utxos
+                    .keys()
+                    .any(|outpoint| outpoint.txid == tx.txid),
                 "an authenticated skipped descendant became spendable"
             );
         }
@@ -1749,8 +1751,8 @@ mod tests {
 
         // Skipped descendants still require cryptographic signatures.
         let mut tampered = state.clone();
-        tampered.dag.blocks.get_mut("b5").unwrap().transactions[1]
-            .inputs[0].signature = "00".repeat(64);
+        tampered.dag.blocks.get_mut("b5").unwrap().transactions[1].inputs[0].signature =
+            "00".repeat(64);
         let error = rebuild_authoritative_state_v3(&tampered, &ONE_HOUR_PER_SCORE)
             .unwrap_err()
             .to_string();
@@ -1764,7 +1766,10 @@ mod tests {
         let error = rebuild_authoritative_state_v3(&phantom, &ONE_HOUR_PER_SCORE)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("without authenticated replay provenance"), "{error}");
+        assert!(
+            error.contains("without authenticated replay provenance"),
+            "{error}"
+        );
 
         // A valid signature with a silent amount gap is not skippable.
         let mut fee_gap = state;
