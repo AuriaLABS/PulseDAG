@@ -4,10 +4,12 @@
 use std::collections::BTreeMap;
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     pow_v3::{evaluate_v3_header_pow, verify_v3_header_pow},
-    protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
+    protocol::BLOCK_HEADER_VERSION_V3,
+    types::BlockId,
 };
 
 const CHAIN: &str = "native-v3-unapproved-mixed-target-real-pow";
@@ -107,7 +109,10 @@ fn harder_shorter_branch_wins_over_easy_taller_branch_and_all_k_boundaries_match
         assert_eq!(trial.blocks.len(), 5);
         assert_eq!(trial.blocks[&easy2].blue_work.decimal(), "4");
         assert_eq!(trial.blocks[&hard].blue_work.decimal(), "512");
-        assert_eq!(trial.blocks[&join].selected_parent.as_deref(), Some(hard.as_str()));
+        assert_eq!(
+            trial.blocks[&join].selected_parent.as_deref(),
+            Some(hard.as_str())
+        );
         assert_eq!(trial.blocks[&join].blue_score, expected_score);
         assert_eq!(trial.blocks[&join].blue_work.decimal(), expected_work);
         assert_eq!(trial.blocks[&join].merge_blues.len(), blue_count);
