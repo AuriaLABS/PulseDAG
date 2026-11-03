@@ -616,10 +616,15 @@ fn replay_authoritative_prefix_v3(
                         if let Some(existing) = skipped_signed_outputs.get(&outpoint) {
                             // Utxo intentionally has no blanket PartialEq.
                             // Compare every authenticated field explicitly.
+                            // A signed tx can occur in more than one
+                            // skipped block. Its outputs have the same
+                            // chain-bound txid/address/amount but the block
+                            // heights differ. Keep first-seen height only
+                            // as diagnostic provenance, never treat it as
+                            // a new economic output or a replay failure.
                             if existing.0.address != provenance.0.address
                                 || existing.0.amount != provenance.0.amount
                                 || existing.0.coinbase != provenance.0.coinbase
-                                || existing.0.height != provenance.0.height
                                 || existing.1 != provenance.1
                             {
                                 return Err(invalid_replay(
@@ -1748,6 +1753,31 @@ mod tests {
             );
         }
         assert_insertion_order_independent(&state, &replay);
+
+        // A VALID, byte-identical losing signed transfer can be included
+        // again in a LATER block, at a different block height. Its skipped
+        // output already has authenticated non-spendable provenance because
+        // the child referenced it. The duplicate must remain a conflict,
+        // not reject the whole DAG due only to a differing block height.
+        let mut duplicate_loser = state.clone();
+        duplicate_loser
+            .dag
+            .blocks
+            .get_mut("b5")
+            .unwrap()
+            .transactions
+            .push(loser.clone());
+        let repeated = rebuild_authoritative_state_v3(&duplicate_loser, &ONE_HOUR_PER_SCORE)
+            .unwrap();
+        assert_eq!(repeated.diagnostics.applied_transactions, 1);
+        assert_eq!(repeated.diagnostics.skipped_conflicting_transactions, 4);
+        assert_eq!(repeated.eligible_fees_by_score[5], 0);
+        assert_eq!(
+            repeated.utxo.compute_state_root().unwrap(),
+            replay.utxo.compute_state_root().unwrap(),
+            "repeated skipped signed transaction must not change supply or UTXOs"
+        );
+        assert_insertion_order_independent(&duplicate_loser, &repeated);
 
         // Skipped descendants still require cryptographic signatures.
         let mut tampered = state.clone();
