@@ -1,69 +1,72 @@
-name: v3 yanked dependency compatibility trial (DRAFT)
+name: v3 non-yanked lockfile validation (DRAFT)
 
 on:
   pull_request:
     paths:
-      - .github/workflows/v3-yanked-lock-candidate.yml
       - Cargo.lock
+      - .github/workflows/v3-yanked-lock-candidate.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  trial-supported-yanked-replacements:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+  verify-non-yanked-lock:
+    name: verify-non-yanked-lock / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
     steps:
-      - name: Checkout exact candidate, no persisted credentials
+      - name: Checkout exact PR candidate without persisted token
         uses: actions/checkout@v4
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact source identity
+      - name: Verify checked-out source SHA
+        shell: bash
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Use pinned Rust 1.91.0
+      - name: Pin Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.91.0'
-      - name: Resolve only parent-compatible replacements for two yanked crates
+      - name: Reject yanked old versions and security policy bypass
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p ci-evidence
-          printf 'source_sha=%s\n' "$(git rev-parse HEAD)" | tee ci-evidence/source.txt
-          printf 'source_lock_sha256=%s\n' "$(sha256sum Cargo.lock | cut -d ' ' -f1)" | tee -a ci-evidence/source.txt
-          cargo update --package async-executor
-          cargo update --package chacha20@0.10.0
-          python3 - <<'PY'
-          import pathlib, tomllib
-          packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
-          found = {(p['name'], p['version']) for p in packages}
-          for item in [('async-executor', '1.14.0'), ('chacha20', '0.10.0')]:
-              assert item not in found, f'cannot replace yanked pinned package: {item}'
-          for name in ['async-executor', 'chacha20']:
-              print(name, sorted(v for n, v in found if n == name))
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+          packages = tomllib.loads(Path('Cargo.lock').read_text())['package']
+          versions = {}
+          for package in packages:
+              versions.setdefault(package['name'], set()).add(package['version'])
+          expected = {
+              'async-executor': '1.14.1',
+              'chacha20': '0.10.2',
+              'tokio': '1.53.3',
+              'zstd-sys': '2.1.2+zstd.1.5.7',
+              'webpki-roots': '1.0.10',
+              'rustls-webpki': '0.103.16',
+              'libz-sys': '1.1.31',
+          }
+          for name, wanted in expected.items():
+              if name == 'chacha20':
+                  assert versions.get(name) == {'0.9.1', wanted}, (name, versions.get(name))
+              else:
+                  assert versions.get(name) == {wanted}, (name, versions.get(name))
+          audit = tomllib.loads(Path('.cargo/audit.toml').read_text())
+          assert not audit.get('advisories', {}).get('ignore', []), 'Do not ignore RustSec'
+          print('Exact versions and active fail-closed audit policy verified')
           PY
-          printf 'candidate_lock_sha256=%s\n' "$(sha256sum Cargo.lock | cut -d ' ' -f1)" | tee -a ci-evidence/source.txt
-          git diff --check
-          git diff -- Cargo.lock > ci-evidence/cargo-lock.patch
-          test -s ci-evidence/cargo-lock.patch
-      - name: Verify exact generated lock with production Cargo builds
+      - name: Check locked P2P node miner wallet on exact candidate
         run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
-      - name: Preserve source, patch and Cargo-generated lock for review
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v3-yanked-lock-trial-artifacts
-          path: |
-            Cargo.lock
-            ci-evidence/source.txt
-            ci-evidence/cargo-lock.patch
-          if-no-files-found: warn
-          retention-days: 30
+      - name: Enforce unchanged checked-out Cargo.lock
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock
