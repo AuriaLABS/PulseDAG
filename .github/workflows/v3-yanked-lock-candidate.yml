@@ -1,0 +1,69 @@
+name: v3 yanked dependency compatibility trial (DRAFT)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/v3-yanked-lock-candidate.yml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trial-supported-yanked-replacements:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact candidate, no persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Use pinned Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Resolve only parent-compatible replacements for two yanked crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          printf 'source_sha=%s\n' "$(git rev-parse HEAD)" | tee ci-evidence/source.txt
+          printf 'source_lock_sha256=%s\n' "$(sha256sum Cargo.lock | cut -d ' ' -f1)" | tee -a ci-evidence/source.txt
+          cargo update --package async-executor
+          cargo update --package chacha20@0.10.0
+          python3 - <<'PY'
+          import pathlib, tomllib
+          packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+          found = {(p['name'], p['version']) for p in packages}
+          for item in [('async-executor', '1.14.0'), ('chacha20', '0.10.0')]:
+              assert item not in found, f'cannot replace yanked pinned package: {item}'
+          for name in ['async-executor', 'chacha20']:
+              print(name, sorted(v for n, v in found if n == name))
+          PY
+          printf 'candidate_lock_sha256=%s\n' "$(sha256sum Cargo.lock | cut -d ' ' -f1)" | tee -a ci-evidence/source.txt
+          git diff --check
+          git diff -- Cargo.lock > ci-evidence/cargo-lock.patch
+          test -s ci-evidence/cargo-lock.patch
+      - name: Verify exact generated lock with production Cargo builds
+        run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
+      - name: Preserve source, patch and Cargo-generated lock for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-yanked-lock-trial-artifacts
+          path: |
+            Cargo.lock
+            ci-evidence/source.txt
+            ci-evidence/cargo-lock.patch
+          if-no-files-found: warn
+          retention-days: 30
