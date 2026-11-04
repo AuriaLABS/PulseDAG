@@ -1,0 +1,45 @@
+name: v3 monetary finality reorg (dormant regression)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - crates/pulsedag-core/src/live_reward_settlement_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - .github/workflows/v3-monetary-finality-reorg-regression.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_monetary_finality_reorg.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - crates/pulsedag-core/src/live_reward_settlement_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - .github/workflows/v3-monetary-finality-reorg-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-dormant-monetary-reorg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+      - name: Install Rust 1.91.0 with Clippy and rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: clippy,rustfmt
+      - name: Verify Rust format (whole workspace)
+        run: cargo fmt --all -- --check
+      - name: Test native-v3 dormant monetary reorg finality
+        run: cargo test --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- --nocapture
+      - name: Clippy on native-v3 dormant monetary reorg finality
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_monetary_finality_reorg -- -D warnings
