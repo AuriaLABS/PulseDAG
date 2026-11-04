@@ -28,12 +28,18 @@ impl StartupProtocolMode {
         }
     }
 
+    fn parse_env_value(raw: Result<String, std::env::VarError>) -> Result<Self> {
+        match raw {
+            Ok(raw) => Self::parse(&raw),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Legacy),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("invalid non-UTF8 {STARTUP_PROTOCOL_MODE_ENV} value")
+            }
+        }
+    }
+
     pub fn from_env() -> Result<Self> {
-        std::env::var(STARTUP_PROTOCOL_MODE_ENV)
-            .ok()
-            .map(|raw| Self::parse(&raw))
-            .transpose()
-            .map(|mode| mode.unwrap_or(Self::Legacy))
+        Self::parse_env_value(std::env::var(STARTUP_PROTOCOL_MODE_ENV))
     }
 }
 
@@ -282,6 +288,37 @@ mod tests {
         assert!(StartupProtocolMode::parse("ghostdag-v1").is_err());
         assert!(StartupProtocolMode::parse("monetary_v3").is_err());
         assert!(StartupProtocolMode::parse("").is_err());
+    }
+
+    #[test]
+    fn startup_mode_env_non_utf8_fails_closed_and_only_absence_defaults_to_legacy() {
+        assert_eq!(
+            StartupProtocolMode::parse_env_value(Err(std::env::VarError::NotPresent)).unwrap(),
+            StartupProtocolMode::Legacy
+        );
+        assert_eq!(
+            StartupProtocolMode::parse_env_value(Ok("legacy".into())).unwrap(),
+            StartupProtocolMode::Legacy
+        );
+        assert_eq!(
+            StartupProtocolMode::parse_env_value(Ok("ghostdag_v1".into())).unwrap(),
+            StartupProtocolMode::GhostdagV1
+        );
+        assert!(StartupProtocolMode::parse_env_value(Ok("monetary_v3".into())).is_err());
+
+        // Use an actually invalid UTF-8 value on Unix, while keeping this
+        // parser test independent of process-wide mutable environment state.
+        #[cfg(unix)]
+        let invalid = {
+            use std::os::unix::ffi::OsStringExt;
+            std::env::VarError::NotUnicode(std::ffi::OsString::from_vec(vec![0xff, b'v', b'3']))
+        };
+        #[cfg(not(unix))]
+        let invalid = std::env::VarError::NotUnicode(std::ffi::OsString::from("invalid-mode"));
+        let error = StartupProtocolMode::parse_env_value(Err(invalid)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid non-UTF8 PULSEDAG_PROTOCOL_CONSENSUS_MODE"));
     }
 
     #[test]
