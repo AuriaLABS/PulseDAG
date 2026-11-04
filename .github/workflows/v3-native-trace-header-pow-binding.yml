@@ -1,0 +1,52 @@
+name: Native v3 full-PoW trace/header binding (DORMANT RESEARCH)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - scripts/native_v3_trace_header_binding.py
+      - scripts/native_v3_propagation_evidence.py
+      - scripts/native_v3_compact_target_oracle.py
+      - scripts/native_v3_kheavyhash_oracle.py
+      - scripts/native_v3_ghostdag_policy_candidate.py
+      - scripts/native_v3_work_policy_candidates.py
+      - .github/workflows/v3-native-trace-header-pow-binding.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - scripts/native_v3_trace_header_binding.py
+      - scripts/native_v3_propagation_evidence.py
+      - scripts/native_v3_compact_target_oracle.py
+      - scripts/native_v3_kheavyhash_oracle.py
+      - scripts/native_v3_ghostdag_policy_candidate.py
+      - scripts/native_v3_work_policy_candidates.py
+      - .github/workflows/v3-native-trace-header-pow-binding.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-full-pow-trace-binding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Check standalone independent Python bridge
+        run: python3 scripts/native_v3_ghostdag_kheavyhash_bridge.py
+      - name: Verify full-PoW observed/historical trace header negatives
+        run: python3 scripts/native_v3_trace_header_binding.py --self-test
+      - name: Verify Python optimized mode retains negative checks
+        run: python3 -O scripts/native_v3_trace_header_binding.py --self-test
+      - name: Check Python syntax
+        run: python3 -m py_compile scripts/native_v3_ghostdag_kheavyhash_bridge.py scripts/native_v3_trace_header_binding.py
