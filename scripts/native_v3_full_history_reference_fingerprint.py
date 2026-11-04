@@ -5,11 +5,13 @@ Not a checkpoint, monetary state root, selected-parent/work rule or permission
 to validate pruned history. Requires every reachable native header to exist.
 """
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
 
 from native_v3_crosslang_ghostdag_vectors import generate
+from native_v3_kheavyhash_oracle import canonical_header
 
 CHAIN = "pulsedag-dormant-ghostdag-rust-policy-probe"
 GENESIS_NS = 1_800_000_000_500_000_000
@@ -28,7 +30,10 @@ def full_history_digest(blocks: dict, tip: str, chain: str, ns: int, genesis: st
     for block in blocks.values():
         header = block["header"]
         block_hash = block["id"]
-        if hashlib.sha256(bytes.fromhex(block["header_bytes_hex"])).hexdigest() != block_hash:
+        committed_bytes = bytes.fromhex(block["header_bytes_hex"])
+        if canonical_header(header, CHAIN, True) != committed_bytes:
+            raise ValueError("header fields differ from committed canonical header bytes")
+        if hashlib.sha256(committed_bytes).hexdigest() != block_hash:
             raise ValueError("hash differs from full canonical header bytes")
         if block_hash in nodes:
             raise ValueError("duplicate header identity")
@@ -109,6 +114,30 @@ def self_test(known: dict, golden: dict) -> None:
             raise AssertionError("missing off-selected side history accepted")
     if results[0] == results[1]:
         raise AssertionError("distinct complete-DAG tips unexpectedly share a fingerprint")
+
+    # The public digest helper must reject uncommitted JSON header metadata
+    # even when the byte blob, its valid SHA-256 ID and the frozen golden
+    # hashes are left unchanged. Otherwise a forged height, timestamp or
+    # parent set could change the alleged complete-history fingerprint.
+    for field, replacement in [
+        ("height", known["blocks"]["A"]["header"]["height"] + 1),
+        ("timestamp_ns", known["blocks"]["A"]["header"]["timestamp_ns"] + 1),
+        ("parents", [known["blocks"]["B"]["id"]]),
+        ("difficulty", known["blocks"]["A"]["header"]["difficulty"] - 1),
+        ("nonce", known["blocks"]["A"]["header"]["nonce"] + 1),
+        ("blue_score", known["blocks"]["A"]["header"]["blue_score"] + 1),
+        ("state_root", "11" * 32),
+    ]:
+        forged = copy.deepcopy(known["blocks"])
+        forged["A"]["header"][field] = replacement
+        try:
+            full_history_digest(
+                forged, known["blocks"]["X0"]["id"], CHAIN, GENESIS_NS, GENESIS
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"uncommitted {field} metadata accepted")
     for chain, ns, genesis in [
         (CHAIN + "-foreign", GENESIS_NS, GENESIS),
         (CHAIN, GENESIS_NS + 1, GENESIS),
