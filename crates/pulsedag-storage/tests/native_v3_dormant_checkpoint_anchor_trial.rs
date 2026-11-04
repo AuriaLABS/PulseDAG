@@ -303,9 +303,9 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
     // An attacker controls the stored manifest and its advertised signer and
     // can make a mathematically VALID new signature with their own key. That
     // signature must still fail when the external pinned trust key is used.
-    let mut counterfeit = manifest.clone();
-    counterfeit.claimed_empty_v3_utxo_root = "ff".repeat(32);
-    let counterfeit_bytes = serde_json::to_vec(&counterfeit).unwrap();
+    // Keep every manifest field valid: only the attacker's signing key differs.
+    // This negative must fail on signer authentication, never on a bad UTXO root.
+    let counterfeit_bytes = bytes.clone();
     let counterfeit_sig = self_appointed_key.sign(&sign_message(&counterfeit_bytes));
     {
         let db = disk.open();
@@ -320,9 +320,11 @@ fn only_independently_pinned_signer_can_approve_tiny_trial_manifest_after_rocksd
     }
     {
         let db = disk.open();
+        let error = read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash)
+            .expect_err("attacker-signed valid manifest must fail with the externally pinned key");
         assert!(
-            read_with_external_trust(&db, Some(&pinned_key), &genesis.hash, &second.hash).is_err(),
-            "valid self-issued signature cannot replace externally pinned authority"
+            error.contains("signature not issued by externally pinned test signer"),
+            "must reject on signature authentication, not on another manifest field: {error}"
         );
         let mut batch = WriteBatch::default();
         batch.put(MANIFEST_KEY, &bytes);
