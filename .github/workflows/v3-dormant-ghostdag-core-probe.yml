@@ -1,0 +1,159 @@
+name: v3 native GHOSTDAG authenticated dormant Rust candidate (UNAPPROVED)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs
+      - crates/pulsedag-core/src/native_v3_envelope_trial.rs
+      - crates/pulsedag-core/tests/native_v3_full_envelope_ghostdag_trial.rs
+      - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
+      - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
+      - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
+      - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
+      - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - scripts/native_v3_full_history_reference_fingerprint.py
+      - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - .github/workflows/v3-dormant-ghostdag-core-probe.yml
+      - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+      - docs/fixtures/native_v3_full_history_reference_trial.json
+      - docs/NATIVE_V3_FULL_HISTORY_REFERENCE_FINGERPRINT_20261103.md
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
+      - crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs
+      - crates/pulsedag-core/src/native_v3_envelope_trial.rs
+      - crates/pulsedag-core/tests/native_v3_full_envelope_ghostdag_trial.rs
+      - crates/pulsedag-core/tests/native_v3_signed_prestate_real_pow_boundary.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
+      - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
+      - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
+      - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
+      - scripts/native_v3_crosslang_ghostdag_vectors.py
+      - scripts/native_v3_full_history_reference_fingerprint.py
+      - docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+      - .github/workflows/v3-dormant-ghostdag-core-probe.yml
+      - docs/NATIVE_V3_DORMANT_RUST_CROSSCHECK_20261101.md
+      - docs/fixtures/native_v3_full_history_reference_trial.json
+      - docs/NATIVE_V3_FULL_HISTORY_REFERENCE_FINGERPRINT_20261103.md
+
+permissions:
+  contents: read
+
+jobs:
+  dormant-rust-crosscheck:
+    name: Cross-language native v3 PoW/blue-work, no activation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact SHA and clean source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Verify dormant candidate has no production Rust call sites
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          expected = {
+              Path("crates/pulsedag-core/src/lib.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs"),
+              Path("crates/pulsedag-core/src/native_v3_envelope_trial.rs"),
+              Path("crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"),
+              Path("crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"),
+              Path("crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"),
+              Path("crates/pulsedag-storage/tests/native_v3_dormant_signed_checkpoint_trial.rs"),
+          }
+          found = set()
+          for root in (Path("crates"), Path("apps")):
+              for path in root.rglob("*.rs"):
+                  if "native_ghostdag_policy_candidate_v3" in path.read_text(encoding="utf-8"):
+                      found.add(path)
+          assert Path("crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs").is_file()
+          unexpected = found - expected
+          assert not unexpected, f"unexpected active or trial-call-site paths: {sorted(map(str, unexpected))}"
+          assert expected <= found, f"required dormant files missing: {expected - found}"
+          print("PASS: native-v3 GHOSTDAG Rust candidate has only dormant module and probe references")
+          PY
+      - name: Verify independent Python canonical native-v3 PoW fixture
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+          python3 -O scripts/native_v3_crosslang_ghostdag_vectors.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json
+          python3 scripts/native_v3_full_history_reference_fingerprint.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json --golden docs/fixtures/native_v3_full_history_reference_trial.json
+          python3 -O scripts/native_v3_full_history_reference_fingerprint.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json --golden docs/fixtures/native_v3_full_history_reference_trial.json
+          # A corrupt independent golden MUST fail even with Python assertions disabled.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          fixture = json.loads(Path("docs/fixtures/native_v3_full_history_reference_trial.json").read_text())
+          fixture["expected"]["X0"] = "00" * 32
+          Path("/tmp/native-v3-corrupt-fingerprint-golden.json").write_text(json.dumps(fixture))
+          PY
+          if python3 -O scripts/native_v3_full_history_reference_fingerprint.py --verify docs/fixtures/native_v3_ghostdag_fork_crosslang.json --golden /tmp/native-v3-corrupt-fingerprint-golden.json; then
+            echo "Optimized Python silently accepted a corrupted full-history fingerprint" >&2
+            exit 1
+          fi
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify exact candidate Rust core arithmetic and independent DAG/PoW vectors
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_work_policy_candidates.py --self-test
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-core --lib native_ghostdag_policy_candidate_v3::tests:: -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_k_pow_boundaries -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_mixed_target_real_pow_selection -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_full_history_reference_fingerprint -- --nocapture
+          cargo test --locked -p pulsedag-core --test native_v3_derived_selected_retarget_genesis -- --nocapture
+          cargo clippy --locked -p pulsedag-core --lib -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_policy_bridge -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_crosslang_vectors -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_k_pow_boundaries -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_full_envelope_ghostdag_trial -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_signed_prestate_real_pow_boundary -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_trial_order_pow_aba -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_authenticated_signed_sequence_boundary -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_mixed_target_real_pow_selection -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_full_history_reference_fingerprint -- -D warnings
+          cargo clippy --locked -p pulsedag-core --test native_v3_derived_selected_retarget_genesis -- -D warnings
