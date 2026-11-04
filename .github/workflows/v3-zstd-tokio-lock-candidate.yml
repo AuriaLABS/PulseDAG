@@ -1,0 +1,59 @@
+name: v3 security Zstd and Tokio lock candidate (DRAFT)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/v3-zstd-tokio-lock-candidate.yml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-verified-zstd-tokio-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact PR head without write credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Generate supported patch lockfile without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          echo "source_sha=$(git rev-parse HEAD)" | tee ci-evidence/source.txt
+          echo "source_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
+          cargo update --package zstd-sys --precise 2.1.2
+          cargo update --package tokio --precise 1.53.3
+          echo "candidate_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
+          git diff --check
+          git diff -- Cargo.lock > ci-evidence/cargo-lock.patch
+          test -s ci-evidence/cargo-lock.patch
+      - name: Check node P2P miner wallet against generated lock
+        run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
+      - name: Preserve exact generated candidate and diff for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-zstd-tokio-lock-research-candidate
+          path: |
+            Cargo.lock
+            ci-evidence/source.txt
+            ci-evidence/cargo-lock.patch
+          if-no-files-found: error
+          retention-days: 30
