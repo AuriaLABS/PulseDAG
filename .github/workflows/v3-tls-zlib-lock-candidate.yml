@@ -1,0 +1,61 @@
+name: v3 security supported dependency lock candidate (DRAFT)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/v3-tls-zlib-lock-candidate.yml
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-safe-lock-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact PR head (no write token)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+      - name: Resolve supported TLS and zlib security patch versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          echo "source_sha=$(git rev-parse HEAD)" | tee ci-evidence/source.txt
+          echo "source_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
+          cargo update --package webpki-roots@1.0.7 --precise 1.0.10
+          cargo update --package rustls-webpki@0.103.15 --precise 0.103.16
+          cargo update --package libz-sys@1.1.28 --precise 1.1.31
+          echo "candidate_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
+          git diff --check
+          git diff -- Cargo.lock > ci-evidence/cargo-lock.patch
+          test -s ci-evidence/cargo-lock.patch
+      - name: Build exact candidate production Rust roots
+        run: cargo check --locked -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
+      - name: Retain patch and generated lockfile for explicit review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-supported-tls-zlib-lock-candidate
+          path: |
+            Cargo.lock
+            ci-evidence/source.txt
+            ci-evidence/cargo-lock.patch
+          if-no-files-found: error
+          retention-days: 30
