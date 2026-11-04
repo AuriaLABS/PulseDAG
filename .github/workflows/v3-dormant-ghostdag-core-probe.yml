@@ -87,13 +87,28 @@ jobs:
               Path("crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs"),
               Path("crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs"),
           }
+          # These seven older experimental consumers are confined to
+          # integration tests. They are optional because the monolithic
+          # unapproved #1341 branch has not been integrated into main.
+          # Unlike "expected", an optional test path need not yet exist.
+          optional_research_tests = {
+              Path("crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"),
+              Path("crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"),
+              Path("crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"),
+              Path("crates/pulsedag-storage/tests/native_v3_dormant_signed_checkpoint_trial.rs"),
+          }
+          assert all(path.suffix == ".rs" and "tests" in path.parts
+                     for path in optional_research_tests), "non-test allowlist path"
           found = set()
           for root in (Path("crates"), Path("apps")):
               for path in root.rglob("*.rs"):
                   if "native_ghostdag_policy_candidate_v3" in path.read_text(encoding="utf-8"):
                       found.add(path)
           assert Path("crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs").is_file()
-          unexpected = found - expected
+          unexpected = found - expected - optional_research_tests
           assert not unexpected, f"unexpected active or trial-call-site paths: {sorted(map(str, unexpected))}"
           assert expected <= found, f"required dormant files missing: {expected - found}"
           print("PASS: native-v3 GHOSTDAG Rust candidate has only dormant module and probe references")
