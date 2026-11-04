@@ -223,7 +223,8 @@ jobs:
             echo "rustc=$(rustc --version 2>/dev/null || true)"
             echo "cargo=$(cargo --version 2>/dev/null || true)"
             echo "cargo_audit=$(cargo audit --version 2>/dev/null || true)"
-            echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
+            # Read the actual DB commit from cargo-audit's raw JSON output, not a possibly absent local git checkout.
+            echo "advisory_db_sha=$(python -c 'import json; print(json.load(open("ci-evidence/dependency-audit/cargo-audit-raw.json"))["database"]["last-commit"])' 2>/dev/null || true)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
             echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
             echo "v3_gate_sha256=$(sha256sum scripts/validate_v3_dependency_security.py | awk '{print $1}')"
