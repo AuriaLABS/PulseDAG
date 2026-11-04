@@ -1725,13 +1725,22 @@ mod tests {
             index: 0,
         }));
         for tx in [&loser, &child] {
-            assert!(!replay.utxo.utxos.keys().any(|outpoint| outpoint.txid == tx.txid));
+            assert!(!replay
+                .utxo
+                .utxos
+                .keys()
+                .any(|outpoint| outpoint.txid == tx.txid));
         }
         let expected_supply: u64 = (1..=3)
             .map(|score| subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap())
             .sum();
         assert_eq!(
-            replay.utxo.utxos.values().map(|coin| coin.amount).sum::<u64>(),
+            replay
+                .utxo
+                .utxos
+                .values()
+                .map(|coin| coin.amount)
+                .sum::<u64>(),
             expected_supply
         );
         assert_insertion_order_independent(&state, &replay);
