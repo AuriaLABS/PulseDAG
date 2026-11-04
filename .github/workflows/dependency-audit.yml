@@ -92,9 +92,17 @@ jobs:
           echo "raw_exit_status=${raw_status}" >ci-evidence/dependency-audit/raw-exit-status.txt
           python - <<'PY' | tee ci-evidence/dependency-audit/raw-summary.txt
           import json
+          import re
           from pathlib import Path
 
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
+          advisory_db = report.get('database') or {}
+          advisory_commit = advisory_db.get('last-commit')
+          advisory_updated = advisory_db.get('last-updated')
+          if not isinstance(advisory_commit, str) or re.fullmatch(r'[0-9a-f]{40}', advisory_commit) is None:
+              raise SystemExit('raw cargo-audit report lacks exact RustSec advisory DB commit')
+          if not isinstance(advisory_updated, str) or not advisory_updated.strip():
+              raise SystemExit('raw cargo-audit report lacks RustSec advisory DB last-updated provenance')
           vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
           observed_vulnerabilities = {
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
