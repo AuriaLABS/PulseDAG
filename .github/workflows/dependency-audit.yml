@@ -147,7 +147,10 @@ jobs:
                   raise SystemExit(f'yanked warning unexpectedly carries advisory data: {item!r}')
               package = item.get('package') or {}
               observed_yanked.add((package.get('name'), package.get('version')))
-          expected_yanked = {('chacha20', '0.10.0')}
+          # #1380: Cargo-generated patched exact lock no longer contains the
+          # yanked async-executor@1.14.0 or chacha20@0.10.0. Any future
+          # yanked dependency is new drift and must fail this security gate.
+          expected_yanked = set()
 
           print(f'raw_vulnerability_count={len(vulnerabilities)}')
           for item in sorted(observed_vulnerabilities):
