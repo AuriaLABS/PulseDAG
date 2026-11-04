@@ -1,0 +1,51 @@
+name: v3 dormant checkpoint externally pinned trust anchor (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-storage/tests/native_v3_dormant_checkpoint_anchor_trial.rs"
+      - "crates/pulsedag-storage/src/native_envelope_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - ".github/workflows/v3-dormant-checkpoint-external-anchor.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-storage/tests/native_v3_dormant_checkpoint_anchor_trial.rs"
+      - "crates/pulsedag-storage/src/native_envelope_v3.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - ".github/workflows/v3-dormant-checkpoint-external-anchor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-dormant-external-anchor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact candidate SHA
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact candidate checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust with Clippy and rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: clippy,rustfmt
+      - name: Check workspace Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Test untrusted signer, signed stale rollback and missing witness
+        run: cargo test --locked -p pulsedag-storage --test native_v3_dormant_checkpoint_anchor_trial -- --nocapture
+      - name: Strict Clippy for checkpoint anchor negative tests
+        run: cargo clippy --locked -p pulsedag-storage --test native_v3_dormant_checkpoint_anchor_trial -- -D warnings
