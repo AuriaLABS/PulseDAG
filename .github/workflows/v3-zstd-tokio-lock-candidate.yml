@@ -1,29 +1,35 @@
-name: v3 security Zstd and Tokio lock candidate (DRAFT)
+name: v3 patched Zstd and Tokio lock validation (DRAFT)
 
 on:
   pull_request:
     paths:
-      - .github/workflows/v3-zstd-tokio-lock-candidate.yml
       - Cargo.lock
+      - .github/workflows/v3-zstd-tokio-lock-candidate.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  generate-verified-zstd-tokio-lock:
-    runs-on: ubuntu-24.04
+  validate-patched-zstd-tokio:
+    name: validate-patched-zstd-tokio / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
     steps:
-      - name: Checkout exact PR head without write credentials
+      - name: Checkout exact candidate, no persisted credentials
         uses: actions/checkout@v4
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Assert exact source commit
+      - name: Assert exact commit SHA
+        shell: bash
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
@@ -31,29 +37,31 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.91.0'
-      - name: Generate supported patch lockfile without committing
+      - name: Check Cargo-generated resolved lock versions, no advisory waivers
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p ci-evidence
-          echo "source_sha=$(git rev-parse HEAD)" | tee ci-evidence/source.txt
-          echo "source_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
-          cargo update --package zstd-sys --precise 2.1.2
-          cargo update --package tokio --precise 1.53.3
-          echo "candidate_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')" | tee -a ci-evidence/source.txt
-          git diff --check
-          git diff -- Cargo.lock > ci-evidence/cargo-lock.patch
-          test -s ci-evidence/cargo-lock.patch
-      - name: Check node P2P miner wallet against generated lock
+          python - <<'PY'
+          import pathlib, tomllib
+          lock = tomllib.loads(pathlib.Path('Cargo.lock').read_text())
+          versions = {}
+          for package in lock['package']:
+              versions.setdefault(package['name'], set()).add(package['version'])
+          expected = {
+              'webpki-roots': '1.0.10',
+              'rustls-webpki': '0.103.16',
+              'libz-sys': '1.1.31',
+              'tokio': '1.53.3',
+              'zstd-sys': '2.1.2+zstd.1.5.7',
+          }
+          for name, version in expected.items():
+              assert versions.get(name) == {version}, (name, versions.get(name))
+          assert ('bindgen' in versions and '0.72.1' not in versions['bindgen'])
+          audit = tomllib.loads(pathlib.Path('.cargo/audit.toml').read_text())
+          assert not audit.get('advisories', {}).get('ignore', []), 'NO advisory ignores allowed'
+          print('Pinned patched lock and fail-closed advisory policy confirmed')
+          PY
+      - name: Compile four launch roots against the exact lockfile
         run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
-      - name: Preserve exact generated candidate and diff for review
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v3-zstd-tokio-lock-research-candidate
-          path: |
-            Cargo.lock
-            ci-evidence/source.txt
-            ci-evidence/cargo-lock.patch
-          if-no-files-found: error
-          retention-days: 30
+      - name: Assert Cargo did not rewrite lockfile
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock
