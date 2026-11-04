@@ -613,24 +613,26 @@ fn replay_authoritative_prefix_v3(
                             },
                             has_immature_reward,
                         );
-                        if let Some(existing) = skipped_signed_outputs.get(&outpoint) {
-                            // Utxo intentionally has no blanket PartialEq.
-                            // Compare every authenticated field explicitly.
-                            // A signed tx can occur in more than one
-                            // skipped block. Its outputs have the same
-                            // chain-bound txid/address/amount but the block
-                            // heights differ. Keep first-seen height only
-                            // as diagnostic provenance, never treat it as
-                            // a new economic output or a replay failure.
+                        if let Some(existing) = skipped_signed_outputs.get_mut(&outpoint) {
+                            // The signed transaction commits to its output
+                            // identity, address, and amount, regardless of
+                            // which block contains a repeated occurrence.
+                            // First-seen height and the need for signature-
+                            // only validation are contextual replay metadata.
                             if existing.0.address != provenance.0.address
                                 || existing.0.amount != provenance.0.amount
                                 || existing.0.coinbase != provenance.0.coinbase
-                                || existing.1 != provenance.1
                             {
                                 return Err(invalid_replay(
                                     "conflicting authenticated skipped output provenance",
                                 ));
                             }
+                            // Keep the conservative unknown-value flag when
+                            // ANY skipped occurrence depends on an immature
+                            // reward. A later valid occurrence may prove its
+                            // own inputs without changing the signed output
+                            // identity or authorizing skipped descendants.
+                            existing.1 |= provenance.1;
                         } else {
                             skipped_signed_outputs.insert(outpoint, provenance);
                         }
@@ -1613,6 +1615,135 @@ mod tests {
                 .to_string()
                 .contains("snapshot conflict diagnostics do not match")
         );
+    }
+
+    #[test]
+    fn repeated_skipped_spend_crosses_reward_maturity_without_minting() {
+        let mut state =
+            init_chain_state_v3("reward-replay-v3-repeated-immature".into(), 1_800_000_053)
+                .unwrap();
+        let chain_id = state.chain_id.clone();
+        let signer = replay_test_address();
+        append_linear_block(&mut state, "b1", vec![claim(&chain_id, &signer, 301)], 1);
+        let reward = settlement_outpoint_v3(
+            &chain_id,
+            "b1",
+            &state.dag.blocks["b1"].transactions[0].txid,
+        );
+        let amount = subsidy_atoms_for_score(1, &ONE_HOUR_PER_SCORE).unwrap();
+        assert!(amount > 20);
+
+        let mut loser = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: reward.clone(),
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: signer.clone(),
+                amount: amount - 7,
+            }],
+            fee: 7,
+            nonce: 302,
+        };
+        sign_replay_transfer(&mut loser, &chain_id);
+        // The reward is still immature during score 2. The signed loser is
+        // validated for provenance only and pays no fee.
+        append_linear_block(
+            &mut state,
+            "b2",
+            vec![claim(&chain_id, "pulse1miner2", 302), loser.clone()],
+            2,
+        );
+
+        let mut winner = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: reward.clone(),
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: signer.clone(),
+                amount: amount - 3,
+            }],
+            fee: 3,
+            nonce: 303,
+        };
+        sign_replay_transfer(&mut winner, &chain_id);
+        // At score 3 the reward is mature; the winner consumes it, then the
+        // byte-identical loser reappears with known input provenance.
+        append_linear_block(
+            &mut state,
+            "b3",
+            vec![
+                claim(&chain_id, "pulse1miner3", 303),
+                winner.clone(),
+                loser.clone(),
+            ],
+            3,
+        );
+
+        let mut child = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: loser.txid.clone(),
+                    index: 0,
+                },
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: signer,
+                amount: amount - 9,
+            }],
+            fee: 2,
+            nonce: 304,
+        };
+        sign_replay_transfer(&mut child, &chain_id);
+        append_linear_block(
+            &mut state,
+            "b4",
+            vec![claim(&chain_id, "pulse1miner4", 304), child.clone()],
+            4,
+        );
+
+        let replay = rebuild_authoritative_state_v3(&state, &ONE_HOUR_PER_SCORE).unwrap();
+        assert_eq!(replay.diagnostics.applied_transactions, 1);
+        assert_eq!(replay.diagnostics.skipped_conflicting_transactions, 3);
+        assert_eq!(replay.eligible_fees_by_score[2], 0);
+        assert_eq!(replay.eligible_fees_by_score[3], winner.fee);
+        assert_eq!(replay.eligible_fees_by_score[4], 0);
+        assert!(!replay.utxo.utxos.contains_key(&reward));
+        assert!(replay.utxo.utxos.contains_key(&OutPoint {
+            txid: winner.txid.clone(),
+            index: 0,
+        }));
+        for tx in [&loser, &child] {
+            assert!(!replay.utxo.utxos.keys().any(|outpoint| outpoint.txid == tx.txid));
+        }
+        let expected_supply: u64 = (1..=3)
+            .map(|score| subsidy_atoms_for_score(score, &ONE_HOUR_PER_SCORE).unwrap())
+            .sum();
+        assert_eq!(
+            replay.utxo.utxos.values().map(|coin| coin.amount).sum::<u64>(),
+            expected_supply
+        );
+        assert_insertion_order_independent(&state, &replay);
+
+        // Repetition is not a bypass for a forged signature after maturity.
+        let mut forged = state;
+        forged.dag.blocks.get_mut("b3").unwrap().transactions[2].inputs[0].signature =
+            "00".repeat(64);
+        let error = rebuild_authoritative_state_v3(&forged, &ONE_HOUR_PER_SCORE)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid signed transfer"), "{error}");
     }
 
     #[test]
