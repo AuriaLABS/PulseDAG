@@ -109,7 +109,7 @@ fn mine(parent: &BlockEnvelopeV3, timestamp_ns: u64) -> BlockEnvelopeV3 {
         nonce: 0,
         merkle_root: compute_merkle_root(&[]),
         state_root: "88".repeat(32), // Deliberately NOT a verified UTXO root.
-        blue_score: height, // NOT derived native-v3 blue score.
+        blue_score: height,          // NOT derived native-v3 blue score.
         height,
     };
     for nonce in 0..4096_u64 {
