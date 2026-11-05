@@ -304,3 +304,95 @@ fn unknown_manifest_or_missing_private_frame_never_passes_reopen() {
         assert!(verify_after_reopen(&db, &a.witness).is_err());
     }
 }
+
+/// An attacker can rehash any local manifest they fabricate. For the test,
+/// allow them to replace that manifest SHA but *not* the independently pinned
+/// network genesis, generation or tip. These are semantic rejections and do
+/// not establish a real approved checkpoint trust anchor.
+#[test]
+fn rehashed_self_declared_manifest_cannot_override_independent_identity() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine(&genesis, GENESIS_NS + 500_000_000);
+    let second = mine(&first, GENESIS_NS + 1_000_000_000);
+    let a = create_batch(7, &genesis.hash, &first, &second);
+    let cases = [
+        ("schema_version", serde_json::json!(2)),
+        ("generation", serde_json::json!(8)),
+        ("chain_id", serde_json::json!("TEST-ONLY-foreign-chain")),
+        ("frozen_genesis_ns", serde_json::json!(GENESIS_NS + 1)),
+        ("genesis_hash", serde_json::json!("ff".repeat(32))),
+        ("tip_hash", serde_json::json!(first.hash)),
+        ("frames_digest", serde_json::json!("00".repeat(32))),
+        ("unrecognized_authority", serde_json::json!("untrusted")),
+    ];
+    for (field, replacement) in cases {
+        let mut manifest: serde_json::Value = serde_json::from_slice(&a.manifest).unwrap();
+        manifest[field] = replacement;
+        let forged_manifest = serde_json::to_vec(&manifest).unwrap();
+        let forged_witness = ExternalTestWitness {
+            generation: a.witness.generation,
+            genesis_hash: a.witness.genesis_hash.clone(),
+            tip_hash: a.witness.tip_hash.clone(),
+            manifest_sha256: digest(&forged_manifest),
+        };
+        let disk = DisposableDb::new(field);
+        {
+            let db = disk.open();
+            write_atomically(&db, &a);
+            db.put(MANIFEST_KEY, &forged_manifest).unwrap();
+            db.flush_wal(true).unwrap();
+        }
+        {
+            let db = disk.open();
+            assert!(
+                verify_after_reopen(&db, &forged_witness).is_err(),
+                "rehashed self-declared manifest field was accepted: {field}"
+            );
+        }
+    }
+}
+
+/// Both frames can be individually canonical/hash/PoW-valid and still form an
+/// invalid ordered history. Rehash the *entire* local manifest and frames for
+/// each attack to ensure the strict native-v3 parent sequence, not a stale
+/// checksum, is the final rejection reason.
+#[test]
+fn rehashed_valid_frames_with_wrong_order_or_duplicate_parent_fail_closed() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine(&genesis, GENESIS_NS + 500_000_000);
+    let second = mine(&first, GENESIS_NS + 1_000_000_000);
+    let a = create_batch(11, &genesis.hash, &first, &second);
+    let cases = [
+        ("swapped", [a.frames[1].clone(), a.frames[0].clone()]),
+        ("duplicate", [a.frames[0].clone(), a.frames[0].clone()]),
+    ];
+    for (label, reordered) in cases {
+        let mut manifest: PrivateManifest = serde_json::from_slice(&a.manifest).unwrap();
+        manifest.frames_digest = frame_digest(&reordered);
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let witness = ExternalTestWitness {
+            generation: a.witness.generation,
+            genesis_hash: a.witness.genesis_hash.clone(),
+            tip_hash: a.witness.tip_hash.clone(),
+            manifest_sha256: digest(&manifest_bytes),
+        };
+        let disk = DisposableDb::new(label);
+        {
+            let db = disk.open();
+            let mut changes = WriteBatch::default();
+            changes.put(FIRST_KEY, &reordered[0]);
+            changes.put(SECOND_KEY, &reordered[1]);
+            changes.put(MANIFEST_KEY, &manifest_bytes);
+            let mut options = WriteOptions::default();
+            options.set_sync(true);
+            db.write_opt(changes, &options).unwrap();
+        }
+        {
+            let db = disk.open();
+            assert!(
+                verify_after_reopen(&db, &witness).is_err(),
+                "rehashing {label} valid frames must not authorize wrong lineage"
+            );
+        }
+    }
+}
