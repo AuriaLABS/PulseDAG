@@ -275,17 +275,12 @@ fn persisted_missing_or_corrupted_later_signed_frame_fails_before_fee_claim() {
     );
 }
 
-
 #[test]
 fn cold_reopen_rejects_distinct_signed_double_spend_without_crediting_later_fee() {
     let (trusted_test_state, original_input) = synthetic_prestate();
     let original_root = trusted_test_state.utxo.compute_state_root().unwrap();
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
-    let first = mine(
-        &genesis.hash,
-        1,
-        signed(original_input.clone(), 90, 10, 1),
-    );
+    let first = mine(&genesis.hash, 1, signed(original_input.clone(), 90, 10, 1));
     let second = mine(&first.hash, 2, signed(original_input, 80, 20, 2));
     assert_ne!(first.transactions[1].txid, second.transactions[1].txid);
     let blocks = [first, second];
