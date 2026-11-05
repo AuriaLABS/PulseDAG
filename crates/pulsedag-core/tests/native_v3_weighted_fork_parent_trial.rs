@@ -11,7 +11,7 @@ use pulsedag_core::{
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     pow_v3::{evaluate_v3_header_pow, verify_v3_header_pow},
     protocol::BLOCK_HEADER_VERSION_V3,
-    types::{BlockId, compute_merkle_root},
+    types::{compute_merkle_root, BlockId},
 };
 
 const CHAIN: &str = "TEST-ONLY-v3-weighted-fork-not-production-consensus";
@@ -63,8 +63,22 @@ fn real_pow_unequal_siblings_select_heavier_parent_and_charge_merge_once() {
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
     let g = genesis.hash;
     let mut headers = BTreeMap::from([(g.clone(), genesis.header)]);
-    let (a, easy) = mine(vec![g.clone()], 1, GENESIS_NS + 500_000_000, EASY_BITS, 1, 0);
-    let (b, hard) = mine(vec![g.clone()], 1, GENESIS_NS + 600_000_000, HARD_BITS, 1, 1);
+    let (a, easy) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        EASY_BITS,
+        1,
+        0,
+    );
+    let (b, hard) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        HARD_BITS,
+        1,
+        1,
+    );
     assert_ne!(a, b);
     headers.insert(a.clone(), easy);
     headers.insert(b.clone(), hard);
@@ -72,9 +86,7 @@ fn real_pow_unequal_siblings_select_heavier_parent_and_charge_merge_once() {
     // The per-target work is independently checked by the existing Python
     // integer oracle scripts/native_v3_work_policy_candidates.py; these
     // values deliberately differ despite equal genesis-relative blue scores.
-    for (k, expected_score, expected_work) in
-        [(0_usize, 2_u64, "514"), (1_usize, 3_u64, "516")]
-    {
+    for (k, expected_score, expected_work) in [(0_usize, 2_u64, "514"), (1_usize, 3_u64, "516")] {
         let (joined, header) = mine(
             vec![a.clone(), b.clone()],
             2,
