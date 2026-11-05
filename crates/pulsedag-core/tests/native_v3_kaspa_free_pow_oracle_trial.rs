@@ -50,14 +50,19 @@ fn matrix_rank(values: &[[u8; 64]; 64]) -> usize {
             selected[pivot] = true;
             rank += 1;
             let divisor = floating[pivot][column];
-            for col in (column + 1)..64 {
-                floating[pivot][col] /= divisor;
+            for cell in floating[pivot].iter_mut().skip(column + 1) {
+                *cell /= divisor;
             }
-            for row in 0..64 {
-                if row != pivot && floating[row][column].abs() > EPS {
-                    let factor = floating[row][column];
-                    for col in (column + 1)..64 {
-                        floating[row][col] -= floating[pivot][col] * factor;
+            let pivot_row = floating[pivot];
+            for (row_index, row) in floating.iter_mut().enumerate() {
+                if row_index != pivot && row[column].abs() > EPS {
+                    let factor = row[column];
+                    for (cell, reference) in row
+                        .iter_mut()
+                        .skip(column + 1)
+                        .zip(pivot_row.iter().skip(column + 1))
+                    {
+                        *cell -= *reference * factor;
                     }
                 }
             }
