@@ -123,16 +123,13 @@ fn offline_vm_resource_exhaustion_is_rejected_in_both_feature_builds() {
     );
 }
 
-
 #[test]
 fn native_v3_signed_replay_refuses_enabled_contract_state_in_both_feature_profiles() {
     use pulsedag_core::{
-        block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::init_chain_state_v3,
+        block_envelope_v3::build_block_envelope_v3, genesis_v3::init_chain_state_v3,
         header_v3::BlockHeaderV3,
         native_v3_signed_prestate_trial::inspect_dormant_native_v3_explicit_order_trial,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
+        protocol::BLOCK_HEADER_VERSION_V3, reward_settlement_v3::build_reward_claim_transaction_v3,
         types::compute_merkle_root,
     };
 
@@ -156,11 +153,9 @@ fn native_v3_signed_replay_refuses_enabled_contract_state_in_both_feature_profil
     // No PoW or network admission: this is a claim-only signed-replay
     // diagnostic checking that enabling contracts cannot change its gate.
     let block = build_block_envelope_v3(CHAIN, header, transactions).unwrap();
-    let clean = inspect_dormant_native_v3_explicit_order_trial(
-        std::slice::from_ref(&block),
-        &clean_state,
-    )
-    .unwrap();
+    let clean =
+        inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&block), &clean_state)
+            .unwrap();
     assert_eq!(clean.candidate_fees, 0);
     assert_eq!(clean.signed_transactions, 0);
     assert_eq!(clean.resulting_utxo_root, original_root);
@@ -176,5 +171,8 @@ fn native_v3_signed_replay_refuses_enabled_contract_state_in_both_feature_profil
         unsafe_state.utxo.compute_state_root().unwrap(),
         root_before_rejection
     );
-    assert_eq!(clean_state.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(
+        clean_state.utxo.compute_state_root().unwrap(),
+        original_root
+    );
 }
