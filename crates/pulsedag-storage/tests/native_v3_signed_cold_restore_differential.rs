@@ -302,11 +302,9 @@ fn cold_reopen_rejects_distinct_signed_double_spend_without_crediting_later_fee(
         let recovered = reload_frames(&db, &genesis.hash).unwrap();
         assert_eq!(recovered[0].hash, blocks[0].hash);
         assert_eq!(recovered[1].hash, blocks[1].hash);
-        assert!(inspect_dormant_native_v3_explicit_order_trial(
-            &recovered,
-            &trusted_test_state,
-        )
-        .is_err());
+        let result =
+            inspect_dormant_native_v3_explicit_order_trial(&recovered, &trusted_test_state);
+        assert!(result.is_err());
     }
     assert_eq!(
         trusted_test_state.utxo.compute_state_root().unwrap(),
@@ -335,11 +333,9 @@ fn cold_reopen_authentic_pow_frame_with_forged_signature_rejects_signed_replay()
         let db = disk.open();
         let recovered = reload_frames(&db, &genesis).unwrap();
         assert_eq!(recovered[1].hash, blocks[1].hash);
-        assert!(inspect_dormant_native_v3_explicit_order_trial(
-            &recovered,
-            &trusted_test_state,
-        )
-        .is_err());
+        let result =
+            inspect_dormant_native_v3_explicit_order_trial(&recovered, &trusted_test_state);
+        assert!(result.is_err());
     }
     assert_eq!(
         trusted_test_state.utxo.compute_state_root().unwrap(),
