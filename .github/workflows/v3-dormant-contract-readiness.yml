@@ -79,7 +79,7 @@ jobs:
           fi
 
           cargo test --locked -p pulsedag-core "${args[@]}" --test v3_dormant_contract_readiness -- --nocapture | tee /tmp/dormant-contract-readiness.log
-          grep -Eq '^test result: ok\. 4 passed; 0 failed;' /tmp/dormant-contract-readiness.log
+          grep -Eq '^test result: ok\. 5 passed; 0 failed;' /tmp/dormant-contract-readiness.log
 
           for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate; do
             cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
