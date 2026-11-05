@@ -115,8 +115,10 @@ fn signed(input: OutPoint, output: u64, fee: u64, nonce: u64) -> Transaction {
         fee,
         nonce,
     };
-    tx.inputs[0].signature =
-        hex::encode(key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+    tx.inputs[0].signature = hex::encode(
+        key.sign(&signing_message_v2(&tx, CHAIN).unwrap())
+            .to_bytes(),
+    );
     tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
     tx
 }
@@ -166,12 +168,10 @@ fn fixture() -> (ChainState, String, [BlockEnvelopeV3; 2]) {
 
 fn encode_frames(genesis: &str, blocks: &[BlockEnvelopeV3; 2]) -> [Vec<u8>; 2] {
     blocks.clone().map(|block| {
-        NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            block, CHAIN, GENESIS_NS, genesis,
-        )
-        .unwrap()
-        .encode_verified(CHAIN, GENESIS_NS, genesis)
-        .unwrap()
+        NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(block, CHAIN, GENESIS_NS, genesis)
+            .unwrap()
+            .encode_verified(CHAIN, GENESIS_NS, genesis)
+            .unwrap()
     })
 }
 
@@ -191,22 +191,18 @@ fn reload_frames(db: &DB, genesis: &str) -> Result<[BlockEnvelopeV3; 2], String>
             .get(key)
             .map_err(|err| format!("private test RocksDB read: {err}"))?
             .ok_or("missing required signed v3 frame")?;
-        let record = NativeV3EnvelopeRestoreRecordV1::decode_verified(
-            &raw, CHAIN, GENESIS_NS, genesis,
-        )
-        .map_err(|err| format!("strict frame decode: {err}"))?;
+        let record =
+            NativeV3EnvelopeRestoreRecordV1::decode_verified(&raw, CHAIN, GENESIS_NS, genesis)
+                .map_err(|err| format!("strict frame decode: {err}"))?;
         verified.push(record);
     }
-    let linkage = verify_dormant_v3_genesis_anchored_linear_segment(
-        &verified, CHAIN, GENESIS_NS, genesis,
-    )
-    .map_err(|err| format!("strict near-genesis linkage: {err}"))?;
+    let linkage =
+        verify_dormant_v3_genesis_anchored_linear_segment(&verified, CHAIN, GENESIS_NS, genesis)
+            .map_err(|err| format!("strict near-genesis linkage: {err}"))?;
     if linkage.linkage_checked_records != 2 {
         return Err("unexpected signed frame count".to_owned());
     }
-    let mut envelopes = verified
-        .into_iter()
-        .map(|record| record.envelope().clone());
+    let mut envelopes = verified.into_iter().map(|record| record.envelope().clone());
     Ok([envelopes.next().unwrap(), envelopes.next().unwrap()])
 }
 
@@ -242,7 +238,10 @@ fn cold_reopen_signed_utxo_root_and_fees_match_full_explicit_replay() {
         )
         .is_err());
     }
-    assert_eq!(trusted_test_state.utxo.compute_state_root().unwrap(), initial_root);
+    assert_eq!(
+        trusted_test_state.utxo.compute_state_root().unwrap(),
+        initial_root
+    );
 }
 
 #[test]
@@ -270,5 +269,8 @@ fn persisted_missing_or_corrupted_later_signed_frame_fails_before_fee_claim() {
         let db = disk.open();
         assert!(reload_frames(&db, &genesis).is_err());
     }
-    assert_eq!(trusted_test_state.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(
+        trusted_test_state.utxo.compute_state_root().unwrap(),
+        original_root
+    );
 }
