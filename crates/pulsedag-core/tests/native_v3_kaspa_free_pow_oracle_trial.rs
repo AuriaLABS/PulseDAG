@@ -227,3 +227,90 @@ fn seed_xoshiro_and_matrix_rank_negative_invariants() {
     let (generated, _) = generate_matrix(seed);
     assert_eq!(matrix_rank(&generated), 64);
 }
+
+
+/// Non-normative exact-integer witness: nonzero determinant modulo a prime
+/// proves the same integer matrix is nonsingular over the rationals.
+/// A modular rank deficiency alone is NOT proof of real-number singularity.
+fn modular_matrix_rank(matrix: &[[u8; 64]; 64], prime: u64) -> usize {
+    fn mod_pow(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
+        let mut answer = 1_u64;
+        while exponent != 0 {
+            if exponent & 1 != 0 {
+                answer = (answer * base) % modulus;
+            }
+            base = (base * base) % modulus;
+            exponent >>= 1;
+        }
+        answer
+    }
+
+    let mut work = matrix.map(|row| row.map(u64::from));
+    let mut rank = 0_usize;
+    for column in 0..64 {
+        let pivot = (rank..64).find(|&row| work[row][column] != 0);
+        let Some(pivot) = pivot else {
+            continue;
+        };
+        work.swap(rank, pivot);
+        let inverse = mod_pow(work[rank][column], prime - 2, prime);
+        for value in work[rank].iter_mut().skip(column) {
+            *value = (*value * inverse) % prime;
+        }
+        let pivot_row = work[rank];
+        for row in work.iter_mut().skip(rank + 1) {
+            let factor = row[column];
+            if factor != 0 {
+                for (entry, reference) in row.iter_mut().zip(pivot_row.iter()).skip(column) {
+                    *entry = (*entry + prime - (factor * reference) % prime) % prime;
+                }
+            }
+        }
+        rank += 1;
+        if rank == 64 {
+            break;
+        }
+    }
+    rank
+}
+
+#[test]
+fn frozen_kheavyhash_matrices_have_independent_exact_integer_full_rank_witnesses() {
+    // Do not replace the production/Kaspa matrix rank selection on this basis.
+    // This tests seven frozen seeds using two independent prime fields, with
+    // no f64 in the witness. Nonzero determinants prove exact nonsingularity
+    // for THESE seven matrices; they do not certify all possible seeds.
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/fixtures/native_v3_kheavyhash_vectors.json"
+    ))
+    .unwrap();
+    let cases = fixture["vectors"].as_array().unwrap();
+    assert_eq!(cases.len(), 7);
+
+    for case in cases {
+        let label = case["name"].as_str().unwrap();
+        let bytes = hex::decode(case["stages"]["pre_pow_keccak256"].as_str().unwrap()).unwrap();
+        let seed: [u8; 32] = bytes.try_into().unwrap();
+        let (matrix, retries) = generate_matrix(seed);
+        assert_eq!(
+            retries as u64,
+            case["stages"]["matrix_retries"].as_u64().unwrap(),
+            "{label}: selected matrix attempt"
+        );
+        for prime in [65_521_u64, 65_519_u64] {
+            assert_eq!(
+                modular_matrix_rank(&matrix, prime),
+                64,
+                "{label}: modular nonsingularity witness for prime {prime}"
+            );
+        }
+    }
+
+    let mut matrix = [[0_u8; 64]; 64];
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[i] = 1;
+    }
+    assert_eq!(modular_matrix_rank(&matrix, 65_521), 64);
+    matrix[0] = matrix[1];
+    assert_eq!(modular_matrix_rank(&matrix, 65_521), 63);
+}
