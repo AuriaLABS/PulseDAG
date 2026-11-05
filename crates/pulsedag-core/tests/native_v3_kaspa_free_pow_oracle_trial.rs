@@ -262,7 +262,7 @@ fn modular_matrix_rank(matrix: &[[u8; 64]; 64], prime: u64) -> usize {
             let factor = row[column];
             if factor != 0 {
                 for (entry, reference) in row.iter_mut().zip(pivot_row.iter()).skip(column) {
-                    *entry = (*entry + prime - (factor * reference) % prime) % prime;
+                    *entry = (*entry + prime - (factor * *reference) % prime) % prime;
                 }
             }
         }
