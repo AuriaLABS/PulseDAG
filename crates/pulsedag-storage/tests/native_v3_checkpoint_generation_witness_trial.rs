@@ -353,7 +353,7 @@ fn rehashed_self_declared_manifest_cannot_override_independent_identity() {
     }
 }
 
-/// Both frames can be individually signed/hash/PoW-valid and still form an
+/// Both frames can be individually canonical/hash/PoW-valid and still form an
 /// invalid ordered history. Rehash the *entire* local manifest and frames for
 /// each attack to ensure the strict native-v3 parent sequence, not a stale
 /// checksum, is the final rejection reason.
