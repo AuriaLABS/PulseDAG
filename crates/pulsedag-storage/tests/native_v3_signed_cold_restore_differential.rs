@@ -255,7 +255,8 @@ fn persisted_missing_or_corrupted_later_signed_frame_fails_before_fee_claim() {
         let db = disk.open();
         write_frames(&db, &frames);
         let mut corrupted = frames[1].clone();
-        corrupted[corrupted.len() / 2] ^= 1;
+        let flip = corrupted.len() / 2;
+        corrupted[flip] ^= 1;
         db.put(SECOND_KEY, corrupted).unwrap();
         db.flush_wal(true).unwrap();
     }
