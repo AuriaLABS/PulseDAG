@@ -274,3 +274,80 @@ fn persisted_missing_or_corrupted_later_signed_frame_fails_before_fee_claim() {
         original_root
     );
 }
+
+
+#[test]
+fn cold_reopen_rejects_distinct_signed_double_spend_without_crediting_later_fee() {
+    let (trusted_test_state, original_input) = synthetic_prestate();
+    let original_root = trusted_test_state.utxo.compute_state_root().unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let first = mine(
+        &genesis.hash,
+        1,
+        signed(original_input.clone(), 90, 10, 1),
+    );
+    let second = mine(&first.hash, 2, signed(original_input, 80, 20, 2));
+    assert_ne!(first.transactions[1].txid, second.transactions[1].txid);
+    let blocks = [first, second];
+
+    // The earlier signed spend is valid by itself, but the complete order
+    // must fail rather than silently skipping the conflicting second spend.
+    let first_only =
+        inspect_dormant_native_v3_explicit_order_trial(&blocks[..1], &trusted_test_state).unwrap();
+    assert_eq!(first_only.signed_transactions, 1);
+    assert_eq!(first_only.candidate_fees, 10);
+
+    let disk = TemporaryDb::new();
+    {
+        let db = disk.open();
+        write_frames(&db, &encode_frames(&genesis.hash, &blocks));
+    }
+    {
+        let db = disk.open();
+        let recovered = reload_frames(&db, &genesis.hash).unwrap();
+        assert_eq!(recovered[0].hash, blocks[0].hash);
+        assert_eq!(recovered[1].hash, blocks[1].hash);
+        assert!(inspect_dormant_native_v3_explicit_order_trial(
+            &recovered,
+            &trusted_test_state,
+        )
+        .is_err());
+    }
+    assert_eq!(
+        trusted_test_state.utxo.compute_state_root().unwrap(),
+        original_root
+    );
+}
+
+#[test]
+fn cold_reopen_authentic_pow_frame_with_forged_signature_rejects_signed_replay() {
+    let (trusted_test_state, genesis, original) = fixture();
+    let original_root = trusted_test_state.utxo.compute_state_root().unwrap();
+    let mut forged_spend = original[1].transactions[1].clone();
+    forged_spend.inputs[0].signature = "00".repeat(64);
+    forged_spend.txid = compute_txid_v2(&forged_spend, CHAIN).unwrap();
+
+    // Re-mine the new Merkle commitment: even a PoW-valid, strictly persisted
+    // v3 frame must not authorize a transfer with a forged Ed25519 signature.
+    let forged_second = mine(&original[0].hash, 2, forged_spend);
+    let blocks = [original[0].clone(), forged_second];
+    let disk = TemporaryDb::new();
+    {
+        let db = disk.open();
+        write_frames(&db, &encode_frames(&genesis, &blocks));
+    }
+    {
+        let db = disk.open();
+        let recovered = reload_frames(&db, &genesis).unwrap();
+        assert_eq!(recovered[1].hash, blocks[1].hash);
+        assert!(inspect_dormant_native_v3_explicit_order_trial(
+            &recovered,
+            &trusted_test_state,
+        )
+        .is_err());
+    }
+    assert_eq!(
+        trusted_test_state.utxo.compute_state_root().unwrap(),
+        original_root
+    );
+}
