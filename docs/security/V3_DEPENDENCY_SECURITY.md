@@ -212,3 +212,29 @@ security for release packaging or the authenticity of a checkpoint. Network
 launch #781 remains NO-GO; native-v3 monetary mining OFF and smart contracts
 INACTIVE/fail-closed. GHOSTDAG rules #1309 and pruned monetary replay #1367
 remain independent blockers.
+
+
+## 2026-11-05 RustSec advisory database drift: `pin-utils` (#1387)
+
+The latest *integrated-main* [RustSec run 42015756913](https://github.com/AuriaLABS/PulseDAG/actions/runs/42015756913) correctly **FAILED CLOSED** at `main@54fbc8507edb5952315e86f82203ab115c975f85`. The raw audit came from advisory database commit `26fd2d43f7280a1fb925a3743ec463017afe7119` (updated `2026-11-05T09:50:49+01:00`; artifact 13410052625).
+
+The exact result is **7 known raw Hickory/Quinn vulnerability advisories, 11 informational warnings, zero yanked crates**. The *only* newly observed advisory compared with the 2026-11-04 inventory above is `RUSTSEC-2026-0441`, category **unmaintained**, package `pin-utils 0.1.0`. The upstream repository was archived; the advisory itself records **no fixed versions**. This is not a newly proven memory-safety bug, and changing `pin-utils` to another patch version does **not** cure its maintenance status. Nor does a green test prove absence of every dependency risk.
+
+`Cargo.lock` and the clean Rust compiler artifact inventories establish the exact existing path:
+
+```text
+pulsedag-core
+  -> kaspa-hashes 2.0.1 (rusty-kaspa Git revision cfafeb4c093fa37a303f1b9f19c58f986b870ce3)
+    -> workflow-wasm 0.18.0
+      -> workflow-core 0.18.0
+        -> async-std 1.13.2
+          -> pin-utils 0.1.0
+```
+
+The package is **compiled in all four** Linux launch roots (P2P, daemon, miner, wallet). It is not a lock-only historical residue, so the narrow Hickory/Quinn unreachability procedure is **not** applicable. The exact-Cargo.lock and exact-four-root compiler-path assertions in this candidate intentionally reject future upstream/version/compilation changes until someone reviews and updates the record.
+
+**Short-term development-CI disposition under review:** retain the new warning in the **exact raw informational inventory** (11 rather than 10) and print the compiled upstream path. `.cargo/audit.toml` stays `ignore=[]`; there is **no `--ignore RUSTSEC-2026-0441`**, no relaxation of the seven raw vulnerability identities, and zero yanked remains mandatory. Do not represent an updated informational inventory as a dependency upgrade or vulnerability fix.
+
+**Remaining actual remediation:** pursue a separately reviewed compatible move off the archived upstream `pin-utils` and `async-std` via the pinned Kaspa/workflow stack. Any such migration is sensitive to native hash/PoW and must rerun independent KHeavyHash/SHA256 golden vectors, deterministic GHOSTDAG/retarget diagnostics, CPU/GPU independence, P2P/wallet interoperability, Windows+Linux compilation, and full RustSec revalidation. Existing `atty` and `faster-hex` unsoundness warnings remain separate launch-security items.
+
+No changes to consensus policy, monetary mining admission, contracts or public launch are authorized by recognizing this warning. **#781 mainnet/testnet NO-GO; native v3 monetary mining OFF; contracts INACTIVE.**

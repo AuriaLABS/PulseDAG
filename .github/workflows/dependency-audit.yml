@@ -122,6 +122,10 @@ jobs:
 
           expected_advisory_warnings = {
               ('unmaintained', 'RUSTSEC-2025-0052', 'async-std', '1.13.2'),
+              # #1387 / DB 26fd2d43 (2026-11-05): upstream archived.
+              # Informational UNMAINTAINED, NOT a patched vulnerability or a waiver.
+              # Compiler-reachable via fixed-rev Kaspa -> workflow-core -> async-std.
+              ('unmaintained', 'RUSTSEC-2026-0441', 'pin-utils', '0.1.0'),
               ('unmaintained', 'RUSTSEC-2024-0375', 'atty', '0.2.14'),
               ('unsound', 'RUSTSEC-2021-0145', 'atty', '0.2.14'),
               ('unmaintained', 'RUSTSEC-2025-0141', 'bincode', '1.3.3'),
@@ -176,6 +180,45 @@ jobs:
               raise SystemExit(f'unexpected raw advisory warning set: {sorted(observed_advisory_warnings)}')
           if observed_yanked != expected_yanked:
               raise SystemExit(f'unexpected raw yanked set: {sorted(observed_yanked)}')
+
+          # #1387: make the newly observed transitive advisory and its
+          # exact parent path REPRODUCIBLE, not an arbitrary expected-count bump.
+          # This will fail if the dependency disappears or changes and requires
+          # revisiting the advisory disposition at that new candidate.
+          import tomllib
+          lock_packages = tomllib.loads(Path('Cargo.lock').read_text(encoding='utf-8'))['package']
+          by_name = {}
+          for p in lock_packages:
+              by_name.setdefault(p['name'], []).append(p)
+          upstream_path = (
+              ('pulsedag-core', 'kaspa-hashes'),
+              ('kaspa-hashes', 'workflow-wasm'),
+              ('workflow-wasm', 'workflow-core'),
+              ('workflow-core', 'async-std'),
+              ('async-std', 'pin-utils'),
+          )
+          expected_versions = {
+              'pin-utils': '0.1.0',
+              'async-std': '1.13.2',
+              'workflow-core': '0.18.0',
+              'workflow-wasm': '0.18.0',
+              'kaspa-hashes': '2.0.1',
+          }
+          for name, version in expected_versions.items():
+              resolved = by_name.get(name, [])
+              if len(resolved) != 1 or resolved[0]['version'] != version:
+                  raise SystemExit(f'pin-utils inherited path/version drift: {name} {resolved}')
+          for parent, child in upstream_path:
+              dependencies = by_name[parent][0].get('dependencies', [])
+              if not any(dep == child or dep.startswith(child + ' ') for dep in dependencies):
+                  raise SystemExit(f'pin-utils upstream parent edge drift: {parent} -> {child}')
+          for root in ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet'):
+              packages = set(Path(
+                  f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt'
+              ).read_text(encoding='utf-8').splitlines())
+              if 'pin-utils@0.1.0' not in packages or 'async-std@1.13.2' not in packages:
+                  raise SystemExit(f'pin-utils exact transitive compiler exposure changed in {root}')
+              print('informational-unmaintained-compiled', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
 
           # The Hickory and Quinn advisories are conditionally disposed only
           # as lockfile-only residues. QUIC may also enter through reqwest,
