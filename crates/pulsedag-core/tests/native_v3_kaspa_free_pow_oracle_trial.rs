@@ -1,0 +1,194 @@
+//! TEST-ONLY: a Kaspa-crate-free, plain Rust+sha3 KHeavyHash reference.
+//!
+//! It is deliberately NOT the production PoW implementation. It uses only
+//! sha3, std and PulseDAG's public v3 header types in this integration test,
+//! then matches the independent Python oracle's raw, frozen stage vectors.
+//! Removing kaspa-hashes/kaspa-pow is NOT authorized by these seven fixtures;
+//! production v1/v2/v3 behavior, platforms, nonce-search speed, consensus
+//! vectors and dependencies still need independent migration validation (#1387).
+
+use pulsedag_core::{
+    header_v3::BlockHeaderV3,
+    pow_v3::{evaluate_v3_header_pow, v3_pow_preimage_bytes},
+};
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    CShake256, CShake256Core, Digest, Keccak256,
+};
+
+struct Xoshiro256PlusPlus([u64; 4]);
+
+impl Xoshiro256PlusPlus {
+    fn from_seed(bytes: [u8; 32]) -> Self {
+        Self(std::array::from_fn(|i| {
+            u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap())
+        }))
+    }
+
+    fn next(&mut self) -> u64 {
+        let [a, b, c, d] = self.0;
+        let word = a.wrapping_add(d).rotate_left(23).wrapping_add(a);
+        let shifted = b << 17;
+        self.0 = [
+            a ^ d ^ b,
+            b ^ c ^ a,
+            c ^ a ^ shifted,
+            (d ^ b).rotate_left(45),
+        ];
+        word
+    }
+}
+
+fn matrix_rank(values: &[[u8; 64]; 64]) -> usize {
+    const EPS: f64 = 1e-9;
+    let mut floating = values.map(|row| row.map(f64::from));
+    let mut selected = [false; 64];
+    let mut rank = 0;
+    for column in 0..64 {
+        let pivot = (0..64)
+            .find(|&row| !selected[row] && floating[row][column].abs() > EPS);
+        if let Some(pivot) = pivot {
+            selected[pivot] = true;
+            rank += 1;
+            let divisor = floating[pivot][column];
+            for col in (column + 1)..64 {
+                floating[pivot][col] /= divisor;
+            }
+            for row in 0..64 {
+                if row != pivot && floating[row][column].abs() > EPS {
+                    let factor = floating[row][column];
+                    for col in (column + 1)..64 {
+                        floating[row][col] -= floating[pivot][col] * factor;
+                    }
+                }
+            }
+        }
+    }
+    rank
+}
+
+fn generate_matrix(seed: [u8; 32]) -> ([[u8; 64]; 64], usize) {
+    let mut rng = Xoshiro256PlusPlus::from_seed(seed);
+    for retry in 0..32_usize {
+        let mut matrix = [[0_u8; 64]; 64];
+        for row in &mut matrix {
+            for chunk in row.chunks_exact_mut(16) {
+                let word = rng.next();
+                for (i, entry) in chunk.iter_mut().enumerate() {
+                    *entry = ((word >> (i * 4)) & 15) as u8;
+                }
+            }
+        }
+        if matrix_rank(&matrix) == 64 {
+            return (matrix, retry);
+        }
+    }
+    panic!("test-only independent matrix rank retry bound exceeded");
+}
+
+fn cshake256(message: &[u8], domain: &[u8]) -> [u8; 32] {
+    let mut engine = CShake256::from_core(CShake256Core::new(domain));
+    engine.update(message);
+    let mut result = [0_u8; 32];
+    engine.finalize_xof().read(&mut result);
+    result
+}
+
+struct Stages {
+    pre_pow: [u8; 32],
+    nonce_pow: [u8; 32],
+    retries: usize,
+    matrix_xor: [u8; 32],
+    heavy_hash: [u8; 32],
+}
+
+fn independent_stages(seed_bytes: &[u8], nonce: u64) -> Stages {
+    let pre_pow: [u8; 32] = Keccak256::digest(seed_bytes).into();
+    let mut nonce_message = Vec::with_capacity(80);
+    nonce_message.extend_from_slice(&pre_pow);
+    nonce_message.extend_from_slice(&[0_u8; 40]);
+    nonce_message.extend_from_slice(&nonce.to_le_bytes());
+    let nonce_pow = cshake256(&nonce_message, b"ProofOfWorkHash");
+    let (matrix, retries) = generate_matrix(pre_pow);
+    let mut nibbles = [0_u8; 64];
+    for (i, value) in nonce_pow.iter().enumerate() {
+        nibbles[2 * i] = value >> 4;
+        nibbles[2 * i + 1] = value & 15;
+    }
+    let mut matrix_xor = [0_u8; 32];
+    for i in 0..32 {
+        let row_sum = |row: usize| -> u32 {
+            (0..64)
+                .map(|j| u32::from(matrix[row][j]) * u32::from(nibbles[j]))
+                .sum()
+        };
+        let high = ((row_sum(2 * i) >> 10) & 15) as u8;
+        let low = ((row_sum(2 * i + 1) >> 10) & 15) as u8;
+        matrix_xor[i] = nonce_pow[i] ^ ((high << 4) | low);
+    }
+    let heavy_hash = cshake256(&matrix_xor, b"HeavyHash");
+    Stages {
+        pre_pow,
+        nonce_pow,
+        retries,
+        matrix_xor,
+        heavy_hash,
+    }
+}
+
+#[test]
+fn pure_rust_non_kaspa_oracle_matches_seven_frozen_v3_vectors_and_current_engine() {
+    // Must be usable as a test even if release code continues using Kaspa.
+    // Python scripts/native_v3_kheavyhash_oracle.py independently generated
+    // each frozen stage; the Rust candidate imports no Kaspa types.
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/fixtures/native_v3_kheavyhash_vectors.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        fixture["schema"].as_str(),
+        Some("pulsedag.dormant-v3-independent-kheavyhash-v1")
+    );
+    let cases = fixture["vectors"].as_array().unwrap();
+    assert_eq!(cases.len(), 7);
+    let mut invalid_count = 0;
+    for case in cases {
+        let label = case["name"].as_str().unwrap();
+        let chain = case["chain_id"].as_str().unwrap();
+        let header: BlockHeaderV3 = serde_json::from_value(case["header"].clone()).unwrap();
+        assert!(header.height > 0, "{label}: only non-genesis PoW examples");
+        let seed = v3_pow_preimage_bytes(&header, chain).unwrap();
+        assert_eq!(hex::encode(&seed), case["canonical_seed_hex"].as_str().unwrap());
+        let candidate = independent_stages(&seed, header.nonce);
+        let expected = &case["stages"];
+        assert_eq!(hex::encode(candidate.pre_pow), expected["pre_pow_keccak256"].as_str().unwrap(), "{label}: pre-pow");
+        assert_eq!(hex::encode(candidate.nonce_pow), expected["nonce_pow_hash"].as_str().unwrap(), "{label}: initial cSHAKE");
+        assert_eq!(candidate.retries as u64, expected["matrix_retries"].as_u64().unwrap(), "{label}: matrix rank retries");
+        assert_eq!(hex::encode(candidate.matrix_xor), expected["matrix_xor"].as_str().unwrap(), "{label}: matrix mixing");
+        assert_eq!(hex::encode(candidate.heavy_hash), expected["kheavyhash"].as_str().unwrap(), "{label}: final cSHAKE");
+        let native = evaluate_v3_header_pow(&header, chain).unwrap();
+        assert_eq!(hex::encode(candidate.heavy_hash), native.pow.hash_hex, "{label}: existing canonical backend");
+        assert_eq!(native.pow.accepted, case["expected_meets_target"].as_bool().unwrap(), "{label}: canonical full 256-bit PoW verdict");
+        if !native.pow.accepted {
+            invalid_count += 1;
+        }
+    }
+    assert!(invalid_count >= 2);
+}
+
+#[test]
+fn seed_xoshiro_and_matrix_rank_negative_invariants() {
+    let expected_empty_keccak = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+    assert_eq!(hex::encode(Keccak256::digest([])), expected_empty_keccak);
+    assert_eq!(matrix_rank(&[[0; 64]; 64]), 0);
+    let mut matrix = [[0_u8; 64]; 64];
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[i] = 1;
+    }
+    assert_eq!(matrix_rank(&matrix), 64);
+    matrix[0] = matrix[1];
+    assert_eq!(matrix_rank(&matrix), 63);
+    let seed = [42_u8; 32];
+    let (generated, _) = generate_matrix(seed);
+    assert_eq!(matrix_rank(&generated), 64);
+}
