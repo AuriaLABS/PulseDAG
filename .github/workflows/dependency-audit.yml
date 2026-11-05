@@ -92,9 +92,17 @@ jobs:
           echo "raw_exit_status=${raw_status}" >ci-evidence/dependency-audit/raw-exit-status.txt
           python - <<'PY' | tee ci-evidence/dependency-audit/raw-summary.txt
           import json
+          import re
           from pathlib import Path
 
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
+          advisory_db = report.get('database') or {}
+          advisory_commit = advisory_db.get('last-commit')
+          advisory_updated = advisory_db.get('last-updated')
+          if not isinstance(advisory_commit, str) or re.fullmatch(r'[0-9a-f]{40}', advisory_commit) is None:
+              raise SystemExit('raw cargo-audit report lacks exact RustSec advisory DB commit')
+          if not isinstance(advisory_updated, str) or not advisory_updated.strip():
+              raise SystemExit('raw cargo-audit report lacks RustSec advisory DB last-updated provenance')
           vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
           observed_vulnerabilities = {
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
@@ -147,7 +155,10 @@ jobs:
                   raise SystemExit(f'yanked warning unexpectedly carries advisory data: {item!r}')
               package = item.get('package') or {}
               observed_yanked.add((package.get('name'), package.get('version')))
-          expected_yanked = {('chacha20', '0.10.0')}
+          # #1380: Cargo-generated patched exact lock no longer contains the
+          # yanked async-executor@1.14.0 or chacha20@0.10.0. Any future
+          # yanked dependency is new drift and must fail this security gate.
+          expected_yanked = set()
 
           print(f'raw_vulnerability_count={len(vulnerabilities)}')
           for item in sorted(observed_vulnerabilities):
@@ -220,7 +231,8 @@ jobs:
             echo "rustc=$(rustc --version 2>/dev/null || true)"
             echo "cargo=$(cargo --version 2>/dev/null || true)"
             echo "cargo_audit=$(cargo audit --version 2>/dev/null || true)"
-            echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
+            # Read the actual DB commit from cargo-audit's raw JSON output, not a possibly absent local git checkout.
+            echo "advisory_db_sha=$(python -c 'import json; print(json.load(open("ci-evidence/dependency-audit/cargo-audit-raw.json"))["database"]["last-commit"])' 2>/dev/null || true)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
             echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
             echo "v3_gate_sha256=$(sha256sum scripts/validate_v3_dependency_security.py | awk '{print $1}')"

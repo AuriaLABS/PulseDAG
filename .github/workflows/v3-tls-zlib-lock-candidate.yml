@@ -1,0 +1,61 @@
+name: v3 supported TLS and zlib lock remediation (candidate)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/v3-tls-zlib-lock-candidate.yml
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/v3-tls-zlib-lock-candidate.yml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pinned-patched-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact candidate, without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact checked-out source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+      - name: Require exact patched lock versions and no advisory ignores
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, tomllib
+          lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text())
+          versions = {}
+          for package in lock["package"]:
+              versions.setdefault(package["name"], set()).add(package["version"])
+          wanted = {
+              "webpki-roots": "1.0.10",
+              "rustls-webpki": "0.103.16",
+              "libz-sys": "1.1.31",
+          }
+          for name, version in wanted.items():
+              assert versions.get(name) == {version}, (name, versions.get(name))
+          audit = tomllib.loads(pathlib.Path(".cargo/audit.toml").read_text())
+          assert not audit.get("advisories", {}).get("ignore", []), "security advisories may not be ignored"
+          print("three patched lock versions pinned; no vulnerability ignores")
+          PY
+      - name: Check node, P2P, miner and wallet with frozen lockfile
+        run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
