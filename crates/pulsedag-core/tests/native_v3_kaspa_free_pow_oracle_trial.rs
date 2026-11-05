@@ -45,8 +45,7 @@ fn matrix_rank(values: &[[u8; 64]; 64]) -> usize {
     let mut selected = [false; 64];
     let mut rank = 0;
     for column in 0..64 {
-        let pivot = (0..64)
-            .find(|&row| !selected[row] && floating[row][column].abs() > EPS);
+        let pivot = (0..64).find(|&row| !selected[row] && floating[row][column].abs() > EPS);
         if let Some(pivot) = pivot {
             selected[pivot] = true;
             rank += 1;
@@ -158,17 +157,48 @@ fn pure_rust_non_kaspa_oracle_matches_seven_frozen_v3_vectors_and_current_engine
         let header: BlockHeaderV3 = serde_json::from_value(case["header"].clone()).unwrap();
         assert!(header.height > 0, "{label}: only non-genesis PoW examples");
         let seed = v3_pow_preimage_bytes(&header, chain).unwrap();
-        assert_eq!(hex::encode(&seed), case["canonical_seed_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(&seed),
+            case["canonical_seed_hex"].as_str().unwrap()
+        );
         let candidate = independent_stages(&seed, header.nonce);
         let expected = &case["stages"];
-        assert_eq!(hex::encode(candidate.pre_pow), expected["pre_pow_keccak256"].as_str().unwrap(), "{label}: pre-pow");
-        assert_eq!(hex::encode(candidate.nonce_pow), expected["nonce_pow_hash"].as_str().unwrap(), "{label}: initial cSHAKE");
-        assert_eq!(candidate.retries as u64, expected["matrix_retries"].as_u64().unwrap(), "{label}: matrix rank retries");
-        assert_eq!(hex::encode(candidate.matrix_xor), expected["matrix_xor"].as_str().unwrap(), "{label}: matrix mixing");
-        assert_eq!(hex::encode(candidate.heavy_hash), expected["kheavyhash"].as_str().unwrap(), "{label}: final cSHAKE");
+        assert_eq!(
+            hex::encode(candidate.pre_pow),
+            expected["pre_pow_keccak256"].as_str().unwrap(),
+            "{label}: pre-pow"
+        );
+        assert_eq!(
+            hex::encode(candidate.nonce_pow),
+            expected["nonce_pow_hash"].as_str().unwrap(),
+            "{label}: initial cSHAKE"
+        );
+        assert_eq!(
+            candidate.retries as u64,
+            expected["matrix_retries"].as_u64().unwrap(),
+            "{label}: matrix rank retries"
+        );
+        assert_eq!(
+            hex::encode(candidate.matrix_xor),
+            expected["matrix_xor"].as_str().unwrap(),
+            "{label}: matrix mixing"
+        );
+        assert_eq!(
+            hex::encode(candidate.heavy_hash),
+            expected["kheavyhash"].as_str().unwrap(),
+            "{label}: final cSHAKE"
+        );
         let native = evaluate_v3_header_pow(&header, chain).unwrap();
-        assert_eq!(hex::encode(candidate.heavy_hash), native.pow.hash_hex, "{label}: existing canonical backend");
-        assert_eq!(native.pow.accepted, case["expected_meets_target"].as_bool().unwrap(), "{label}: canonical full 256-bit PoW verdict");
+        assert_eq!(
+            hex::encode(candidate.heavy_hash),
+            native.pow.hash_hex,
+            "{label}: existing canonical backend"
+        );
+        assert_eq!(
+            native.pow.accepted,
+            case["expected_meets_target"].as_bool().unwrap(),
+            "{label}: canonical full 256-bit PoW verdict"
+        );
         if !native.pow.accepted {
             invalid_count += 1;
         }
