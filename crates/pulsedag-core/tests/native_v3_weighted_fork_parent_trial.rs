@@ -101,7 +101,7 @@ fn real_pow_unequal_siblings_select_heavier_parent_and_charge_merge_once() {
             CHAIN,
             GENESIS_NS,
             &g,
-            &[joined.clone()],
+            std::slice::from_ref(&joined),
             &complete,
             k,
         )
