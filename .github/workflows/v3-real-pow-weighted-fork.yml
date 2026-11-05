@@ -1,0 +1,50 @@
+name: v3 real-PoW weighted-fork K candidate (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_weighted_fork_parent_trial.rs
+      - .github/workflows/v3-real-pow-weighted-fork.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_weighted_fork_parent_trial.rs
+      - .github/workflows/v3-real-pow-weighted-fork.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-pow-weighted-fork-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact candidate without persisted token
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin exact source identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Verify rustfmt
+        run: cargo fmt --all -- --check
+      - name: Verify two distinct authentic PoW target weights and K=0/K=1
+        run: cargo test --locked -p pulsedag-core --test native_v3_weighted_fork_parent_trial -- --nocapture
+      - name: Strict Rust Clippy for policy trial
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_weighted_fork_parent_trial -- -D warnings
+      - name: Verify no cargo-lock change
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock
