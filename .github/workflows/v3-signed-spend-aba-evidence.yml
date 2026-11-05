@@ -1,0 +1,64 @@
+name: v3 signed-spend A/B/A evidence (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/native_v3_signed_spend_aba_evidence.py
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - .github/workflows/v3-signed-spend-aba-evidence.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/native_v3_signed_spend_aba_evidence.py
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - .github/workflows/v3-signed-spend-aba-evidence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-signed-spend-aba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact candidate without write credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Validate standalone evidence parser in normal and optimized mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native_v3_signed_spend_aba_evidence.py --self-test
+          python3 -O scripts/native_v3_signed_spend_aba_evidence.py --self-test
+      - name: Observe isolated signed-spend A/B/A UTXO-state equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/signed-spend-aba
+          cargo test --locked -p pulsedag-core --lib state_replay_v3::tests::accepted_spend_clone_vs_in_place_trial_probe -- --ignored --nocapture 2>&1 | tee ci-evidence/signed-spend-aba/rust-test.log
+          python3 scripts/native_v3_signed_spend_aba_evidence.py --input ci-evidence/signed-spend-aba/rust-test.log --output ci-evidence/signed-spend-aba/observation.json --sha "$(git rev-parse HEAD)"
+          test "$(git diff --name-only -- Cargo.lock | wc -l)" -eq 0
+      - name: Upload exact source and noisy same-runner observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-test-only-signed-spend-aba
+          path: ci-evidence/signed-spend-aba
+          if-no-files-found: warn
+          retention-days: 30
