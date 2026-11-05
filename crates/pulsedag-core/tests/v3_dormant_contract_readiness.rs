@@ -122,3 +122,59 @@ fn offline_vm_resource_exhaustion_is_rejected_in_both_feature_builds() {
         Err(PulseVmV1Error::ComputeBudgetExceeded { actual: 6, max: 5 }),
     );
 }
+
+
+#[test]
+fn native_v3_signed_replay_refuses_enabled_contract_state_in_both_feature_profiles() {
+    use pulsedag_core::{
+        block_envelope_v3::build_block_envelope_v3,
+        genesis_v3::init_chain_state_v3,
+        header_v3::BlockHeaderV3,
+        native_v3_signed_prestate_trial::inspect_dormant_native_v3_explicit_order_trial,
+        protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3,
+        types::compute_merkle_root,
+    };
+
+    const CHAIN: &str = "TEST-ONLY-v3-inactive-contract-signed-replay";
+    let clean_state = init_chain_state_v3(CHAIN.into(), 1_800_000_000).unwrap();
+    assert!(!clean_state.contracts.config.enabled);
+    let original_root = clean_state.utxo.compute_state_root().unwrap();
+    let claim = build_reward_claim_transaction_v3("pulse1test-miner", 1, CHAIN).unwrap();
+    let transactions = vec![claim];
+    let header = BlockHeaderV3 {
+        version: BLOCK_HEADER_VERSION_V3,
+        parents: vec!["11".repeat(32)],
+        timestamp_ns: 1_800_000_000_500_000_000,
+        difficulty: 0x207f_ffff,
+        nonce: 0,
+        merkle_root: compute_merkle_root(&transactions),
+        state_root: "33".repeat(32), // Deliberately not a committed monetary root.
+        blue_score: 1,
+        height: 1,
+    };
+    // No PoW or network admission: this is a claim-only signed-replay
+    // diagnostic checking that enabling contracts cannot change its gate.
+    let block = build_block_envelope_v3(CHAIN, header, transactions).unwrap();
+    let clean = inspect_dormant_native_v3_explicit_order_trial(
+        std::slice::from_ref(&block),
+        &clean_state,
+    )
+    .unwrap();
+    assert_eq!(clean.candidate_fees, 0);
+    assert_eq!(clean.signed_transactions, 0);
+    assert_eq!(clean.resulting_utxo_root, original_root);
+
+    let mut unsafe_state = clean_state.clone();
+    unsafe_state.contracts.config.enabled = true;
+    let root_before_rejection = unsafe_state.utxo.compute_state_root().unwrap();
+    let rejected = inspect_dormant_native_v3_explicit_order_trial(&[block], &unsafe_state)
+        .unwrap_err()
+        .to_string();
+    assert!(rejected.contains("INACTIVE"), "{rejected}");
+    assert_eq!(
+        unsafe_state.utxo.compute_state_root().unwrap(),
+        root_before_rejection
+    );
+    assert_eq!(clean_state.utxo.compute_state_root().unwrap(), original_root);
+}
