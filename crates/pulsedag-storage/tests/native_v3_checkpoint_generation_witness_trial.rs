@@ -305,7 +305,6 @@ fn unknown_manifest_or_missing_private_frame_never_passes_reopen() {
     }
 }
 
-
 /// An attacker can rehash any local manifest they fabricate. For the test,
 /// allow them to replace that manifest SHA but *not* the independently pinned
 /// network genesis, generation or tip. These are semantic rejections and do
