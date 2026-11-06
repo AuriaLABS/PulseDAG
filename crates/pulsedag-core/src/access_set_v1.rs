@@ -279,6 +279,57 @@ mod tests {
     }
 
     #[test]
+    fn dormant_key_write_read_conflicts_are_symmetric_and_read_read_is_safe() {
+        let key = AccessKeyIdV1([7; 32]);
+        let mut writer = writes(&[op("writer", 0)]);
+        writer.write_keys.insert(key.clone());
+        let mut first_reader = writes(&[op("reader-one", 0)]);
+        first_reader.read_keys.insert(key.clone());
+        let mut second_reader = writes(&[op("reader-two", 0)]);
+        second_reader.read_keys.insert(key.clone());
+
+        assert!(access_sets_conflict_v1(&writer, &first_reader));
+        assert!(access_sets_conflict_v1(&first_reader, &writer));
+        assert!(!access_sets_conflict_v1(&first_reader, &second_reader));
+        assert!(!access_sets_conflict_v1(&second_reader, &first_reader));
+
+        let readers_first = [
+            (1, first_reader.clone()),
+            (2, second_reader.clone()),
+            (3, writer.clone()),
+        ];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &readers_first, true);
+        assert_eq!(accepted, vec![1, 2]);
+        assert_eq!(rejected, vec![(3, AccessConflictClassV1::AccessConflict)]);
+
+        // The order is EXTERNALLY supplied and remains non-consensus. A
+        // different order must reject both readers behind the first writer.
+        let writer_first = [(3, writer), (2, second_reader), (1, first_reader)];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &writer_first, true);
+        assert_eq!(accepted, vec![3]);
+        assert_eq!(
+            rejected,
+            vec![
+                (2, AccessConflictClassV1::AccessConflict),
+                (1, AccessConflictClassV1::AccessConflict),
+            ]
+        );
+
+        let (inactive, refused) =
+            schedule_access_sets_v1(AccessSetAdmissionV1::INACTIVE, &readers_first, true);
+        assert!(inactive.is_empty());
+        assert_eq!(refused.len(), readers_first.len());
+
+        let mut ambiguous = writes(&[op("ambiguous", 0)]);
+        ambiguous.write_keys.insert(key.clone());
+        ambiguous.read_keys.insert(key);
+        assert_eq!(
+            validate_access_set_v1(admitted(), &ambiguous, true),
+            Err(AccessSetV1Error::DuplicateDeclaration)
+        );
+    }
+
+    #[test]
     fn underdeclare_spend_is_invalid() {
         let set = writes(&[op("aa", 0)]);
         assert!(spends_underdeclared_v1(&set, &op("aa", 1)));
