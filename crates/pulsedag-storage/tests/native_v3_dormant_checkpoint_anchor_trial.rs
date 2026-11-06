@@ -494,6 +494,23 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
             read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
                 .is_err()
         );
+        // These witnesses are exactly 64 bytes (unlike "bad"), but neither
+        // uppercase nor non-hex identities may be silently normalized or
+        // replaced by the signed manifest's self-declared older tip.
+        for malformed in [b"AA".repeat(32), b"gg".repeat(32)] {
+            independent.put(EXTERNAL_TIP_WITNESS, malformed).unwrap();
+            independent.flush_wal(true).unwrap();
+            assert!(
+                read_with_independent_tip_witness(
+                    &db,
+                    &independent,
+                    Some(&pinned),
+                    &genesis.hash,
+                )
+                .is_err(),
+                "invalid complete-length trusted tip must not accept signed rollback"
+            );
+        }
         independent
             .put(EXTERNAL_TIP_WITNESS, second.hash.as_bytes())
             .unwrap();
