@@ -501,13 +501,8 @@ fn genuine_signed_checkpoint_rollback_is_rejected_only_with_external_fresh_tip_p
             independent.put(EXTERNAL_TIP_WITNESS, malformed).unwrap();
             independent.flush_wal(true).unwrap();
             assert!(
-                read_with_independent_tip_witness(
-                    &db,
-                    &independent,
-                    Some(&pinned),
-                    &genesis.hash,
-                )
-                .is_err(),
+                read_with_independent_tip_witness(&db, &independent, Some(&pinned), &genesis.hash,)
+                    .is_err(),
                 "invalid complete-length trusted tip must not accept signed rollback"
             );
         }
