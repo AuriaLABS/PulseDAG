@@ -342,3 +342,50 @@ fn cold_reopen_authentic_pow_frame_with_forged_signature_rejects_signed_replay()
         original_root
     );
 }
+
+#[test]
+fn cold_reopen_signed_frames_do_not_authenticate_missing_or_tampered_funding_prestate() {
+    // The same valid PoW/Ed25519 frames may be recovered without recovering
+    // the UTXO that a caller had injected into the full-history hypothesis.
+    // Authenticated framing MUST NOT invent an independently trusted prestate.
+    let (trusted_test_state, genesis, blocks) = fixture();
+    let original_root = trusted_test_state.utxo.compute_state_root().unwrap();
+    let no_funding = init_chain_state_v3(CHAIN.into(), GENESIS_NS / 1_000_000_000).unwrap();
+    assert!(!no_funding.contracts.config.enabled);
+    assert!(no_funding.utxo.utxos.is_empty());
+
+    let input = blocks[0].transactions[1].inputs[0].previous_output.clone();
+    let mut tampered_funding = trusted_test_state.clone();
+    tampered_funding.utxo.utxos.get_mut(&input).unwrap().amount = 101;
+    let altered_root = tampered_funding.utxo.compute_state_root().unwrap();
+    assert_ne!(altered_root, original_root);
+
+    let disk = TemporaryDb::new();
+    {
+        let db = disk.open();
+        write_frames(&db, &encode_frames(&genesis, &blocks));
+    }
+    {
+        let db = disk.open();
+        let restored = reload_frames(&db, &genesis).unwrap();
+        assert_eq!(restored[0].hash, blocks[0].hash);
+        assert_eq!(restored[1].hash, blocks[1].hash);
+
+        let baseline =
+            inspect_dormant_native_v3_explicit_order_trial(&restored, &trusted_test_state).unwrap();
+        assert_eq!(baseline.signed_transactions, 2);
+        assert_eq!(baseline.candidate_fees, 17);
+        assert_ne!(baseline.resulting_utxo_root, restored[1].header.state_root);
+
+        // No funding UTXO in the real genesis-derived state: signed frames
+        // cannot prove the previously injected synthetic 100-unit coin.
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&restored, &no_funding).is_err());
+        // A plausible but different balance for that same outpoint must not
+        // let an attacker claim the original 17-unit signed fee sequence.
+        assert!(
+            inspect_dormant_native_v3_explicit_order_trial(&restored, &tampered_funding).is_err()
+        );
+    }
+    assert_eq!(trusted_test_state.utxo.compute_state_root().unwrap(), original_root);
+    assert_eq!(tampered_funding.utxo.compute_state_root().unwrap(), altered_root);
+}
