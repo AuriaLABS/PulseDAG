@@ -444,7 +444,10 @@ fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment()
     let first = remine(&originals[0], &genesis, &first_root);
     let second = remine(&originals[1], &first.hash, &second_root);
     let committed = [first, second];
-    assert_eq!(check_conditional_roots(&committed, &trusted_prestate), Ok(17));
+    assert_eq!(
+        check_conditional_roots(&committed, &trusted_prestate),
+        Ok(17)
+    );
 
     let disk = TemporaryDb::new();
     {
@@ -456,7 +459,10 @@ fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment()
         let recovered = reload_frames(&db, &genesis).unwrap();
         assert_eq!(recovered[0].hash, committed[0].hash);
         assert_eq!(recovered[1].hash, committed[1].hash);
-        assert_eq!(check_conditional_roots(&recovered, &trusted_prestate), Ok(17));
+        assert_eq!(
+            check_conditional_roots(&recovered, &trusted_prestate),
+            Ok(17)
+        );
 
         // The attacker recomputes block hash, Merkle-consistent v3 header and
         // genuine PoW with a fake state root; frame authentication still passes.
