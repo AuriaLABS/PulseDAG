@@ -395,3 +395,86 @@ fn cold_reopen_signed_frames_do_not_authenticate_missing_or_tampered_funding_pre
         altered_root
     );
 }
+
+#[test]
+fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment() {
+    use pulsedag_core::apply::apply_transaction;
+
+    // This is intentionally a caller-ordered, synthetic-prestate diagnostic;
+    // a matching root proves neither canonical GD-08 nor checkpoint trust.
+    fn remine(block: &BlockEnvelopeV3, parent: &str, committed_root: &str) -> BlockEnvelopeV3 {
+        let mut header = block.header.clone();
+        header.parents = vec![parent.to_owned()];
+        header.state_root = committed_root.to_owned();
+        for nonce in 0..4096_u64 {
+            header.nonce = nonce;
+            if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+                return build_block_envelope_v3(CHAIN, header, block.transactions.clone()).unwrap();
+            }
+        }
+        panic!("TEST-ONLY easy-target remine exceeded nonce budget");
+    }
+
+    fn check_conditional_roots(
+        blocks: &[BlockEnvelopeV3; 2],
+        prestate: &ChainState,
+    ) -> Result<u64, String> {
+        let mut total_fees = 0;
+        for (index, block) in blocks.iter().enumerate() {
+            let hypothesis =
+                inspect_dormant_native_v3_explicit_order_trial(&blocks[..=index], prestate)
+                    .map_err(|err| err.to_string())?;
+            if hypothesis.resulting_utxo_root != block.header.state_root {
+                return Err("caller-ordered signed UTXO root differs from v3 header".to_owned());
+            }
+            total_fees = hypothesis.candidate_fees;
+        }
+        Ok(total_fees)
+    }
+
+    let (trusted_prestate, genesis, originals) = fixture();
+    let initial_root = trusted_prestate.utxo.compute_state_root().unwrap();
+    let mut independent = trusted_prestate.clone();
+    apply_transaction(&originals[0].transactions[1], &mut independent, 1).unwrap();
+    let first_root = independent.utxo.compute_state_root().unwrap();
+    apply_transaction(&originals[1].transactions[1], &mut independent, 2).unwrap();
+    let second_root = independent.utxo.compute_state_root().unwrap();
+    assert_ne!(first_root, second_root);
+
+    let first = remine(&originals[0], &genesis, &first_root);
+    let second = remine(&originals[1], &first.hash, &second_root);
+    let committed = [first, second];
+    assert_eq!(check_conditional_roots(&committed, &trusted_prestate), Ok(17));
+
+    let disk = TemporaryDb::new();
+    {
+        let db = disk.open();
+        write_frames(&db, &encode_frames(&genesis, &committed));
+    }
+    {
+        let db = disk.open();
+        let recovered = reload_frames(&db, &genesis).unwrap();
+        assert_eq!(recovered[0].hash, committed[0].hash);
+        assert_eq!(recovered[1].hash, committed[1].hash);
+        assert_eq!(check_conditional_roots(&recovered, &trusted_prestate), Ok(17));
+
+        // The attacker recomputes block hash, Merkle-consistent v3 header and
+        // genuine PoW with a fake state root; frame authentication still passes.
+        let bad_root = "ff".repeat(32);
+        assert_ne!(bad_root, second_root);
+        let falsified = [
+            committed[0].clone(),
+            remine(&originals[1], &committed[0].hash, &bad_root),
+        ];
+        write_frames(&db, &encode_frames(&genesis, &falsified));
+    }
+    {
+        let db = disk.open();
+        let recovered = reload_frames(&db, &genesis).unwrap();
+        assert!(check_conditional_roots(&recovered, &trusted_prestate).is_err());
+    }
+    assert_eq!(
+        trusted_prestate.utxo.compute_state_root().unwrap(),
+        initial_root
+    );
+}
