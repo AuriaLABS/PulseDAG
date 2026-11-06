@@ -12,6 +12,7 @@ on:
       - "crates/pulsedag-core/src/contract_v3.rs"
       - "crates/pulsedag-core/src/contract_state_v1.rs"
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/src/access_set_v1.rs"
       - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
       - "crates/pulsedag-core/Cargo.toml"
       - ".github/workflows/v3-dormant-contract-readiness.yml"
@@ -26,6 +27,7 @@ on:
       - "crates/pulsedag-core/src/contract_v3.rs"
       - "crates/pulsedag-core/src/contract_state_v1.rs"
       - "crates/pulsedag-core/src/pulsescript_vm_v1.rs"
+      - "crates/pulsedag-core/src/access_set_v1.rs"
       - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
       - "crates/pulsedag-core/Cargo.toml"
       - ".github/workflows/v3-dormant-contract-readiness.yml"
@@ -81,7 +83,7 @@ jobs:
           cargo test --locked -p pulsedag-core "${args[@]}" --test v3_dormant_contract_readiness -- --nocapture | tee /tmp/dormant-contract-readiness.log
           grep -Eq '^test result: ok\. 5 passed; 0 failed;' /tmp/dormant-contract-readiness.log
 
-          for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate; do
+          for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate access_set_v1; do
             cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
             grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "/tmp/dormant-contract-$module.log"
           done
