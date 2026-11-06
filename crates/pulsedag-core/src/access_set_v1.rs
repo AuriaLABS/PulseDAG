@@ -120,7 +120,21 @@ pub fn schedule_access_sets_v1(
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
     let mut accepted_sets: Vec<&AccessSetV1> = Vec::new();
+    // A duplicated caller identity makes *both* entries ambiguous, even if
+    // their resources are disjoint. Never select the first by arrival order.
+    // This remains an inactive, non-consensus scheduling hypothesis.
+    let mut seen_ids = BTreeSet::new();
+    let mut duplicate_ids = BTreeSet::new();
+    for (id, _) in ordered {
+        if !seen_ids.insert(*id) {
+            duplicate_ids.insert(*id);
+        }
+    }
     for (id, set) in ordered {
+        if duplicate_ids.contains(id) {
+            rejected.push((*id, AccessConflictClassV1::AccessUnderdeclared));
+            continue;
+        }
         if !admission.admitted() {
             rejected.push((*id, AccessConflictClassV1::AccessUnderdeclared));
             continue;
@@ -217,6 +231,51 @@ mod tests {
         assert_eq!(rejected, vec![(2, AccessConflictClassV1::AccessConflict)]);
         let again = schedule_access_sets_v1(admitted(), &window, true);
         assert_eq!((accepted, rejected), again);
+    }
+
+    #[test]
+    fn repeated_window_id_rejects_every_alias_even_when_resources_do_not_conflict() {
+        let a = writes(&[op("aa", 0)]);
+        let b = writes(&[op("bb", 1)]);
+        let c = writes(&[op("cc", 2)]);
+        let forward = [(17, a.clone()), (29, c.clone()), (17, b.clone())];
+        let reverse = [(17, b), (29, c), (17, a)];
+
+        for window in [forward, reverse] {
+            let (accepted, rejected) = schedule_access_sets_v1(admitted(), &window, true);
+            assert_eq!(accepted, vec![29]);
+            assert_eq!(
+                rejected,
+                vec![
+                    (17, AccessConflictClassV1::AccessUnderdeclared),
+                    (17, AccessConflictClassV1::AccessUnderdeclared),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_window_id_cannot_be_laundered_through_an_invalid_first_entry() {
+        let invalid = AccessSetV1 {
+            writes: BTreeSet::new(),
+            reads: BTreeSet::new(),
+            write_keys: BTreeSet::new(),
+            read_keys: BTreeSet::new(),
+        };
+        let window = [(7, invalid), (7, writes(&[op("aa", 0)]))];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &window, true);
+        assert!(accepted.is_empty());
+        assert_eq!(
+            rejected,
+            vec![
+                (7, AccessConflictClassV1::AccessUnderdeclared),
+                (7, AccessConflictClassV1::AccessUnderdeclared),
+            ]
+        );
+        let (inactive_accepted, inactive_rejected) =
+            schedule_access_sets_v1(AccessSetAdmissionV1::INACTIVE, &window, true);
+        assert!(inactive_accepted.is_empty());
+        assert_eq!(inactive_rejected, rejected);
     }
 
     #[test]
