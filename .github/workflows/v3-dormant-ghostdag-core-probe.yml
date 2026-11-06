@@ -17,6 +17,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
       - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_weighted_fork_parent_trial.rs
       - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
       - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
@@ -41,6 +42,7 @@ on:
       - crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs
       - crates/pulsedag-core/tests/native_v3_authenticated_signed_sequence_boundary.rs
       - crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs
+      - crates/pulsedag-core/tests/native_v3_weighted_fork_parent_trial.rs
       - crates/pulsedag-core/tests/native_v3_full_history_reference_fingerprint.rs
       - crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs
       - scripts/native_v3_crosslang_ghostdag_vectors.py
@@ -85,6 +87,7 @@ jobs:
               Path("crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"),
               Path("crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs"),
               Path("crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_weighted_fork_parent_trial.rs"),
               Path("crates/pulsedag-core/tests/native_v3_derived_selected_retarget_genesis.rs"),
           }
           # These seven older experimental consumers are confined to
