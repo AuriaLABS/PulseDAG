@@ -386,6 +386,12 @@ fn cold_reopen_signed_frames_do_not_authenticate_missing_or_tampered_funding_pre
             inspect_dormant_native_v3_explicit_order_trial(&restored, &tampered_funding).is_err()
         );
     }
-    assert_eq!(trusted_test_state.utxo.compute_state_root().unwrap(), original_root);
-    assert_eq!(tampered_funding.utxo.compute_state_root().unwrap(), altered_root);
+    assert_eq!(
+        trusted_test_state.utxo.compute_state_root().unwrap(),
+        original_root
+    );
+    assert_eq!(
+        tampered_funding.utxo.compute_state_root().unwrap(),
+        altered_root
+    );
 }
