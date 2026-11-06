@@ -268,3 +268,51 @@ fn signed_state_preview_does_not_authenticate_missing_or_wrong_network_ancestry(
     .is_err());
     assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
 }
+
+#[test]
+fn conflicting_pow_siblings_cannot_be_settled_by_arbitrary_explicit_order() {
+    // Both siblings carry independently valid Ed25519 transactions spending
+    // ONE synthetic input. Authenticated PoW/ancestry cannot authorize which
+    // conflicting transaction receives fees without frozen GD-08 ordering.
+    let (state, funding) = trusted_test_state();
+    let original_root = state.utxo.compute_state_root().unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let a = mine(&genesis.hash, 1, 41, signed(funding[0].clone(), 90, 10, 41));
+    let b = mine(&genesis.hash, 1, 42, signed(funding[0].clone(), 85, 15, 42));
+    assert_ne!(a.hash, b.hash);
+    assert_ne!(a.transactions[1].txid, b.transactions[1].txid);
+    verify_v3_header_pow(&a.header, CHAIN).unwrap();
+    verify_v3_header_pow(&b.header, CHAIN).unwrap();
+
+    let headers = authenticated_headers(&genesis, &[a.clone(), b.clone()]);
+    let mut tips = vec![a.hash.clone(), b.hash.clone()];
+    tips.sort();
+    let ancestry = derive_dormant_native_v3_topological_evaluation(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        &tips,
+        &headers,
+    )
+    .unwrap();
+    assert_eq!(ancestry.verified_dag.authenticated_non_genesis_headers, 2);
+    assert_eq!(ancestry.ordered_reachable_headers.len(), 3);
+
+    // Each alternative is a valid conditional signed-spend hypothesis.
+    let only_a =
+        inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&a), &state).unwrap();
+    let only_b =
+        inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&b), &state).unwrap();
+    assert_eq!(only_a.candidate_fees, 10);
+    assert_eq!(only_b.candidate_fees, 15);
+    assert_eq!(only_a.signed_transactions, 1);
+    assert_eq!(only_b.signed_transactions, 1);
+    assert_ne!(only_a.resulting_utxo_root, only_b.resulting_utxo_root);
+
+    // Neither peer arrival order may pay BOTH fees or accept both conflicts.
+    // Do not reinterpret these rejects as an approved GHOSTDAG blue/red rule.
+    for order in [[a.clone(), b.clone()], [b, a]] {
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&order, &state).is_err());
+    }
+    assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
+}
