@@ -228,7 +228,6 @@ fn seed_xoshiro_and_matrix_rank_negative_invariants() {
     assert_eq!(matrix_rank(&generated), 64);
 }
 
-
 /// Non-normative exact-integer witness: nonzero determinant modulo a prime
 /// proves the same integer matrix is nonsingular over the rationals.
 /// A modular rank deficiency alone is NOT proof of real-number singularity.
