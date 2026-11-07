@@ -190,9 +190,14 @@ jobs:
           by_name = {}
           for p in lock_packages:
               by_name.setdefault(p['name'], []).append(p)
+          # Check BOTH independently present Kaspa routes to pin-utils.
+          # Disabling kaspa-hashes' optional workflow feature alone cannot
+          # clear kaspa-pow's direct workflow-wasm dependency (#1387).
           upstream_path = (
               ('pulsedag-core', 'kaspa-hashes'),
               ('kaspa-hashes', 'workflow-wasm'),
+              ('pulsedag-core', 'kaspa-pow'),
+              ('kaspa-pow', 'workflow-wasm'),
               ('workflow-wasm', 'workflow-core'),
               ('workflow-core', 'async-std'),
               ('async-std', 'pin-utils'),
@@ -203,6 +208,7 @@ jobs:
               'workflow-core': '0.18.0',
               'workflow-wasm': '0.18.0',
               'kaspa-hashes': '2.0.1',
+              'kaspa-pow': '2.0.1',
           }
           for name, version in expected_versions.items():
               resolved = by_name.get(name, [])
