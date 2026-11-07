@@ -1274,7 +1274,7 @@ mod tests {
                     );
                     assert_eq!(
                         validate_pulse_bytecode_v1(&compiled.bytecode),
-                        Ok(compiled.analysis.clone())
+                        Ok(compiled.analysis)
                     );
                     assert_eq!(
                         pulse_bytecode_fingerprint_v1(&compiled.bytecode).unwrap(),
