@@ -1,0 +1,72 @@
+name: v3 dormant atomic prune and frontier tests (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"
+      - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
+      - "crates/pulsedag-storage/src/native_envelope_v3.rs"
+      - ".github/workflows/v3-dormant-atomic-prune-frontier.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"
+      - "crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs"
+      - "crates/pulsedag-storage/src/native_envelope_v3.rs"
+      - ".github/workflows/v3-dormant-atomic-prune-frontier.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-supersession-v2-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
+jobs:
+  isolated-atomic-prune-and-multiparent-frontier:
+    name: verify both isolated 26-header RocksDB trials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: never
+    steps:
+      - name: Checkout exact candidate SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce exact-head checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust and formatting/lint tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: clippy,rustfmt
+      - name: Check workspace formatting
+        run: cargo fmt --all -- --check
+      - name: Execute both exact-head checkpoint frontier regressions (no skip)
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 30m \
+            cargo test --locked -p pulsedag-storage \
+              --test native_v3_dormant_atomic_checkpoint_trial \
+              -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-dormant-atomic-prune-frontier.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed; 0 ignored;' \
+            /tmp/v3-dormant-atomic-prune-frontier.log
+      - name: Reject warnings in exact integration-test target
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 20m \
+            cargo clippy --locked -p pulsedag-storage \
+              --test native_v3_dormant_atomic_checkpoint_trial -- -D warnings
