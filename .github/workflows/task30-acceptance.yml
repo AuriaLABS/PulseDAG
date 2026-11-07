@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-core --lib native_v3_signed_prestate_trial::tests:: -- --nocapture | tee /tmp/native-v3-signed-prestate-trial.log
-          grep -Fq 'test result: ok. 7 passed; 0 failed;' /tmp/native-v3-signed-prestate-trial.log
+          grep -Fq 'test result: ok. 8 passed; 0 failed;' /tmp/native-v3-signed-prestate-trial.log
 
       - name: Protocol-bound mempool reconciliation
         run: 'cargo test --locked -p pulsedag-core mempool_protocol::tests::'
