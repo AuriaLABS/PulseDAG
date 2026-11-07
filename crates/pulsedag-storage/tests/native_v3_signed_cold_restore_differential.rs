@@ -485,7 +485,6 @@ fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment()
     );
 }
 
-
 /// Synthetic *externally pinned* monetary-prestate witness. A local signature
 /// is NOT a finality certificate or a production checkpoint trust authority.
 #[test]
@@ -510,7 +509,8 @@ fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
         for nonce in 0..4096_u64 {
             header.nonce = nonce;
             if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
-                return build_block_envelope_v3(CHAIN, header, original.transactions.clone()).unwrap();
+                return build_block_envelope_v3(CHAIN, header, original.transactions.clone())
+                    .unwrap();
             }
         }
         panic!("bounded real-PoW remine exhausted");
@@ -547,11 +547,9 @@ fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
             .map_err(|_| "initial monetary prestate/tip not signed by pinned test key")?;
 
         for (index, block) in recovered.iter().enumerate() {
-            let replay = inspect_dormant_native_v3_explicit_order_trial(
-                &recovered[..=index],
-                prestate,
-            )
-            .map_err(|error| error.to_string())?;
+            let replay =
+                inspect_dormant_native_v3_explicit_order_trial(&recovered[..=index], prestate)
+                    .map_err(|error| error.to_string())?;
             if replay.resulting_utxo_root != block.header.state_root {
                 return Err("PoW-valid monetary header does not commit signed replay root".into());
             }
@@ -598,10 +596,14 @@ fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
         let mut tampered_state = prestate.clone();
         let funded = tampered_state.utxo.utxos.values_mut().next().unwrap();
         funded.amount += 1;
-        assert!(
-            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &tampered_state)
-                .is_err()
-        );
+        assert!(verify_from_cold_disk(
+            &db,
+            &genesis,
+            &expected_tip,
+            &pinned_signer,
+            &tampered_state
+        )
+        .is_err());
         assert!(
             verify_from_cold_disk(&db, &genesis, &"00".repeat(32), &pinned_signer, &prestate)
                 .is_err()
@@ -617,8 +619,7 @@ fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
     {
         let db = disk.open();
         assert!(
-            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate)
-                .is_err()
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate).is_err()
         );
         db.delete(WITNESS_KEY).unwrap();
         db.flush_wal(true).unwrap();
@@ -626,8 +627,7 @@ fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
     {
         let db = disk.open();
         assert!(
-            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate)
-                .is_err(),
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate).is_err(),
             "missing prestate anchor must never fall back to self-asserted frame roots"
         );
     }
