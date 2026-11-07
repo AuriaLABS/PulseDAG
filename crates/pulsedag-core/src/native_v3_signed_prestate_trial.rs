@@ -385,16 +385,12 @@ mod tests {
         let high_fee = native_envelope(vec![signed(funding, address(), 80, 20, 12)]);
         assert_ne!(low_fee.hash, high_fee.hash);
 
-        let a = inspect_dormant_native_v3_explicit_order_trial(
-            std::slice::from_ref(&low_fee),
-            &state,
-        )
-        .unwrap();
-        let b = inspect_dormant_native_v3_explicit_order_trial(
-            std::slice::from_ref(&high_fee),
-            &state,
-        )
-        .unwrap();
+        let a =
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&low_fee), &state)
+                .unwrap();
+        let b =
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&high_fee), &state)
+                .unwrap();
         assert_eq!(a.signed_transactions, 1);
         assert_eq!(b.signed_transactions, 1);
         assert_eq!(a.candidate_fees, 10);
