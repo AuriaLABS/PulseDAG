@@ -111,9 +111,8 @@ fn preview_unpruned_candidate_window_arithmetic(
         .into_iter()
         .map(|(hash, metadata)| (hash, metadata.selected_parent))
         .collect();
-    let samples =
-        selected_parent_retarget_window_v3_ns(CHAIN, selected_tip, headers, &derived)
-            .map_err(|error| PulseError::InvalidBlock(error.to_string()))?;
+    let samples = selected_parent_retarget_window_v3_ns(CHAIN, selected_tip, headers, &derived)
+        .map_err(|error| PulseError::InvalidBlock(error.to_string()))?;
     expected_difficulty_for_v3_window_ns(&samples)
         .map_err(|error| PulseError::InvalidBlock(error.to_string()))
 }
@@ -305,31 +304,19 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
         0,
     )
     .is_err());
-    assert!(preview_unpruned_candidate_window_arithmetic(
-        &genesis.hash,
-        &tip,
-        &pruned_side,
-        0,
-    )
-    .is_err());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &pruned_side, 0,)
+            .is_err()
+    );
     // The side branch is outside the selected retarget window: tampering its
     // otherwise hash-consistent header must fail the full-DAG preflight.
     let mut forged_side = headers.clone();
     forged_side.get_mut(&side).unwrap().nonce ^= 1;
-    assert!(selected_parent_retarget_window_v3_ns(
-        CHAIN,
-        &tip,
-        &forged_side,
-        &derived,
-    )
-    .is_ok());
-    assert!(preview_unpruned_candidate_window_arithmetic(
-        &genesis.hash,
-        &tip,
-        &forged_side,
-        0,
-    )
-    .is_err());
+    assert!(selected_parent_retarget_window_v3_ns(CHAIN, &tip, &forged_side, &derived,).is_ok());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &forged_side, 0,)
+            .is_err()
+    );
 
     // The same window also cannot authenticate the frozen genesis outside
     // its horizon, even if every retained selected header has valid PoW.
@@ -348,13 +335,10 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
         0,
     )
     .is_err());
-    assert!(preview_unpruned_candidate_window_arithmetic(
-        &genesis.hash,
-        &tip,
-        &pruned_genesis,
-        0,
-    )
-    .is_err());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &pruned_genesis, 0,)
+            .is_err()
+    );
     let error = verify_dormant_frozen_genesis_retarget_v3_ns(
         CHAIN,
         GENESIS_NS,
