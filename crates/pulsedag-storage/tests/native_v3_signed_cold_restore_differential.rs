@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use pulsedag_core::{
     address_from_public_key,
     block_envelope_v3::{build_block_envelope_v3, BlockEnvelopeV3},
@@ -483,4 +483,153 @@ fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment()
         trusted_prestate.utxo.compute_state_root().unwrap(),
         initial_root
     );
+}
+
+
+/// Synthetic *externally pinned* monetary-prestate witness. A local signature
+/// is NOT a finality certificate or a production checkpoint trust authority.
+#[test]
+fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
+    use pulsedag_core::apply::apply_transaction;
+
+    const WITNESS_KEY: &[u8] = b"__TEST_ONLY_EXTERNAL_MONETARY_PIN";
+
+    fn witness_message(root: &str, genesis: &str, tip: &str) -> Vec<u8> {
+        let mut message = Vec::from(b"PulseDAG:test-only-v3-signed-prestate-witness:v1".as_slice());
+        for part in [CHAIN, genesis, root, tip] {
+            message.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            message.extend_from_slice(part.as_bytes());
+        }
+        message
+    }
+
+    fn remine(original: &BlockEnvelopeV3, parent: &str, root: &str) -> BlockEnvelopeV3 {
+        let mut header = original.header.clone();
+        header.parents = vec![parent.to_owned()];
+        header.state_root = root.to_owned();
+        for nonce in 0..4096_u64 {
+            header.nonce = nonce;
+            if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+                return build_block_envelope_v3(CHAIN, header, original.transactions.clone()).unwrap();
+            }
+        }
+        panic!("bounded real-PoW remine exhausted");
+    }
+
+    fn verify_from_cold_disk(
+        db: &DB,
+        genesis: &str,
+        expected_tip: &str,
+        pinned_signer: &VerifyingKey,
+        prestate: &ChainState,
+    ) -> Result<u64, String> {
+        let raw = db
+            .get(WITNESS_KEY)
+            .map_err(|error| error.to_string())?
+            .ok_or("missing independently signed prestate witness")?;
+        let sig_bytes: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid prestate signature length")?;
+        let recovered = reload_frames(db, genesis)?;
+        if recovered[1].hash != expected_tip {
+            return Err("persisted signed replay tip differs from externally pinned tip".into());
+        }
+        let initial = prestate
+            .utxo
+            .compute_state_root()
+            .map_err(|error| error.to_string())?;
+        pinned_signer
+            .verify(
+                &witness_message(&initial, genesis, expected_tip),
+                &Signature::from_bytes(&sig_bytes),
+            )
+            .map_err(|_| "initial monetary prestate/tip not signed by pinned test key")?;
+
+        for (index, block) in recovered.iter().enumerate() {
+            let replay = inspect_dormant_native_v3_explicit_order_trial(
+                &recovered[..=index],
+                prestate,
+            )
+            .map_err(|error| error.to_string())?;
+            if replay.resulting_utxo_root != block.header.state_root {
+                return Err("PoW-valid monetary header does not commit signed replay root".into());
+            }
+        }
+        Ok(
+            inspect_dormant_native_v3_explicit_order_trial(&recovered, prestate)
+                .map_err(|error| error.to_string())?
+                .candidate_fees,
+        )
+    }
+
+    let (prestate, genesis, originals) = fixture();
+    let initial_root = prestate.utxo.compute_state_root().unwrap();
+    let mut independent = prestate.clone();
+    apply_transaction(&originals[0].transactions[1], &mut independent, 1).unwrap();
+    let first_root = independent.utxo.compute_state_root().unwrap();
+    apply_transaction(&originals[1].transactions[1], &mut independent, 2).unwrap();
+    let second_root = independent.utxo.compute_state_root().unwrap();
+    assert_ne!(first_root, second_root);
+
+    let first = remine(&originals[0], &genesis, &first_root);
+    let second = remine(&originals[1], &first.hash, &second_root);
+    let committed = [first, second];
+    let expected_tip = committed[1].hash.clone();
+    let anchor = SigningKey::from_bytes(&[94_u8; 32]);
+    let pinned_signer = anchor.verifying_key();
+    let sig = anchor.sign(&witness_message(&initial_root, &genesis, &expected_tip));
+    let disk = TemporaryDb::new();
+    {
+        let db = disk.open();
+        write_frames(&db, &encode_frames(&genesis, &committed));
+        db.put(WITNESS_KEY, sig.to_bytes()).unwrap();
+        db.flush_wal(true).unwrap();
+    }
+    {
+        let db = disk.open();
+        assert_eq!(
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate),
+            Ok(17)
+        );
+
+        // Authenticated PoW frames cannot bootstrap trust in a *different*
+        // caller-injected initial UTXO balance; the witness binds that root.
+        let mut tampered_state = prestate.clone();
+        let funded = tampered_state.utxo.utxos.values_mut().next().unwrap();
+        funded.amount += 1;
+        assert!(
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &tampered_state)
+                .is_err()
+        );
+        assert!(
+            verify_from_cold_disk(&db, &genesis, &"00".repeat(32), &pinned_signer, &prestate)
+                .is_err()
+        );
+
+        // Anyone can generate a valid signature using their OWN key, but
+        // that cannot replace the externally pinned fixture signer.
+        let attacker = SigningKey::from_bytes(&[95_u8; 32]);
+        let forged = attacker.sign(&witness_message(&initial_root, &genesis, &expected_tip));
+        db.put(WITNESS_KEY, forged.to_bytes()).unwrap();
+        db.flush_wal(true).unwrap();
+    }
+    {
+        let db = disk.open();
+        assert!(
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate)
+                .is_err()
+        );
+        db.delete(WITNESS_KEY).unwrap();
+        db.flush_wal(true).unwrap();
+    }
+    {
+        let db = disk.open();
+        assert!(
+            verify_from_cold_disk(&db, &genesis, &expected_tip, &pinned_signer, &prestate)
+                .is_err(),
+            "missing prestate anchor must never fall back to self-asserted frame roots"
+        );
+    }
+    assert_eq!(prestate.utxo.compute_state_root().unwrap(), initial_root);
 }
