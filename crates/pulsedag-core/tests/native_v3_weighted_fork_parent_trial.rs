@@ -130,7 +130,10 @@ fn real_pow_unequal_siblings_select_heavier_parent_and_charge_merge_once() {
             preview_dormant_v3_candidate_selected_chain_delta(&trial, &a, &joined).unwrap();
         assert_eq!(forward.common_selected_ancestor, g);
         assert_eq!(forward.detach_tip_first, vec![a.clone()]);
-        assert_eq!(forward.attach_ancestor_first, vec![b.clone(), joined.clone()]);
+        assert_eq!(
+            forward.attach_ancestor_first,
+            vec![b.clone(), joined.clone()]
+        );
         assert_eq!(forward.old_tip_blue_work.decimal(), "2");
         assert_eq!(forward.new_tip_blue_work.decimal(), expected_work);
 
