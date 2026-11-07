@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
-    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
+    native_ghostdag_policy_candidate_v3::{
+        derive_dormant_native_v3_ghostdag_trial, preview_dormant_v3_candidate_selected_chain_delta,
+    },
     pow_v3::{evaluate_v3_header_pow, verify_v3_header_pow},
     protocol::BLOCK_HEADER_VERSION_V3,
     types::{compute_merkle_root, BlockId},
@@ -119,6 +121,43 @@ fn real_pow_unequal_siblings_select_heavier_parent_and_charge_merge_once() {
             assert_eq!(choice.merge_blues, vec![a.clone()]);
             assert!(choice.merge_reds.is_empty());
         }
+
+        // A separately chosen old/current tip is NOT a canonical winner:
+        // this dormant preview merely describes the already-authenticated
+        // candidate's selected-parent spine changes. The lower-work fork
+        // must detach, and the high-work selected spine must attach from g.
+        let forward =
+            preview_dormant_v3_candidate_selected_chain_delta(&trial, &a, &joined).unwrap();
+        assert_eq!(forward.common_selected_ancestor, g);
+        assert_eq!(forward.detach_tip_first, vec![a.clone()]);
+        assert_eq!(
+            forward.attach_ancestor_first,
+            vec![b.clone(), joined.clone()]
+        );
+        assert_eq!(forward.old_tip_blue_work.decimal(), "2");
+        assert_eq!(forward.new_tip_blue_work.decimal(), expected_work);
+
+        // The inverse switch must reverse the detach/attach direction, not
+        // invent a peer-arrival or height-based monetary ordering.
+        let reverse =
+            preview_dormant_v3_candidate_selected_chain_delta(&trial, &joined, &a).unwrap();
+        assert_eq!(reverse.common_selected_ancestor, g);
+        assert_eq!(reverse.detach_tip_first, vec![joined.clone(), b.clone()]);
+        assert_eq!(reverse.attach_ancestor_first, vec![a.clone()]);
+        assert_eq!(reverse.old_tip_blue_work.decimal(), expected_work);
+        assert_eq!(reverse.new_tip_blue_work.decimal(), "2");
+
+        let no_change =
+            preview_dormant_v3_candidate_selected_chain_delta(&trial, &joined, &joined).unwrap();
+        assert_eq!(no_change.common_selected_ancestor, joined);
+        assert!(no_change.detach_tip_first.is_empty());
+        assert!(no_change.attach_ancestor_first.is_empty());
+        assert!(preview_dormant_v3_candidate_selected_chain_delta(
+            &trial,
+            &joined,
+            &"ff".repeat(32),
+        )
+        .is_err());
 
         // A new PoW-valid header with an invented committed blue_score must
         // NOT become authority just by recomputing SHA256/KHeavyHash.
