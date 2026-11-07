@@ -1266,10 +1266,12 @@ mod tests {
                         "pulsescript-v1\npush_u64 {left}\npush_u64 {right}\n{opcode}\nhalt\n"
                     );
                     let compiled = compile_pulsescript_v1(&source).unwrap();
-                    let from_crlf =
-                        compile_pulsescript_v1(&source.replace('\n', "\r\n")).unwrap();
+                    let from_crlf = compile_pulsescript_v1(&source.replace('\n', "\r\n")).unwrap();
                     assert_eq!(compiled.bytecode, from_crlf.bytecode);
-                    assert_eq!(compiled.bytecode_fingerprint, from_crlf.bytecode_fingerprint);
+                    assert_eq!(
+                        compiled.bytecode_fingerprint,
+                        from_crlf.bytecode_fingerprint
+                    );
                     assert_eq!(
                         validate_pulse_bytecode_v1(&compiled.bytecode),
                         Ok(compiled.analysis.clone())
@@ -1294,7 +1296,8 @@ mod tests {
                         "mul_u64" => left.checked_mul(right),
                         _ => unreachable!(),
                     };
-                    let execution = execute_pulse_bytecode_v1(&compiled.bytecode, &budget(required));
+                    let execution =
+                        execute_pulse_bytecode_v1(&compiled.bytecode, &budget(required));
                     match oracle {
                         Some(expected) => {
                             let completed = execution.unwrap();
