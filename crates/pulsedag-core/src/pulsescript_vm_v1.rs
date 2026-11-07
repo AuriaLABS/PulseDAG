@@ -1255,6 +1255,66 @@ mod tests {
     }
 
     #[test]
+    fn checked_arithmetic_matches_independent_u64_oracle_over_boundary_corpus() {
+        // Offline / dormant VM only. Every source is branch-free and must
+        // preserve its exact gas, bytecode identity and arithmetic errors.
+        let values = [0_u64, 1, 2, 17, u64::MAX - 1, u64::MAX];
+        for left in values {
+            for right in values {
+                for opcode in ["add_u64", "sub_u64", "mul_u64"] {
+                    let source = format!(
+                        "pulsescript-v1\npush_u64 {left}\npush_u64 {right}\n{opcode}\nhalt\n"
+                    );
+                    let compiled = compile_pulsescript_v1(&source).unwrap();
+                    let from_crlf =
+                        compile_pulsescript_v1(&source.replace('\n', "\r\n")).unwrap();
+                    assert_eq!(compiled.bytecode, from_crlf.bytecode);
+                    assert_eq!(compiled.bytecode_fingerprint, from_crlf.bytecode_fingerprint);
+                    assert_eq!(
+                        validate_pulse_bytecode_v1(&compiled.bytecode),
+                        Ok(compiled.analysis.clone())
+                    );
+                    assert_eq!(
+                        pulse_bytecode_fingerprint_v1(&compiled.bytecode).unwrap(),
+                        compiled.bytecode_fingerprint
+                    );
+                    let required = compiled.analysis.compute_units;
+                    assert_eq!(
+                        execute_pulse_bytecode_v1(&compiled.bytecode, &budget(required - 1)),
+                        Err(PulseVmV1Error::ComputeBudgetExceeded {
+                            actual: required,
+                            max: required - 1,
+                        }),
+                        "resource gate must reject even when the arithmetic would overflow"
+                    );
+
+                    let oracle = match opcode {
+                        "add_u64" => left.checked_add(right),
+                        "sub_u64" => left.checked_sub(right),
+                        "mul_u64" => left.checked_mul(right),
+                        _ => unreachable!(),
+                    };
+                    let execution = execute_pulse_bytecode_v1(&compiled.bytecode, &budget(required));
+                    match oracle {
+                        Some(expected) => {
+                            let completed = execution.unwrap();
+                            assert_eq!(completed.result, PulseValueV1::U64(expected));
+                            assert_eq!(completed.usage.compute_units, required);
+                            assert_eq!(completed.executed_instructions, 4);
+                        }
+                        None => {
+                            assert_eq!(
+                                execution,
+                                Err(PulseVmV1Error::ArithmeticOverflow { instruction: 2 })
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn compute_budget_is_checked_before_execution() {
         let compiled = compile_pulsescript_v1(GOLDEN_SOURCE).unwrap();
         assert_eq!(
