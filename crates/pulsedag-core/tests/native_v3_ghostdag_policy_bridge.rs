@@ -218,3 +218,65 @@ fn independent_rust_dag_rejects_invalid_pow_on_unselected_side_branch() {
         "invalid-PoW side ancestry may not be omitted by selected-parent choice"
     );
 }
+
+#[test]
+fn authenticated_side_branch_commitment_cannot_be_mutated_or_rehashed_in_place() {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let g = genesis.hash.clone();
+    let mut headers = BTreeMap::new();
+    headers.insert(g.clone(), genesis.header);
+
+    let (a, ha) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        1,
+        compute_merkle_root(&[]),
+    );
+    let (b, hb) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        1,
+        "ab".repeat(32),
+    );
+    headers.insert(a.clone(), ha);
+    headers.insert(b.clone(), hb);
+    let mut tips = vec![a.clone(), b.clone()];
+    tips.sort();
+
+    derive_dormant_native_v3_all_parent_merge_sets(CHAIN, GENESIS_NS, &g, &tips, &headers)
+        .expect("genuine PoW side ancestry must authenticate");
+
+    // Changing an already named side branch's commitment without rehashing
+    // must invalidate the COMPLETE candidate corpus, not just its chosen tip.
+    let mut poisoned = headers.clone();
+    poisoned.get_mut(&b).unwrap().state_root = "ef".repeat(32);
+    assert!(
+        derive_dormant_native_v3_all_parent_merge_sets(CHAIN, GENESIS_NS, &g, &tips, &poisoned)
+            .is_err(),
+        "a valid-PoW sibling's old hash cannot authenticate a changed state root"
+    );
+
+    // Even a genuinely re-mined alternate branch cannot substitute for the
+    // hash already referenced by the independently supplied candidate tips.
+    let (replacement, replacement_header) = mine(
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 650_000_000,
+        1,
+        "cd".repeat(32),
+    );
+    assert_ne!(replacement, b);
+    poisoned.remove(&b);
+    poisoned.insert(replacement.clone(), replacement_header);
+    assert!(
+        derive_dormant_native_v3_all_parent_merge_sets(CHAIN, GENESIS_NS, &g, &tips, &poisoned)
+            .is_err(),
+        "stale tip identity cannot silently follow a new PoW-valid branch"
+    );
+    let mut new_tips = vec![a, replacement];
+    new_tips.sort();
+    derive_dormant_native_v3_all_parent_merge_sets(CHAIN, GENESIS_NS, &g, &new_tips, &poisoned)
+        .expect("a freshly named and fully authenticated branch is a new trial corpus");
+}
