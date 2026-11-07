@@ -16,7 +16,7 @@ use pulsedag_core::{
     protocol::BLOCK_HEADER_VERSION_V3,
     retarget_context_v3::selected_parent_retarget_window_v3_ns,
     retarget_genesis_guard_v3::verify_dormant_frozen_genesis_retarget_v3_ns,
-    retarget_v3::V3RetargetDecision,
+    retarget_v3::{expected_difficulty_for_v3_window_ns, V3RetargetDecision},
     types::BlockId,
 };
 
@@ -86,6 +86,35 @@ fn preview_candidate_derived_retarget(
         &derived,
     )?;
     Ok((decision, derived))
+}
+
+/// A TEST-ONLY fully unpruned comparison, not the frozen-genesis guard and
+/// NOT a checkpoint trust authority. First authenticate the complete native
+/// DAG, including off-spine red blocks, before interpreting a 20-sample window
+/// whose oldest timestamp may no longer include genesis.
+fn preview_unpruned_candidate_window_arithmetic(
+    frozen_genesis_hash: &str,
+    selected_tip: &BlockId,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    trial_k: usize,
+) -> Result<V3RetargetDecision, PulseError> {
+    let trial = derive_dormant_native_v3_ghostdag_trial(
+        CHAIN,
+        GENESIS_NS,
+        frozen_genesis_hash,
+        std::slice::from_ref(selected_tip),
+        headers,
+        trial_k,
+    )?;
+    let derived: BTreeMap<BlockId, Option<BlockId>> = trial
+        .blocks
+        .into_iter()
+        .map(|(hash, metadata)| (hash, metadata.selected_parent))
+        .collect();
+    let samples = selected_parent_retarget_window_v3_ns(CHAIN, selected_tip, headers, &derived)
+        .map_err(|error| PulseError::InvalidBlock(error.to_string()))?;
+    expected_difficulty_for_v3_window_ns(&samples)
+        .map_err(|error| PulseError::InvalidBlock(error.to_string()))
 }
 
 #[test]
@@ -247,6 +276,15 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
         complete_window.last().unwrap().timestamp_ns,
         GENESIS_NS + 1_500_000_000
     );
+    // Unlike the intentionally guarded near-genesis API, this is only a
+    // mathematical diagnostic over an already completely verified DAG.
+    let unpruned_decision =
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &headers, 0).unwrap();
+    assert_eq!(
+        unpruned_decision,
+        expected_difficulty_for_v3_window_ns(&complete_window).unwrap()
+    );
+    assert_eq!(unpruned_decision.observed_intervals, 19);
 
     // The 20 most recent selected-parent PoW headers still verify after
     // deleting a *required nonselected ancestor*. Hence a successful
@@ -266,6 +304,19 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
         0,
     )
     .is_err());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &pruned_side, 0,)
+            .is_err()
+    );
+    // The side branch is outside the selected retarget window: tampering its
+    // otherwise hash-consistent header must fail the full-DAG preflight.
+    let mut forged_side = headers.clone();
+    forged_side.get_mut(&side).unwrap().nonce ^= 1;
+    assert!(selected_parent_retarget_window_v3_ns(CHAIN, &tip, &forged_side, &derived,).is_ok());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &forged_side, 0,)
+            .is_err()
+    );
 
     // The same window also cannot authenticate the frozen genesis outside
     // its horizon, even if every retained selected header has valid PoW.
@@ -284,6 +335,10 @@ fn twenty_sample_pow_window_cannot_authenticate_pruned_red_ancestry() {
         0,
     )
     .is_err());
+    assert!(
+        preview_unpruned_candidate_window_arithmetic(&genesis.hash, &tip, &pruned_genesis, 0,)
+            .is_err()
+    );
     let error = verify_dormant_frozen_genesis_retarget_v3_ns(
         CHAIN,
         GENESIS_NS,
