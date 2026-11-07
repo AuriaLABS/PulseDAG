@@ -484,7 +484,9 @@ fn cold_reopen_conditional_signed_utxo_roots_detect_pow_valid_false_commitment()
         initial_root
     );
 }
-\n\n/// Synthetic *externally pinned* monetary-prestate witness. A local signature
+
+
+/// Synthetic *externally pinned* monetary-prestate witness. A local signature
 /// is NOT a finality certificate or a production checkpoint trust authority.
 #[test]
 fn cold_reopen_real_pow_signed_roots_require_pinned_prestate_and_tip_witness() {
