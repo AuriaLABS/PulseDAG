@@ -86,6 +86,14 @@ REQUIRED_VISIBLE_BLOCKERS = {
 REQUIRED_VISIBLE_INFORMATIONAL = {
     ("faster-hex", "0.9.0"),
 }
+# #1387: raw informational RustSec advisories, but these packages ARE
+# compiler-reachable in every v3.0 launch root (not lock-only waivers).
+# Their upstream migration remains a separate pre-GO security obligation.
+REQUIRED_COMPILED_UNMAINTAINED_DEBT = {
+    ("async-std", "1.13.2"): "RUSTSEC-2025-0052",
+    ("pin-utils", "0.1.0"): "RUSTSEC-2026-0441",
+}
+
 AFFECTED_FASTER_HEX_SYMBOL = "hex_decode_unchecked"
 
 
@@ -222,6 +230,34 @@ def validate_faster_hex_advisory_scope(
     return call_sites
 
 
+def require_compiler_reachable_debt(
+    compiled_by_root: dict[str, set[tuple[str, str]]],
+) -> dict[str, list[str]]:
+    """Pin exact compiler-reachable inherited advisory inventory, NOT a waiver.
+
+    An upstream dependency migration is a separate security change: it must
+    update this evidence policy with a reviewed RustSec report rather than
+    quietly being interpreted as a launch GO or a compiled/lock-only waiver.
+    """
+    if set(compiled_by_root) != set(COMPILE_ROOTS):
+        fail("launch-root compiler inventory incomplete or unexpected")
+    required = set(REQUIRED_COMPILED_UNMAINTAINED_DEBT)
+    evidence: dict[str, list[str]] = {}
+    for root in COMPILE_ROOTS:
+        observed = compiled_by_root[root]
+        missing = sorted(required - observed)
+        if missing:
+            fail(
+                f"{root} inherited unmaintained compiled-dependency inventory drifted: "
+                f"{missing}; review #1387 before changing its release disposition"
+            )
+        evidence[root] = [
+            f"{name}@{version}:{REQUIRED_COMPILED_UNMAINTAINED_DEBT[(name, version)]}"
+            for name, version in sorted(required)
+        ]
+    return evidence
+
+
 def main() -> None:
     audit = tomllib.loads((ROOT / ".cargo" / "audit.toml").read_text(encoding="utf-8"))
     ignored = set(audit.get("advisories", {}).get("ignore", []))
@@ -302,6 +338,11 @@ def main() -> None:
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
 
+    reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root)
+    (evidence_dir / "reachable-unmaintained-launch-debt.json").write_text(
+        json.dumps(reachable_unmaintained, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     faster_hex_call_sites = validate_faster_hex_advisory_scope(metadata, evidence_dir)
 
     candidate_sha = os.environ.get("CANDIDATE_SHA") or os.environ.get("GITHUB_SHA", "local")
@@ -320,7 +361,12 @@ def main() -> None:
         "lru_0_12_5_present": ("lru", "0.12.5") in locked,
         "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
         "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
-        "remaining_launch_blockers": [f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_BLOCKERS)],
+        "remaining_launch_blockers": [
+            f"{name}@{ver}" for name, ver in
+            sorted(REQUIRED_VISIBLE_BLOCKERS | set(REQUIRED_COMPILED_UNMAINTAINED_DEBT))
+        ],
+        "reachable_unmaintained_compiler_debt_by_launch_root": reachable_unmaintained,
+        "reachable_unmaintained_inventory_does_not_authorize_release": True,
         "visible_informational_advisories": [
             f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_INFORMATIONAL)
         ],
@@ -346,15 +392,18 @@ def main() -> None:
         "quinn_proto_0_11_16_compiled=false",
         "quinn_stack_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
-        "remaining_launch_blockers=atty@0.2.14",
+        "remaining_launch_blockers=atty@0.2.14,async-std@1.13.2,pin-utils@0.1.0",
+        "pin_utils_0_1_0_compiled_all_four_launch_roots=true",
+        "pin_utils_0_1_0_advisory=RUSTSEC-2026-0441:unmaintained",
+        "async_std_1_13_2_advisory=RUSTSEC-2025-0052:unmaintained",
         "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",
         "faster_hex_0306_affected_api_call_sites=0",
         "final_v3_launch_security_ready=false",
         "",
     ]), encoding="utf-8")
     print(
-        "PASS: v3 dependency remediation gate; lru/linkme/intertrait are absent and "
-        "hickory-proto 0.25.2 remains lock-only across all launch compile roots"
+        "PASS: development-only dependency inventory, NOT release security approval; "
+        "reachable pin-utils/async-std unmaintained debt remains open in all four launch roots"
     )
 
 
