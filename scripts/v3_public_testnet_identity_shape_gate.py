@@ -137,7 +137,8 @@ def check_candidate(candidate: object) -> dict:
         reject("require 2-16 distinct proposed public-testnet bootnode identities")
     peers = [_text(peer, "bootnode_peer_id") for peer in bootnodes]
     if len(set(peers)) != len(peers) or any(
-        not (BASE58BTC_PEER.fullmatch(peer) or CIDV1_BASE32_PEER.fullmatch(peer))
+        not (CIDV1_BASE32_PEER.fullmatch(peer) if peer.startswith("baf")
+             else BASE58BTC_PEER.fullmatch(peer))
         for peer in peers
     ):
         reject("invalid or duplicate bootnode peer identity (base58btc/CIDv1 lexical shape only)")
