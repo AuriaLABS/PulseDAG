@@ -678,9 +678,11 @@ mod tests {
             conditional_checkpoint_envelope(signed(source.clone(), address(), 80, 10, 202), 2);
         let high = conditional_checkpoint_envelope(signed(source, address(), 70, 20, 203), 2);
         let low_only =
-            inspect_dormant_native_v3_explicit_order_trial(&[low.clone()], &checkpoint).unwrap();
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&low), &checkpoint)
+                .unwrap();
         let high_only =
-            inspect_dormant_native_v3_explicit_order_trial(&[high.clone()], &checkpoint).unwrap();
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&high), &checkpoint)
+                .unwrap();
         assert_eq!(low_only.candidate_fees, 10);
         assert_eq!(high_only.candidate_fees, 20);
         assert_ne!(low_only.resulting_utxo_root, high_only.resulting_utxo_root);
