@@ -1,0 +1,55 @@
+name: v3 compiled RustSec unmaintained exposure guard (NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_compiled_unmaintained_debt.py
+      - docs/security/V3_DEPENDENCY_SECURITY.md
+      - .github/workflows/v3-compiled-unmaintained-debt-guard.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_compiled_unmaintained_debt.py
+      - docs/security/V3_DEPENDENCY_SECURITY.md
+      - .github/workflows/v3-compiled-unmaintained-debt-guard.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-exact-compiled-advisory-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify SHA and closed launch gates
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Python stdlib 5 exact per-root negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/validate_v3_dependency_security.py scripts/tests/test_v3_compiled_unmaintained_debt.py
+          python3 -m unittest discover -v -s scripts/tests -p 'test_v3_compiled_unmaintained_debt.py'
+      - name: No advisory ignore and no release-ready claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'ignore = []' .cargo/audit.toml
+          grep -Fq '"final_v3_launch_security_ready": False' scripts/validate_v3_dependency_security.py
+          grep -Fq 'RUSTSEC-2026-0441' scripts/validate_v3_dependency_security.py
