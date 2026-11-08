@@ -20,6 +20,8 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 TESTNET_CHAIN = re.compile(r"^pulsedag-public-testnet-v3(?:-[a-z0-9]+)*$")
 TESTNET_DOMAIN = re.compile(r"^pulsedag:v3:public-testnet:[a-z0-9_-]{4,64}$")
+MAINNET_CHAIN = re.compile(r"^pulsedag-mainnet-v3(?:-[a-z0-9]+)*$")
+MAINNET_DOMAIN = re.compile(r"^pulsedag:v3:mainnet:[a-z0-9_-]{4,64}$")
 PLACEHOLDERS = ("TBD", "PLACEHOLDER", "FREEZE_REQUIRED", "REPLACE_ME", "EXAMPLE")
 MAX_MANIFEST_BYTES = 64 * 1024
 REQUIRED = frozenset({
@@ -147,6 +149,10 @@ def check_candidate(candidate: object) -> dict:
         other_chain = _text(v["chain_id"], "mainnet.chain_id")
         other_genesis = _hex(v["genesis_hash"], "mainnet.genesis_hash")
         other_domain = _text(v["signing_domain"], "mainnet.signing_domain")
+        if not MAINNET_CHAIN.fullmatch(other_chain):
+            reject("future mainnet chain_id must belong to the mainnet-v3 namespace")
+        if not MAINNET_DOMAIN.fullmatch(other_domain):
+            reject("future mainnet signing domain must be mainnet-v3 scoped")
         if other_chain == chain_id or other_genesis == genesis or other_domain == domain:
             reject("public testnet identity overlaps future mainnet identity")
 
@@ -155,7 +161,8 @@ def check_candidate(candidate: object) -> dict:
         "network": "public-testnet-v3",
         "source_and_artifacts_authenticated": False,
         "genesis_and_consensus_verified": False,
-        "mainnet_cross_identity_frozen": other is not None,
+        "future_mainnet_identity_shape_checked": other is not None,
+        "mainnet_cross_identity_frozen": False,  # A draft never authenticates or freezes mainnet.
         "public_testnet_launch_authorized": False,
         "mainnet_launch_authorized": False,
         "monetary_runtime_enabled": False,
