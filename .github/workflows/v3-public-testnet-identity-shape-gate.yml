@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/v3_public_testnet_identity_shape_gate.py
       - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - scripts/v3_public_testnet_identity_shape_gate.py
       - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
   workflow_dispatch:
