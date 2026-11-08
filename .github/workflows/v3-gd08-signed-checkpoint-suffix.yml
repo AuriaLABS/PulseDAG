@@ -1,0 +1,63 @@
+name: v3 GD-08 conditional signed checkpoint suffix (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs
+      - crates/pulsedag-core/src/block_envelope_v3.rs
+      - crates/pulsedag-core/src/validation_v2.rs
+      - crates/pulsedag-core/src/apply.rs
+      - Cargo.lock
+      - .github/workflows/v3-gd08-signed-checkpoint-suffix.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs
+      - crates/pulsedag-core/src/block_envelope_v3.rs
+      - crates/pulsedag-core/src/validation_v2.rs
+      - crates/pulsedag-core/src/apply.rs
+      - Cargo.lock
+      - .github/workflows/v3-gd08-signed-checkpoint-suffix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-signed-conditional-checkpoint-suffix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact head without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact candidate and monetization disabled
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Rust stable pinned
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Exactly two signed UTXO checkpoint-boundary regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib conditional_checkpoint_ -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-signed-checkpoint-conditional.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed; 0 ignored;' /tmp/v3-signed-checkpoint-conditional.log
+      - name: Clippy strict library
+        run: cargo clippy --locked -p pulsedag-core --lib -- -D warnings
