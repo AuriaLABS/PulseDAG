@@ -374,6 +374,48 @@ mod tests {
     }
 
     #[test]
+    fn competing_valid_signed_spends_have_distinct_fees_until_order_is_frozen() {
+        // GD-08 diagnostic only: two individually valid signed spends of the
+        // same prestate UTXO cannot both settle, and their potential fees and
+        // UTXO roots differ. Without a separately approved DAG total order,
+        // neither hypothesis is consensus authority or a reward entitlement.
+        let (state, funding) = funded_state();
+        let original_root = state.utxo.compute_state_root().unwrap();
+        let low_fee = native_envelope(vec![signed(funding.clone(), address(), 90, 10, 11)]);
+        let high_fee = native_envelope(vec![signed(funding, address(), 80, 20, 12)]);
+        assert_ne!(low_fee.hash, high_fee.hash);
+
+        let a =
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&low_fee), &state)
+                .unwrap();
+        let b =
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&high_fee), &state)
+                .unwrap();
+        assert_eq!(a.signed_transactions, 1);
+        assert_eq!(b.signed_transactions, 1);
+        assert_eq!(a.candidate_fees, 10);
+        assert_eq!(b.candidate_fees, 20);
+        assert_eq!(a.fees_by_block.get(&low_fee.hash), Some(&10));
+        assert_eq!(b.fees_by_block.get(&high_fee.hash), Some(&20));
+        assert_ne!(a.resulting_utxo_root, b.resulting_utxo_root);
+        assert_ne!(a.resulting_utxo_root, original_root);
+        assert_ne!(b.resulting_utxo_root, original_root);
+
+        // Both supplied orders must fail closed instead of adding 10 + 20
+        // as if the conflicting transfer could collect a second fee.
+        for order in [
+            [low_fee.clone(), high_fee.clone()],
+            [high_fee.clone(), low_fee.clone()],
+        ] {
+            assert!(
+                inspect_dormant_native_v3_explicit_order_trial(&order, &state).is_err(),
+                "conflicting signed spends must never credit both fees"
+            );
+        }
+        assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
+    }
+
+    #[test]
     fn explicit_order_rejects_forged_later_block_without_mutating_prestate() {
         let (state, funding) = funded_state();
         let first = signed(funding, address(), 90, 10, 1);
