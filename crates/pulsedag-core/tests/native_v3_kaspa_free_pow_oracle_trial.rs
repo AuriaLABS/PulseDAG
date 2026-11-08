@@ -211,6 +211,69 @@ fn pure_rust_non_kaspa_oracle_matches_seven_frozen_v3_vectors_and_current_engine
     assert!(invalid_count >= 2);
 }
 
+/// Migration evidence only: this stresses nonce extremes and chain identity
+/// beyond the seven frozen single-nonce fixtures. It is NOT a production PoW
+/// backend, a release-parity certification, or permission to drop Kaspa.
+#[test]
+fn independent_backend_matches_nonce_boundaries_and_foreign_chain_for_all_frozen_seeds() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/fixtures/native_v3_kheavyhash_vectors.json"
+    ))
+    .unwrap();
+    let cases = fixture["vectors"].as_array().unwrap();
+    assert_eq!(cases.len(), 7);
+
+    for case in cases {
+        let label = case["name"].as_str().unwrap();
+        let chain = case["chain_id"].as_str().unwrap();
+        let mut header: BlockHeaderV3 = serde_json::from_value(case["header"].clone()).unwrap();
+        let original_nonce = header.nonce;
+        let seed = v3_pow_preimage_bytes(&header, chain).unwrap();
+        let target = pulsedag_core::pow::target_from_bits(header.difficulty);
+
+        // The pre-PoW seed must not accidentally incorporate the nonce.
+        // The reference has no imports from kaspa-hashes / kaspa-pow.
+        let nonces = std::collections::BTreeSet::from([
+            0_u64,
+            1,
+            2,
+            17,
+            u64::MAX - 1,
+            u64::MAX,
+            original_nonce,
+        ]);
+        for nonce in nonces {
+            header.nonce = nonce;
+            assert_eq!(
+                v3_pow_preimage_bytes(&header, chain).unwrap(),
+                seed,
+                "{label}: pre-PoW seed unexpectedly depends on nonce {nonce}"
+            );
+            let independent = independent_stages(&seed, nonce);
+            let production = evaluate_v3_header_pow(&header, chain).unwrap();
+            assert_eq!(
+                independent.heavy_hash, production.pow.hash,
+                "{label}: KHeavyHash backend mismatch at nonce {nonce}"
+            );
+            assert_eq!(
+                production.pow.accepted,
+                independent.heavy_hash <= target,
+                "{label}: full-256-bit target disagreement at nonce {nonce}"
+            );
+        }
+
+        let foreign_chain = format!("{chain}-different-network");
+        let foreign_seed = v3_pow_preimage_bytes(&header, &foreign_chain).unwrap();
+        assert_ne!(seed, foreign_seed, "{label}: network seed must differ");
+        let independent = independent_stages(&foreign_seed, header.nonce);
+        let production = evaluate_v3_header_pow(&header, &foreign_chain).unwrap();
+        assert_eq!(
+            independent.heavy_hash, production.pow.hash,
+            "{label}: foreign-chain backend mismatch"
+        );
+    }
+}
+
 #[test]
 fn seed_xoshiro_and_matrix_rank_negative_invariants() {
     let expected_empty_keccak = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
