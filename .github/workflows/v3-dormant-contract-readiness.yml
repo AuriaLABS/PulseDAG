@@ -107,7 +107,7 @@ jobs:
 
           for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate access_set_v1; do
             cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
-            grep -Eq '^test result: ok\\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "/tmp/dormant-contract-$module.log"
+            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "/tmp/dormant-contract-$module.log"
           done
 
       - name: Prove daemon startup rejects contract env under both compile profiles
