@@ -15,6 +15,17 @@ on:
       - "crates/pulsedag-core/src/access_set_v1.rs"
       - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
       - "crates/pulsedag-core/Cargo.toml"
+      - "crates/pulsedag-core/src/network_block_v3.rs"
+      - "crates/pulsedag-core/src/network_runtime_v3.rs"
+      - "crates/pulsedag-core/src/mined_block_v3.rs"
+      - "crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs"
+      - "crates/pulsedag-core/src/state_replay_v3.rs"
+      - "crates/pulsedag-core/src/genesis_v3.rs"
+      - "crates/pulsedag-core/src/state.rs"
+      - "crates/pulsedag-storage/src/protocol_identity.rs"
+      - "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs"
+      - "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs"
+      - "Cargo.lock"
       - ".github/workflows/v3-dormant-contract-readiness.yml"
   push:
     branches:
@@ -30,6 +41,17 @@ on:
       - "crates/pulsedag-core/src/access_set_v1.rs"
       - "crates/pulsedag-core/tests/v3_dormant_contract_readiness.rs"
       - "crates/pulsedag-core/Cargo.toml"
+      - "crates/pulsedag-core/src/network_block_v3.rs"
+      - "crates/pulsedag-core/src/network_runtime_v3.rs"
+      - "crates/pulsedag-core/src/mined_block_v3.rs"
+      - "crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs"
+      - "crates/pulsedag-core/src/state_replay_v3.rs"
+      - "crates/pulsedag-core/src/genesis_v3.rs"
+      - "crates/pulsedag-core/src/state.rs"
+      - "crates/pulsedag-storage/src/protocol_identity.rs"
+      - "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs"
+      - "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs"
+      - "Cargo.lock"
       - ".github/workflows/v3-dormant-contract-readiness.yml"
 
 permissions:
@@ -81,11 +103,11 @@ jobs:
           fi
 
           cargo test --locked -p pulsedag-core "${args[@]}" --test v3_dormant_contract_readiness -- --nocapture | tee /tmp/dormant-contract-readiness.log
-          grep -Eq '^test result: ok\. 5 passed; 0 failed;' /tmp/dormant-contract-readiness.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed; 0 ignored;' /tmp/dormant-contract-readiness.log
 
           for module in contract_v3 contract_state_v1 pulsescript_vm_v1 programmability_activation_v1 contracts_gate access_set_v1; do
             cargo test --locked -p pulsedag-core "${args[@]}" --lib "$module::tests::" -- --nocapture | tee "/tmp/dormant-contract-$module.log"
-            grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' "/tmp/dormant-contract-$module.log"
+            grep -Eq '^test result: ok\\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "/tmp/dormant-contract-$module.log"
           done
 
       - name: Prove daemon startup rejects contract env under both compile profiles
@@ -98,7 +120,8 @@ jobs:
           if [[ "$FEATURE_PROFILE" == "executable-contracts" ]]; then
             args=(--features executable-contracts)
           fi
-          cargo test --locked -p pulsedagd "${args[@]}" startup_protocol::tests::contracts_env_is_inactive_even_with_executable_feature -- --nocapture
+          cargo test --locked -p pulsedagd "${args[@]}" startup_protocol::tests::contracts_env_is_inactive_even_with_executable_feature -- --nocapture 2>&1 | tee /tmp/dormant-contract-startup.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' /tmp/dormant-contract-startup.log
           cargo clippy --locked -p pulsedagd "${args[@]}" --all-targets -- -D warnings
 
       - name: Strict clippy on tested core/profile
