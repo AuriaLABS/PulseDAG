@@ -11,12 +11,9 @@ mod trial_order_preview;
 use trial_order_preview::preview_unapproved_native_v3_order;
 
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
-    pow_v3::evaluate_v3_header_pow,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    types::BlockId,
+    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
 
 const CHAIN: &str = "pulsedag-dormant-v3-ghostdag-variable-work";
@@ -163,4 +160,3 @@ fn k32_k33_blue_anticone_pressure_on_34_actual_pow_valid_siblings() {
         );
     }
 }
-
