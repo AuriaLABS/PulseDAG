@@ -274,6 +274,60 @@ fn independent_backend_matches_nonce_boundaries_and_foreign_chain_for_all_frozen
     }
 }
 
+/// Migration evidence only: the same Kaspa-free KHeavyHash primitive must
+/// also agree with the *legacy seconds-based* header validation route.
+/// The v1/v2 preimages and admission policies remain distinct from native v3.
+#[test]
+fn legacy_v1_v2_header_pow_matches_independent_backend_across_nonce_boundaries() {
+    use pulsedag_core::{
+        pow::{canonical_pow_engine, pow_hash, target_from_bits, PowEngine},
+        protocol::{BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2},
+        types::{canonical_mining_preimage_bytes, BlockHeader},
+    };
+
+    for version in [BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2] {
+        for difficulty in [0x207f_ffff, 0x1f7f_ffff] {
+            let mut header = BlockHeader {
+                version,
+                parents: vec!["22".repeat(32), "11".repeat(32)],
+                timestamp: 1_800_000_000,
+                difficulty,
+                nonce: 0,
+                merkle_root: "33".repeat(32),
+                state_root: "44".repeat(32),
+                blue_score: 2,
+                height: 5,
+            };
+            let seed = canonical_mining_preimage_bytes(&header);
+            let target = target_from_bits(difficulty);
+            for nonce in [0_u64, 1, 17, u64::MAX] {
+                header.nonce = nonce;
+                assert_eq!(
+                    canonical_mining_preimage_bytes(&header),
+                    seed,
+                    "legacy nonce must not alter the canonical pre-PoW bytes"
+                );
+                let independent = independent_stages(&seed, nonce);
+                let canonical = canonical_pow_engine().evaluate_header(&header);
+                let direct = canonical_pow_engine()
+                    .evaluate_pre_pow_bytes_with_nonce(&seed, nonce, difficulty);
+                assert_eq!(
+                    independent.heavy_hash, canonical.hash,
+                    "version {version}, bits {difficulty:#010x}, nonce {nonce}"
+                );
+                assert_eq!(canonical, direct);
+                assert_eq!(canonical.hash, pow_hash(&header));
+                assert_eq!(canonical.accepted, independent.heavy_hash <= target);
+            }
+
+            let mut shuffled = header.clone();
+            shuffled.parents.reverse();
+            assert_eq!(canonical_mining_preimage_bytes(&shuffled), seed);
+            assert_eq!(pow_hash(&shuffled), pow_hash(&header));
+        }
+    }
+}
+
 #[test]
 fn seed_xoshiro_and_matrix_rank_negative_invariants() {
     let expected_empty_keccak = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
