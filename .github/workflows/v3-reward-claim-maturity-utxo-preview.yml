@@ -1,0 +1,68 @@
+name: v3 reward claim and maturity UTXO preview (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/src/monetary_v3.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-reward-claim-maturity-utxo-preview.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_reward_policy_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/src/monetary_v3.rs
+      - crates/pulsedag-core/src/state_replay_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-reward-claim-maturity-utxo-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-dormant-reward-claim-maturity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact head without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify head and inactive launch gates
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Rust pinned
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Strict rustfmt
+        run: cargo fmt --all -- --check
+      - name: Exactly two native reward claim and hypothetical UTXO cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_reward_policy_utxo_preview -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-reward-trial.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed; 0 ignored;' /tmp/v3-reward-trial.log
+      - name: Strict Clippy on regression suite
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_reward_policy_utxo_preview -- -D warnings
