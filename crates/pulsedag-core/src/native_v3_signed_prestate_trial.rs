@@ -551,4 +551,152 @@ mod tests {
         )
         .is_err());
     }
+
+    // This mines NO headers and accepts NO checkpoint supplied by a peer:
+    // the order and prefix UTXOs are manually trusted inside this test.
+    // It probes only signed Ed25519 transfer accounting across a local cut.
+    fn conditional_checkpoint_envelope(transfer: Transaction, height: u64) -> BlockEnvelopeV3 {
+        let mut envelope = native_envelope(vec![transfer]);
+        envelope.header.height = height;
+        envelope.header.blue_score = height;
+        envelope.header.timestamp_ns = 1_800_000_000_000_000_000 + height * 500_000_000;
+        envelope.hash = crate::header_v3::compute_block_hash_v3(&envelope.header, CHAIN).unwrap();
+        envelope
+    }
+
+    #[test]
+    fn conditional_checkpoint_signed_suffix_matches_complete_three_block_trial() {
+        let (original, funding) = funded_state();
+        let original_root = original.utxo.compute_state_root().unwrap();
+        let first = signed(funding, address(), 90, 10, 101);
+        let second = signed(
+            OutPoint {
+                txid: first.txid.clone(),
+                index: 0,
+            },
+            address(),
+            80,
+            10,
+            102,
+        );
+        let third = signed(
+            OutPoint {
+                txid: second.txid.clone(),
+                index: 0,
+            },
+            "pulse1recipient".into(),
+            70,
+            10,
+            103,
+        );
+        let a = conditional_checkpoint_envelope(first.clone(), 1);
+        let b = conditional_checkpoint_envelope(second.clone(), 2);
+        let c = conditional_checkpoint_envelope(third.clone(), 3);
+
+        let full = inspect_dormant_native_v3_explicit_order_trial(
+            &[a.clone(), b.clone(), c.clone()],
+            &original,
+        )
+        .unwrap();
+        assert_eq!(full.signed_transactions, 3);
+        assert_eq!(full.candidate_fees, 30);
+        for block in [&a, &b, &c] {
+            assert_eq!(full.fees_by_block.get(&block.hash), Some(&10));
+        }
+
+        // The local prefix is first checked independently using the signed
+        // inspector, then reconstructed through the real v2 UTXO apply path.
+        // A hash presented by an untrusted peer would NOT authorize this state.
+        let prefix = inspect_dormant_native_v3_explicit_order_trial(&[a], &original).unwrap();
+        let mut locally_authenticated = original.clone();
+        apply_transaction(&first, &mut locally_authenticated, 1).unwrap();
+        let prefix_root = locally_authenticated.utxo.compute_state_root().unwrap();
+        assert_eq!(prefix.resulting_utxo_root, prefix_root);
+        assert_eq!(prefix.candidate_fees, 10);
+
+        let suffix = inspect_dormant_native_v3_explicit_order_trial(
+            &[b.clone(), c.clone()],
+            &locally_authenticated,
+        )
+        .unwrap();
+        assert_eq!(suffix.signed_transactions, 2);
+        assert_eq!(suffix.candidate_fees, 20);
+        assert_eq!(suffix.fees_by_block.len(), 2);
+        assert_eq!(suffix.fees_by_block.get(&b.hash), Some(&10));
+        assert_eq!(suffix.fees_by_block.get(&c.hash), Some(&10));
+        assert_eq!(full.resulting_utxo_root, suffix.resulting_utxo_root);
+        assert_eq!(
+            full.candidate_fees,
+            prefix.candidate_fees + suffix.candidate_fees
+        );
+
+        // A claimed/truncated checkpoint is insufficient. Without the local
+        // first-spend prestate the second and third signed spends cannot apply.
+        assert!(
+            inspect_dormant_native_v3_explicit_order_trial(&[b.clone(), c.clone()], &original,)
+                .is_err()
+        );
+        assert!(inspect_dormant_native_v3_explicit_order_trial(
+            std::slice::from_ref(&c),
+            &locally_authenticated,
+        )
+        .is_err());
+
+        // Even changing a real output's amount by one must invalidate the
+        // independently verified prefix root and signed fee conservation.
+        let mut tampered = locally_authenticated.clone();
+        let first_output = OutPoint {
+            txid: first.txid,
+            index: 0,
+        };
+        tampered.utxo.utxos.get_mut(&first_output).unwrap().amount += 1;
+        assert_ne!(tampered.utxo.compute_state_root().unwrap(), prefix_root);
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&[b, c], &tampered).is_err());
+        assert_eq!(original.utxo.compute_state_root().unwrap(), original_root);
+        assert_eq!(
+            locally_authenticated.utxo.compute_state_root().unwrap(),
+            prefix_root
+        );
+    }
+
+    #[test]
+    fn conditional_checkpoint_competing_signed_suffixes_fail_without_double_fees() {
+        let (original, funding) = funded_state();
+        let first = signed(funding, address(), 90, 10, 201);
+        let a = conditional_checkpoint_envelope(first.clone(), 1);
+        let prefix = inspect_dormant_native_v3_explicit_order_trial(&[a], &original).unwrap();
+        let mut checkpoint = original.clone();
+        apply_transaction(&first, &mut checkpoint, 1).unwrap();
+        let checkpoint_root = checkpoint.utxo.compute_state_root().unwrap();
+        assert_eq!(prefix.resulting_utxo_root, checkpoint_root);
+
+        let source = OutPoint {
+            txid: first.txid,
+            index: 0,
+        };
+        let low =
+            conditional_checkpoint_envelope(signed(source.clone(), address(), 80, 10, 202), 2);
+        let high = conditional_checkpoint_envelope(signed(source, address(), 70, 20, 203), 2);
+        let low_only =
+            inspect_dormant_native_v3_explicit_order_trial(std::slice::from_ref(&low), &checkpoint)
+                .unwrap();
+        let high_only = inspect_dormant_native_v3_explicit_order_trial(
+            std::slice::from_ref(&high),
+            &checkpoint,
+        )
+        .unwrap();
+        assert_eq!(low_only.candidate_fees, 10);
+        assert_eq!(high_only.candidate_fees, 20);
+        assert_ne!(low_only.resulting_utxo_root, high_only.resulting_utxo_root);
+
+        // Both branch orders must fail rather than collecting 10 + 20 from
+        // mutually exclusive spends, even after a valid local checkpoint.
+        for order in [[low.clone(), high.clone()], [high.clone(), low.clone()]] {
+            assert!(inspect_dormant_native_v3_explicit_order_trial(&order, &checkpoint).is_err());
+        }
+        assert_eq!(
+            checkpoint.utxo.compute_state_root().unwrap(),
+            checkpoint_root
+        );
+    }
 }
