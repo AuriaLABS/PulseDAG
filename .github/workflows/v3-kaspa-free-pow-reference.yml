@@ -4,12 +4,22 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
       - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
       - docs/fixtures/native_v3_kheavyhash_vectors.json
       - .github/workflows/v3-kaspa-free-pow-reference.yml
   push:
     branches: [main]
     paths:
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
       - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
       - docs/fixtures/native_v3_kheavyhash_vectors.json
       - .github/workflows/v3-kaspa-free-pow-reference.yml
@@ -43,8 +53,12 @@ jobs:
           components: rustfmt, clippy
       - name: Strict rustfmt on entire workspace
         run: cargo fmt --all -- --check
-      - name: Independently compare frozen 7-stage SHA/Keccak/cSHAKE/matrix vectors
-        run: cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture
+      - name: Independently compare frozen 7-stage SHA/Keccak/cSHAKE/matrix vectors (4 tests required)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture 2>&1 | tee /tmp/v3-kaspa-free-pow-oracle.log
+          grep -Fq 'test result: ok. 4 passed; 0 failed; 0 ignored;' /tmp/v3-kaspa-free-pow-oracle.log
       - name: Strict test-only Clippy
         run: cargo clippy --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- -D warnings
       - name: Pin Cargo.lock immutability
