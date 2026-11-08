@@ -120,7 +120,21 @@ pub fn schedule_access_sets_v1(
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
     let mut accepted_sets: Vec<&AccessSetV1> = Vec::new();
+    // A duplicated caller identity makes *both* entries ambiguous, even if
+    // their resources are disjoint. Never select the first by arrival order.
+    // This remains an inactive, non-consensus scheduling hypothesis.
+    let mut seen_ids = BTreeSet::new();
+    let mut duplicate_ids = BTreeSet::new();
+    for (id, _) in ordered {
+        if !seen_ids.insert(*id) {
+            duplicate_ids.insert(*id);
+        }
+    }
     for (id, set) in ordered {
+        if duplicate_ids.contains(id) {
+            rejected.push((*id, AccessConflictClassV1::AccessUnderdeclared));
+            continue;
+        }
         if !admission.admitted() {
             rejected.push((*id, AccessConflictClassV1::AccessUnderdeclared));
             continue;
@@ -217,6 +231,102 @@ mod tests {
         assert_eq!(rejected, vec![(2, AccessConflictClassV1::AccessConflict)]);
         let again = schedule_access_sets_v1(admitted(), &window, true);
         assert_eq!((accepted, rejected), again);
+    }
+
+    #[test]
+    fn repeated_window_id_rejects_every_alias_even_when_resources_do_not_conflict() {
+        let a = writes(&[op("aa", 0)]);
+        let b = writes(&[op("bb", 1)]);
+        let c = writes(&[op("cc", 2)]);
+        let forward = [(17, a.clone()), (29, c.clone()), (17, b.clone())];
+        let reverse = [(17, b), (29, c), (17, a)];
+
+        for window in [forward, reverse] {
+            let (accepted, rejected) = schedule_access_sets_v1(admitted(), &window, true);
+            assert_eq!(accepted, vec![29]);
+            assert_eq!(
+                rejected,
+                vec![
+                    (17, AccessConflictClassV1::AccessUnderdeclared),
+                    (17, AccessConflictClassV1::AccessUnderdeclared),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_window_id_cannot_be_laundered_through_an_invalid_first_entry() {
+        let invalid = AccessSetV1 {
+            writes: BTreeSet::new(),
+            reads: BTreeSet::new(),
+            write_keys: BTreeSet::new(),
+            read_keys: BTreeSet::new(),
+        };
+        let window = [(7, invalid), (7, writes(&[op("aa", 0)]))];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &window, true);
+        assert!(accepted.is_empty());
+        assert_eq!(
+            rejected,
+            vec![
+                (7, AccessConflictClassV1::AccessUnderdeclared),
+                (7, AccessConflictClassV1::AccessUnderdeclared),
+            ]
+        );
+        let (inactive_accepted, inactive_rejected) =
+            schedule_access_sets_v1(AccessSetAdmissionV1::INACTIVE, &window, true);
+        assert!(inactive_accepted.is_empty());
+        assert_eq!(inactive_rejected, rejected);
+    }
+
+    #[test]
+    fn dormant_key_write_read_conflicts_are_symmetric_and_read_read_is_safe() {
+        let key = AccessKeyIdV1([7; 32]);
+        let mut writer = writes(&[op("writer", 0)]);
+        writer.write_keys.insert(key.clone());
+        let mut first_reader = writes(&[op("reader-one", 0)]);
+        first_reader.read_keys.insert(key.clone());
+        let mut second_reader = writes(&[op("reader-two", 0)]);
+        second_reader.read_keys.insert(key.clone());
+
+        assert!(access_sets_conflict_v1(&writer, &first_reader));
+        assert!(access_sets_conflict_v1(&first_reader, &writer));
+        assert!(!access_sets_conflict_v1(&first_reader, &second_reader));
+        assert!(!access_sets_conflict_v1(&second_reader, &first_reader));
+
+        let readers_first = [
+            (1, first_reader.clone()),
+            (2, second_reader.clone()),
+            (3, writer.clone()),
+        ];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &readers_first, true);
+        assert_eq!(accepted, vec![1, 2]);
+        assert_eq!(rejected, vec![(3, AccessConflictClassV1::AccessConflict)]);
+
+        // The order is EXTERNALLY supplied and remains non-consensus. A
+        // different order must reject both readers behind the first writer.
+        let writer_first = [(3, writer), (2, second_reader), (1, first_reader)];
+        let (accepted, rejected) = schedule_access_sets_v1(admitted(), &writer_first, true);
+        assert_eq!(accepted, vec![3]);
+        assert_eq!(
+            rejected,
+            vec![
+                (2, AccessConflictClassV1::AccessConflict),
+                (1, AccessConflictClassV1::AccessConflict),
+            ]
+        );
+
+        let (inactive, refused) =
+            schedule_access_sets_v1(AccessSetAdmissionV1::INACTIVE, &readers_first, true);
+        assert!(inactive.is_empty());
+        assert_eq!(refused.len(), readers_first.len());
+
+        let mut ambiguous = writes(&[op("ambiguous", 0)]);
+        ambiguous.write_keys.insert(key.clone());
+        ambiguous.read_keys.insert(key);
+        assert_eq!(
+            validate_access_set_v1(admitted(), &ambiguous, true),
+            Err(AccessSetV1Error::DuplicateDeclaration)
+        );
     }
 
     #[test]

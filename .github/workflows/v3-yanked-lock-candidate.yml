@@ -1,0 +1,72 @@
+name: v3 non-yanked lockfile validation (DRAFT)
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - .github/workflows/v3-yanked-lock-candidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-non-yanked-lock:
+    name: verify-non-yanked-lock / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact PR candidate without persisted token
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify checked-out source SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Pin Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Reject yanked old versions and security policy bypass
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+          packages = tomllib.loads(Path('Cargo.lock').read_text())['package']
+          versions = {}
+          for package in packages:
+              versions.setdefault(package['name'], set()).add(package['version'])
+          expected = {
+              'async-executor': '1.14.1',
+              'chacha20': '0.10.2',
+              'tokio': '1.53.3',
+              'zstd-sys': '2.1.2+zstd.1.5.7',
+              'webpki-roots': '1.0.10',
+              'rustls-webpki': '0.103.16',
+              'libz-sys': '1.1.31',
+          }
+          for name, wanted in expected.items():
+              if name == 'chacha20':
+                  assert versions.get(name) == {'0.9.1', wanted}, (name, versions.get(name))
+              else:
+                  assert versions.get(name) == {wanted}, (name, versions.get(name))
+          audit = tomllib.loads(Path('.cargo/audit.toml').read_text())
+          assert not audit.get('advisories', {}).get('ignore', []), 'Do not ignore RustSec'
+          print('Exact versions and active fail-closed audit policy verified')
+          PY
+      - name: Check locked P2P node miner wallet on exact candidate
+        run: cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
+      - name: Enforce unchanged checked-out Cargo.lock
+        shell: bash
+        run: git diff --exit-code -- Cargo.lock

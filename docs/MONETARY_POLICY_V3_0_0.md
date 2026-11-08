@@ -25,7 +25,7 @@ Authority: #781, #794, #1045. The prior 500M year-one / annual-halving curve, th
 - consensus burn: **0%**
 - programmable resource fees: **consensus-unreachable on v3.0.0 mainnet because smart-contract deployment/execution is INACTIVE**
 - canonical monetary index: deterministic ordered-DAG ordinal, genesis = score 0
-- production monetary cadence: **500 ms / 2 target score transitions per economic second**, active from monetary score 0 on both mainnet and parallel testnet
+- production monetary cadence: **500 ms / 2 target score transitions per economic second**, from monetary score 0 **on each separately authorized native-v3 network**; public testnet starts first, mainnet only after its independent GO
 - production cadence fingerprint: `6c571a95c57b7987e6a65d744d2abc9ed83c2a064ddb53b42e50cf1d6d03277f`
 - raw block height / raw BPS / header blue score are not monetary authority
 
@@ -103,7 +103,7 @@ Consensus economic time is derived from a versioned list of:
 
 A cadence change must activate at an exact canonical monetary score. Changing block cadence changes reward granularity only; equal economic time maps to equal cumulative issuance.
 
-The v3.0.0 production cadence is frozen for **both mainnet and the parallel testnet** as the same one-segment monetary-time table:
+The v3.0.0 production cadence candidate is the same one-segment monetary-time table for **the earlier public testnet and the separately authorized later mainnet**; a common policy/cadence fingerprint never authorizes launch or automatically transfers network identity:
 
 | activation_score | target_interval_ns | target interval |
 |---:|---:|---:|
@@ -113,7 +113,7 @@ Canonical cadence fingerprint:
 
 `6c571a95c57b7987e6a65d744d2abc9ed83c2a064ddb53b42e50cf1d6d03277f`
 
-The identical cadence table does **not** make the networks compatible. Mainnet and parallel testnet still require independent chain IDs, deterministic genesis identities, protocol/config fingerprints, persistent P2P identities, signing/application domains, bootnodes and public endpoints under #1049.
+The identical cadence table does **not** make the networks compatible or simultaneously launchable. Public testnet is the **first live native-v3 monetary-mining network** once #781 records `GO_PUBLIC_TESTNET` following minimum offline/CI and security gates; there is **no mandatory separate private live mining network**. Mainnet comes later, after >=30 days of meaningful public-testnet evidence and all production gates, and requires its own explicit `GO_V3_MAINNET` on #781. Mainnet and testnet must have independent chain IDs, deterministic genesis identities, protocol/config fingerprints, persistent P2P identities, signing/application domains, bootnodes and public endpoints under #1049. Monetary policy and cadence are shared specification inputs, **not a substitute for native GD-01..08 authority, authenticated monetary state or identity-bound runtime activation**. Until those are implemented and authorized, both public networks are NO-GO; monetary mining v3 OFF and smart-contract deployment/execution INACTIVE on v3.0.
 
 ### Selection evidence
 

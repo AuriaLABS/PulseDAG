@@ -264,6 +264,17 @@ def analyze(manifest: dict, rows: list[dict], *, expected_sha: str,
         require(maximum_possible is None or
                 minimum_possible <= maximum_possible,
                 f"invalid missingness quantile interval: {name}")
+    # Clock-adjusted p99.9 is a FULL-POPULATION conservative upper bound,
+    # never the quantile of just the receptions that happened to arrive.
+    # Sort all observed upper bounds and place missing receptions at +infinity
+    # (worst case). The nearest-rank upper bound is then unknown if the
+    # requested population rank falls into the missing tail.
+    p999_population_rank = (total_pairs * 999 + 999) // 1000
+    p999_clock_upper = (upper_bounded[p999_population_rank - 1]
+                        if p999_population_rank <= len(upper_bounded) else None)
+    require((p999_clock_upper is None) ==
+            (censored_bounds["p999"]["upper_ns_missing_may_be_unbounded"] is None),
+            "clock-aware and censored full-population rank disagree")
     return {
         "status": "OBSERVATIONS_NEED_INDEPENDENT_AUTHENTICATION_NOT_K_FREEZE",
         "run_id": run_id,
@@ -287,7 +298,7 @@ def analyze(manifest: dict, rows: list[dict], *, expected_sha: str,
             censored_bounds["p999"]["upper_ns_missing_may_be_unbounded"] is not None,
         "all_peer_block_receptions_observed": missing == 0,
         "p999_upper_bound_with_declared_clock_uncertainty_ns":
-            quantile(upper_bounded, 999, 1000),
+            p999_clock_upper,
         "not_authenticated_native_headers_or_anticone": True,
         "not_verified_clock_calibration_or_physical_host_independence": True,
         "not_K_false_red_or_finality_probability": True,
@@ -371,8 +382,15 @@ def self_test() -> None:
     require(incomplete["censored_full_population_quantile_bounds_ns"]
             ["p999"]["upper_ns_missing_may_be_unbounded"] is None,
             "unknown high-tail observations incorrectly imputed")
+    require(incomplete["p999_upper_bound_with_declared_clock_uncertainty_ns"] is None,
+            "missing receiver incorrectly produced a finite clock-aware p999 bound")
     require(incomplete["all_peer_block_receptions_observed"] is False,
             "missing peer count was lost")
+    require(result["p999_upper_bound_with_declared_clock_uncertainty_ns"] is not None,
+            "complete receiver population incorrectly marked unbounded")
+    require(result["p999_upper_bound_with_declared_clock_uncertainty_ns"] >=
+            result["observed_delay_ns_nearest_rank"]["p999"],
+            "clock uncertainty must not decrease full-population p999")
     require(result["all_peer_block_receptions_observed"] is True,
             "complete case incorrectly marked censored")
     require(result["censored_full_population_quantile_bounds_ns"]
@@ -463,6 +481,14 @@ def self_test() -> None:
     require(single_missing["censored_full_population_quantile_bounds_ns"]
             ["p999"]["upper_ns_missing_may_be_unbounded"] is not None,
             "finite p999 with one missing and 2904 pairs miscomputed")
+    require(single_missing["p999_upper_bound_with_declared_clock_uncertainty_ns"] is not None,
+            "one missing reception should still have finite p999 with this population")
+    # One censored observation changes the full-population p999 rank.
+    # The result must agree with the full-rank bound, not the observed p999.
+    require(single_missing["p999_upper_bound_with_declared_clock_uncertainty_ns"] >=
+            single_missing["censored_full_population_quantile_bounds_ns"]["p999"]
+            ["upper_ns_missing_may_be_unbounded"],
+            "clock-aware bound was not computed at the full population rank")
     # At least 4 unobserved pairs out of 2904 make nearest-rank p99.9
     # mathematically unbounded in the worst case.
     four_missing = check(manifest, rows[:-4])
@@ -471,6 +497,8 @@ def self_test() -> None:
     require(four_missing["censored_full_population_quantile_bounds_ns"]
             ["p999"]["upper_ns_missing_may_be_unbounded"] is None,
             "unbounded full-population p999 accidentally imputed")
+    require(four_missing["p999_upper_bound_with_declared_clock_uncertainty_ns"] is None,
+            "clock-aware p999 must be unknown when full population is unbounded")
     print("PASS: synthetic-only validator scenarios (NOT measured propagation)")
 
 

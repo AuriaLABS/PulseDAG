@@ -1,0 +1,65 @@
+name: v3 Kaspa-free Rust PoW reference (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
+      - docs/fixtures/native_v3_kheavyhash_vectors.json
+      - .github/workflows/v3-kaspa-free-pow-reference.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
+      - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
+      - docs/fixtures/native_v3_kheavyhash_vectors.json
+      - .github/workflows/v3-kaspa-free-pow-reference.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  independent-rust-pow-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact commit without persisted write credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install Rust 1.91.0, rustfmt and Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Strict rustfmt on entire workspace
+        run: cargo fmt --all -- --check
+      - name: Independently compare frozen 7-stage SHA/Keccak/cSHAKE/matrix vectors (5 tests required)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture 2>&1 | tee /tmp/v3-kaspa-free-pow-oracle.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed; 0 ignored;' /tmp/v3-kaspa-free-pow-oracle.log
+      - name: Strict test-only Clippy
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- -D warnings
+      - name: Pin Cargo.lock immutability
+        run: git diff --exit-code -- Cargo.lock

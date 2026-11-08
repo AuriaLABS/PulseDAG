@@ -1,0 +1,47 @@
+name: v3 checkpoint generation witness (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-storage/tests/native_v3_checkpoint_generation_witness_trial.rs
+      - .github/workflows/v3-checkpoint-generation-witness.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-storage/tests/native_v3_checkpoint_generation_witness_trial.rs
+      - .github/workflows/v3-checkpoint-generation-witness.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-atomic-generation-witness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact head without write credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert checkout identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust 1.91.0 with rustfmt and Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Strict rustfmt
+        run: cargo fmt --all -- --check
+      - name: Verify two private generation/reopen adversarial tests
+        run: cargo test --locked -p pulsedag-storage --test native_v3_checkpoint_generation_witness_trial -- --nocapture
+      - name: Strict Clippy on checkpoint-shaped trial only
+        run: cargo clippy --locked -p pulsedag-storage --test native_v3_checkpoint_generation_witness_trial -- -D warnings
