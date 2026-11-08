@@ -1,0 +1,70 @@
+name: v3 native checkpoint/full-DAG conditional differential (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/retarget_context_v3.rs
+      - crates/pulsedag-core/src/retarget_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-prune-ghostdag-checkpoint-differential.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/retarget_context_v3.rs
+      - crates/pulsedag-core/src/retarget_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-prune-ghostdag-checkpoint-differential.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-only-local-pinned-checkpoint-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact-head without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact-head and non-activation
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Rust pinned
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Run exactly two test-only native checkpoint differential scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-conditional-checkpoint.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed; 0 ignored;' /tmp/v3-conditional-checkpoint.log
+      - name: Strict Clippy for trial suite
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_checkpoint_prune_resume_trial -- -D warnings
