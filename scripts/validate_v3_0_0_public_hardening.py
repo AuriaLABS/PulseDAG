@@ -84,7 +84,7 @@ def main() -> None:
         "--backend",
         "cpu",
     )
-    require(
+    templates_readme = require(
         "configs/public-testnet/README.md",
         "v3.0.0",
         "pre-GO templates",
@@ -92,15 +92,32 @@ def main() -> None:
         "GO_PUBLIC_TESTNET",
         "__TASK31_FREEZE_REQUIRED__",
         "validate_v3_0_0_public_hardening.py",
+        "no mandatory private live network",
+        "legacy/ghostdag_v1",
+        "native-v3",
     )
-    require(
+    public_runbook = require(
         "docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md",
         "v3.0.0",
         "PRE-GO / NOT LAUNCHED",
-        "5-node/4-miner",
+        "no mandatory private live network",
+        "first live native-v3 monetary-mining network",
         "GO_PUBLIC_TESTNET",
         "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=true",
+        "Smart contracts remain INACTIVE throughout public testnet and mainnet v3.0.0",
     )
+    for path, body in (
+        ("configs/public-testnet/README.md", templates_readme),
+        ("docs/runbooks/V3_0_0_PUBLIC_TESTNET_PREP.md", public_runbook),
+    ):
+        for obsolete_gate in (
+            "After the private burn-in",
+            "5-node/4-miner private rehearsal PASS",
+            "demonstrated in the private rehearsal before public GO",
+            "until at least 30 accepted public-testnet days",
+        ):
+            if obsolete_gate in body:
+                fail(f"{path} retains superseded live-network gate: {obsolete_gate!r}")
     require(
         "docs/VERSION_MATRIX.md",
         "PENDING_EXACT_CANDIDATE_EVIDENCE",
