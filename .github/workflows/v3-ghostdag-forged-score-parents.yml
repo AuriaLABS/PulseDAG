@@ -1,0 +1,65 @@
+name: v3 GHOSTDAG forged score / redundant parent rejection (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_reject_forged_score_parent.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_topological_evaluation_v3.rs
+      - crates/pulsedag-core/src/native_parent_dag_context_v3.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-ghostdag-forged-score-parents.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_reject_forged_score_parent.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_topological_evaluation_v3.rs
+      - crates/pulsedag-core/src/native_parent_dag_context_v3.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-ghostdag-forged-score-parents.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-forged-pow-valid-header-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Exact-head checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact-head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Rust stable pinned
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Rust format
+        run: cargo fmt --all -- --check
+      - name: Require both negative real-PoW regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_reject_forged_score_parent -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-ghostdag-invalid-score-parent.log
+          grep -Fq 'test result: ok. 2 passed; 0 failed; 0 ignored;' /tmp/v3-ghostdag-invalid-score-parent.log
+      - name: Clippy strict integration test
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_reject_forged_score_parent -- -D warnings
