@@ -119,6 +119,7 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             "12D3KooWInvalidlBootnode",  # lowercase l
             "12D3KooWInvalid!Bootnode",  # punctuation
             "baf" + "a" * 20 + "0",  # invalid CIDv1 base32 character
+            "baf" + "a" * 20 + "8",  # valid base58 digit but illegal CIDv1 base32
         ):
             with self.subTest(invalid=invalid):
                 self.reject("bootnode_peer_ids", [candidate()["bootnode_peer_ids"][0], invalid])
