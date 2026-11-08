@@ -2,23 +2,23 @@
 
 Status: **PRE-GO / NOT LAUNCHED**
 
-Authority: issue #781 is the only public launch-control record. This document prepares operations; it cannot set `GO_PUBLIC_TESTNET`, Day 0, the 30-day clock, high cadence or contracts.
+Authority: issue #781 is the only public launch-control record. This document prepares operations; it cannot set `GO_PUBLIC_TESTNET`, Day 0, the 30-day clock, high cadence or contracts. **Public testnet is the first live native-v3 monetary-mining network: no mandatory private live network.** See #1418 and the v3 testnet-first runbook proposed in #1417.
 
 ## Hard preconditions
 
 Before any public endpoint or bootnode is advertised, all of the following must be attached to #781/#794 on one exact release SHA:
 
-1. #789/private burn-in/restart/prune/restore/rejoin PASS on the exact v3.0.0 candidate;
-2. 5-node/4-miner private rehearsal PASS across independent failure domains;
+1. native-v3 deterministic consensus/monetary-admission minimum (GD-01..08, PoW, retarget, signed transfers, reward/fee conservation, contract-INACTIVE) implemented and verified by exact-head **offline/local CI**;
+2. explicit **testnet-only** monetary activation bound to the frozen testnet genesis, chain ID, signing domain and configuration digest, with mainnet/legacy fail-closed; **no mandatory private live network** or 5-node/4-miner rehearsal before public testnet;
 3. exact source SHA and release artifact digests;
 4. frozen chain ID, network profile, genesis hash and config digests;
 5. at least two persistent bootnode peer IDs and final `/p2p/<peer-id>` multiaddrs;
 6. public RPC DNS/TLS owner, request limits, per-IP limits and CORS allowlist;
 7. storage/backup/NTP/firewall checks for every role;
-8. security review including #1127 disposition (historical #803);
+8. exact-candidate security/dependency review including reachable package inventory and #1387, P2P/RPC abuse controls and incident ownership;
 9. explicit `GO_PUBLIC_TESTNET` in #781.
 
-Until then, the repository templates under `configs/public-testnet/` intentionally retain placeholders and `PULSEDAG_P2P_ENABLED=false`.
+Until then, the repository templates under `configs/public-testnet/` intentionally retain placeholders and `PULSEDAG_P2P_ENABLED=false`. **They still use legacy/ghostdag_v1 modes, so changing those flags cannot activate valid native-v3 monetary consensus.** Before testnet GO, a distinct reviewed native-v3-specific configuration, protocol/runtime and identity guard are necessary; legacy fallback must fail closed.
 
 ## Role separation
 
@@ -95,7 +95,7 @@ No `example.*` or placeholder hostname may appear in the final launch evidence.
 - RocksDB must live on persistent storage outside extracted release directories.
 - Snapshot creation/verification is an operator-only action.
 - Compact prune requires a verified snapshot according to the configured gate.
-- Restore and clean-node catch-up must be demonstrated in the private rehearsal before public GO.
+- Before testnet GO, verify snapshot/restore **fail-closed** behavior in offline/local CI without asserting a production checkpoint. After testnet GO, prove genuine restart, prune, rejoin and clean-node catch-up on the **public testnet**; use that evidence for the later separate mainnet decision.
 - Preserve enough free disk for compaction/recovery; alert before the configured safety margin is exhausted.
 
 ## Observability
@@ -128,4 +128,4 @@ Only after the freeze record is complete:
 
 Do not launch, or stop and record an incident, on any consensus/state divergence, unexplained data loss, security blocker without approved disposition, stale control plane, persistent peer-mesh failure, submit-finality incoherence, artifact/config digest mismatch, or loss of rollback/recovery capability.
 
-Smart contracts remain disabled until at least 30 accepted public-testnet days and a separate activation approval.
+**Smart contracts remain INACTIVE throughout public testnet and mainnet v3.0.0**, regardless of how long the testnet runs. The bounded core must be implementation-ready before mainnet, but live deployment/execution requires a separately versioned future protocol upgrade and its own GO; 30 days alone never authorize activation.
