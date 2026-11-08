@@ -111,6 +111,25 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
         self.reject("bootnode_peer_ids", "12D3KooWSyntheticBootnodeA")
         self.reject("bootnode_peer_ids", ["short", "also-short"])
 
+    def test_reject_non_peer_id_bootnode_ascii_and_accept_lexical_cidv1(self) -> None:
+        for invalid in (
+            "12D3KooWInvalid0Bootnode",  # base58btc disallows zero
+            "12D3KooWInvalidOBootnode",  # capital O
+            "12D3KooWInvalidIBootnode",  # capital I
+            "12D3KooWInvalidlBootnode",  # lowercase l
+            "12D3KooWInvalid!Bootnode",  # punctuation
+            "baf" + "a" * 20 + "0",  # invalid CIDv1 base32 character
+        ):
+            with self.subTest(invalid=invalid):
+                self.reject("bootnode_peer_ids", [candidate()["bootnode_peer_ids"][0], invalid])
+
+        m = candidate()
+        m["bootnode_peer_ids"] = ["baf" + "a" * 32, "12D3KooWSyntheticBootnodeB"]
+        verdict = check_candidate(m)
+        self.assertEqual(verdict["schema_shape"], "PASS_ONLY")
+        self.assertFalse(verdict["public_testnet_launch_authorized"])
+        self.assertFalse(verdict["genesis_and_consensus_verified"])
+
     def test_reject_same_daemon_and_miner_digest(self) -> None:
         self.reject("miner_artifact_sha256", candidate()["node_artifact_sha256"])
 
