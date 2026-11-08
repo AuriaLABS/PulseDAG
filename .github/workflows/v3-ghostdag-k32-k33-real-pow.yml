@@ -1,0 +1,66 @@
+name: v3 GHOSTDAG K32 K33 PoW boundary (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_k32_k33_real_pow.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-ghostdag-k32-k33-real-pow.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_k32_k33_real_pow.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/src/header_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-ghostdag-k32-k33-real-pow.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-non-normative-34-sibling-k-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify SHA and do not activate any network
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Rust pinned
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Strict rustfmt
+        run: cargo fmt --all -- --check
+      - name: Exactly one 34-sibling PoW K=0/32/33 boundary scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_k32_k33_real_pow -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-k32-k33-test.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' /tmp/v3-k32-k33-test.log
+      - name: Strict Clippy for exact test
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_k32_k33_real_pow -- -D warnings
