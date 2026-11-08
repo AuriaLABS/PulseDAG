@@ -2,15 +2,12 @@
 //! Extracted from archived mixed-scope PR #1341; no activation or K freeze.
 //! K=0..2 are experimental values and not production policy.
 
-use std::collections::BTreeMap;
 use pulsedag_core::{
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
+    genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
     native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
-    pow_v3::evaluate_v3_header_pow,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    types::BlockId,
+    pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3, types::BlockId,
 };
+use std::collections::BTreeMap;
 
 const CHAIN: &str = "pulsedag-dormant-v3-ghostdag-variable-work";
 const GENESIS_NS: u64 = 1_800_000_004_000_000_000;
