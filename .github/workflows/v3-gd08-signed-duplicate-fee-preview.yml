@@ -1,0 +1,69 @@
+name: v3 GD-08 signed conflict and duplicate fee trial (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/validation_v2.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-gd08-signed-duplicate-fee-preview.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/src/native_v3_signed_prestate_trial.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/validation_v2.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - Cargo.lock
+      - .github/workflows/v3-gd08-signed-duplicate-fee-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-dormant-conditional-gd08-trial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout exact-head without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Confirm exact candidate SHA and no launch
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Rust stable 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Format all code
+        run: cargo fmt --all -- --check
+      - name: Exactly five genuine Ed25519 + native v3 PoW preview regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_signed_v2_utxo_bridge -- --nocapture --test-threads=1 2>&1 | tee /tmp/gd08-signed-conditional.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed; 0 ignored;' /tmp/gd08-signed-conditional.log
+      - name: No clippy warnings in the exact integration suite
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_signed_v2_utxo_bridge -- -D warnings
