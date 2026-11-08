@@ -17,4 +17,4 @@ This is a **negative trust-boundary regression**. It intentionally does not impl
 
 Formal GD-01..07 consensus-policy freeze, independently authenticated checkpoint chain/genesis/version/policy identity, trustworthy historical-work and selected-spine commitments, canonical GD-08 red-inclusive monetary ordering, byte-for-byte full-DAG vs pruned restore/retarget/fee/UTXO/reward comparison, crash/reorg atomicity and adversarial invalid checkpoint tests. No proof here covers production retarget with genuine authenticated pruned history or production 500ms convergence.
 
-**Native-v3 monetary mining OFF. Smart contracts INACTIVE/fail-closed in v3.0. [#781](https://github.com/AuriaLABS/PulseDAG/issues/781) public mainnet and parallel testnet NO-GO.**
+**Native-v3 monetary mining OFF. Smart contracts INACTIVE/fail-closed in v3.0. [#781](https://github.com/AuriaLABS/PulseDAG/issues/781) public testnet NO-GO first, and mainnet NO-GO later under separate decisions. The real network pruning/rejoin proof belongs to the authorized public testnet after its GO; pre-GO checks remain local/CI.**
