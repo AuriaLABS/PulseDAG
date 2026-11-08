@@ -2,7 +2,7 @@
 
 These files are **pre-GO templates**, not launch configuration and not a frozen public network identity.
 
-They deliberately contain `__TASK31_FREEZE_REQUIRED__` placeholders and keep network activation fail-closed. Until issue #781 records an explicit `GO_PUBLIC_TESTNET`, the templates must retain:
+They deliberately contain `__TASK31_FREEZE_REQUIRED__` placeholders and keep network activation fail-closed. **Current node/seed/observer templates still select legacy/ghostdag_v1, not native-v3 monetary admission. They are NOT a launch-ready native-v3 testnet profile.** A separate reviewed native-v3 identity-bound configuration and runtime must exist before public GO; do not merely flip a readiness/P2P flag. Until issue #781 records an explicit `GO_PUBLIC_TESTNET`, the templates must retain:
 
 - `PULSEDAG_PUBLIC_TESTNET_READY=false`
 - `PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false`
@@ -21,9 +21,9 @@ Do not advertise DNS names, bootnodes, public RPC, peer IDs or Day 0 from these 
 
 ## Render only after the launch-control gate
 
-After the private burn-in and 5-node/4-miner rehearsal pass on one exact release SHA, Task31/#781 must freeze and record the source SHA, chain ID, network profile, genesis/config digests, node/miner artifact digests, bootnode peer IDs/multiaddrs and public endpoint ownership.
+Before `GO_PUBLIC_TESTNET`, Task31/#781 must freeze and record the exact source SHA, a **native-v3-only** chain ID/genesis/consensus activation/config digest, separate mainnet identity, node/miner artifacts, bootnode peer IDs/multiaddrs, public endpoint ownership, and offline/CI safety evidence. **No mandatory private live network or 5-node/4-miner rehearsal is required before public testnet.** Public testnet is the **first live native-v3 monetary mining network**; larger multi-node/fork/prune/recovery exercises take place there after its own GO.
 
-Only then may an operator copy a template to a host-local file and replace every `__TASK31_FREEZE_REQUIRED__` placeholder with the values recorded in the launch-control evidence. P2P/public exposure remains disabled until the explicit GO is recorded.
+Only after a new **native-v3** template and an implementation of testnet-only monetary activation pass exact-head CI, and #781 records `GO_PUBLIC_TESTNET`, may an operator render the verified network-specific configuration and expose approved nodes. The legacy `ghostdag_v1` examples in this directory must not be promoted into a monetary-v3 network. P2P/public exposure remains disabled before GO.
 
 The repository validator `scripts/validate_v3_0_0_public_hardening.py` fails if a pre-GO template loses these guardrails or accidentally contains apparent credentials/private keys.
 
