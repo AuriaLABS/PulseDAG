@@ -132,8 +132,36 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             "signing_domain": "pulsedag:v3:mainnet:later",
         }
         result = check_candidate(m)
-        self.assertTrue(result["mainnet_cross_identity_frozen"])
+        self.assertTrue(result["future_mainnet_identity_shape_checked"])
+        self.assertFalse(result["mainnet_cross_identity_frozen"])
         self.assertFalse(result["mainnet_launch_authorized"])
+
+    def test_reject_future_mainnet_disguised_as_other_network(self) -> None:
+        baseline = {
+            "chain_id": "pulsedag-mainnet-v3",
+            "genesis_hash": "cd" * 32,
+            "signing_domain": "pulsedag:v3:mainnet:later",
+        }
+        for incorrect in (
+            {"chain_id": "pulsedag-public-testnet-v3-other"},
+            {"chain_id": "pulsedag-mainnet-v2"},
+            {"chain_id": "pulsedag-mainnet-v3-DRAFT"},
+            {"chain_id": "pulsedag-mainnet-v3-shadow_2"},
+            {"signing_domain": "pulsedag:v3:public-testnet:other"},
+            {"signing_domain": "pulsedag:v3:mainnet:x"},
+            {"signing_domain": "pulsedag:v3:mainnet:BAD"},
+            {"signing_domain": "pulsedag:legacy:mainnet:other"},
+        ):
+            draft = candidate()
+            draft["future_mainnet_identity"] = {**baseline, **incorrect}
+            with self.subTest(incorrect=incorrect), self.assertRaises(CandidateError):
+                check_candidate(draft)
+
+    def test_absent_future_mainnet_is_not_mistaken_for_authority(self) -> None:
+        verdict = check_candidate(candidate())
+        self.assertFalse(verdict["future_mainnet_identity_shape_checked"])
+        self.assertFalse(verdict["mainnet_cross_identity_frozen"])
+        self.assertFalse(verdict["mainnet_launch_authorized"])
 
     def test_any_testnet_mainnet_overlap_rejected(self) -> None:
         m = candidate()

@@ -18,7 +18,7 @@ The current daemon in `apps/pulsedagd/src/startup_protocol.rs` accepts only `leg
 - Exact-shape proposed `source_git_sha`, `node_artifact_sha256`, `miner_artifact_sha256`, `config_sha256`; current monetary-policy SHA-256 and cadence SHA-256 as **syntactic candidate inputs**, not independently verified bytes.
 - Two to sixteen distinct proposed `bootnode_peer_ids` (string format only; this does not validate real libp2p IDs or ownership).
 - JSON `false` for **all** `monetary_runtime_enabled`, `contracts_enabled`, `admin_enabled`, `public_testnet_ready`, `thirty_day_clock_started`, `allow_legacy_fallback`.
-- `future_mainnet_identity` is **null** before the later mainnet freeze, or a three-field object `{chain_id, genesis_hash, signing_domain}` with no value equal to the testnet fields. This does not waive the mandatory future full mainnet isolation proof.
+- `future_mainnet_identity` is **null** when mainnet has no draft identity, or a three-field **unapproved** object `{chain_id, genesis_hash, signing_domain}`. If present, its chain ID must be scoped `pulsedag-mainnet-v3` (optionally with lowercase suffixes), its signing domain `pulsedag:v3:mainnet:<name>`, and neither its chain ID, genesis hash nor signing domain may coincide with public testnet. Shape checks NEVER freeze mainnet or authenticate that the supplied mainnet values correspond to actual artifacts; a final cross-network isolation proof remains mandatory.
 
 Duplicate JSON fields, missing/unexpected fields, malformed hashes, non-Boolean false aliases, placeholders, chain/signing-domain substitutions, duplicated bootnode identifiers and candidate status promoted to GO are rejected. Unknown fields are rejected to prevent unnoticed activation or credential material.
 
@@ -29,7 +29,7 @@ python3 scripts/v3_public_testnet_identity_shape_gate.py /path/to/UNAPPROVED-DRA
 python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_identity_shape_gate.py'
 ```
 
-A successful output explicitly sets `public_testnet_launch_authorized=false`, `mainnet_launch_authorized=false`, `source_and_artifacts_authenticated=false` and `monetary_runtime_enabled=false`. It must **never** be interpreted as a runnable config, attestation, readiness clock start or approval to deploy a network.
+A successful output explicitly sets `public_testnet_launch_authorized=false`, `mainnet_launch_authorized=false`, `mainnet_cross_identity_frozen=false`, `source_and_artifacts_authenticated=false` and `monetary_runtime_enabled=false`. A supplied future-mainnet draft only sets `future_mainnet_identity_shape_checked=true` (syntactic validation, not proof). It must **never** be interpreted as a runnable config, attestation, readiness clock start or approval to deploy a network.
 
 ## Independent remaining release gates
 
