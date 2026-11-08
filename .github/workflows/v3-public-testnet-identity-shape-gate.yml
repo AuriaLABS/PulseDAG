@@ -1,0 +1,62 @@
+name: v3 public-testnet identity draft shape gate (NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/v3_public_testnet_identity_shape_gate.py
+      - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
+      - .github/workflows/v3-public-testnet-identity-shape-gate.yml
+      - docs/MONETARY_POLICY_V3_0_0.md
+  push:
+    branches: [main]
+    paths:
+      - scripts/v3_public_testnet_identity_shape_gate.py
+      - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
+      - .github/workflows/v3-public-testnet-identity-shape-gate.yml
+      - docs/MONETARY_POLICY_V3_0_0.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reject-unsafe-identity-drafts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact-head SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Compile and run offline standard-library negative fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/v3_public_testnet_identity_shape_gate.py \
+            scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+          python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_identity_shape_gate.py'
+      - name: Verify launch authority remains absent in the source and templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq '"public_testnet_launch_authorized": False' scripts/v3_public_testnet_identity_shape_gate.py
+          grep -Fq '"mainnet_launch_authorized": False' scripts/v3_public_testnet_identity_shape_gate.py
+          grep -Fq '"monetary_runtime_enabled": False' scripts/v3_public_testnet_identity_shape_gate.py
+          grep -Fq '"contracts_enabled": False' scripts/v3_public_testnet_identity_shape_gate.py
+          grep -Fq 'PULSEDAG_P2P_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1' configs/public-testnet/node.env.template
+          grep -Fq '"monetary_v3").is_err()' apps/pulsedagd/src/startup_protocol.rs
