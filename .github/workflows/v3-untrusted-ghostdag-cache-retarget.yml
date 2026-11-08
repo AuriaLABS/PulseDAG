@@ -1,0 +1,71 @@
+name: v3 GHOSTDAG untrusted metadata and retarget regression (TEST ONLY)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_topological_evaluation_v3.rs
+      - crates/pulsedag-core/src/retarget_context_v3.rs
+      - crates/pulsedag-core/src/retarget_genesis_guard_v3.rs
+      - crates/pulsedag-core/src/retarget_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
+      - .github/workflows/v3-untrusted-ghostdag-cache-retarget.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_topological_evaluation_v3.rs
+      - crates/pulsedag-core/src/retarget_context_v3.rs
+      - crates/pulsedag-core/src/retarget_genesis_guard_v3.rs
+      - crates/pulsedag-core/src/retarget_v3.rs
+      - crates/pulsedag-core/src/pow_v3.rs
+      - crates/pulsedag-core/Cargo.toml
+      - Cargo.lock
+      - .github/workflows/v3-untrusted-ghostdag-cache-retarget.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-full-history-non-normative:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Exact head, no write credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify checked-out SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Pinned toolchain and lint
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Check Rustfmt
+        run: cargo fmt --all -- --check
+      - name: Run all five required non-ignored tests; keep optional perf profiling ignored
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- --nocapture --test-threads=1 2>&1 | tee /tmp/v3-ghostdag-untrusted-retarget.log
+          grep -Fq 'test result: ok. 5 passed; 0 failed; 1 ignored;' /tmp/v3-ghostdag-untrusted-retarget.log
+      - name: Strict Clippy on this integration target
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_perf_probe -- -D warnings
+      - name: Confirm Cargo.lock unchanged
+        run: git diff --exit-code -- Cargo.lock
