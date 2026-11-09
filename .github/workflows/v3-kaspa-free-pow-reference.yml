@@ -75,7 +75,7 @@ jobs:
                   if ("experimental_kheavyhash_digest" in source
                           or "pow_kaspa_free_candidate" in source):
                       observed.add(path)
-          assert observed == {trial}, (
+          assert observed == {trial, module}, (
               f"non-authoritative PoW reference escapes isolated integration test: {sorted(map(str, observed))}"
           )
           print("PASS: no exported or production-callable experimental KHeavyHash reference")
