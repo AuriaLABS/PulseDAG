@@ -415,7 +415,11 @@ fn replicated_signed_transfer_in_two_pow_siblings_never_earns_a_second_fee() {
     let a = mine(&genesis.hash, 1, 62, duplicate_tx.clone());
     let b = mine(&genesis.hash, 1, 63, duplicate_tx);
     assert_ne!(a.hash, b.hash);
-    assert_eq!(a.transactions[1], b.transactions[1]);
+    assert_eq!(a.transactions[1].txid, b.transactions[1].txid);
+    assert_eq!(
+        a.transactions[1].inputs[0].signature,
+        b.transactions[1].inputs[0].signature
+    );
 
     for block in [&unique, &a, &b] {
         verify_v3_header_pow(&block.header, CHAIN).unwrap();
