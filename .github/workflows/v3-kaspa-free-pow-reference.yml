@@ -87,12 +87,12 @@ jobs:
           components: rustfmt, clippy
       - name: Strict rustfmt on entire workspace
         run: cargo fmt --all -- --check
-      - name: Independently compare frozen 7-stage SHA/Keccak/cSHAKE/matrix vectors (5 tests required)
+      - name: Compare 7 frozen vectors and 16 seeded diversity inputs (6 tests required)
         shell: bash
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture 2>&1 | tee /tmp/v3-kaspa-free-pow-oracle.log
-          grep -Fq 'test result: ok. 5 passed; 0 failed; 0 ignored;' /tmp/v3-kaspa-free-pow-oracle.log
+          grep -Fq 'test result: ok. 6 passed; 0 failed; 0 ignored;' /tmp/v3-kaspa-free-pow-oracle.log
       - name: Strict test-only Clippy
         run: cargo clippy --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- -D warnings
       - name: Pin Cargo.lock immutability
