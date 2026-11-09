@@ -9,6 +9,10 @@ on:
       - crates/pulsedag-core/src/header_v3.rs
       - crates/pulsedag-core/Cargo.toml
       - Cargo.lock
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/src/pow_kaspa_free_candidate.rs
+      - crates/**/src/**
+      - apps/**/src/**
       - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
       - docs/fixtures/native_v3_kheavyhash_vectors.json
       - .github/workflows/v3-kaspa-free-pow-reference.yml
@@ -20,6 +24,10 @@ on:
       - crates/pulsedag-core/src/header_v3.rs
       - crates/pulsedag-core/Cargo.toml
       - Cargo.lock
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/src/pow_kaspa_free_candidate.rs
+      - crates/**/src/**
+      - apps/**/src/**
       - crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs
       - docs/fixtures/native_v3_kheavyhash_vectors.json
       - .github/workflows/v3-kaspa-free-pow-reference.yml
@@ -46,6 +54,32 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Reject experimental PoW use outside the integration-test crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          module = Path("crates/pulsedag-core/src/pow_kaspa_free_candidate.rs")
+          library = Path("crates/pulsedag-core/src/lib.rs")
+          trial = Path("crates/pulsedag-core/tests/native_v3_kaspa_free_pow_oracle_trial.rs")
+          assert module.is_file() and trial.is_file() and library.is_file()
+          assert "pub mod pow_kaspa_free_candidate" not in library.read_text(encoding="utf-8")
+          assert '#[path = "../src/pow_kaspa_free_candidate.rs"]' in trial.read_text(encoding="utf-8")
+          assert "use pow_kaspa_free_candidate::experimental_kheavyhash_digest;" in trial.read_text(encoding="utf-8")
+          observed = set()
+          for root in (Path("crates"), Path("apps")):
+              for path in root.rglob("*.rs"):
+                  source = path.read_text(encoding="utf-8")
+                  if ("experimental_kheavyhash_digest" in source
+                          or "pow_kaspa_free_candidate" in source):
+                      observed.add(path)
+          assert observed == {trial}, (
+              f"non-authoritative PoW reference escapes isolated integration test: {sorted(map(str, observed))}"
+          )
+          print("PASS: no exported or production-callable experimental KHeavyHash reference")
+          PY
       - name: Install Rust 1.91.0, rustfmt and Clippy
         uses: dtolnay/rust-toolchain@stable
         with:
