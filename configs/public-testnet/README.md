@@ -17,7 +17,8 @@ Do not advertise DNS names, bootnodes, public RPC, peer IDs or Day 0 from these 
 `scripts/validate_v3_0_0_public_hardening.py` now checks the **active**
 `PULSEDAG_KEY=value` assignments in each unrendered seed/node/observer template,
 not merely the presence of `false` text. A required disabled flag hidden in
-a comment, an overridden or duplicate key, a shell `export`/substitution,
+a comment, an overridden or duplicate key, an unreviewed `PULSEDAG_` variable,
+a shell `export`/substitution,
 ambiguous whitespace/inline commands, a public RPC bind, a premature network
 identity or a non-legacy startup mode is rejected. The restricted literal
 syntax is intentional for these unrendered, non-executable safety templates.
