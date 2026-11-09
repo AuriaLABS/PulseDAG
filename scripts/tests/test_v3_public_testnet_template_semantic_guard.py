@@ -121,6 +121,27 @@ class PublicTestnetTemplateSemanticGuardTests(unittest.TestCase):
                 self.reject(original + "\n" + injected + "\n")
         self.reject(original + ("# " + "x" * (64 * 1024)))
 
+    def test_safety_sensitive_allowed_keys_cannot_weaken_pre_go_defaults(self) -> None:
+        original = self.template(TEMPLATES[1])
+        for key, unsafe in (
+            ("PULSEDAG_RPC_RATE_LIMIT_PER_IP", "false"),
+            ("PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE", "0"),
+            ("PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES", "9999999"),
+            ("PULSEDAG_PRUNE_REQUIRE_SNAPSHOT", "false"),
+            ("PULSEDAG_PERSIST_SNAPSHOT_ON_START", "false"),
+            ("PULSEDAG_P2P_MDNS", "true"),
+            ("PULSEDAG_P2P_IDENTITY_KEY", "/tmp/identity.key"),
+            ("PULSEDAG_ROCKSDB_PATH", "/tmp/shared-mainnet"),
+            ("PULSEDAG_RPC_CORS_ALLOWLIST", "example.org"),
+        ):
+            with self.subTest(key=key):
+                line = next(
+                    item for item in original.splitlines()
+                    if item.startswith(f"{key}=")
+                )
+                self.reject(original.replace(line, f"{key}={unsafe}", 1))
+
+
 
 if __name__ == "__main__":
     unittest.main()
