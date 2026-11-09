@@ -35,6 +35,53 @@ def function_slice(source: str, marker: str) -> str:
     return source[start:] if end < 0 else source[start:end]
 
 
+# Exact assignment checks for UNRENDERED pre-GO templates. A grep match in a
+# comment, duplicated env entry, shell expression or alternate assignment is
+# not evidence that a future operator would load a safe configuration.
+PUBLIC_TEMPLATE_REQUIRED = {
+    "PULSEDAG_CONFIG_PROFILE": "testnet",
+    "PULSEDAG_NETWORK_PROFILE": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_CHAIN_ID": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_CONSENSUS_MODE": "legacy",
+    "PULSEDAG_PROTOCOL_CONSENSUS_MODE": "ghostdag_v1",
+    "PULSEDAG_P2P_ENABLED": "false",
+    "PULSEDAG_P2P_BOOTSTRAP": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_PUBLIC_P2P_MULTIADDR": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_RPC_BIND": "127.0.0.1:8080",
+    "PULSEDAG_API_PROFILE": "public_safe",
+    "PULSEDAG_ADMIN_ENABLED": "false",
+    "PULSEDAG_EXPERIMENTAL_FAST_CADENCE": "false",
+    "PULSEDAG_CONTRACTS_ENABLED": "false",
+    "PULSEDAG_PUBLIC_TESTNET_READY": "false",
+    "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED": "false",
+}
+
+
+def validate_public_template_assignments(body: str, path: str) -> dict[str, str]:
+    """Parse literal pre-GO env assignments, never evaluate or render shell."""
+    if len(body.encode("utf-8")) > 64 * 1024:
+        fail(f"{path}: pre-GO env template exceeds 64 KiB")
+    assignments: dict[str, str] = {}
+    for number, raw_line in enumerate(body.splitlines(), 1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Reject whitespace aliases, shell substitutions, inline comments,
+        # export statements, hidden secondary commands and mixed-case keys.
+        match = re.fullmatch(r"(PULSEDAG_[A-Z0-9_]+)=([A-Za-z0-9_./:,+-]*)", raw_line)
+        if match is None:
+            fail(f"{path}:{number}: only unquoted literal PULSEDAG_KEY=value allowed")
+        key, value = match.groups()
+        if key in assignments:
+            fail(f"{path}:{number}: duplicate assignment for {key}")
+        assignments[key] = value
+
+    for key, expected in PUBLIC_TEMPLATE_REQUIRED.items():
+        if assignments.get(key) != expected:
+            fail(f"{path}: active {key} must be exact pre-GO value {expected!r}")
+    return assignments
+
+
 def main() -> None:
     if text("VERSION").strip() != "v3.0.0":
         fail("VERSION is not v3.0.0")
@@ -68,6 +115,7 @@ def main() -> None:
             "PULSEDAG_PUBLIC_TESTNET_READY=false",
             "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false",
         )
+        validate_public_template_assignments(body, path)
         if "PULSEDAG_P2P_ENABLED=true" in body:
             fail(f"{path} enables P2P before GO")
         if re.search(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY", body):
