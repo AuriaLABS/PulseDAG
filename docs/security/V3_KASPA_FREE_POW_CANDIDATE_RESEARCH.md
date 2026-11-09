@@ -8,6 +8,12 @@ To prepare **a reviewed, separately reproducible migration**, the isolated `crat
 
 The independent integration test `native_v3_kaspa_free_pow_oracle_trial.rs` uses a file-local `#[path = "../src/pow_kaspa_free_candidate.rs"]` module import. The candidate is **not exported from `pulsedag-core/src/lib.rs`**, so daemon, miner and other production crates cannot link to it as an ordinary library API. The test now compares the reusable candidate against **both** the previously frozen seven cross-language vectors and canonical Rusty Kaspa backend for the same PoW seeds, including u64 nonce extremes and an altered chain ID. The original independent test oracle still computes its own result, and KHeavyHash consensus remains **only** in `pow.rs`.
 
+## Additional deterministic primitive-differential coverage (NOT production certification)
+
+The standalone Rust integration test now additionally creates **16 reproducible test-only pre-PoW byte seeds** (Keccak256 of versioned test labels) and evaluates **three unique nonce values per seed**, including zero, a nontrivial 64-bit nonce and `u64::MAX`: **48 extra KHeavyHash evaluations**. The independently implemented test oracle, the isolated research candidate and the **unchanged canonical Kaspa engine** must all compute identical 256-bit hashes. A compact-target check alternates two valid difficulty encodings, and repeated nonce results are rejected. The existing seven cross-language frozen native-v3 header fixtures, legacy v1/v2 header tests and integer matrix-rank witnesses remain unchanged. Strict CI requires all **six** tests to pass, not only a generic zero exit code.
+
+These deterministic seeds are **not actual network block headers or a statistically meaningful security fuzz campaign**. Passing does not establish production backend parity under every input, matrix retry distribution, throughput, CPU/GPU/Windows equivalence, or removal of any RustSec exposure. In particular, no change to `kaspa-pow` wiring, monetary runtime or consensus authority is authorized by this test.
+
 ## Scope and limits
 
 - Fail-closed CI inspects Rust files under `crates/` and `apps/` to reject imports or invocations outside this one integration test; a future candidate promotion requires explicit separate review, not just adding a runtime call. This is a textual guard, **not** a compiler-enforced proof of non-reachability.

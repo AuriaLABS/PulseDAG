@@ -356,6 +356,64 @@ fn legacy_v1_v2_header_pow_matches_independent_backend_across_nonce_boundaries()
     }
 }
 
+/// More inputs than the fixed seven golden headers: deterministic
+/// KHeavyHash *primitive* diversity, not native-v3 consensus approval.
+///
+/// Seeds are independently generated test bytes rather than network headers;
+/// they exercise nonce extremes, nontrivial 64-bit nonces and two full-width
+/// compact targets without changing any live PoW or mining implementation.
+#[test]
+fn deterministic_diversity_seeds_match_our_oracle_candidate_and_kaspa_pow() {
+    use pulsedag_core::pow::{canonical_pow_engine, target_from_bits, PowEngine};
+
+    for index in 0..16_u64 {
+        let label = format!("PulseDAG:TEST_ONLY:kheavyhash-differential:v1:{index:02}");
+        let pre_pow_seed = Keccak256::digest(label.as_bytes());
+        let seed: &[u8] = &pre_pow_seed;
+        let difficulty = if index % 2 == 0 {
+            0x207f_ffff
+        } else {
+            0x1f7f_ffff
+        };
+        let target = target_from_bits(difficulty);
+        let mut distinct_hashes = std::collections::BTreeSet::new();
+
+        for nonce in [
+            0_u64,
+            (index + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            u64::MAX,
+        ] {
+            let independently_computed = independent_stages(seed, nonce);
+            let bounded_candidate = experimental_kheavyhash_digest(seed, nonce);
+            let canonical =
+                canonical_pow_engine().evaluate_pre_pow_bytes_with_nonce(seed, nonce, difficulty);
+            assert_eq!(
+                bounded_candidate,
+                Some(independently_computed.heavy_hash),
+                "seed {index} nonce {nonce}: bounded reference drift"
+            );
+            assert_eq!(
+                canonical.hash, independently_computed.heavy_hash,
+                "seed {index} nonce {nonce}: upstream Kaspa digest drift"
+            );
+            assert_eq!(
+                canonical.accepted,
+                independently_computed.heavy_hash <= target,
+                "seed {index} nonce {nonce}: compact-target acceptance drift"
+            );
+            assert!(
+                independently_computed.retries < 32,
+                "seed {index}: research-only matrix budget exceeded"
+            );
+            assert!(
+                distinct_hashes.insert(independently_computed.heavy_hash),
+                "seed {index}: duplicate hash in tested nonce inputs"
+            );
+        }
+        assert_eq!(distinct_hashes.len(), 3, "seed {index}: nonce diversity");
+    }
+}
+
 #[test]
 fn seed_xoshiro_and_matrix_rank_negative_invariants() {
     let expected_empty_keccak = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
