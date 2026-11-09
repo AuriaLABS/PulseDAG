@@ -9,6 +9,9 @@ on:
       - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
+      - scripts/native_v3_checkpoint_external_anchor_trial.py
+      - scripts/tests/test_native_v3_checkpoint_external_anchor_trial.py
+      - docs/runbooks/V3_NATIVE_CHECKPOINT_EXTERNAL_PIN_TRIAL.md
   push:
     branches: [main]
     paths:
@@ -17,6 +20,9 @@ on:
       - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
+      - scripts/native_v3_checkpoint_external_anchor_trial.py
+      - scripts/tests/test_native_v3_checkpoint_external_anchor_trial.py
+      - docs/runbooks/V3_NATIVE_CHECKPOINT_EXTERNAL_PIN_TRIAL.md
   workflow_dispatch:
 
 permissions:
@@ -45,8 +51,11 @@ jobs:
           set -euo pipefail
           python3 -m py_compile \
             scripts/v3_public_testnet_identity_shape_gate.py \
-            scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+            scripts/tests/test_v3_public_testnet_identity_shape_gate.py \
+            scripts/native_v3_checkpoint_external_anchor_trial.py \
+            scripts/tests/test_native_v3_checkpoint_external_anchor_trial.py
           python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_identity_shape_gate.py'
+          python3 -m unittest discover -v -s scripts/tests -p 'test_native_v3_checkpoint_external_anchor_trial.py'
       - name: Verify launch authority remains absent in the source and templates
         shell: bash
         run: |
@@ -55,6 +64,10 @@ jobs:
           grep -Fq '"mainnet_launch_authorized": False' scripts/v3_public_testnet_identity_shape_gate.py
           grep -Fq '"monetary_runtime_enabled": False' scripts/v3_public_testnet_identity_shape_gate.py
           grep -Fq '"contracts_enabled": False' scripts/v3_public_testnet_identity_shape_gate.py
+          grep -Fq '"checkpoint_launch_authorized": False' scripts/native_v3_checkpoint_external_anchor_trial.py
+          grep -Fq '"independent_pin_provenance_authenticated": False' scripts/native_v3_checkpoint_external_anchor_trial.py
+          grep -Fq '"monetary_runtime_enabled": False' scripts/native_v3_checkpoint_external_anchor_trial.py
+          grep -Fq '"contracts_enabled": False' scripts/native_v3_checkpoint_external_anchor_trial.py
           grep -Fq 'PULSEDAG_P2P_ENABLED=false' configs/public-testnet/node.env.template
           grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
