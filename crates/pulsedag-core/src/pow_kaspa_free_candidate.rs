@@ -123,4 +123,3 @@ pub fn experimental_kheavyhash_digest(seed_bytes: &[u8], nonce: u64) -> Option<[
     }
     Some(cshake256(&matrix_xor, b"HeavyHash"))
 }
-
