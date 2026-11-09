@@ -9,6 +9,7 @@
 
 use pulsedag_core::{
     header_v3::BlockHeaderV3,
+    pow_kaspa_free_candidate::experimental_kheavyhash_digest,
     pow_v3::{evaluate_v3_header_pow, v3_pow_preimage_bytes},
 };
 use sha3::{
@@ -167,6 +168,12 @@ fn pure_rust_non_kaspa_oracle_matches_seven_frozen_v3_vectors_and_current_engine
             case["canonical_seed_hex"].as_str().unwrap()
         );
         let candidate = independent_stages(&seed, header.nonce);
+        let reusable = experimental_kheavyhash_digest(&seed, header.nonce)
+            .expect("frozen research matrix fits bounded candidate budget");
+        assert_eq!(
+            reusable, candidate.heavy_hash,
+            "{label}: reusable candidate parity"
+        );
         let expected = &case["stages"];
         assert_eq!(
             hex::encode(candidate.pre_pow),
@@ -250,6 +257,12 @@ fn independent_backend_matches_nonce_boundaries_and_foreign_chain_for_all_frozen
                 "{label}: pre-PoW seed unexpectedly depends on nonce {nonce}"
             );
             let independent = independent_stages(&seed, nonce);
+            let reusable = experimental_kheavyhash_digest(&seed, nonce)
+                .expect("frozen nonce-extreme corpus fits bounded diagnostic");
+            assert_eq!(
+                reusable, independent.heavy_hash,
+                "{label}: standalone Kaspa-free candidate differs at nonce {nonce}"
+            );
             let production = evaluate_v3_header_pow(&header, chain).unwrap();
             assert_eq!(
                 independent.heavy_hash, production.pow.hash,
@@ -266,6 +279,11 @@ fn independent_backend_matches_nonce_boundaries_and_foreign_chain_for_all_frozen
         let foreign_seed = v3_pow_preimage_bytes(&header, &foreign_chain).unwrap();
         assert_ne!(seed, foreign_seed, "{label}: network seed must differ");
         let independent = independent_stages(&foreign_seed, header.nonce);
+        assert_eq!(
+            experimental_kheavyhash_digest(&foreign_seed, header.nonce),
+            Some(independent.heavy_hash),
+            "{label}: foreign-chain candidate parity"
+        );
         let production = evaluate_v3_header_pow(&header, &foreign_chain).unwrap();
         assert_eq!(
             independent.heavy_hash, production.pow.hash,
@@ -308,6 +326,11 @@ fn legacy_v1_v2_header_pow_matches_independent_backend_across_nonce_boundaries()
                     "legacy nonce must not alter the canonical pre-PoW bytes"
                 );
                 let independent = independent_stages(&seed, nonce);
+                assert_eq!(
+                    experimental_kheavyhash_digest(&seed, nonce),
+                    Some(independent.heavy_hash),
+                    "legacy version {version} nonce {nonce} candidate parity"
+                );
                 let canonical = canonical_pow_engine().evaluate_header(&header);
                 let direct = canonical_pow_engine()
                     .evaluate_pre_pow_bytes_with_nonce(&seed, nonce, difficulty);

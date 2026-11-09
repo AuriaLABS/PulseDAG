@@ -98,6 +98,10 @@ jobs:
               Path("crates/pulsedag-core/tests/native_v3_checkpoint_prune_resume_trial.rs"),
               Path("crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs"),
               Path("crates/pulsedag-core/tests/native_v3_ghostdag_perf_probe.rs"),
+              # Already integrated isolated native-v3 K-boundary/forged-score
+              # regressions; these are tests, NEVER a production authority.
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_k32_k33_real_pow.rs"),
+              Path("crates/pulsedag-core/tests/native_v3_ghostdag_reject_forged_score_parent.rs"),
               Path("crates/pulsedag-core/tests/native_v3_signed_v2_utxo_bridge.rs"),
               Path("crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs"),
               Path("crates/pulsedag-storage/tests/native_v3_dormant_atomic_checkpoint_trial.rs"),
