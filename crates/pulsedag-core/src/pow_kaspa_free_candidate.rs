@@ -68,7 +68,7 @@ fn matrix_rank(values: &[[u8; 64]; 64]) -> usize {
 
 fn generate_matrix(seed: [u8; 32]) -> Option<[[u8; 64]; 64]> {
     let mut rng = Xoshiro256PlusPlus::from_seed(seed);
-    for retry in 0..32_usize {
+    for _ in 0..32_usize {
         let mut matrix = [[0_u8; 64]; 64];
         for row in &mut matrix {
             for chunk in row.chunks_exact_mut(16) {
