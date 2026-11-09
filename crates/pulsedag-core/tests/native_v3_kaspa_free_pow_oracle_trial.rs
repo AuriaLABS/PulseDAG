@@ -369,7 +369,7 @@ fn deterministic_diversity_seeds_match_our_oracle_candidate_and_kaspa_pow() {
     for index in 0..16_u64 {
         let label = format!("PulseDAG:TEST_ONLY:kheavyhash-differential:v1:{index:02}");
         let pre_pow_seed = Keccak256::digest(label.as_bytes());
-        let seed = pre_pow_seed.as_slice();
+        let seed: &[u8] = &pre_pow_seed;
         let difficulty = if index % 2 == 0 {
             0x207f_ffff
         } else {
@@ -380,7 +380,7 @@ fn deterministic_diversity_seeds_match_our_oracle_candidate_and_kaspa_pow() {
 
         for nonce in [
             0_u64,
-            index.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            (index + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15),
             u64::MAX,
         ] {
             let independently_computed = independent_stages(seed, nonce);
