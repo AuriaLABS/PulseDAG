@@ -401,3 +401,71 @@ fn three_pow_siblings_two_conflicts_and_one_independent_spend_never_count_both_f
     }
     assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
 }
+
+// Two distinct PoW-authenticated siblings can carry the exact same signed
+// transaction (txid and signature). The test-only replay must never attribute
+// the same valid fee twice, regardless of which block arrived first.
+#[test]
+fn replicated_signed_transfer_in_two_pow_siblings_never_earns_a_second_fee() {
+    let (state, sources) = trusted_test_state();
+    let original_root = state.utxo.compute_state_root().unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let unique = mine(&genesis.hash, 1, 61, signed(sources[0].clone(), 90, 10, 61));
+    let duplicate_tx = signed(sources[1].clone(), 93, 7, 62);
+    let a = mine(&genesis.hash, 1, 62, duplicate_tx.clone());
+    let b = mine(&genesis.hash, 1, 63, duplicate_tx);
+    assert_ne!(a.hash, b.hash);
+    assert_eq!(a.transactions[1], b.transactions[1]);
+
+    for block in [&unique, &a, &b] {
+        verify_v3_header_pow(&block.header, CHAIN).unwrap();
+    }
+    let headers = authenticated_headers(&genesis, &[unique.clone(), a.clone(), b.clone()]);
+    let mut tips = vec![unique.hash.clone(), a.hash.clone(), b.hash.clone()];
+    tips.sort();
+    let ancestry = derive_dormant_native_v3_topological_evaluation(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        &tips,
+        &headers,
+    )
+    .unwrap();
+    assert_eq!(ancestry.verified_dag.authenticated_non_genesis_headers, 3);
+    assert_eq!(ancestry.ordered_reachable_headers.len(), 4);
+
+    // Each pair is a separate *conditional* replay hypothesis, not a
+    // consensus winner. Both valid choices must conserve exactly the same
+    // 10 + 7 fees and the same UTXO root, never crediting a third block.
+    let only_a =
+        inspect_dormant_native_v3_explicit_order_trial(&[unique.clone(), a.clone()], &state)
+            .unwrap();
+    let only_b =
+        inspect_dormant_native_v3_explicit_order_trial(&[b.clone(), unique.clone()], &state)
+            .unwrap();
+    assert_eq!(only_a.candidate_fees, 17);
+    assert_eq!(only_a.signed_transactions, 2);
+    assert_eq!(only_b.candidate_fees, 17);
+    assert_eq!(only_b.signed_transactions, 2);
+    assert_eq!(only_a.resulting_utxo_root, only_b.resulting_utxo_root);
+    assert_eq!(only_a.fees_by_block.get(&unique.hash), Some(&10));
+    assert_eq!(only_a.fees_by_block.get(&a.hash), Some(&7));
+    assert!(!only_a.fees_by_block.contains_key(&b.hash));
+    assert_eq!(only_b.fees_by_block.get(&unique.hash), Some(&10));
+    assert_eq!(only_b.fees_by_block.get(&b.hash), Some(&7));
+    assert!(!only_b.fees_by_block.contains_key(&a.hash));
+
+    // All 3! reception orders containing both identical transactions are
+    // invalid, regardless of their independently valid PoW block hashes.
+    for order in [
+        [unique.clone(), a.clone(), b.clone()],
+        [unique.clone(), b.clone(), a.clone()],
+        [a.clone(), unique.clone(), b.clone()],
+        [a.clone(), b.clone(), unique.clone()],
+        [b.clone(), unique.clone(), a.clone()],
+        [b.clone(), a.clone(), unique.clone()],
+    ] {
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&order, &state).is_err());
+    }
+    assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
+}
