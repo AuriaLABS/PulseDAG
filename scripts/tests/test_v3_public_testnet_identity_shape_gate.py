@@ -111,6 +111,31 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
         self.reject("bootnode_peer_ids", "12D3KooWSyntheticBootnodeA")
         self.reject("bootnode_peer_ids", ["short", "also-short"])
 
+    def test_reject_non_peer_id_bootnode_ascii_and_accept_lexical_cidv1(self) -> None:
+        # Each negative Base58 fixture differs from a valid lexical peer ID
+        # by exactly one forbidden character. Multiple forbidden letters in
+        # a fixture would mask regressions in the alphabet checker.
+        good = candidate()["bootnode_peer_ids"][0]
+        self.assertIn("S", good)
+        for forbidden in ("0", "O", "I", "l", "!"):
+            invalid = good.replace("S", forbidden, 1)
+            with self.subTest(forbidden=forbidden):
+                self.reject("bootnode_peer_ids", [good, invalid])
+
+        for invalid in (
+            "baf" + "a" * 20 + "0",  # invalid CIDv1 base32 character
+            "baf" + "a" * 20 + "8",  # valid base58 digit but illegal CIDv1 base32
+        ):
+            with self.subTest(invalid=invalid):
+                self.reject("bootnode_peer_ids", [good, invalid])
+
+        m = candidate()
+        m["bootnode_peer_ids"] = ["baf" + "a" * 32, "12D3KooWSyntheticBootnodeB"]
+        verdict = check_candidate(m)
+        self.assertEqual(verdict["schema_shape"], "PASS_ONLY")
+        self.assertFalse(verdict["public_testnet_launch_authorized"])
+        self.assertFalse(verdict["genesis_and_consensus_verified"])
+
     def test_reject_same_daemon_and_miner_digest(self) -> None:
         self.reject("miner_artifact_sha256", candidate()["node_artifact_sha256"])
 

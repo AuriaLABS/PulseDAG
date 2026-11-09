@@ -22,6 +22,10 @@ TESTNET_CHAIN = re.compile(r"^pulsedag-public-testnet-v3(?:-[a-z0-9]+)*$")
 TESTNET_DOMAIN = re.compile(r"^pulsedag:v3:public-testnet:[a-z0-9_-]{4,64}$")
 MAINNET_CHAIN = re.compile(r"^pulsedag-mainnet-v3(?:-[a-z0-9]+)*$")
 MAINNET_DOMAIN = re.compile(r"^pulsedag:v3:mainnet:[a-z0-9_-]{4,64}$")
+# These are lexical checks only. Real libp2p multihash/CID decoding,
+# public-key ownership and a signed chain-bound bootnode inventory are separate GO gates.
+BASE58BTC_PEER = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{16,128}$")
+CIDV1_BASE32_PEER = re.compile(r"^baf[a-z2-7]{13,125}$")
 PLACEHOLDERS = ("TBD", "PLACEHOLDER", "FREEZE_REQUIRED", "REPLACE_ME", "EXAMPLE")
 MAX_MANIFEST_BYTES = 64 * 1024
 REQUIRED = frozenset({
@@ -132,8 +136,12 @@ def check_candidate(candidate: object) -> dict:
     if type(bootnodes) is not list or not 2 <= len(bootnodes) <= 16:
         reject("require 2-16 distinct proposed public-testnet bootnode identities")
     peers = [_text(peer, "bootnode_peer_id") for peer in bootnodes]
-    if any(not 16 <= len(peer) <= 128 for peer in peers) or len(set(peers)) != len(peers):
-        reject("invalid or duplicate bootnode peer identity")
+    if len(set(peers)) != len(peers) or any(
+        not (CIDV1_BASE32_PEER.fullmatch(peer) if peer.startswith("baf")
+             else BASE58BTC_PEER.fullmatch(peer))
+        for peer in peers
+    ):
+        reject("invalid or duplicate bootnode peer identity (base58btc/CIDv1 lexical shape only)")
 
     for field in (
         "monetary_runtime_enabled", "contracts_enabled", "admin_enabled",
