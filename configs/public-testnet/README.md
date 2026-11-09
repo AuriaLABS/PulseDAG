@@ -12,6 +12,25 @@ They deliberately contain `__TASK31_FREEZE_REQUIRED__` placeholders and keep net
 
 Do not advertise DNS names, bootnodes, public RPC, peer IDs or Day 0 from these files.
 
+## Active pre-GO template guard (offline only)
+
+`scripts/validate_v3_0_0_public_hardening.py` now checks the **active**
+`PULSEDAG_KEY=value` assignments in each unrendered seed/node/observer template,
+not merely the presence of `false` text. A required disabled flag hidden in
+a comment, an overridden or duplicate key, a shell `export`/substitution,
+ambiguous whitespace/inline commands, a public RPC bind, a premature network
+identity or a non-legacy startup mode is rejected. The restricted literal
+syntax is intentional for these unrendered, non-executable safety templates.
+
+The negative fixtures in
+`scripts/tests/test_v3_public_testnet_template_semantic_guard.py`
+exercise those cases on ordinary and optimized Python; the exact-head GitHub
+Action also invokes the full pre-GO hardening validator. This **does not**
+prove that an externally rendered configuration is authentic, safe or
+authorized; future testnet-specific monetary activation needs its own exact
+artifact/identity-bound validation and a recorded `GO_PUBLIC_TESTNET`.
+Contracts remain **INACTIVE** regardless.
+
 ## Intended roles
 
 - `seed.env.template`: future public seed/bootnode role.
