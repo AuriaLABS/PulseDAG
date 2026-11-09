@@ -9,9 +9,14 @@
 
 use pulsedag_core::{
     header_v3::BlockHeaderV3,
-    pow_kaspa_free_candidate::experimental_kheavyhash_digest,
     pow_v3::{evaluate_v3_header_pow, v3_pow_preimage_bytes},
 };
+// Compile the experimental candidate ONLY inside this integration-test crate.
+// Never export it via pulsedag-core::lib or make it reachable from daemon/miner.
+#[path = "../src/pow_kaspa_free_candidate.rs"]
+mod pow_kaspa_free_candidate;
+use pow_kaspa_free_candidate::experimental_kheavyhash_digest;
+
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
     CShake256, CShake256Core, Digest, Keccak256,
