@@ -5,6 +5,7 @@ network identities, frozen artifacts, genesis or permission to launch.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import subprocess
@@ -14,6 +15,20 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Fake binary Ed25519 public-key fields / SHA256 digests, NOT real bootnode keys.
+# Both alphabets below encode the SAME first synthetic multihash.
+FAKE_PEER_A = "12D3KooW9tJMax94Lrqw7Y5Qw36viGQAS2gTEPQ5Wg1vTk7xPfQs"
+FAKE_PEER_B = "12D3KooWC3hpAb3PGQMBaS5etbYL2H6aF7QtnRNKPjLvKuZ8JKjV"
+FAKE_PEER_A_CID = "bafzaajaiaejcaaicamcakbqhbaequcymbuha6earcijrifiwc4mbsgq3dqor4hza"
+FAKE_SHA58 = "QmfZxBuQen1NwBcAt7QEs7Cnyx4S5JsE11ZgywXhucyFx3"
+FAKE_SHA_CID = "bafzbeih77367z6727h4pp5xv6tz7f4pq57xo33hl5lu6rz7g4xsohyxb4a"
+
+
+def cidv1_bytes(raw: bytes) -> str:
+    """Make malformed CIDv1 fixtures without relying on the production parser."""
+    return "b" + base64.b32encode(raw).decode("ascii").lower().rstrip("=")
+
+
 from v3_public_testnet_identity_shape_gate import (  # noqa: E402
     CADENCE_SHA256,
     POLICY_SHA256,
@@ -39,7 +54,7 @@ def candidate() -> dict:
         "config_sha256": "56" * 32,
         "monetary_policy_sha256": POLICY_SHA256,
         "cadence_sha256": CADENCE_SHA256,
-        "bootnode_peer_ids": ["12D3KooWSyntheticBootnodeA", "12D3KooWSyntheticBootnodeB"],
+        "bootnode_peer_ids": [FAKE_PEER_A, FAKE_PEER_B],
         "monetary_runtime_enabled": False,
         "contracts_enabled": False,
         "admin_enabled": False,
@@ -107,8 +122,8 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
 
     def test_require_unique_proposed_bootnode_identities(self) -> None:
         self.reject("bootnode_peer_ids", [])
-        self.reject("bootnode_peer_ids", ["12D3KooWSyntheticBootnodeA"] * 2)
-        self.reject("bootnode_peer_ids", "12D3KooWSyntheticBootnodeA")
+        self.reject("bootnode_peer_ids", [FAKE_PEER_A] * 2)
+        self.reject("bootnode_peer_ids", FAKE_PEER_A)
         self.reject("bootnode_peer_ids", ["short", "also-short"])
 
     def test_reject_non_peer_id_bootnode_ascii_and_accept_lexical_cidv1(self) -> None:
@@ -130,11 +145,45 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
                 self.reject("bootnode_peer_ids", [good, invalid])
 
         m = candidate()
-        m["bootnode_peer_ids"] = ["baf" + "a" * 32, "12D3KooWSyntheticBootnodeB"]
+        m["bootnode_peer_ids"] = [FAKE_PEER_A_CID, FAKE_PEER_B]
         verdict = check_candidate(m)
         self.assertEqual(verdict["schema_shape"], "PASS_ONLY")
         self.assertFalse(verdict["public_testnet_launch_authorized"])
         self.assertFalse(verdict["genesis_and_consensus_verified"])
+
+    def test_reject_duplicate_identity_across_base58_and_cidv1(self) -> None:
+        self.reject("bootnode_peer_ids", [FAKE_PEER_A, FAKE_PEER_A_CID])
+
+    def test_accept_synthetic_sha2_multihash_not_as_network_authority(self) -> None:
+        m = candidate()
+        m["bootnode_peer_ids"] = [FAKE_SHA58, FAKE_PEER_B]
+        self.assertFalse(check_candidate(m)["public_testnet_launch_authorized"])
+        m["bootnode_peer_ids"] = [FAKE_SHA_CID, FAKE_PEER_B]
+        self.assertFalse(check_candidate(m)["source_and_artifacts_authenticated"])
+        self.reject("bootnode_peer_ids", [FAKE_SHA58, FAKE_SHA_CID])
+
+    def test_reject_wrong_cid_codec_and_multihash_payload(self) -> None:
+        ed25519 = bytes((0, 36, 8, 1, 18, 32)) + bytes(range(1, 33))
+        for malformed in (
+            cidv1_bytes(bytes((2, 0x72)) + ed25519),  # wrong CID version
+            cidv1_bytes(bytes((1, 0x71)) + ed25519),  # wrong codec
+            cidv1_bytes(bytes((1, 0x72)) + ed25519[:-1]),  # truncated identity
+            cidv1_bytes(bytes((1, 0x72)) + ed25519 + b"X"),  # excess trailing byte
+            cidv1_bytes(bytes((1, 0x72)) + bytes((0, 36, 8, 2, 18, 32))
+                        + bytes(range(1, 33))),  # unsupported identity type
+            cidv1_bytes(bytes((1, 0x72, 0x13, 32)) + bytes(range(32))),
+            cidv1_bytes(bytes((1, 0x72, 0x12, 31)) + bytes(range(32))),
+            cidv1_bytes(bytes((1, 0x72, 0x80, 0x00, 36, 8, 1, 18, 32))
+                        + bytes(range(1, 33))),  # nonminimal multihash varint
+        ):
+            with self.subTest(malformed=malformed):
+                self.reject("bootnode_peer_ids", [FAKE_PEER_B, malformed])
+
+    def test_legacy_lexically_valid_gibberish_is_not_a_peer_id(self) -> None:
+        for malformed in ("123456789ABCDEFGHJKLMNPQRSTUVWXYZ", "baf" + "a" * 32,
+                          FAKE_PEER_A[:-1], FAKE_PEER_A + "2"):
+            with self.subTest(malformed=malformed):
+                self.reject("bootnode_peer_ids", [FAKE_PEER_B, malformed])
 
     def test_reject_same_daemon_and_miner_digest(self) -> None:
         self.reject("miner_artifact_sha256", candidate()["node_artifact_sha256"])
