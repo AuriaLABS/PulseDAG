@@ -385,16 +385,15 @@ fn deterministic_diversity_seeds_match_our_oracle_candidate_and_kaspa_pow() {
         ] {
             let independently_computed = independent_stages(seed, nonce);
             let bounded_candidate = experimental_kheavyhash_digest(seed, nonce);
-            let canonical = canonical_pow_engine()
-                .evaluate_pre_pow_bytes_with_nonce(seed, nonce, difficulty);
+            let canonical =
+                canonical_pow_engine().evaluate_pre_pow_bytes_with_nonce(seed, nonce, difficulty);
             assert_eq!(
                 bounded_candidate,
                 Some(independently_computed.heavy_hash),
                 "seed {index} nonce {nonce}: bounded reference drift"
             );
             assert_eq!(
-                canonical.hash,
-                independently_computed.heavy_hash,
+                canonical.hash, independently_computed.heavy_hash,
                 "seed {index} nonce {nonce}: upstream Kaspa digest drift"
             );
             assert_eq!(
