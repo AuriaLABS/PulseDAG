@@ -92,6 +92,25 @@ PUBLIC_TEMPLATE_ALLOWED_KEYS = frozenset({
 })
 
 
+# Freeze existing safety-sensitive values in the UNRENDERED pre-GO inputs.
+# A key-name allowlist alone does not prevent weaker RPC throttling or
+# snapshot protections from being silently configured before public GO.
+PUBLIC_TEMPLATE_SAFETY_VALUES = {
+    "PULSEDAG_P2P_MODE": "libp2p-real",
+    "PULSEDAG_P2P_LISTEN": "/ip4/0.0.0.0/tcp/30333",
+    "PULSEDAG_P2P_MDNS": "false",
+    "PULSEDAG_P2P_KADEMLIA": "true",
+    "PULSEDAG_P2P_IDENTITY_KEY": "/var/lib/pulsedag/identity.key",
+    "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES": "131072",
+    "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE": "30",
+    "PULSEDAG_RPC_RATE_LIMIT_PER_IP": "true",
+    "PULSEDAG_ROCKSDB_PATH": "/var/lib/pulsedag/rocksdb",
+    "PULSEDAG_AUTO_REBUILD_ON_START": "true",
+    "PULSEDAG_PERSIST_SNAPSHOT_ON_START": "true",
+    "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT": "true",
+}
+
+
 def validate_public_template_assignments(body: str, path: str) -> dict[str, str]:
     """Parse literal pre-GO env assignments, never evaluate or render shell."""
     if len(body.encode("utf-8")) > 64 * 1024:
@@ -113,9 +132,13 @@ def validate_public_template_assignments(body: str, path: str) -> dict[str, str]
             fail(f"{path}:{number}: duplicate assignment for {key}")
         assignments[key] = value
 
-    for key, expected in PUBLIC_TEMPLATE_REQUIRED.items():
+    for key, expected in {**PUBLIC_TEMPLATE_REQUIRED, **PUBLIC_TEMPLATE_SAFETY_VALUES}.items():
         if assignments.get(key) != expected:
             fail(f"{path}: active {key} must be exact pre-GO value {expected!r}")
+    if assignments.get("PULSEDAG_RPC_CORS_ALLOWLIST") not in (
+        "", "__TASK31_FREEZE_REQUIRED__"
+    ):
+        fail(f"{path}: CORS must remain empty or unresolved before public GO")
     return assignments
 
 
