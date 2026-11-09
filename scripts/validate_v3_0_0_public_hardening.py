@@ -57,6 +57,41 @@ PUBLIC_TEMPLATE_REQUIRED = {
 }
 
 
+PUBLIC_TEMPLATE_ALLOWED_KEYS = frozenset({
+    "PULSEDAG_ADMIN_ENABLED",
+    "PULSEDAG_API_PROFILE",
+    "PULSEDAG_AUTO_PRUNE_ENABLED",
+    "PULSEDAG_AUTO_PRUNE_EVERY_BLOCKS",
+    "PULSEDAG_AUTO_REBUILD_ON_START",
+    "PULSEDAG_CHAIN_ID",
+    "PULSEDAG_CONFIG_PROFILE",
+    "PULSEDAG_CONSENSUS_MODE",
+    "PULSEDAG_CONTRACTS_ENABLED",
+    "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
+    "PULSEDAG_NETWORK_PROFILE",
+    "PULSEDAG_P2P_BOOTSTRAP",
+    "PULSEDAG_P2P_ENABLED",
+    "PULSEDAG_P2P_IDENTITY_KEY",
+    "PULSEDAG_P2P_KADEMLIA",
+    "PULSEDAG_P2P_LISTEN",
+    "PULSEDAG_P2P_MDNS",
+    "PULSEDAG_P2P_MODE",
+    "PULSEDAG_PERSIST_SNAPSHOT_ON_START",
+    "PULSEDAG_PROTOCOL_CONSENSUS_MODE",
+    "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
+    "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
+    "PULSEDAG_PUBLIC_P2P_MULTIADDR",
+    "PULSEDAG_PUBLIC_TESTNET_READY",
+    "PULSEDAG_ROCKSDB_PATH",
+    "PULSEDAG_RPC_BIND",
+    "PULSEDAG_RPC_CORS_ALLOWLIST",
+    "PULSEDAG_RPC_RATE_LIMIT_PER_IP",
+    "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE",
+    "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES",
+    "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED",
+})
+
+
 def validate_public_template_assignments(body: str, path: str) -> dict[str, str]:
     """Parse literal pre-GO env assignments, never evaluate or render shell."""
     if len(body.encode("utf-8")) > 64 * 1024:
@@ -72,6 +107,8 @@ def validate_public_template_assignments(body: str, path: str) -> dict[str, str]
         if match is None:
             fail(f"{path}:{number}: only unquoted literal PULSEDAG_KEY=value allowed")
         key, value = match.groups()
+        if key not in PUBLIC_TEMPLATE_ALLOWED_KEYS:
+            fail(f"{path}:{number}: unreviewed pre-GO config key {key}")
         if key in assignments:
             fail(f"{path}:{number}: duplicate assignment for {key}")
         assignments[key] = value
