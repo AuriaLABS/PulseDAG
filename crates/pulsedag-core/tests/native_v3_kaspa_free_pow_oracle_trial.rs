@@ -276,6 +276,11 @@ fn independent_backend_matches_nonce_boundaries_and_foreign_chain_for_all_frozen
         let foreign_seed = v3_pow_preimage_bytes(&header, &foreign_chain).unwrap();
         assert_ne!(seed, foreign_seed, "{label}: network seed must differ");
         let independent = independent_stages(&foreign_seed, header.nonce);
+        assert_eq!(
+            experimental_kheavyhash_digest(&foreign_seed, header.nonce),
+            Some(independent.heavy_hash),
+            "{label}: foreign-chain candidate parity"
+        );
         let production = evaluate_v3_header_pow(&header, &foreign_chain).unwrap();
         assert_eq!(
             independent.heavy_hash, production.pow.hash,
@@ -318,6 +323,11 @@ fn legacy_v1_v2_header_pow_matches_independent_backend_across_nonce_boundaries()
                     "legacy nonce must not alter the canonical pre-PoW bytes"
                 );
                 let independent = independent_stages(&seed, nonce);
+                assert_eq!(
+                    experimental_kheavyhash_digest(&seed, nonce),
+                    Some(independent.heavy_hash),
+                    "legacy version {version} nonce {nonce} candidate parity"
+                );
                 let canonical = canonical_pow_engine().evaluate_header(&header);
                 let direct = canonical_pow_engine()
                     .evaluate_pre_pow_bytes_with_nonce(&seed, nonce, difficulty);
