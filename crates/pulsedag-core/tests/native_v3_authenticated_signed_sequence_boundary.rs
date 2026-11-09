@@ -372,11 +372,17 @@ fn three_pow_siblings_two_conflicts_and_one_independent_spend_never_count_both_f
     let mut expected_a = state.clone();
     apply_transaction(&a.transactions[1], &mut expected_a, 1).unwrap();
     apply_transaction(&c.transactions[1], &mut expected_a, 1).unwrap();
-    assert_eq!(ac.resulting_utxo_root, expected_a.utxo.compute_state_root().unwrap());
+    assert_eq!(
+        ac.resulting_utxo_root,
+        expected_a.utxo.compute_state_root().unwrap()
+    );
     let mut expected_b = state.clone();
     apply_transaction(&b.transactions[1], &mut expected_b, 1).unwrap();
     apply_transaction(&c.transactions[1], &mut expected_b, 1).unwrap();
-    assert_eq!(bc.resulting_utxo_root, expected_b.utxo.compute_state_root().unwrap());
+    assert_eq!(
+        bc.resulting_utxo_root,
+        expected_b.utxo.compute_state_root().unwrap()
+    );
 
     // All 3! peer arrival permutations contain a valid double spend and must
     // fail closed without paying BOTH 10+15 conflicting fees, or mutating state.
