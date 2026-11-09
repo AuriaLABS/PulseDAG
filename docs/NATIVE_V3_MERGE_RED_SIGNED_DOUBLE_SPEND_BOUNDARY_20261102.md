@@ -13,4 +13,4 @@ The test file already runs via the SHA-exact `v3-dormant-ghostdag-core-probe.yml
 
 **Still NOT proven:** native consensus and economics policy freeze (trial K32/8-parent), red-block transaction inclusion/fee disposition, canonical selected-parent/total order, PoW-driven committed monetary UTXO state root, reward finality/maturity, 500ms physical propagation, atomic checkpoint/restart, or all-node agreement. In particular *rejecting a conflicting pair* does **not** determine which valid branch wins or whether any red block's transaction may be included.
 
-**Constraints:** native v3 monetary mining OFF; smart contracts INACTIVE/fail-closed; mainnet and public parallel testnet **NO-GO** until #781 authorization.
+**Constraints:** native v3 monetary mining OFF; smart contracts INACTIVE/fail-closed; public testnet **NO-GO** first and later mainnet **NO-GO**, each requiring a separate exact-candidate #781 authorization. Offline/CI checks precede testnet; genuine live monetary fork/prune/stress evidence follows its GO. No private monetary network is a mandatory intermediate launch stage.
