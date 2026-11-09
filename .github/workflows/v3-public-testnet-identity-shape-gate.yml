@@ -6,6 +6,9 @@ on:
     paths:
       - scripts/v3_public_testnet_identity_shape_gate.py
       - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - scripts/validate_v3_0_0_public_hardening.py
+      - scripts/tests/test_v3_public_testnet_template_semantic_guard.py
+      - "configs/public-testnet/**"
       - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
@@ -17,6 +20,9 @@ on:
     paths:
       - scripts/v3_public_testnet_identity_shape_gate.py
       - scripts/tests/test_v3_public_testnet_identity_shape_gate.py
+      - scripts/validate_v3_0_0_public_hardening.py
+      - scripts/tests/test_v3_public_testnet_template_semantic_guard.py
+      - "configs/public-testnet/**"
       - docs/runbooks/V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md
       - .github/workflows/v3-public-testnet-identity-shape-gate.yml
       - docs/MONETARY_POLICY_V3_0_0.md
@@ -56,6 +62,9 @@ jobs:
             scripts/tests/test_native_v3_checkpoint_external_anchor_trial.py
           python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_identity_shape_gate.py'
           python3 -m unittest discover -v -s scripts/tests -p 'test_native_v3_checkpoint_external_anchor_trial.py'
+          python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_template_semantic_guard.py'
+          python3 -O -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_template_semantic_guard.py'
+          python3 scripts/validate_v3_0_0_public_hardening.py
       - name: Verify launch authority remains absent in the source and templates
         shell: bash
         run: |
