@@ -8,6 +8,8 @@ It NEVER contacts nodes, writes configuration, toggles env flags or grants GO.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import re
 import sys
@@ -24,6 +26,7 @@ MAINNET_CHAIN = re.compile(r"^pulsedag-mainnet-v3(?:-[a-z0-9]+)*$")
 MAINNET_DOMAIN = re.compile(r"^pulsedag:v3:mainnet:[a-z0-9_-]{4,64}$")
 # These are lexical checks only. Real libp2p multihash/CID decoding,
 # public-key ownership and a signed chain-bound bootnode inventory are separate GO gates.
+BASE58BTC_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BASE58BTC_PEER = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{16,128}$")
 CIDV1_BASE32_PEER = re.compile(r"^baf[a-z2-7]{13,125}$")
 PLACEHOLDERS = ("TBD", "PLACEHOLDER", "FREEZE_REQUIRED", "REPLACE_ME", "EXAMPLE")
@@ -99,6 +102,76 @@ def parse_manifest(raw: bytes) -> object:
         reject(f"invalid UTF-8 JSON: {exc}")
 
 
+def _uvarint(raw: bytes, offset: int, label: str) -> tuple[int, int]:
+    """Decode one bounded, minimally encoded unsigned protobuf/CID varint."""
+    value = 0
+    start = offset
+    for shift in range(0, 70, 7):
+        if offset >= len(raw):
+            reject(f"{label}: truncated varint")
+        byte = raw[offset]
+        offset += 1
+        if shift == 63 and byte > 1:
+            reject(f"{label}: varint overflow")
+        value |= (byte & 0x7f) << shift
+        if byte < 0x80:
+            if offset - start > 1 and byte == 0:
+                reject(f"{label}: noncanonical varint")
+            return value, offset
+    reject(f"{label}: varint too long")
+
+
+def _decode_bootnode_peer_id(peer: str) -> bytes:
+    """Return canonical binary MULTIHASH identity, not a public-key proof.
+
+    Only draft-level identity-multihash Ed25519 and sha2-256 are supported.
+    CIDv1 must be version 1 / libp2p-key codec; no generic CID masquerade.
+    """
+    if peer.startswith("baf"):
+        if not CIDV1_BASE32_PEER.fullmatch(peer):
+            reject("bootnode CIDv1: invalid lowercase base32 alphabet or length")
+        encoded = peer[1:].upper()
+        try:
+            binary = base64.b32decode(encoded + "=" * (-len(encoded) % 8))
+        except binascii.Error:
+            reject("bootnode CIDv1: invalid base32 bytes")
+        if base64.b32encode(binary).decode("ascii").rstrip("=").lower() != peer[1:]:
+            reject("bootnode CIDv1: noncanonical trailing base32 bits")
+        version, offset = _uvarint(binary, 0, "bootnode CIDv1 version")
+        codec, offset = _uvarint(binary, offset, "bootnode CIDv1 codec")
+        if version != 1 or codec != 0x72:
+            reject("bootnode CIDv1: require v1 libp2p-key codec")
+        multihash = binary[offset:]
+    else:
+        if not BASE58BTC_PEER.fullmatch(peer):
+            reject("bootnode Base58btc: invalid alphabet or length")
+        number = 0
+        for character in peer:
+            number = number * 58 + BASE58BTC_ALPHABET.index(character)
+        leading_zeroes = len(peer) - len(peer.lstrip("1"))
+        decoded = number.to_bytes((number.bit_length() + 7) // 8, "big")
+        multihash = b"\x00" * leading_zeroes + decoded
+        if not multihash or len(multihash) > 128:
+            reject("bootnode Base58btc: invalid decoded length")
+
+    code, offset = _uvarint(multihash, 0, "bootnode multihash code")
+    length, offset = _uvarint(multihash, offset, "bootnode multihash length")
+    payload = multihash[offset:]
+    if length != len(payload):
+        reject("bootnode multihash: truncated or appended payload")
+    if code == 0:
+        if length != 36 or payload[:4] != bytes((8, 1, 18, 32)):
+            reject("bootnode identity: expected Ed25519 public-key protobuf framing")
+    elif code == 0x12:
+        if length != 32:
+            reject("bootnode sha2-256: expected exactly 32 digest bytes")
+    else:
+        reject("bootnode multihash: unapproved algorithm")
+
+    # Does NOT establish that a provider controls this key or that the node exists.
+    return multihash
+
+
 def check_candidate(candidate: object) -> dict:
     m = _exact_keys(candidate, REQUIRED, "candidate")
     if _text(m["schema"], "schema") != SCHEMA:
@@ -136,12 +209,9 @@ def check_candidate(candidate: object) -> dict:
     if type(bootnodes) is not list or not 2 <= len(bootnodes) <= 16:
         reject("require 2-16 distinct proposed public-testnet bootnode identities")
     peers = [_text(peer, "bootnode_peer_id") for peer in bootnodes]
-    if len(set(peers)) != len(peers) or any(
-        not (CIDV1_BASE32_PEER.fullmatch(peer) if peer.startswith("baf")
-             else BASE58BTC_PEER.fullmatch(peer))
-        for peer in peers
-    ):
-        reject("invalid or duplicate bootnode peer identity (base58btc/CIDv1 lexical shape only)")
+    decoded_peer_ids = [_decode_bootnode_peer_id(peer) for peer in peers]
+    if len(set(decoded_peer_ids)) != len(decoded_peer_ids):
+        reject("duplicate bootnode multihash across Base58btc/CIDv1 encodings")
 
     for field in (
         "monetary_runtime_enabled", "contracts_enabled", "admin_enabled",
