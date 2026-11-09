@@ -332,7 +332,10 @@ fn three_pow_siblings_two_conflicts_and_one_independent_spend_never_count_both_f
         verify_v3_header_pow(&block.header, CHAIN).unwrap();
     }
     let headers = authenticated_headers(&genesis, &[a.clone(), b.clone(), c.clone()]);
-    let tips = vec![a.hash.clone(), b.hash.clone(), c.hash.clone()];
+    // The native diagnostic requires a canonically sorted tip set, independent
+    // of the caller-supplied conditional transaction replay orders below.
+    let mut tips = vec![a.hash.clone(), b.hash.clone(), c.hash.clone()];
+    tips.sort();
     let ancestry = derive_dormant_native_v3_topological_evaluation(
         CHAIN,
         GENESIS_NS,
