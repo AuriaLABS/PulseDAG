@@ -112,6 +112,13 @@ class PublicTestnetTemplateSemanticGuardTests(unittest.TestCase):
     def test_reject_non_pulsedag_assignment_and_oversized_payload(self) -> None:
         original = self.template(TEMPLATES[1])
         self.reject(original + "\nOTHER_UNREVIEWED_CONFIG=1\n")
+        for injected in (
+            "PULSEDAG_CONTRACT_EXECUTION_ENABLED=true",
+            "PULSEDAG_GO_PUBLIC_TESTNET=true",
+            "PULSEDAG_P2P_ENABLED_SHADOW=false",
+        ):
+            with self.subTest(injected=injected):
+                self.reject(original + "\n" + injected + "\n")
         self.reject(original + ("# " + "x" * (64 * 1024)))
 
 
