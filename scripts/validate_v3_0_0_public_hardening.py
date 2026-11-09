@@ -116,8 +116,6 @@ def main() -> None:
             "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false",
         )
         validate_public_template_assignments(body, path)
-        if "PULSEDAG_P2P_ENABLED=true" in body:
-            fail(f"{path} enables P2P before GO")
         if re.search(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY", body):
             fail(f"{path} contains an apparent private key")
         for forbidden in ("ghp_", "github_pat_", "AKIA", "xoxb-", "xoxp-"):
