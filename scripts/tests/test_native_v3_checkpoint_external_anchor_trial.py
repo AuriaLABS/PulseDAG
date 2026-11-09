@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from native_v3_checkpoint_external_anchor_trial import (  # noqa: E402
     ANCHOR_SCHEMA, CLAIM_SCHEMA, AnchorError, compare_external_pin,
-    read_bounded_json, sha256_bounded_snapshot,
+    digest_field, read_bounded_json, sha256_bounded_snapshot,
 )
 
 
@@ -115,7 +115,20 @@ class IndependentExternalAnchorTrialTests(unittest.TestCase):
             self.reject_claim("checkpoint_score", bad)
             self.reject_pin("minimum_accepted_score", bad)
         for bad in ("00" * 32, "AB" * 32, "ab" * 31, "placeholder"):
-            self.reject_claim("snapshot_sha256", bad)
+            # Comparing a malformed value on only one side would fail by
+            # mismatched identities even with the SHA256 shape check deleted.
+            # Force the same bad digest into BOTH sides to isolate that gate.
+            for field in ("genesis_hash", "checkpoint_hash"):
+                pin = copy.deepcopy(self.pin)
+                claim = copy.deepcopy(self.claim)
+                pin[field] = bad
+                claim[field] = bad
+                with self.subTest(field=field, digest=bad), self.assertRaises(AnchorError):
+                    compare_external_pin(pin, claim, self.snapshot)
+            # The raw snapshot's real SHA256 can never be malformed. Test
+            # its manifest field parser directly, not only digest mismatch.
+            with self.subTest(snapshot_digest=bad), self.assertRaises(AnchorError):
+                digest_field(bad, "snapshot_sha256")
         self.reject_pin("schema", "wrong-schema")
         self.reject_claim("schema", "wrong-schema")
 
