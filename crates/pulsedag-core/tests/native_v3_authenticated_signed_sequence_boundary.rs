@@ -316,3 +316,79 @@ fn conflicting_pow_siblings_cannot_be_settled_by_arbitrary_explicit_order() {
     }
     assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
 }
+
+// GD-08 research only: do not pay a fee from an unresolved conflicting branch
+// merely because an unrelated valid sibling is also present. Caller supplies
+// conditional orders; none is promoted to the canonical monetary order.
+#[test]
+fn three_pow_siblings_two_conflicts_and_one_independent_spend_never_count_both_fees() {
+    let (state, sources) = trusted_test_state();
+    let original_root = state.utxo.compute_state_root().unwrap();
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let a = mine(&genesis.hash, 1, 51, signed(sources[0].clone(), 90, 10, 51));
+    let b = mine(&genesis.hash, 1, 52, signed(sources[0].clone(), 85, 15, 52));
+    let c = mine(&genesis.hash, 1, 53, signed(sources[1].clone(), 93, 7, 53));
+    for block in [&a, &b, &c] {
+        verify_v3_header_pow(&block.header, CHAIN).unwrap();
+    }
+    let headers = authenticated_headers(&genesis, &[a.clone(), b.clone(), c.clone()]);
+    let tips = vec![a.hash.clone(), b.hash.clone(), c.hash.clone()];
+    let ancestry = derive_dormant_native_v3_topological_evaluation(
+        CHAIN,
+        GENESIS_NS,
+        &genesis.hash,
+        &tips,
+        &headers,
+    )
+    .unwrap();
+    assert_eq!(ancestry.verified_dag.authenticated_non_genesis_headers, 3);
+    assert_eq!(ancestry.ordered_reachable_headers.len(), 4);
+
+    // Conditional, conflict-free orders commute and credit ONLY their own fees.
+    // No global winner or selected-parent/blue-work rule is implied.
+    let ac =
+        inspect_dormant_native_v3_explicit_order_trial(&[a.clone(), c.clone()], &state).unwrap();
+    let ca =
+        inspect_dormant_native_v3_explicit_order_trial(&[c.clone(), a.clone()], &state).unwrap();
+    let bc =
+        inspect_dormant_native_v3_explicit_order_trial(&[b.clone(), c.clone()], &state).unwrap();
+    let cb =
+        inspect_dormant_native_v3_explicit_order_trial(&[c.clone(), b.clone()], &state).unwrap();
+    assert_eq!(ac.candidate_fees, 17);
+    assert_eq!(bc.candidate_fees, 22);
+    assert_eq!(ac.candidate_fees, ca.candidate_fees);
+    assert_eq!(bc.candidate_fees, cb.candidate_fees);
+    assert_eq!(ac.resulting_utxo_root, ca.resulting_utxo_root);
+    assert_eq!(bc.resulting_utxo_root, cb.resulting_utxo_root);
+    assert_ne!(ac.resulting_utxo_root, bc.resulting_utxo_root);
+    assert_eq!(ac.fees_by_block.get(&a.hash), Some(&10));
+    assert_eq!(ac.fees_by_block.get(&c.hash), Some(&7));
+    assert!(!ac.fees_by_block.contains_key(&b.hash));
+    assert_eq!(bc.fees_by_block.get(&b.hash), Some(&15));
+    assert_eq!(bc.fees_by_block.get(&c.hash), Some(&7));
+    assert!(!bc.fees_by_block.contains_key(&a.hash));
+
+    // Independent state replay from the identical trusted synthetic prestate.
+    let mut expected_a = state.clone();
+    apply_transaction(&a.transactions[1], &mut expected_a, 1).unwrap();
+    apply_transaction(&c.transactions[1], &mut expected_a, 1).unwrap();
+    assert_eq!(ac.resulting_utxo_root, expected_a.utxo.compute_state_root().unwrap());
+    let mut expected_b = state.clone();
+    apply_transaction(&b.transactions[1], &mut expected_b, 1).unwrap();
+    apply_transaction(&c.transactions[1], &mut expected_b, 1).unwrap();
+    assert_eq!(bc.resulting_utxo_root, expected_b.utxo.compute_state_root().unwrap());
+
+    // All 3! peer arrival permutations contain a valid double spend and must
+    // fail closed without paying BOTH 10+15 conflicting fees, or mutating state.
+    for order in [
+        [a.clone(), b.clone(), c.clone()],
+        [a.clone(), c.clone(), b.clone()],
+        [b.clone(), a.clone(), c.clone()],
+        [b.clone(), c.clone(), a.clone()],
+        [c.clone(), a.clone(), b.clone()],
+        [c.clone(), b.clone(), a.clone()],
+    ] {
+        assert!(inspect_dormant_native_v3_explicit_order_trial(&order, &state).is_err());
+    }
+    assert_eq!(state.utxo.compute_state_root().unwrap(), original_root);
+}
