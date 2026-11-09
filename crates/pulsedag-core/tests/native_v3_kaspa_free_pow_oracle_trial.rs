@@ -170,7 +170,10 @@ fn pure_rust_non_kaspa_oracle_matches_seven_frozen_v3_vectors_and_current_engine
         let candidate = independent_stages(&seed, header.nonce);
         let reusable = experimental_kheavyhash_digest(&seed, header.nonce)
             .expect("frozen research matrix fits bounded candidate budget");
-        assert_eq!(reusable, candidate.heavy_hash, "{label}: reusable candidate parity");
+        assert_eq!(
+            reusable, candidate.heavy_hash,
+            "{label}: reusable candidate parity"
+        );
         let expected = &case["stages"];
         assert_eq!(
             hex::encode(candidate.pre_pow),
