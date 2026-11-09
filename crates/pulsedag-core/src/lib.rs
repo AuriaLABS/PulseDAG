@@ -66,8 +66,6 @@ pub mod ordering_v2;
 pub mod orphans;
 pub mod pay_stream_v1;
 pub mod pow;
-/// Non-authoritative, bounded Kaspa-independent PoW candidate; NEVER consensus runtime.
-pub mod pow_kaspa_free_candidate;
 pub mod pow_protocol;
 pub mod pow_v2;
 pub mod pow_v3;
