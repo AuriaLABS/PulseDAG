@@ -172,7 +172,8 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             cidv1_bytes(bytes((1, 0x72)) + bytes((0, 36, 8, 2, 18, 32))
                         + bytes(range(1, 33))),  # unsupported identity type
             cidv1_bytes(bytes((1, 0x72, 0x13, 32)) + bytes(range(32))),
-            cidv1_bytes(bytes((1, 0x72, 0x12, 31)) + bytes(range(32))),
+            cidv1_bytes(bytes((1, 0x72, 0x12, 31)) + bytes(range(31))),  # SHA2 exact 32 bytes, not 31
+            cidv1_bytes(bytes((1, 0x72, 0x12, 33)) + bytes(range(33))),  # SHA2 exact 32 bytes, not 33
             cidv1_bytes(bytes((1, 0x72, 0x80, 0x00, 36, 8, 1, 18, 32))
                         + bytes(range(1, 33))),  # nonminimal multihash varint
         ):
