@@ -274,6 +274,11 @@ def require_compiler_reachable_debt(
     for root in COMPILE_ROOTS:
         observed = compiled_by_root[root]
         if native_runtime:
+            # Require positive release-root compiler evidence, not merely the
+            # absence of vulnerable names in an empty/suppressed report.
+            observed_names = {name for name, _ in observed}
+            if root not in observed_names or "pulsedag-core" not in observed_names:
+                fail(f"{root} native backend compiler evidence missing root or pulsedag-core")
             # An independent runtime must prove compiled absence, not relabel
             # reachable advisories as lock-only without compiler evidence.
             forbidden_names = {
