@@ -153,9 +153,7 @@ class PublicTestnetTemplateSemanticGuardTests(unittest.TestCase):
             PUBLIC_MINER_ARGS_REQUIRED,
         )
         # Comments must not turn a disabled flag into effective arguments.
-        annotated = "# --backend\ngpu is only a documentation warning\n".replace(
-            "\ngpu is only a documentation warning", " gpu is only a documentation warning"
-        ) + original
+        annotated = "# --backend gpu is only a documentation warning\n" + original
         self.assertEqual(
             validate_public_miner_args_template(annotated, "SYNTHETIC.args"),
             PUBLIC_MINER_ARGS_REQUIRED,
