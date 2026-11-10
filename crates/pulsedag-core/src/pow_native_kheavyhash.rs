@@ -88,7 +88,6 @@ fn cshake256(message: &[u8], domain: &[u8]) -> [u8; 32] {
     result
 }
 
-
 #[derive(Clone)]
 pub(crate) struct NativeKHeavyHasher {
     pre_pow: [u8; 32],
@@ -98,7 +97,10 @@ pub(crate) struct NativeKHeavyHasher {
 impl NativeKHeavyHasher {
     pub(crate) fn new(pre_pow_bytes: &[u8]) -> Self {
         let pre_pow: [u8; 32] = Keccak256::digest(pre_pow_bytes).into();
-        Self { pre_pow, matrix: generate_matrix(pre_pow) }
+        Self {
+            pre_pow,
+            matrix: generate_matrix(pre_pow),
+        }
     }
 
     /// Cache matrix/prehash for repeated nonces of the same chain-bound header.
