@@ -131,13 +131,38 @@ def package_index(metadata: dict[str, Any]) -> dict[str, tuple[str, str]]:
     }
 
 
-def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> None:
+def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> str:
     manifest = tomllib.loads((ROOT / "crates" / "pulsedag-core" / "Cargo.toml").read_text(encoding="utf-8"))
     dependencies = manifest.get("dependencies", {})
+    dev_dependencies = manifest.get("dev-dependencies", {})
+    # Both dependencies move together or fail closed. In migration mode the
+    # pinned crates remain only an independent test oracle, NOT a release root.
+    normal = {name for name in EXPECTED_KASPA_DIRECT if name in dependencies}
+    dev = {name for name in EXPECTED_KASPA_DIRECT if name in dev_dependencies}
+    if normal == EXPECTED_KASPA_DIRECT and not dev:
+        mode = "pinned_runtime"
+        selected = dependencies
+    elif not normal and dev == EXPECTED_KASPA_DIRECT:
+        mode = "native_runtime_dev_reference"
+        selected = dev_dependencies
+        native_path = ROOT / "crates/pulsedag-core/src/pow_native_kheavyhash.rs"
+        native = native_path.read_text(encoding="utf-8") if native_path.is_file() else ""
+        pow_source = (ROOT / "crates/pulsedag-core/src/pow.rs").read_text(encoding="utf-8")
+        library = (ROOT / "crates/pulsedag-core/src/lib.rs").read_text(encoding="utf-8")
+        if not native or "mod pow_native_kheavyhash;" not in library:
+            fail("native runtime claims missing canonical native backend module")
+        if any(marker in pow_source for marker in (
+            "use kaspa_hashes", "use kaspa_pow", "kaspa_hashes::", "kaspa_pow::"
+        )):
+            fail("native runtime still directly imports Kaspa")
+        if "native_kheavyhash_digest" not in pow_source or "NativeKHeavyHasher" not in pow_source:
+            fail("native runtime digest/prepared backend linkage is incomplete")
+    else:
+        fail("Kaspa runtime/test dependency scope split or missing: review #1387")
     for dependency in EXPECTED_KASPA_DIRECT:
-        value = dependencies.get(dependency)
+        value = selected.get(dependency)
         if not isinstance(value, dict):
-            fail(f"{dependency} must remain an explicit pinned upstream git dependency")
+            fail(f"{dependency} must remain explicitly pinned for the current evidence mode")
         if value.get("git") != EXPECTED_KASPA_GIT:
             fail(f"{dependency} must use official rusty-kaspa upstream, found {value.get('git')!r}")
         if value.get("rev") != EXPECTED_KASPA_REV:
@@ -159,6 +184,7 @@ def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> None:
             fail(f"{dependency} must resolve to {EXPECTED_KASPA_VERSION}, found {version or 'nothing'}")
         if not source.startswith(expected_source_prefix):
             fail(f"{dependency} resolved from unexpected source {source!r}")
+    return mode
 
 
 def compile_clean(root: str, evidence_dir: Path, by_id: dict[str, tuple[str, str]]) -> set[tuple[str, str]]:
@@ -232,6 +258,8 @@ def validate_faster_hex_advisory_scope(
 
 def require_compiler_reachable_debt(
     compiled_by_root: dict[str, set[tuple[str, str]]],
+    *,
+    native_runtime: bool = False,
 ) -> dict[str, list[str]]:
     """Pin exact compiler-reachable inherited advisory inventory, NOT a waiver.
 
@@ -245,6 +273,21 @@ def require_compiler_reachable_debt(
     evidence: dict[str, list[str]] = {}
     for root in COMPILE_ROOTS:
         observed = compiled_by_root[root]
+        if native_runtime:
+            # An independent runtime must prove compiled absence, not relabel
+            # reachable advisories as lock-only without compiler evidence.
+            forbidden_names = {
+                name for name, _ in observed
+                if name.startswith(("kaspa-", "workflow-"))
+                or name in {"async-std", "pin-utils", "faster-hex"}
+            }
+            if forbidden_names:
+                fail(
+                    f"{root} still compiles obsolete Kaspa/transitive packages: "
+                    f"{sorted(forbidden_names)}"
+                )
+            evidence[root] = []
+            continue
         missing = sorted(required - observed)
         if missing:
             fail(
@@ -280,7 +323,8 @@ def main() -> None:
         fail(f"forbidden libp2p features selected: {sorted(features & FORBIDDEN_FEATURES)}")
 
     metadata = cargo_metadata()
-    validate_kaspa_parent_stack(metadata)
+    kaspa_mode = validate_kaspa_parent_stack(metadata)
+    native_runtime = kaspa_mode == "native_runtime_dev_reference"
     by_id = package_index(metadata)
     locked = set(by_id.values())
 
@@ -338,7 +382,7 @@ def main() -> None:
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
 
-    reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root)
+    reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root, native_runtime=native_runtime)
     (evidence_dir / "reachable-unmaintained-launch-debt.json").write_text(
         json.dumps(reachable_unmaintained, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -352,6 +396,8 @@ def main() -> None:
         "libp2p_version": version,
         "libp2p_features": sorted(features),
         "kaspa_version": EXPECTED_KASPA_VERSION,
+        "kaspa_dependency_mode": kaspa_mode,
+        "native_runtime_compiled_kaspa_tree_absent": native_runtime,
         "kaspa_upstream_rev": EXPECTED_KASPA_REV,
         "forbidden_legacy_or_vulnerable_locked": False,
         "lock_only_vulnerability_disposition": [
@@ -382,6 +428,7 @@ def main() -> None:
         f"source_sha={candidate_sha}",
         f"libp2p_version={version}",
         f"kaspa_version={EXPECTED_KASPA_VERSION}",
+        f"kaspa_dependency_mode={kaspa_mode}",
         f"kaspa_upstream_rev={EXPECTED_KASPA_REV}",
         "lru_0_12_5_present=false",
         "linkme_0_2_10_present=false",
@@ -393,7 +440,7 @@ def main() -> None:
         "quinn_stack_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "remaining_launch_blockers=atty@0.2.14,async-std@1.13.2,pin-utils@0.1.0",
-        "pin_utils_0_1_0_compiled_all_four_launch_roots=true",
+        f"pin_utils_0_1_0_compiled_all_four_launch_roots={str(not native_runtime).lower()}",
         "pin_utils_0_1_0_advisory=RUSTSEC-2026-0441:unmaintained",
         "async_std_1_13_2_advisory=RUSTSEC-2025-0052:unmaintained",
         "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",
@@ -402,8 +449,9 @@ def main() -> None:
         "",
     ]), encoding="utf-8")
     print(
-        "PASS: development-only dependency inventory, NOT release security approval; "
-        "reachable pin-utils/async-std unmaintained debt remains open in all four launch roots"
+        "PASS: source/compiled dependency evidence, NOT release security approval; "
+        f"Kaspa mode={kaspa_mode}, compiled-unmaintained "
+        f"{'absent' if native_runtime else 'present'} in launch roots"
     )
 
 
