@@ -4429,6 +4429,7 @@ dependencies = [
  "hex",
  "kaspa-hashes",
  "kaspa-pow",
+ "keccak",
  "proptest",
  "serde",
  "serde_json",

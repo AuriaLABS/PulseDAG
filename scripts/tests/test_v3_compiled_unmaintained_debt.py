@@ -74,6 +74,32 @@ class CompilerReachableDebtTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             require_compiler_reachable_debt({root: set() for root in COMPILE_ROOTS})
 
+    def test_native_runtime_requires_complete_absent_compiled_debt(self) -> None:
+        clean = {
+            root: {(root, "3.0.0"), ("pulsedag-core", "3.0.0")}
+            for root in COMPILE_ROOTS
+        }
+        rows = require_compiler_reachable_debt(clean, native_runtime=True)
+        self.assertEqual(rows, {root: [] for root in COMPILE_ROOTS})
+        for leaked_name in (
+            "kaspa-pow", "kaspa-hashes", "workflow-core", "workflow-wasm",
+            "async-std", "pin-utils", "faster-hex",
+        ):
+            poisoned = {root: packages.copy() for root, packages in clean.items()}
+            poisoned["pulsedagd"].add((leaked_name, "0.1.0"))
+            with self.subTest(leaked_name=leaked_name), self.assertRaises(SystemExit):
+                require_compiler_reachable_debt(poisoned, native_runtime=True)
+        for root in COMPILE_ROOTS:
+            missing = {k: v.copy() for k, v in clean.items()}
+            missing[root].remove(("pulsedag-core", "3.0.0"))
+            with self.subTest(missing_core=root), self.assertRaises(SystemExit):
+                require_compiler_reachable_debt(missing, native_runtime=True)
+        with self.assertRaises(SystemExit):
+            require_compiler_reachable_debt(
+                {root: set() for root in COMPILE_ROOTS}, native_runtime=True
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()

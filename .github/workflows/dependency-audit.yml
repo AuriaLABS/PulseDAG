@@ -218,13 +218,27 @@ jobs:
               dependencies = by_name[parent][0].get('dependencies', [])
               if not any(dep == child or dep.startswith(child + ' ') for dep in dependencies):
                   raise SystemExit(f'pin-utils upstream parent edge drift: {parent} -> {child}')
+          security = json.loads(Path(
+              'ci-evidence/dependency-audit/v3-validation.json'
+          ).read_text(encoding='utf-8'))
+          mode = security['kaspa_dependency_mode']
+          if mode not in {'pinned_runtime', 'native_runtime_dev_reference'}:
+              raise SystemExit(f'unrecognized runtime PoW security disposition: {mode}')
           for root in ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet'):
               packages = set(Path(
                   f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt'
               ).read_text(encoding='utf-8').splitlines())
-              if 'pin-utils@0.1.0' not in packages or 'async-std@1.13.2' not in packages:
-                  raise SystemExit(f'pin-utils exact transitive compiler exposure changed in {root}')
-              print('informational-unmaintained-compiled', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
+              if mode == 'pinned_runtime':
+                  if 'pin-utils@0.1.0' not in packages or 'async-std@1.13.2' not in packages:
+                      raise SystemExit(f'pin-utils exact inherited runtime exposure changed in {root}')
+                  print('informational-unmaintained-compiled', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
+              else:
+                  forbidden = sorted(p for p in packages if p.split('@', 1)[0].startswith(
+                      ('kaspa-', 'workflow-')
+                  ) or p.split('@', 1)[0] in {'pin-utils', 'async-std', 'faster-hex'})
+                  if forbidden:
+                      raise SystemExit(f'unmaintained runtime packages remain in {root}: {forbidden}')
+                  print('unreachable-release-root', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
 
           # The Hickory and Quinn advisories are conditionally disposed only
           # as lockfile-only residues. QUIC may also enter through reqwest,
