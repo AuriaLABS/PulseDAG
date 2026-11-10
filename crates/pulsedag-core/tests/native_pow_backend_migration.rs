@@ -77,7 +77,9 @@ fn prepared_native_mining_throughput_must_remain_close_to_upstream() {
     const COUNT: u64 = 200_000;
     let start = Instant::now();
     for nonce in 0..COUNT {
-        black_box(upstream_matrix.heavy_hash(upstream.clone().finalize_with_nonce(black_box(nonce))));
+        black_box(
+            upstream_matrix.heavy_hash(upstream.clone().finalize_with_nonce(black_box(nonce))),
+        );
     }
     let baseline = start.elapsed().as_secs_f64();
 
