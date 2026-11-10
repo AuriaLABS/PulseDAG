@@ -1,0 +1,9 @@
+# Native KHeavyHash runtime migration — exact candidate, NOT RELEASE APPROVED
+
+Issue: #1387. The production `pow.rs` canonical and prepared-hasher paths now use the new internal `pow_native_kheavyhash.rs` module instead of `kaspa-hashes` / `kaspa-pow` Rust APIs. The implementation preserves legacy/v3 chain-bound PoW preimages, upstream Xoshiro256++ matrix generation until full rank, cSHAKE/Keccak stages, 256-bit result and target comparisons. No consensus decision, difficulty change, monetary activation or contracts are authorized by this PR.
+
+The Kaspa crates remain **dev-dependencies only** as byte-parity oracles. This is a first real production-path removal, but does not yet remove their entries from `Cargo.lock`; raw RustSec inventory will still see them. Test-root compilation legitimately includes them. Only after full exact-head tests and all release-root `cargo tree --edges normal` inventories exclude the crates can compiled runtime reachability be reclassified. Formal closure of #1387 also needs separately reviewed lockfile and raw RustSec remediation, CPU mining performance/latency review, Windows parity, and follow-up of `atty`/`faster-hex`.
+
+The dedicated workflow tests 96 deterministic full-preimage seeds × 5 nonce boundary values (480 hash comparisons), prepared miner nonce reuse and existing seven frozen headers / 16 diverse seed vectors, plus unchanged legacy v1/v2 checks. It runs strict rustfmt/Clippy and checks four public release roots for compiled Kaspa/workflow/async-std/pin-utils reachability. Exact SHA required. Existing full CI, cross-architecture and CPU throughput remain separate gates.
+
+**Do not merge before all CI, review, absence of measurable mining regression, and updated adversarial validation. Public testnet / mainnet NO-GO; monetary mining OFF; contracts INACTIVE.**
