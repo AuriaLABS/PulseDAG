@@ -13,7 +13,9 @@ ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
 from validate_v3_0_0_public_hardening import (  # noqa: E402
+    PUBLIC_MINER_ARGS_REQUIRED,
     PUBLIC_TEMPLATE_REQUIRED,
+    validate_public_miner_args_template,
     validate_public_template_assignments,
 )
 
@@ -141,6 +143,45 @@ class PublicTestnetTemplateSemanticGuardTests(unittest.TestCase):
                 )
                 self.reject(original.replace(line, f"{key}={unsafe}", 1))
 
+
+
+    def test_real_unrendered_miner_cli_has_exact_pre_go_tokens(self) -> None:
+        path = ROOT / "configs" / "public-testnet" / "miner.args.template"
+        original = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            validate_public_miner_args_template(original, str(path)),
+            PUBLIC_MINER_ARGS_REQUIRED,
+        )
+        # Comments must not turn a disabled flag into effective arguments.
+        annotated = "# --backend\ngpu is only a documentation warning\n".replace(
+            "\ngpu is only a documentation warning", " gpu is only a documentation warning"
+        ) + original
+        self.assertEqual(
+            validate_public_miner_args_template(annotated, "SYNTHETIC.args"),
+            PUBLIC_MINER_ARGS_REQUIRED,
+        )
+
+    def test_miner_cli_template_rejects_comment_alias_duplicate_and_unsafe_value(self) -> None:
+        original = (
+            ROOT / "configs" / "public-testnet" / "miner.args.template"
+        ).read_text(encoding="utf-8")
+        mutations = (
+            original.replace("--backend\ncpu", "# --backend\n# cpu\n--backend\ngpu", 1),
+            original.replace("--backend\ncpu", "--backend\ngpu", 1),
+            original.replace("--node\n__TASK31_FREEZE_REQUIRED__", "--node\nmainnet", 1),
+            original.replace("--miner-address", "# --miner-address", 1),
+            original.replace("--loop\n", "", 1),
+            original + "--backend\ngpu\n",
+            original + "--contracts-enabled\n",
+            original + "$(echo --backend)\n",
+            original.replace("--threads\n4", "--threads 4", 1),
+            original.replace("--backend\ncpu", "--backend\n'cpu'", 1),
+            original.replace("--backend\ncpu", " --backend\ncpu", 1),
+            original + "# " + "x" * (8 * 1024),
+        )
+        for index, mutant in enumerate(mutations):
+            with self.subTest(index=index), self.assertRaises(SystemExit):
+                validate_public_miner_args_template(mutant, "SYNTHETIC.args")
 
 
 if __name__ == "__main__":
