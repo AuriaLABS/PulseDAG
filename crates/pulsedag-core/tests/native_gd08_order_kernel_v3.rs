@@ -62,18 +62,21 @@ fn corpus(
         vec![genesis.hash.clone()],
         1,
         GENESIS_NS + 500_000_000,
+        true,
     );
     let b = add(
         &mut headers,
         vec![genesis.hash.clone()],
         1,
         GENESIS_NS + 600_000_000,
+        valid_side_pow,
     );
     let join = add(
         &mut headers,
         vec![a.clone(), b.clone()],
         2,
         GENESIS_NS + 1_000_000_000,
+        true,
     );
     let spine = vec![genesis.hash.clone(), a.clone(), join.clone()];
     let assignments = BTreeMap::from([
