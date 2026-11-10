@@ -54,23 +54,54 @@ fn corpus() -> (
 ) {
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
     let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header)]);
-    let a = add(&mut headers, vec![genesis.hash.clone()], 1, GENESIS_NS + 500_000_000);
-    let b = add(&mut headers, vec![genesis.hash.clone()], 1, GENESIS_NS + 600_000_000);
-    let join = add(&mut headers, vec![a.clone(), b.clone()], 2, GENESIS_NS + 1_000_000_000);
+    let a = add(
+        &mut headers,
+        vec![genesis.hash.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+    );
+    let b = add(
+        &mut headers,
+        vec![genesis.hash.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+    );
+    let join = add(
+        &mut headers,
+        vec![a.clone(), b.clone()],
+        2,
+        GENESIS_NS + 1_000_000_000,
+    );
     let spine = vec![genesis.hash.clone(), a.clone(), join.clone()];
     let assignments = BTreeMap::from([
-        (genesis.hash.clone(), DormantGd08AnchorSlot {
-            anchor: 0, role: DormantGd08Role::Selected,
-        }),
-        (a, DormantGd08AnchorSlot {
-            anchor: 1, role: DormantGd08Role::Selected,
-        }),
-        (b.clone(), DormantGd08AnchorSlot {
-            anchor: 2, role: DormantGd08Role::MergeBlue,
-        }),
-        (join, DormantGd08AnchorSlot {
-            anchor: 2, role: DormantGd08Role::Selected,
-        }),
+        (
+            genesis.hash.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 0,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            a,
+            DormantGd08AnchorSlot {
+                anchor: 1,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            b.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::MergeBlue,
+            },
+        ),
+        (
+            join,
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::Selected,
+            },
+        ),
     ]);
     (genesis.hash, spine, b, headers, assignments)
 }
@@ -79,12 +110,22 @@ fn corpus() -> (
 fn authenticated_real_pow_multiparent_order_is_stable_under_map_permutations() {
     let (genesis, spine, side, headers, assignments) = corpus();
     let stable = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &genesis, &spine, &headers, &assignments,
+        CHAIN,
+        GENESIS_NS,
+        &genesis,
+        &spine,
+        &headers,
+        &assignments,
     )
     .unwrap();
     let reversed = headers.clone().into_iter().rev().collect();
     let same = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &genesis, &spine, &reversed, &assignments,
+        CHAIN,
+        GENESIS_NS,
+        &genesis,
+        &spine,
+        &reversed,
+        &assignments,
     )
     .unwrap();
     assert_eq!(stable, same);
@@ -122,7 +163,12 @@ fn rejects_incomplete_wrong_anchor_cross_chain_and_forged_pow() {
     assert!(check(&forged, &spine, &assignments).is_err());
 
     assert!(derive_dormant_native_gd08_order(
-        "untrusted-foreign-chain", GENESIS_NS, &genesis, &spine, &headers, &assignments,
+        "untrusted-foreign-chain",
+        GENESIS_NS,
+        &genesis,
+        &spine,
+        &headers,
+        &assignments,
     )
     .is_err());
 }
