@@ -65,6 +65,7 @@ pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
 pub mod pay_stream_v1;
+mod pow_native_kheavyhash;
 pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
