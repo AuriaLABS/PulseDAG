@@ -153,28 +153,24 @@ mod tests {
             Vec::new(),
             [&bytes[..], &b"-extra"[..]].concat(),
         ] {
-            assert!(
-                verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                    &claim,
-                    &pin,
-                    None,
-                    Cursor::new(&rejected),
-                    1024,
-                )
-                .is_err()
-            );
+            assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+                &claim,
+                &pin,
+                None,
+                Cursor::new(&rejected),
+                1024,
+            )
+            .is_err());
         }
         for max in [0, 1, DORMANT_CHECKPOINT_SNAPSHOT_MAX_BYTES + 1] {
-            assert!(
-                verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                    &claim,
-                    &pin,
-                    None,
-                    Cursor::new(bytes),
-                    max,
-                )
-                .is_err()
-            );
+            assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+                &claim,
+                &pin,
+                None,
+                Cursor::new(bytes),
+                max,
+            )
+            .is_err());
         }
     }
 
@@ -191,43 +187,29 @@ mod tests {
         let (claim, pin) = signed_fixture(bytes);
         let mut forged = claim.clone();
         forged.signature[0] ^= 1;
-        assert!(
-            verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                &forged,
-                &pin,
-                None,
-                NeverRead,
-                1024,
-            )
-            .is_err()
-        );
+        assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+            &forged, &pin, None, NeverRead, 1024,
+        )
+        .is_err());
         let mut wrong_pin = pin.clone();
         wrong_pin.consensus_digest[0] ^= 1;
-        assert!(
-            verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                &claim,
-                &wrong_pin,
-                None,
-                NeverRead,
-                1024,
-            )
-            .is_err()
-        );
+        assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+            &claim, &wrong_pin, None, NeverRead, 1024,
+        )
+        .is_err());
         let last = NativeV3PreviousAuthenticatedPosition {
             height: 100,
             blue_score: 90,
             sequence: 3,
         };
-        assert!(
-            verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                &claim,
-                &pin,
-                Some(last),
-                NeverRead,
-                1024,
-            )
-            .is_err()
-        );
+        assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+            &claim,
+            &pin,
+            Some(last),
+            NeverRead,
+            1024,
+        )
+        .is_err());
     }
 
     #[test]
@@ -247,15 +229,13 @@ mod tests {
         }
         let bytes = b"test snapshot bytes";
         let (claim, pin) = signed_fixture(bytes);
-        assert!(
-            verify_dormant_native_v3_checkpoint_snapshot_bytes(
-                &claim,
-                &pin,
-                None,
-                InterruptedRead { sent: false },
-                1024,
-            )
-            .is_err()
-        );
+        assert!(verify_dormant_native_v3_checkpoint_snapshot_bytes(
+            &claim,
+            &pin,
+            None,
+            InterruptedRead { sent: false },
+            1024,
+        )
+        .is_err());
     }
 }
