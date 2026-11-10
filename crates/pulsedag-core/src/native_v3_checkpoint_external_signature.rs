@@ -328,7 +328,6 @@ mod tests {
         let mut pin = pin;
         pin.minimum_sequence = 10;
         assert!(verify_dormant_native_v3_checkpoint_signature(&claim, &pin, None).is_err());
-        let mut pin = pin;
         pin.minimum_sequence = 9;
         pin.minimum_blue_score = 119;
         assert!(verify_dormant_native_v3_checkpoint_signature(&claim, &pin, None).is_err());
