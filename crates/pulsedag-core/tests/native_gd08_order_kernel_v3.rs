@@ -46,15 +46,16 @@ fn add(
     hash
 }
 
-fn corpus(
-    valid_side_pow: bool,
-) -> (
+// A named fixture type keeps the shape explicit without disabling Clippy.
+type Gd08Corpus = (
     BlockId,
     Vec<BlockId>,
     BlockId,
     BTreeMap<BlockId, BlockHeaderV3>,
     BTreeMap<BlockId, DormantGd08AnchorSlot>,
-) {
+);
+
+fn corpus(valid_side_pow: bool) -> Gd08Corpus {
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
     let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header)]);
     let a = add(
