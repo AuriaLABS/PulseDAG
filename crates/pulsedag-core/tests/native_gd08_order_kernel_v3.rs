@@ -21,6 +21,7 @@ fn add(
     mut parents: Vec<BlockId>,
     height: u64,
     timestamp_ns: u64,
+    valid_pow: bool,
 ) -> BlockId {
     parents.sort();
     let mut header = BlockHeaderV3 {
@@ -37,7 +38,7 @@ fn add(
     header.nonce = (0..2048_u64)
         .find(|nonce| {
             header.nonce = *nonce;
-            evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted == valid_pow
         })
         .expect("easy target must find valid KHeavyHash PoW");
     let hash = compute_block_hash_v3(&header, CHAIN).unwrap();
@@ -45,7 +46,7 @@ fn add(
     hash
 }
 
-fn corpus() -> (
+fn corpus(valid_side_pow: bool) -> (
     BlockId,
     Vec<BlockId>,
     BlockId,
@@ -108,7 +109,7 @@ fn corpus() -> (
 
 #[test]
 fn authenticated_real_pow_multiparent_order_is_stable_under_map_permutations() {
-    let (genesis, spine, side, headers, assignments) = corpus();
+    let (genesis, spine, side, headers, assignments) = corpus(true);
     let stable = derive_dormant_native_gd08_order(
         CHAIN,
         GENESIS_NS,
@@ -138,8 +139,19 @@ fn authenticated_real_pow_multiparent_order_is_stable_under_map_permutations() {
 }
 
 #[test]
-fn rejects_incomplete_wrong_anchor_cross_chain_and_forged_pow() {
-    let (genesis, spine, side, headers, assignments) = corpus();
+fn hash_consistent_invalid_pow_side_branch_is_rejected_by_real_pow_validator() {
+    // Unlike a nonce-only mutation with stale map key, this corpus is built
+    // with *consistent* header IDs for the invalid side and the valid join.
+    let (genesis, spine, _side, headers, assignments) = corpus(false);
+    let err = derive_dormant_native_gd08_order(
+        CHAIN, GENESIS_NS, &genesis, &spine, &headers, &assignments,
+    ).unwrap_err();
+    assert!(err.to_string().contains("invalid PoW"), "{err}");
+}
+
+#[test]
+fn rejects_incomplete_wrong_anchor_cross_chain_and_inconsistent_hash() {
+    let (genesis, spine, side, headers, assignments) = corpus(true);
     let check = |h: &BTreeMap<_, _>, s: &[BlockId], a: &BTreeMap<_, _>| {
         derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &genesis, s, h, a)
     };
