@@ -99,12 +99,12 @@ mod tests {
             claimed_public_key: key.verifying_key().to_bytes(),
             signature: [0; 64],
         };
-        claim.signature = key
-            .sign(
-                &crate::native_v3_checkpoint_external_signature::
-                    dormant_native_v3_checkpoint_signature_preimage(&claim).unwrap(),
+        let preimage =
+            crate::native_v3_checkpoint_external_signature::dormant_native_v3_checkpoint_signature_preimage(
+                &claim,
             )
-            .to_bytes();
+            .unwrap();
+        claim.signature = key.sign(&preimage).to_bytes();
         let pin = NativeV3ExternallyTrustedCheckpointPin {
             chain_id: claim.chain_id.clone(),
             genesis_hash: claim.genesis_hash,
@@ -151,7 +151,7 @@ mod tests {
             mutated,
             bytes[..bytes.len() - 1].to_vec(),
             Vec::new(),
-            [bytes.as_slice(), b"-extra"].concat(),
+            [&bytes[..], &b"-extra"[..]].concat(),
         ] {
             assert!(
                 verify_dormant_native_v3_checkpoint_snapshot_bytes(
