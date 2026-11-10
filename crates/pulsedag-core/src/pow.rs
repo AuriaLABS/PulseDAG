@@ -1,8 +1,8 @@
+use crate::pow_native_kheavyhash::{native_kheavyhash_digest, NativeKHeavyHasher};
 use crate::{
     state::ChainState,
     types::{canonical_mining_preimage_bytes, BlockHeader},
 };
-use crate::pow_native_kheavyhash::{native_kheavyhash_digest, NativeKHeavyHasher};
 
 fn read_env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -498,7 +498,9 @@ pub struct PreparedKHeavyHasher {
 }
 impl PreparedKHeavyHasher {
     pub fn new(pre_pow_bytes: &[u8]) -> Self {
-        Self { inner: NativeKHeavyHasher::new(pre_pow_bytes) }
+        Self {
+            inner: NativeKHeavyHasher::new(pre_pow_bytes),
+        }
     }
     pub fn hash_nonce(&self, nonce: u64) -> [u8; 32] {
         self.inner.hash_nonce(nonce)
