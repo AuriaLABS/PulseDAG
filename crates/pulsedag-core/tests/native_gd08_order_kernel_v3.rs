@@ -46,7 +46,9 @@ fn add(
     hash
 }
 
-fn corpus(valid_side_pow: bool) -> (
+fn corpus(
+    valid_side_pow: bool,
+) -> (
     BlockId,
     Vec<BlockId>,
     BlockId,
@@ -144,8 +146,14 @@ fn hash_consistent_invalid_pow_side_branch_is_rejected_by_real_pow_validator() {
     // with *consistent* header IDs for the invalid side and the valid join.
     let (genesis, spine, _side, headers, assignments) = corpus(false);
     let err = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &genesis, &spine, &headers, &assignments,
-    ).unwrap_err();
+        CHAIN,
+        GENESIS_NS,
+        &genesis,
+        &spine,
+        &headers,
+        &assignments,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("invalid PoW"), "{err}");
 }
 
