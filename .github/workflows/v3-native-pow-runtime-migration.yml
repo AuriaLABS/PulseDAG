@@ -43,6 +43,8 @@ jobs:
         run: cargo test --locked -p pulsedag-core --test native_pow_backend_migration -- --nocapture
       - name: Independent Python/Rust golden candidate versus new canonical path
         run: cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture
+      - name: Prepared CPU nonce search release-performance gate vs pinned upstream
+        run: cargo test --locked --release -p pulsedag-core --test native_pow_backend_migration -- --ignored --nocapture
       - name: Strict Clippy including reference parity
         run: cargo clippy --locked -p pulsedag-core --test native_pow_backend_migration -- -D warnings
       - name: Normal release roots must not compile archived Kaspa dependency graph
