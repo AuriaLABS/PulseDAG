@@ -111,6 +111,46 @@ PUBLIC_TEMPLATE_SAFETY_VALUES = {
 }
 
 
+# Exact, NON-RENDERED miner CLI template. Validation only: no invocation,
+# signing or testnet monetary permission. Prevent comment/duplicate flag text
+# from satisfying pre-GO checks of a different effective CLI.
+PUBLIC_MINER_ARGS_REQUIRED = (
+    "--node",
+    "__TASK31_FREEZE_REQUIRED__",
+    "--miner-address",
+    "__TASK31_FREEZE_REQUIRED__",
+    "--threads",
+    "4",
+    "--max-tries",
+    "1000000",
+    "--loop",
+    "--sleep-ms",
+    "250",
+    "--refresh-before-expiry-ms",
+    "1000",
+    "--backend",
+    "cpu",
+)
+
+
+def validate_public_miner_args_template(body: str, path: str) -> tuple[str, ...]:
+    """Check active literal CLI tokens of a PRE-GO-only unrendered template."""
+    if len(body.encode("utf-8")) > 8 * 1024:
+        fail(f"{path}: pre-GO miner template exceeds 8 KiB")
+    active: list[str] = []
+    for number, raw_line in enumerate(body.splitlines(), 1):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        if raw_line != raw_line.strip() or re.fullmatch(
+            r"[A-Za-z0-9_./:+-]+", raw_line
+        ) is None:
+            fail(f"{path}:{number}: only one unquoted literal CLI token per line")
+        active.append(raw_line)
+    if tuple(active) != PUBLIC_MINER_ARGS_REQUIRED:
+        fail(f"{path}: active miner flags differ from frozen PRE-GO placeholder list")
+    return tuple(active)
+
+
 def validate_public_template_assignments(body: str, path: str) -> dict[str, str]:
     """Parse literal pre-GO env assignments, never evaluate or render shell."""
     if len(body.encode("utf-8")) > 64 * 1024:
@@ -182,13 +222,16 @@ def main() -> None:
             if forbidden in body:
                 fail(f"{path} contains apparent credential marker {forbidden!r}")
 
-    require(
+    miner_args = require(
         "configs/public-testnet/miner.args.template",
         "__TASK31_FREEZE_REQUIRED__",
         "--node",
         "--miner-address",
         "--backend",
         "cpu",
+    )
+    validate_public_miner_args_template(
+        miner_args, "configs/public-testnet/miner.args.template"
     )
     templates_readme = require(
         "configs/public-testnet/README.md",
