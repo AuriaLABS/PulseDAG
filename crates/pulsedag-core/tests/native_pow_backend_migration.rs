@@ -59,3 +59,41 @@ fn native_consensus_hash_retains_chain_bound_separation_and_exact_target() {
         assert_eq!(digest.hash_hex, hex::encode(digest.hash));
     }
 }
+
+/// Exact-head release-profile performance *gate* against the pinned original.
+/// Compare both paths on the SAME CI runner with the SAME cached matrix. Any
+/// large loss of CPU miner throughput blocks promotion of the new backend.
+#[test]
+#[ignore = "run explicitly in release profile on CI"]
+fn prepared_native_mining_throughput_must_remain_close_to_upstream() {
+    use std::{hint::black_box, time::Instant};
+
+    let seed: [u8; 32] = Keccak256::digest(b"PulseDAG:prepared-miner-throughput:20261110").into();
+    let native = PreparedKHeavyHasher::new(&seed);
+    let upstream_prehash = KaspaHash::from_bytes(Keccak256::digest(seed).into());
+    let upstream_matrix = Matrix::generate(upstream_prehash);
+    let upstream = PowHash::new(upstream_prehash, 0);
+
+    const COUNT: u64 = 200_000;
+    let start = Instant::now();
+    for nonce in 0..COUNT {
+        black_box(upstream_matrix.heavy_hash(upstream.clone().finalize_with_nonce(black_box(nonce))));
+    }
+    let baseline = start.elapsed().as_secs_f64();
+
+    let start = Instant::now();
+    for nonce in 0..COUNT {
+        black_box(native.hash_nonce(black_box(nonce)));
+    }
+    let alternative = start.elapsed().as_secs_f64();
+
+    eprintln!(
+        "prepared PoW throughput on same release runner: upstream={baseline:.4}s native={alternative:.4}s ratio={:.3}x",
+        alternative / baseline
+    );
+    assert!(baseline > 0.0);
+    assert!(
+        alternative <= baseline * 1.50,
+        "native prepared CPU mining throughput regressed more than 50%"
+    );
+}
