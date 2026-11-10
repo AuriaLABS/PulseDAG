@@ -1,0 +1,43 @@
+name: native v3 externally pinned checkpoint Ed25519 (DORMANT / NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/native_v3_checkpoint_external_signature.rs
+      - crates/pulsedag-core/src/lib.rs
+      - .github/workflows/v3-native-checkpoint-external-signature.yml
+      - docs/runbooks/V3_NATIVE_CHECKPOINT_EXTERNAL_SIGNATURE.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  external-signature-verifier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Rustfmt exact-head
+        run: cargo fmt --all -- --check
+      - name: Valid pinned Ed25519 and forgery/replay negatives
+        run: cargo test --locked -p pulsedag-core native_v3_checkpoint_external_signature -- --nocapture
+      - name: Strict Clippy for core including dormant signature tests
+        run: cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: No native-v3 checkpoint restore/runtime callsite
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -n -F 'verify_dormant_native_v3_checkpoint_signature(' -- '*.rs' |
+             grep -v -F 'crates/pulsedag-core/src/native_v3_checkpoint_external_signature.rs:'; then
+            echo "::error::Checkpoint signature verifier wired to runtime before trust/full-replay approvals"
+            exit 1
+          fi
