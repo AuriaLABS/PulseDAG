@@ -33,6 +33,14 @@ authorized; future testnet-specific monetary activation needs its own exact
 artifact/identity-bound validation and a recorded `GO_PUBLIC_TESTNET`.
 Contracts remain **INACTIVE** regardless.
 
+The separate `miner.args.template` is now also checked as an exact ordered
+sequence of active literal CLI tokens: unresolved node/address placeholders,
+CPU backend and bounded thread/attempt/refresh settings. Comments cannot
+satisfy a required active flag; duplicate or extra flags, shell substitution,
+quoting, premature addresses and alternative backends fail the offline guard.
+This does **not** execute the miner, authorize mining, attest a rendered
+operator CLI or replace the eventual testnet-specific identity verification.
+
 ## Intended roles
 
 - `seed.env.template`: future public seed/bootnode role.
