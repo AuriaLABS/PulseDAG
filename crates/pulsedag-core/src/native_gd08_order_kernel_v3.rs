@@ -87,7 +87,9 @@ pub fn derive_dormant_native_gd08_order(
     {
         return Err(reject("selected spine must start at frozen genesis"));
     }
-    let tip = selected_spine.last().ok_or_else(|| reject("missing selected tip"))?;
+    let tip = selected_spine
+        .last()
+        .ok_or_else(|| reject("missing selected tip"))?;
     let verified = derive_dormant_native_v3_topological_evaluation(
         chain_id,
         frozen_genesis_timestamp_ns,
@@ -95,8 +97,7 @@ pub fn derive_dormant_native_gd08_order(
         std::slice::from_ref(tip),
         headers,
     )?;
-    let reachable: BTreeSet<BlockId> =
-        verified.ordered_reachable_headers.iter().cloned().collect();
+    let reachable: BTreeSet<BlockId> = verified.ordered_reachable_headers.iter().cloned().collect();
     let selected: BTreeSet<BlockId> = selected_spine.iter().cloned().collect();
     if selected.len() != selected_spine.len() {
         return Err(reject("duplicate selected-spine header"));
@@ -105,22 +106,30 @@ pub fn derive_dormant_native_gd08_order(
         || reachable.iter().any(|hash| !assignments.contains_key(hash))
         || assignments.keys().any(|hash| !reachable.contains(hash))
     {
-        return Err(reject("missing, extra or duplicate role/anchor assignments"));
+        return Err(reject(
+            "missing, extra or duplicate role/anchor assignments",
+        ));
     }
     for (index, hash) in selected_spine.iter().enumerate() {
         if !reachable.contains(hash) {
             return Err(reject("selected spine references unverified header"));
         }
-        if assignments.get(hash) != Some(&DormantGd08AnchorSlot {
-            anchor: index,
-            role: DormantGd08Role::Selected,
-        }) {
+        if assignments.get(hash)
+            != Some(&DormantGd08AnchorSlot {
+                anchor: index,
+                role: DormantGd08Role::Selected,
+            })
+        {
             return Err(reject("selected-spine slot/role mismatch"));
         }
         if index > 0 {
-            let header = headers.get(hash).ok_or_else(|| reject("missing spine header"))?;
+            let header = headers
+                .get(hash)
+                .ok_or_else(|| reject("missing spine header"))?;
             if !header.parents.contains(&selected_spine[index - 1]) {
-                return Err(reject("claimed selected parent is not a direct header parent"));
+                return Err(reject(
+                    "claimed selected parent is not a direct header parent",
+                ));
             }
         }
     }
@@ -128,14 +137,15 @@ pub fn derive_dormant_native_gd08_order(
         if selected.contains(hash) {
             continue;
         }
-        if slot.role == DormantGd08Role::Selected || slot.anchor == 0
+        if slot.role == DormantGd08Role::Selected
+            || slot.anchor == 0
             || slot.anchor >= selected_spine.len()
         {
             return Err(reject("side header claims invalid selected role or anchor"));
         }
-        let first_reachable_anchor = selected_spine.iter().position(|spine_hash| {
-            ancestor_or_self(hash, spine_hash, headers)
-        });
+        let first_reachable_anchor = selected_spine
+            .iter()
+            .position(|spine_hash| ancestor_or_self(hash, spine_hash, headers));
         if first_reachable_anchor != Some(slot.anchor) {
             return Err(reject("side header assigned to non-earliest merge anchor"));
         }
@@ -148,7 +158,10 @@ pub fn derive_dormant_native_gd08_order(
         let chosen = remaining
             .iter()
             .filter(|hash| {
-                headers[*hash].parents.iter().all(|parent| emitted.contains(parent))
+                headers[*hash]
+                    .parents
+                    .iter()
+                    .all(|parent| emitted.contains(parent))
             })
             .min_by_key(|hash| {
                 let slot = assignments[*hash];
@@ -178,8 +191,14 @@ pub fn derive_dormant_native_gd08_order(
         hasher.update([slot.role as u8]);
     }
     Ok(DormantGd08OrderPreview {
-        blue_count: assignments.values().filter(|s| s.role == DormantGd08Role::MergeBlue).count(),
-        red_count: assignments.values().filter(|s| s.role == DormantGd08Role::MergeRed).count(),
+        blue_count: assignments
+            .values()
+            .filter(|s| s.role == DormantGd08Role::MergeBlue)
+            .count(),
+        red_count: assignments
+            .values()
+            .filter(|s| s.role == DormantGd08Role::MergeRed)
+            .count(),
         ordered,
         digest: hex::encode(hasher.finalize()),
     })
