@@ -84,7 +84,9 @@ fn generate_matrix(seed: [u8; 32]) -> [[u8; 64]; 64] {
 pub(crate) struct NativeKHeavyHasher {
     nonce_state: CShake256,
     heavy_state: CShake256,
-    matrix: [[u8; 64]; 64],
+    // Retain upstream's u16 matrix element type so the hot nonce loop can
+    // do narrow dot products without converting every matrix cell.
+    matrix: [[u16; 64]; 64],
 }
 
 impl NativeKHeavyHasher {
@@ -99,7 +101,7 @@ impl NativeKHeavyHasher {
         Self {
             nonce_state,
             heavy_state,
-            matrix: generate_matrix(pre_pow),
+            matrix: generate_matrix(pre_pow).map(|row| row.map(u16::from)),
         }
     }
 
@@ -115,15 +117,20 @@ impl NativeKHeavyHasher {
             nibbles[2 * i + 1] = value & 15;
         }
         let mut matrix_xor = [0_u8; 32];
-        for i in 0..32 {
-            let row_sum = |row: usize| -> u32 {
-                (0..64)
-                    .map(|j| u32::from(self.matrix[row][j]) * u32::from(nibbles[j]))
-                    .sum()
-            };
-            let high = ((row_sum(2 * i) >> 10) & 15) as u8;
-            let low = ((row_sum(2 * i + 1) >> 10) & 15) as u8;
-            matrix_xor[i] = nonce_pow[i] ^ ((high << 4) | low);
+        for (i, output) in matrix_xor.iter_mut().enumerate() {
+            // Every sum is bounded by 64 * 15 * 15 = 14_400, so u16 is
+            // mathematically exact. Mirror upstream's two adjacent row
+            // dot-products and avoid the per-cell u32 widening cost.
+            let even = &self.matrix[2 * i];
+            let odd = &self.matrix[2 * i + 1];
+            let mut high = 0_u16;
+            let mut low = 0_u16;
+            for (j, &nibble) in nibbles.iter().enumerate() {
+                let value = u16::from(nibble);
+                high += even[j] * value;
+                low += odd[j] * value;
+            }
+            *output = nonce_pow[i] ^ (((high >> 10) << 4) as u8 | (low >> 10) as u8);
         }
         let mut sponge = self.heavy_state.clone();
         sponge.update(&matrix_xor);
