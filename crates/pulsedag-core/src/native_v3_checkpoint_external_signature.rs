@@ -12,8 +12,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::errors::PulseError;
 
-const SIGNATURE_DOMAIN: &[u8] =
-    b"PulseDAG:NATIVE-V3:DORMANT-EXTERNALLY-PINNED-CHECKPOINT:v1";
+const SIGNATURE_DOMAIN: &[u8] = b"PulseDAG:NATIVE-V3:DORMANT-EXTERNALLY-PINNED-CHECKPOINT:v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeV3CheckpointSignedClaim {
@@ -94,7 +93,9 @@ pub fn dormant_native_v3_checkpoint_signature_preimage(
         return Err(reject("chain identity must be explicit bounded ASCII"));
     }
     if claim.checkpoint_height == 0 || claim.blue_score == 0 || claim.sequence == 0 {
-        return Err(reject("checkpoint height, score and sequence must be positive"));
+        return Err(reject(
+            "checkpoint height, score and sequence must be positive",
+        ));
     }
     if [
         claim.genesis_hash,
@@ -107,7 +108,9 @@ pub fn dormant_native_v3_checkpoint_signature_preimage(
     .iter()
     .any(|digest| digest.iter().all(|byte| *byte == 0))
     {
-        return Err(reject("missing zero-valued authenticated domain or state digest"));
+        return Err(reject(
+            "missing zero-valued authenticated domain or state digest",
+        ));
     }
     let mut message = Vec::with_capacity(512);
     append_field(&mut message, SIGNATURE_DOMAIN);
@@ -138,10 +141,14 @@ pub fn verify_dormant_native_v3_checkpoint_signature(
 ) -> Result<NativeV3DormantSignatureVerdict, PulseError> {
     let preimage = dormant_native_v3_checkpoint_signature_preimage(claim)?;
     if claim.chain_id != pin.chain_id || claim.genesis_hash != pin.genesis_hash {
-        return Err(reject("chain identity/genesis differs from independent frozen pin"));
+        return Err(reject(
+            "chain identity/genesis differs from independent frozen pin",
+        ));
     }
     if claim.claimed_public_key != pin.signer_public_key {
-        return Err(reject("self-declared signer differs from externally pinned key"));
+        return Err(reject(
+            "self-declared signer differs from externally pinned key",
+        ));
     }
     if claim.checkpoint_hash != pin.checkpoint_hash
         || claim.selected_tip_hash != pin.selected_tip_hash
@@ -149,20 +156,26 @@ pub fn verify_dormant_native_v3_checkpoint_signature(
         || claim.consensus_digest != pin.consensus_digest
         || claim.monetary_digest != pin.monetary_digest
     {
-        return Err(reject("checkpoint/consensus/monetary digest differs from independent pin"));
+        return Err(reject(
+            "checkpoint/consensus/monetary digest differs from independent pin",
+        ));
     }
     if claim.checkpoint_height < pin.minimum_height
         || claim.blue_score < pin.minimum_blue_score
         || claim.sequence < pin.minimum_sequence
     {
-        return Err(reject("checkpoint below externally pinned anti-rollback floor"));
+        return Err(reject(
+            "checkpoint below externally pinned anti-rollback floor",
+        ));
     }
     if let Some(last) = previous {
         if claim.sequence <= last.sequence
             || claim.checkpoint_height < last.height
             || claim.blue_score < last.blue_score
         {
-            return Err(reject("checkpoint cannot replay sequence or rewind committed position"));
+            return Err(reject(
+                "checkpoint cannot replay sequence or rewind committed position",
+            ));
         }
     }
     let verifying_key = VerifyingKey::from_bytes(&pin.signer_public_key)
@@ -225,7 +238,10 @@ mod tests {
         (claim, pin, key)
     }
 
-    fn signed(mut claim: NativeV3CheckpointSignedClaim, signer: &SigningKey) -> NativeV3CheckpointSignedClaim {
+    fn signed(
+        mut claim: NativeV3CheckpointSignedClaim,
+        signer: &SigningKey,
+    ) -> NativeV3CheckpointSignedClaim {
         let message = dormant_native_v3_checkpoint_signature_preimage(&claim).unwrap();
         claim.signature = signer.sign(&message).to_bytes();
         claim
@@ -283,13 +299,31 @@ mod tests {
         let (claim, pin, signer) = fixture();
         let claim = signed(claim, &signer);
         for last in [
-            NativeV3PreviousAuthenticatedPosition { height: 120, blue_score: 118, sequence: 9 },
-            NativeV3PreviousAuthenticatedPosition { height: 121, blue_score: 118, sequence: 8 },
-            NativeV3PreviousAuthenticatedPosition { height: 120, blue_score: 119, sequence: 8 },
+            NativeV3PreviousAuthenticatedPosition {
+                height: 120,
+                blue_score: 118,
+                sequence: 9,
+            },
+            NativeV3PreviousAuthenticatedPosition {
+                height: 121,
+                blue_score: 118,
+                sequence: 8,
+            },
+            NativeV3PreviousAuthenticatedPosition {
+                height: 120,
+                blue_score: 119,
+                sequence: 8,
+            },
         ] {
-            assert!(verify_dormant_native_v3_checkpoint_signature(&claim, &pin, Some(last)).is_err());
+            assert!(
+                verify_dormant_native_v3_checkpoint_signature(&claim, &pin, Some(last)).is_err()
+            );
         }
-        let last = NativeV3PreviousAuthenticatedPosition { height: 119, blue_score: 117, sequence: 8 };
+        let last = NativeV3PreviousAuthenticatedPosition {
+            height: 119,
+            blue_score: 117,
+            sequence: 8,
+        };
         assert!(verify_dormant_native_v3_checkpoint_signature(&claim, &pin, Some(last)).is_ok());
         let mut pin = pin;
         pin.minimum_sequence = 10;
