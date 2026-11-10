@@ -35,6 +35,113 @@ def function_slice(source: str, marker: str) -> str:
     return source[start:] if end < 0 else source[start:end]
 
 
+# Exact assignment checks for UNRENDERED pre-GO templates. A grep match in a
+# comment, duplicated env entry, shell expression or alternate assignment is
+# not evidence that a future operator would load a safe configuration.
+PUBLIC_TEMPLATE_REQUIRED = {
+    "PULSEDAG_CONFIG_PROFILE": "testnet",
+    "PULSEDAG_NETWORK_PROFILE": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_CHAIN_ID": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_CONSENSUS_MODE": "legacy",
+    "PULSEDAG_PROTOCOL_CONSENSUS_MODE": "ghostdag_v1",
+    "PULSEDAG_P2P_ENABLED": "false",
+    "PULSEDAG_P2P_BOOTSTRAP": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_PUBLIC_P2P_MULTIADDR": "__TASK31_FREEZE_REQUIRED__",
+    "PULSEDAG_RPC_BIND": "127.0.0.1:8080",
+    "PULSEDAG_API_PROFILE": "public_safe",
+    "PULSEDAG_ADMIN_ENABLED": "false",
+    "PULSEDAG_EXPERIMENTAL_FAST_CADENCE": "false",
+    "PULSEDAG_CONTRACTS_ENABLED": "false",
+    "PULSEDAG_PUBLIC_TESTNET_READY": "false",
+    "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED": "false",
+}
+
+
+PUBLIC_TEMPLATE_ALLOWED_KEYS = frozenset({
+    "PULSEDAG_ADMIN_ENABLED",
+    "PULSEDAG_API_PROFILE",
+    "PULSEDAG_AUTO_PRUNE_ENABLED",
+    "PULSEDAG_AUTO_PRUNE_EVERY_BLOCKS",
+    "PULSEDAG_AUTO_REBUILD_ON_START",
+    "PULSEDAG_CHAIN_ID",
+    "PULSEDAG_CONFIG_PROFILE",
+    "PULSEDAG_CONSENSUS_MODE",
+    "PULSEDAG_CONTRACTS_ENABLED",
+    "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
+    "PULSEDAG_NETWORK_PROFILE",
+    "PULSEDAG_P2P_BOOTSTRAP",
+    "PULSEDAG_P2P_ENABLED",
+    "PULSEDAG_P2P_IDENTITY_KEY",
+    "PULSEDAG_P2P_KADEMLIA",
+    "PULSEDAG_P2P_LISTEN",
+    "PULSEDAG_P2P_MDNS",
+    "PULSEDAG_P2P_MODE",
+    "PULSEDAG_PERSIST_SNAPSHOT_ON_START",
+    "PULSEDAG_PROTOCOL_CONSENSUS_MODE",
+    "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
+    "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
+    "PULSEDAG_PUBLIC_P2P_MULTIADDR",
+    "PULSEDAG_PUBLIC_TESTNET_READY",
+    "PULSEDAG_ROCKSDB_PATH",
+    "PULSEDAG_RPC_BIND",
+    "PULSEDAG_RPC_CORS_ALLOWLIST",
+    "PULSEDAG_RPC_RATE_LIMIT_PER_IP",
+    "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE",
+    "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES",
+    "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED",
+})
+
+
+# Freeze existing safety-sensitive values in the UNRENDERED pre-GO inputs.
+# A key-name allowlist alone does not prevent weaker RPC throttling or
+# snapshot protections from being silently configured before public GO.
+PUBLIC_TEMPLATE_SAFETY_VALUES = {
+    "PULSEDAG_P2P_MODE": "libp2p-real",
+    "PULSEDAG_P2P_LISTEN": "/ip4/0.0.0.0/tcp/30333",
+    "PULSEDAG_P2P_MDNS": "false",
+    "PULSEDAG_P2P_KADEMLIA": "true",
+    "PULSEDAG_P2P_IDENTITY_KEY": "/var/lib/pulsedag/identity.key",
+    "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES": "131072",
+    "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE": "30",
+    "PULSEDAG_RPC_RATE_LIMIT_PER_IP": "true",
+    "PULSEDAG_ROCKSDB_PATH": "/var/lib/pulsedag/rocksdb",
+    "PULSEDAG_AUTO_REBUILD_ON_START": "true",
+    "PULSEDAG_PERSIST_SNAPSHOT_ON_START": "true",
+    "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT": "true",
+}
+
+
+def validate_public_template_assignments(body: str, path: str) -> dict[str, str]:
+    """Parse literal pre-GO env assignments, never evaluate or render shell."""
+    if len(body.encode("utf-8")) > 64 * 1024:
+        fail(f"{path}: pre-GO env template exceeds 64 KiB")
+    assignments: dict[str, str] = {}
+    for number, raw_line in enumerate(body.splitlines(), 1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Reject whitespace aliases, shell substitutions, inline comments,
+        # export statements, hidden secondary commands and mixed-case keys.
+        match = re.fullmatch(r"(PULSEDAG_[A-Z0-9_]+)=([A-Za-z0-9_./:,+-]*)", raw_line)
+        if match is None:
+            fail(f"{path}:{number}: only unquoted literal PULSEDAG_KEY=value allowed")
+        key, value = match.groups()
+        if key not in PUBLIC_TEMPLATE_ALLOWED_KEYS:
+            fail(f"{path}:{number}: unreviewed pre-GO config key {key}")
+        if key in assignments:
+            fail(f"{path}:{number}: duplicate assignment for {key}")
+        assignments[key] = value
+
+    for key, expected in {**PUBLIC_TEMPLATE_REQUIRED, **PUBLIC_TEMPLATE_SAFETY_VALUES}.items():
+        if assignments.get(key) != expected:
+            fail(f"{path}: active {key} must be exact pre-GO value {expected!r}")
+    if assignments.get("PULSEDAG_RPC_CORS_ALLOWLIST") not in (
+        "", "__TASK31_FREEZE_REQUIRED__"
+    ):
+        fail(f"{path}: CORS must remain empty or unresolved before public GO")
+    return assignments
+
+
 def main() -> None:
     if text("VERSION").strip() != "v3.0.0":
         fail("VERSION is not v3.0.0")
@@ -68,8 +175,7 @@ def main() -> None:
             "PULSEDAG_PUBLIC_TESTNET_READY=false",
             "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false",
         )
-        if "PULSEDAG_P2P_ENABLED=true" in body:
-            fail(f"{path} enables P2P before GO")
+        validate_public_template_assignments(body, path)
         if re.search(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY", body):
             fail(f"{path} contains an apparent private key")
         for forbidden in ("ghp_", "github_pat_", "AKIA", "xoxb-", "xoxp-"):
