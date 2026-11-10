@@ -17,6 +17,7 @@ hex = "0.4"
 ed25519-dalek = "2"
 
 sha3 = "0.10"
+keccak = "0.1.6"
 
 [dev-dependencies]
 # Kaspa is now only an integration-test byte-parity reference, not a runtime dependency.
