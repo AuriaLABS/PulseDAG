@@ -80,35 +80,35 @@ fn generate_matrix(seed: [u8; 32]) -> [[u8; 64]; 64] {
     }
 }
 
-fn cshake256(message: &[u8], domain: &[u8]) -> [u8; 32] {
-    let mut engine = CShake256::from_core(CShake256Core::new(domain));
-    engine.update(message);
-    let mut result = [0_u8; 32];
-    engine.finalize_xof().read(&mut result);
-    result
-}
-
 #[derive(Clone)]
 pub(crate) struct NativeKHeavyHasher {
-    pre_pow: [u8; 32],
+    nonce_state: CShake256,
+    heavy_state: CShake256,
     matrix: [[u8; 64]; 64],
 }
 
 impl NativeKHeavyHasher {
     pub(crate) fn new(pre_pow_bytes: &[u8]) -> Self {
         let pre_pow: [u8; 32] = Keccak256::digest(pre_pow_bytes).into();
+        // Reuse finalized customization and immutable preimage state for every
+        // nonce, matching the old prepared miner's cached sponge behavior.
+        let mut nonce_state = CShake256::from_core(CShake256Core::new(b"ProofOfWorkHash"));
+        nonce_state.update(&pre_pow);
+        nonce_state.update(&[0_u8; 40]);
+        let heavy_state = CShake256::from_core(CShake256Core::new(b"HeavyHash"));
         Self {
-            pre_pow,
+            nonce_state,
+            heavy_state,
             matrix: generate_matrix(pre_pow),
         }
     }
 
     /// Cache matrix/prehash for repeated nonces of the same chain-bound header.
     pub(crate) fn hash_nonce(&self, nonce: u64) -> [u8; 32] {
-        let mut nonce_message = [0_u8; 80];
-        nonce_message[..32].copy_from_slice(&self.pre_pow);
-        nonce_message[72..].copy_from_slice(&nonce.to_le_bytes());
-        let nonce_pow = cshake256(&nonce_message, b"ProofOfWorkHash");
+        let mut sponge = self.nonce_state.clone();
+        sponge.update(&nonce.to_le_bytes());
+        let mut nonce_pow = [0_u8; 32];
+        sponge.finalize_xof().read(&mut nonce_pow);
         let mut nibbles = [0_u8; 64];
         for (i, value) in nonce_pow.iter().enumerate() {
             nibbles[2 * i] = value >> 4;
@@ -125,7 +125,11 @@ impl NativeKHeavyHasher {
             let low = ((row_sum(2 * i + 1) >> 10) & 15) as u8;
             matrix_xor[i] = nonce_pow[i] ^ ((high << 4) | low);
         }
-        cshake256(&matrix_xor, b"HeavyHash")
+        let mut sponge = self.heavy_state.clone();
+        sponge.update(&matrix_xor);
+        let mut digest = [0_u8; 32];
+        sponge.finalize_xof().read(&mut digest);
+        digest
     }
 }
 
