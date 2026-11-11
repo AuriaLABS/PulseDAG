@@ -1,0 +1,63 @@
+name: v3 native KHeavyHash runtime migration (PARITY / NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/src/pow_native_kheavyhash.rs
+      - crates/pulsedag-core/src/pow.rs
+      - crates/pulsedag-core/src/lib.rs
+      - crates/pulsedag-core/Cargo.toml
+      - crates/pulsedag-core/tests/native_pow_backend_migration.rs
+      - .github/workflows/v3-native-pow-runtime-migration.yml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-pow-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin source commit identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Strict formatting
+        run: cargo fmt --all -- --check
+      - name: Native release implementation versus original upstream
+        run: cargo test --locked -p pulsedag-core --test native_pow_backend_migration -- --nocapture
+      - name: Independent Python/Rust golden candidate versus new canonical path
+        run: cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture
+      - name: Prepared CPU nonce search release-performance gate vs pinned upstream
+        run: cargo test --locked --release -p pulsedag-core --test native_pow_backend_migration -- --ignored --nocapture
+      - name: Strict Clippy including reference parity
+        run: cargo clippy --locked -p pulsedag-core --test native_pow_backend_migration -- -D warnings
+      - name: Normal release roots must not compile archived Kaspa dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          for root in pulsedagd pulsedag-miner pulsedag-wallet pulsedag-p2p; do
+            cargo tree --locked --target x86_64-unknown-linux-gnu -e normal -p "$root" > "/tmp/${root}-normal-tree.txt"
+            if grep -E '(kaspa-pow|kaspa-hashes|workflow-(core|wasm)|async-std|pin-utils) v' "/tmp/${root}-normal-tree.txt"; then
+              echo "::error::obsolete Kaspa dependency compiled by $root"
+              exit 1
+            fi
+            echo "PASS normal release dependency tree excludes Kaspa/$root"
+          done
+      - name: Cargo.lock must remain untouched for reference-only migration
+        run: git diff --exit-code -- Cargo.lock

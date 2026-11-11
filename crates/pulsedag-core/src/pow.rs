@@ -1,10 +1,8 @@
+use crate::pow_native_kheavyhash::{native_kheavyhash_digest, NativeKHeavyHasher};
 use crate::{
     state::ChainState,
     types::{canonical_mining_preimage_bytes, BlockHeader},
 };
-use kaspa_hashes::{Hash as KaspaHash, PowHash};
-use kaspa_pow::matrix::Matrix;
-use sha3::Digest;
 
 fn read_env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -282,7 +280,7 @@ pub trait PowEngine {
     ) -> PowEvaluation {
         let digest = kheavyhash_digest(pre_pow_bytes, nonce);
         let mut hash = [0u8; 32];
-        hash.copy_from_slice(&digest.as_bytes());
+        hash.copy_from_slice(&digest);
         let hash_hex = hex::encode(hash);
         let mut prefix = [0u8; 8];
         prefix.copy_from_slice(&hash[..8]);
@@ -303,7 +301,7 @@ pub trait PowEngine {
     fn evaluate_preimage(&self, preimage: &[u8], difficulty: u64) -> PowEvaluation {
         let digest = kheavyhash_digest(preimage, 0);
         let mut hash = [0u8; 32];
-        hash.copy_from_slice(&digest.as_bytes());
+        hash.copy_from_slice(&digest);
         let hash_hex = hex::encode(hash);
         let score_u64 = self.score_preimage_u64(preimage);
         let target = target_from_bits(difficulty as u32);
@@ -365,7 +363,7 @@ impl PowEngine for KaspaKHeavyHashEngine {
     fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
         let digest = kheavyhash_digest(preimage, 0);
         let mut prefix = [0u8; 8];
-        prefix.copy_from_slice(&digest.as_bytes()[..8]);
+        prefix.copy_from_slice(&digest[..8]);
         u64::from_be_bytes(prefix)
     }
 }
@@ -493,41 +491,23 @@ pub fn canonical_pow_adapter() -> CanonicalPowAdapter {
     CanonicalPowAdapter::new()
 }
 
-/// Nonce-search preparation for one immutable PoW preimage.
-///
-/// This caches only the Keccak prehash, initialized PowHash and KHeavyHash
-/// matrix. Its nonce digest must exactly match the existing canonical
-/// `kheavyhash_digest`; validation and consensus continue using that path.
-/// Do not reuse across distinct headers, chain identities or timestamps.
+/// The matrix/prehash are cached once per header. Do not reuse across chain
+/// identity, timestamp or preimage changes; the target check is unchanged.
 pub struct PreparedKHeavyHasher {
-    hasher: PowHash,
-    matrix: Matrix,
+    inner: NativeKHeavyHasher,
 }
-
 impl PreparedKHeavyHasher {
     pub fn new(pre_pow_bytes: &[u8]) -> Self {
-        let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(pre_pow_bytes).into());
         Self {
-            hasher: PowHash::new(pre_pow_hash, 0),
-            matrix: Matrix::generate(pre_pow_hash),
+            inner: NativeKHeavyHasher::new(pre_pow_bytes),
         }
     }
-
-    /// Raw canonical 256-bit digest. Target checks remain exact byte comparisons.
     pub fn hash_nonce(&self, nonce: u64) -> [u8; 32] {
-        let digest = self
-            .matrix
-            .heavy_hash(self.hasher.clone().finalize_with_nonce(nonce));
-        digest.as_bytes()
+        self.inner.hash_nonce(nonce)
     }
 }
-
-fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> KaspaHash {
-    let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(pre_pow_bytes).into());
-    let hasher = PowHash::new(pre_pow_hash, 0);
-    let initial_hash = hasher.finalize_with_nonce(nonce);
-    let matrix = Matrix::generate(pre_pow_hash);
-    matrix.heavy_hash(initial_hash)
+fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> [u8; 32] {
+    native_kheavyhash_digest(pre_pow_bytes, nonce)
 }
 
 fn validate_pow_preimage_encoding_view(
