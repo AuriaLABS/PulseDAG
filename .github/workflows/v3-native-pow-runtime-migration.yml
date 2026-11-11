@@ -47,17 +47,27 @@ jobs:
         run: cargo test --locked --release -p pulsedag-core --test native_pow_backend_migration -- --ignored --nocapture
       - name: Strict Clippy including reference parity
         run: cargo clippy --locked -p pulsedag-core --test native_pow_backend_migration -- -D warnings
-      - name: Normal release roots must not compile archived Kaspa dependency graph
+      - name: Normal release dependency trees exclude archived Kaspa across Linux Windows and macOS
         shell: bash
         run: |
           set -euo pipefail
-          for root in pulsedagd pulsedag-miner pulsedag-wallet pulsedag-p2p; do
-            cargo tree --locked --target x86_64-unknown-linux-gnu -e normal -p "$root" > "/tmp/${root}-normal-tree.txt"
-            if grep -E '(kaspa-pow|kaspa-hashes|workflow-(core|wasm)|async-std|pin-utils) v' "/tmp/${root}-normal-tree.txt"; then
-              echo "::error::obsolete Kaspa dependency compiled by $root"
-              exit 1
-            fi
-            echo "PASS normal release dependency tree excludes Kaspa/$root"
+          # cargo tree is target-filtered RESOLUTION evidence. On this Linux
+          # runner only the Linux compiler-artifact gate proves compiled absence;
+          # Windows and macOS still need separate real release-build evidence.
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            for root in pulsedagd pulsedag-miner pulsedag-wallet pulsedag-p2p; do
+              evidence="/tmp/$root-$target-normal-tree.txt"
+              cargo tree --locked --target "$target" -e normal -p "$root" > "$evidence"
+              if ! grep -qE "^$root v" "$evidence"; then
+                echo "::error::missing $root in $target dependency-tree evidence"
+                exit 1
+              fi
+              if grep -E '(kaspa-pow|kaspa-hashes|workflow-(core|wasm)|async-std|pin-utils) v' "$evidence"; then
+                echo "::error::obsolete Kaspa runtime dependency reachable in $root on $target"
+                exit 1
+              fi
+              echo "PASS $target/$root: normal dependency resolution excludes pinned legacy Kaspa stack"
+            done
           done
       - name: Cargo.lock must remain untouched for reference-only migration
         run: git diff --exit-code -- Cargo.lock
