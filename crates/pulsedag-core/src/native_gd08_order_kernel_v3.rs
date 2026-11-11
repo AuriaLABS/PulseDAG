@@ -311,10 +311,8 @@ pub fn derive_dormant_native_gd08_order_from_ghostdag_trial(
 mod derived_ghostdag_bridge_tests {
     use super::*;
     use crate::{
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        types::compute_merkle_root,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, pow_v3::evaluate_v3_header_pow,
+        protocol::BLOCK_HEADER_VERSION_V3, types::compute_merkle_root,
     };
 
     const CHAIN: &str = "pulsedag-dormant-gd08-ghostdag-derived-bridge";
@@ -402,7 +400,12 @@ mod derived_ghostdag_bridge_tests {
     fn derived_order_rejects_wrong_network_or_missing_ancestor() {
         let (genesis, tip, side, mut headers) = sibling_join(1);
         assert!(derive_dormant_native_gd08_order_from_ghostdag_trial(
-            "wrong-chain", GENESIS_NS, &genesis, &tip, &headers, 1,
+            "wrong-chain",
+            GENESIS_NS,
+            &genesis,
+            &tip,
+            &headers,
+            1,
         )
         .is_err());
         headers.remove(&side);
