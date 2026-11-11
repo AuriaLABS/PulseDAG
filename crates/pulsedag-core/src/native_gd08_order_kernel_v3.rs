@@ -350,7 +350,9 @@ mod derived_ghostdag_bridge_tests {
         panic!("easy target nonce not found");
     }
 
-    fn sibling_join(trial_k: usize) -> (BlockId, BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>) {
+    type Fixture = (BlockId, BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>);
+
+    fn sibling_join(trial_k: usize) -> Fixture {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let g = genesis.hash;
         let mut headers = BTreeMap::from([(g.clone(), genesis.header)]);
@@ -366,7 +368,8 @@ mod derived_ghostdag_bridge_tests {
             "33",
         );
         headers.insert(tip.clone(), ht);
-        (g, tip, headers[&tip].parents[0].clone(), headers)
+        let side = headers[&tip].parents[0].clone();
+        (g, tip, side, headers)
     }
 
     #[test]
