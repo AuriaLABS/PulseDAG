@@ -336,7 +336,7 @@ mod derived_ghostdag_bridge_tests {
             difficulty: EASY_BITS,
             nonce: 0,
             merkle_root: compute_merkle_root(&[]),
-            state_root: marker.repeat(64),
+            state_root: marker.repeat(32),
             blue_score,
             height,
         };
