@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     errors::PulseError, header_v3::BlockHeaderV3,
+    native_ghostdag_policy_candidate_v3::derive_dormant_native_v3_ghostdag_trial,
     native_topological_evaluation_v3::derive_dormant_native_v3_topological_evaluation,
     types::BlockId,
 };
@@ -202,4 +203,215 @@ pub fn derive_dormant_native_gd08_order(
         ordered,
         digest: hex::encode(hasher.finalize()),
     })
+}
+
+/// Reconstruct the GD-08 diagnostic roles from authenticated GHOSTDAG trial
+/// metadata instead of trusting caller-supplied selected-spine/anchor/color
+/// assignments. This closes a *diagnostic integration* gap between GD-01..07
+/// and GD-08 (#1309/#1410); it does not freeze K or blue/red monetary policy.
+///
+/// Every ancestor, PoW, committed blue score and proposed K-cluster is derived
+/// from exact native-v3 headers. Each side block must be classified exactly
+/// once at its selected-spine merge anchor; missing/duplicate slots fail closed.
+/// The returned order is NOT a spending, settlement, mining or P2P authority.
+pub fn derive_dormant_native_gd08_order_from_ghostdag_trial(
+    chain_id: &str,
+    frozen_genesis_timestamp_ns: u64,
+    frozen_genesis_hash: &str,
+    tip: &BlockId,
+    headers: &BTreeMap<BlockId, BlockHeaderV3>,
+    trial_k: usize,
+) -> Result<DormantGd08OrderPreview, PulseError> {
+    let trial = derive_dormant_native_v3_ghostdag_trial(
+        chain_id,
+        frozen_genesis_timestamp_ns,
+        frozen_genesis_hash,
+        std::slice::from_ref(tip),
+        headers,
+        trial_k,
+    )?;
+
+    let mut reversed_spine = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut next = tip.clone();
+    loop {
+        if !seen.insert(next.clone()) || seen.len() > trial.blocks.len() {
+            return Err(reject("cycle or unbounded derived selected-parent spine"));
+        }
+        let metadata = trial
+            .blocks
+            .get(&next)
+            .ok_or_else(|| reject("derived selected-parent header missing"))?;
+        reversed_spine.push(next.clone());
+        match &metadata.selected_parent {
+            Some(parent) => next = parent.clone(),
+            None if next == frozen_genesis_hash => break,
+            None => return Err(reject("derived spine does not end at frozen genesis")),
+        }
+    }
+    reversed_spine.reverse();
+
+    let mut assignments = BTreeMap::new();
+    for (index, hash) in reversed_spine.iter().enumerate() {
+        if assignments
+            .insert(
+                hash.clone(),
+                DormantGd08AnchorSlot {
+                    anchor: index,
+                    role: DormantGd08Role::Selected,
+                },
+            )
+            .is_some()
+        {
+            return Err(reject("duplicate derived selected-spine role"));
+        }
+    }
+    for (index, hash) in reversed_spine.iter().enumerate().skip(1) {
+        let metadata = trial
+            .blocks
+            .get(hash)
+            .ok_or_else(|| reject("missing derived merge-set metadata"))?;
+        for (role, side_blocks) in [
+            (DormantGd08Role::MergeBlue, &metadata.merge_blues),
+            (DormantGd08Role::MergeRed, &metadata.merge_reds),
+        ] {
+            for side_hash in side_blocks {
+                if !trial.blocks.contains_key(side_hash) {
+                    return Err(reject("derived merge-set references unknown side header"));
+                }
+                if assignments
+                    .insert(
+                        side_hash.clone(),
+                        DormantGd08AnchorSlot {
+                            anchor: index,
+                            role,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(reject("duplicate or selected derived side role"));
+                }
+            }
+        }
+    }
+    if assignments.len() != trial.blocks.len() {
+        return Err(reject("incomplete derived GHOSTDAG side-role coverage"));
+    }
+    derive_dormant_native_gd08_order(
+        chain_id,
+        frozen_genesis_timestamp_ns,
+        frozen_genesis_hash,
+        &reversed_spine,
+        headers,
+        &assignments,
+    )
+}
+
+#[cfg(test)]
+mod derived_ghostdag_bridge_tests {
+    use super::*;
+    use crate::{
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, pow_v3::evaluate_v3_header_pow,
+        protocol::BLOCK_HEADER_VERSION_V3, types::compute_merkle_root,
+    };
+
+    const CHAIN: &str = "pulsedag-dormant-gd08-ghostdag-derived-bridge";
+    const GENESIS_NS: u64 = 1_800_000_012_000_000_000;
+    const EASY_BITS: u32 = 0x207f_ffff;
+
+    fn mined(
+        mut parents: Vec<BlockId>,
+        timestamp_ns: u64,
+        height: u64,
+        blue_score: u64,
+        marker: &str,
+    ) -> (BlockId, BlockHeaderV3) {
+        parents.sort();
+        let mut header = BlockHeaderV3 {
+            version: BLOCK_HEADER_VERSION_V3,
+            parents,
+            timestamp_ns,
+            difficulty: EASY_BITS,
+            nonce: 0,
+            merkle_root: compute_merkle_root(&[]),
+            state_root: marker.repeat(32),
+            blue_score,
+            height,
+        };
+        for nonce in 0..4096_u64 {
+            header.nonce = nonce;
+            let proof = evaluate_v3_header_pow(&header, CHAIN).unwrap();
+            if proof.pow.accepted {
+                return (proof.block_hash, header);
+            }
+        }
+        panic!("easy target nonce not found");
+    }
+
+    type Fixture = (BlockId, BlockId, BlockId, BTreeMap<BlockId, BlockHeaderV3>);
+
+    fn sibling_join(trial_k: usize) -> Fixture {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let g = genesis.hash;
+        let mut headers = BTreeMap::from([(g.clone(), genesis.header)]);
+        let (a, ha) = mined(vec![g.clone()], GENESIS_NS + 500_000_000, 1, 1, "11");
+        let (b, hb) = mined(vec![g.clone()], GENESIS_NS + 600_000_000, 1, 1, "22");
+        headers.insert(a.clone(), ha);
+        headers.insert(b.clone(), hb);
+        let (tip, ht) = mined(
+            vec![a, b],
+            GENESIS_NS + 1_000_000_000,
+            2,
+            2 + trial_k as u64,
+            "33",
+        );
+        headers.insert(tip.clone(), ht);
+        let side = headers[&tip].parents[0].clone();
+        (g, tip, side, headers)
+    }
+
+    #[test]
+    fn derived_blue_red_roles_and_order_are_authenticated_and_deterministic() {
+        for k in [0, 1] {
+            let (genesis, tip, _, headers) = sibling_join(k);
+            let first = derive_dormant_native_gd08_order_from_ghostdag_trial(
+                CHAIN, GENESIS_NS, &genesis, &tip, &headers, k,
+            )
+            .unwrap();
+            assert_eq!(first.ordered.len(), 4);
+            assert_eq!(first.ordered.first(), Some(&genesis));
+            assert_eq!(first.ordered.last(), Some(&tip));
+            assert_eq!(first.blue_count, k);
+            assert_eq!(first.red_count, 1 - k);
+            let reversed = headers
+                .iter()
+                .rev()
+                .map(|(id, header)| (id.clone(), header.clone()))
+                .collect();
+            let second = derive_dormant_native_gd08_order_from_ghostdag_trial(
+                CHAIN, GENESIS_NS, &genesis, &tip, &reversed, k,
+            )
+            .unwrap();
+            assert_eq!(first, second);
+        }
+    }
+
+    #[test]
+    fn derived_order_rejects_wrong_network_or_missing_ancestor() {
+        let (genesis, tip, side, mut headers) = sibling_join(1);
+        assert!(derive_dormant_native_gd08_order_from_ghostdag_trial(
+            "wrong-chain",
+            GENESIS_NS,
+            &genesis,
+            &tip,
+            &headers,
+            1,
+        )
+        .is_err());
+        headers.remove(&side);
+        assert!(derive_dormant_native_gd08_order_from_ghostdag_trial(
+            CHAIN, GENESIS_NS, &genesis, &tip, &headers, 1,
+        )
+        .is_err());
+    }
 }
