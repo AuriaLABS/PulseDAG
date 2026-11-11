@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - crates/pulsedag-core/src/native_v3_checkpoint_external_signature.rs
+      - crates/pulsedag-core/src/native_v3_checkpoint_snapshot_bytes_trial.rs
       - crates/pulsedag-core/src/lib.rs
       - .github/workflows/v3-native-checkpoint-external-signature.yml
       - docs/runbooks/V3_NATIVE_CHECKPOINT_EXTERNAL_SIGNATURE.md
@@ -30,6 +31,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Valid pinned Ed25519 and forgery/replay negatives
         run: cargo test --locked -p pulsedag-core native_v3_checkpoint_external_signature -- --nocapture
+      - name: Bounded real snapshot digest and untrusted-reader negative tests
+        run: cargo test --locked -p pulsedag-core --lib native_v3_checkpoint_snapshot_bytes_trial -- --nocapture
       - name: Strict Clippy for core including dormant signature tests
         run: cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
       - name: No native-v3 checkpoint restore/runtime callsite
@@ -37,7 +40,13 @@ jobs:
         run: |
           set -euo pipefail
           if git grep -n -F 'verify_dormant_native_v3_checkpoint_signature(' -- '*.rs' |
-             grep -v -F 'crates/pulsedag-core/src/native_v3_checkpoint_external_signature.rs:'; then
+             grep -v -F 'crates/pulsedag-core/src/native_v3_checkpoint_external_signature.rs:' |
+             grep -v -F 'crates/pulsedag-core/src/native_v3_checkpoint_snapshot_bytes_trial.rs:'; then
             echo "::error::Checkpoint signature verifier wired to runtime before trust/full-replay approvals"
+            exit 1
+          fi
+          if git grep -n -F 'verify_dormant_native_v3_checkpoint_snapshot_bytes(' -- '*.rs' |
+             grep -v -F 'crates/pulsedag-core/src/native_v3_checkpoint_snapshot_bytes_trial.rs:'; then
+            echo "::error::Snapshot byte verifier wired to runtime before full-DAG consensus approval"
             exit 1
           fi
