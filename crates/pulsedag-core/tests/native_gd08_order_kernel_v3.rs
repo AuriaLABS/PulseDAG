@@ -196,3 +196,264 @@ fn rejects_incomplete_wrong_anchor_cross_chain_and_inconsistent_hash() {
     )
     .is_err());
 }
+#[test]
+fn blue_and_red_sibling_forks_order_by_authenticated_anchor_roles() {
+    // Five REAL native-v3 PoW headers: three equally high competitors and
+    // their authenticated 3-parent merge. Symbolic work/K authority is NOT
+    // assumed. Only the supplied dormant role/anchor contract is exercised.
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let g = genesis.hash;
+    let mut headers = BTreeMap::from([(g.clone(), genesis.header)]);
+    let selected = add(
+        &mut headers,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        true,
+    );
+    let blue = add(
+        &mut headers,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        true,
+    );
+    let red = add(
+        &mut headers,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 700_000_000,
+        true,
+    );
+    let tip = add(
+        &mut headers,
+        vec![selected.clone(), blue.clone(), red.clone()],
+        2,
+        GENESIS_NS + 1_000_000_000,
+        true,
+    );
+    let spine = vec![g.clone(), selected.clone(), tip.clone()];
+    let roles = BTreeMap::from([
+        (
+            g.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 0,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            selected.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 1,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            blue.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::MergeBlue,
+            },
+        ),
+        (
+            red.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::MergeRed,
+            },
+        ),
+        (
+            tip.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+    ]);
+    let order =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &roles).unwrap();
+    assert_eq!(
+        order.ordered,
+        vec![
+            g.clone(),
+            selected.clone(),
+            blue.clone(),
+            red.clone(),
+            tip.clone()
+        ]
+    );
+    assert_eq!(order.blue_count, 1);
+    assert_eq!(order.red_count, 1);
+
+    // Reinsert verified headers and role assignments in reverse order; the
+    // independently authenticated preview must have identical order/digest.
+    let reversed_headers = headers.clone().into_iter().rev().collect();
+    let reversed_roles = roles.clone().into_iter().rev().collect();
+    let replay = derive_dormant_native_gd08_order(
+        CHAIN,
+        GENESIS_NS,
+        &g,
+        &spine,
+        &reversed_headers,
+        &reversed_roles,
+    )
+    .unwrap();
+    assert_eq!(order, replay);
+
+    // An unrelated valid PoW sibling that does not belong to the tip ancestor
+    // closure must not be credited or change the digest.
+    let mut extended = headers.clone();
+    let unselected = add(
+        &mut extended,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 800_000_000,
+        true,
+    );
+    assert!(!order.ordered.contains(&unselected));
+    assert_eq!(
+        order,
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &extended, &roles,)
+            .unwrap()
+    );
+
+    // Roles are not *derived* here. When externally supplied roles change,
+    // the preview and cryptographic digest must change rather than silently
+    // preserving an old monetary/order commitment.
+    let mut swapped_roles = roles;
+    swapped_roles.get_mut(&blue).unwrap().role = DormantGd08Role::MergeRed;
+    swapped_roles.get_mut(&red).unwrap().role = DormantGd08Role::MergeBlue;
+    let swapped =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &swapped_roles)
+            .unwrap();
+    assert_eq!(swapped.ordered, vec![g, selected, red, blue, tip]);
+    assert_ne!(order.digest, swapped.digest);
+    assert_eq!(swapped.blue_count, 1);
+    assert_eq!(swapped.red_count, 1);
+}
+
+#[test]
+fn delayed_side_branch_requires_its_first_real_selected_merge_anchor() {
+    // A side branch created after a selected merge first enters the selected
+    // ancestry at the NEXT selected block. Earlier anchoring would silently
+    // leak a transaction into a prior ordering/reward segment.
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let g = genesis.hash;
+    let mut headers = BTreeMap::from([(g.clone(), genesis.header)]);
+    let a = add(
+        &mut headers,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 500_000_000,
+        true,
+    );
+    let b = add(
+        &mut headers,
+        vec![g.clone()],
+        1,
+        GENESIS_NS + 600_000_000,
+        true,
+    );
+    let join = add(
+        &mut headers,
+        vec![a.clone(), b.clone()],
+        2,
+        GENESIS_NS + 1_000_000_000,
+        true,
+    );
+    let delayed = add(
+        &mut headers,
+        vec![a.clone()],
+        2,
+        GENESIS_NS + 1_100_000_000,
+        true,
+    );
+    let tip = add(
+        &mut headers,
+        vec![join.clone(), delayed.clone()],
+        3,
+        GENESIS_NS + 1_500_000_000,
+        true,
+    );
+    let spine = vec![g.clone(), a.clone(), join.clone(), tip.clone()];
+    let roles = BTreeMap::from([
+        (
+            g.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 0,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            a.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 1,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            b.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::MergeBlue,
+            },
+        ),
+        (
+            join.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 2,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+        (
+            delayed.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 3,
+                role: DormantGd08Role::MergeRed,
+            },
+        ),
+        (
+            tip.clone(),
+            DormantGd08AnchorSlot {
+                anchor: 3,
+                role: DormantGd08Role::Selected,
+            },
+        ),
+    ]);
+    let valid =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &roles).unwrap();
+    assert_eq!(
+        valid.ordered,
+        vec![g.clone(), a, b, join, delayed.clone(), tip]
+    );
+    assert_eq!(valid.ordered.len(), 6);
+
+    // An authentic child cannot be attached to a selected ancestor that has
+    // not yet observed it. The kernel must reject this before producing a
+    // digest or an order that downstream accounting could misuse.
+    let mut forged = roles.clone();
+    forged.get_mut(&delayed).unwrap().anchor = 2;
+    let error = derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged)
+        .unwrap_err();
+    assert!(error.to_string().contains("non-earliest merge anchor"));
+
+    forged.get_mut(&delayed).unwrap().anchor = 4;
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,)
+            .is_err()
+    );
+
+    forged = roles.clone();
+    forged.get_mut(&delayed).unwrap().role = DormantGd08Role::Selected;
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,)
+            .is_err()
+    );
+
+    let mut incomplete = headers.clone();
+    incomplete.remove(&delayed);
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &incomplete, &roles,)
+            .is_err()
+    );
+}
