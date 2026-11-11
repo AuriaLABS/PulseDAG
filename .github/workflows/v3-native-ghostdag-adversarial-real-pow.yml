@@ -1,0 +1,44 @@
+name: native v3 GHOSTDAG authenticated adversarial Rust trial (DORMANT / NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-core/tests/native_v3_ghostdag_adversarial.rs
+      - crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs
+      - crates/pulsedag-core/tests/support/native_v3_utxo_preview.rs
+      - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - .github/workflows/v3-native-ghostdag-adversarial-real-pow.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-ghostdag-adversarial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Pin exact commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          components: rustfmt, clippy
+      - name: Verify whole-workspace Rustfmt
+        run: cargo fmt --all -- --check
+      - name: Real-PoW heterogeneous-work K-boundary and adversarial DAG corpus
+        run: cargo test --locked -p pulsedag-core --test native_v3_ghostdag_adversarial -- --nocapture
+      - name: Strict exact-head Rust Clippy for dormant corpus
+        run: cargo clippy --locked -p pulsedag-core --test native_v3_ghostdag_adversarial -- -D warnings
