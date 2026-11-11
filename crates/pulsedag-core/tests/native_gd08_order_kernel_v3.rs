@@ -270,13 +270,17 @@ fn blue_and_red_sibling_forks_order_by_authenticated_anchor_roles() {
             },
         ),
     ]);
-    let order = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &roles,
-    )
-    .unwrap();
+    let order =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &roles).unwrap();
     assert_eq!(
         order.ordered,
-        vec![g.clone(), selected.clone(), blue.clone(), red.clone(), tip.clone()]
+        vec![
+            g.clone(),
+            selected.clone(),
+            blue.clone(),
+            red.clone(),
+            tip.clone()
+        ]
     );
     assert_eq!(order.blue_count, 1);
     assert_eq!(order.red_count, 1);
@@ -309,10 +313,8 @@ fn blue_and_red_sibling_forks_order_by_authenticated_anchor_roles() {
     assert!(!order.ordered.contains(&unselected));
     assert_eq!(
         order,
-        derive_dormant_native_gd08_order(
-            CHAIN, GENESIS_NS, &g, &spine, &extended, &roles,
-        )
-        .unwrap()
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &extended, &roles,)
+            .unwrap()
     );
 
     // Roles are not *derived* here. When externally supplied roles change,
@@ -321,14 +323,10 @@ fn blue_and_red_sibling_forks_order_by_authenticated_anchor_roles() {
     let mut swapped_roles = roles;
     swapped_roles.get_mut(&blue).unwrap().role = DormantGd08Role::MergeRed;
     swapped_roles.get_mut(&red).unwrap().role = DormantGd08Role::MergeBlue;
-    let swapped = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &swapped_roles,
-    )
-    .unwrap();
-    assert_eq!(
-        swapped.ordered,
-        vec![g, selected, red, blue, tip]
-    );
+    let swapped =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &swapped_roles)
+            .unwrap();
+    assert_eq!(swapped.ordered, vec![g, selected, red, blue, tip]);
     assert_ne!(order.digest, swapped.digest);
     assert_eq!(swapped.blue_count, 1);
     assert_eq!(swapped.red_count, 1);
@@ -422,10 +420,8 @@ fn delayed_side_branch_requires_its_first_real_selected_merge_anchor() {
             },
         ),
     ]);
-    let valid = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &roles,
-    )
-    .unwrap();
+    let valid =
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &roles).unwrap();
     assert_eq!(
         valid.ordered,
         vec![g.clone(), a, b, join, delayed.clone(), tip]
@@ -437,29 +433,27 @@ fn delayed_side_branch_requires_its_first_real_selected_merge_anchor() {
     // digest or an order that downstream accounting could misuse.
     let mut forged = roles.clone();
     forged.get_mut(&delayed).unwrap().anchor = 2;
-    let error = derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,
-    )
-    .unwrap_err();
+    let error = derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged)
+        .unwrap_err();
     assert!(error.to_string().contains("non-earliest merge anchor"));
 
     forged.get_mut(&delayed).unwrap().anchor = 4;
-    assert!(derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,
-    )
-    .is_err());
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,)
+            .is_err()
+    );
 
     forged = roles.clone();
     forged.get_mut(&delayed).unwrap().role = DormantGd08Role::Selected;
-    assert!(derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,
-    )
-    .is_err());
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &headers, &forged,)
+            .is_err()
+    );
 
     let mut incomplete = headers.clone();
     incomplete.remove(&delayed);
-    assert!(derive_dormant_native_gd08_order(
-        CHAIN, GENESIS_NS, &g, &spine, &incomplete, &roles,
-    )
-    .is_err());
+    assert!(
+        derive_dormant_native_gd08_order(CHAIN, GENESIS_NS, &g, &spine, &incomplete, &roles,)
+            .is_err()
+    );
 }
