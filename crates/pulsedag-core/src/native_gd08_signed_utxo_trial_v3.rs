@@ -16,18 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 use crate::{
-    block_envelope_v3::{
-        validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3,
-    },
+    block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
     errors::PulseError,
     header_v3::BlockHeaderV3,
     native_gd08_order_kernel_v3::derive_dormant_native_gd08_order_from_ghostdag_trial,
     native_parent_dag_context_v3::MAX_DORMANT_V3_DAG_HEADERS,
     state::UtxoState,
-    tx::{
-        address_from_public_key, compute_txid_v2, signing_message_v2,
-        TRANSACTION_VERSION_V2,
-    },
+    tx::{address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2},
     types::{BlockId, OutPoint, Transaction, Utxo},
 };
 
@@ -64,7 +59,9 @@ fn verify_full_signed_spend(
     view: &BTreeMap<OutPoint, Utxo>,
 ) -> Result<(), PulseError> {
     if tx.version != TRANSACTION_VERSION_V2 || tx.inputs.is_empty() || tx.outputs.is_empty() {
-        return Err(reject("unsupported transfer version or empty inputs/outputs"));
+        return Err(reject(
+            "unsupported transfer version or empty inputs/outputs",
+        ));
     }
     if tx.outputs.iter().any(|output| output.amount == 0) {
         return Err(reject("zero-value ordinary output"));
@@ -80,14 +77,18 @@ fn verify_full_signed_spend(
         if !seen_inputs.insert(input.previous_output.clone()) {
             return Err(reject("duplicate input in signed transfer"));
         }
-        let referenced = view.get(&input.previous_output).ok_or(PulseError::UtxoNotFound)?;
+        let referenced = view
+            .get(&input.previous_output)
+            .ok_or(PulseError::UtxoNotFound)?;
         if address_from_public_key(&input.public_key) != referenced.address {
             return Err(PulseError::InvalidSignature);
         }
         let key_bytes = hex::decode(&input.public_key).map_err(|_| PulseError::InvalidSignature)?;
         let signature_bytes =
             hex::decode(&input.signature).map_err(|_| PulseError::InvalidSignature)?;
-        let key: [u8; 32] = key_bytes.try_into().map_err(|_| PulseError::InvalidSignature)?;
+        let key: [u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| PulseError::InvalidSignature)?;
         let sig: [u8; 64] = signature_bytes
             .try_into()
             .map_err(|_| PulseError::InvalidSignature)?;
@@ -107,7 +108,9 @@ fn verify_full_signed_spend(
         .checked_add(u128::from(tx.fee))
         .ok_or_else(|| reject("fee amount overflow"))?;
     if input_sum != required {
-        return Err(reject("signed input value must equal outputs plus explicit fee"));
+        return Err(reject(
+            "signed input value must equal outputs plus explicit fee",
+        ));
     }
     Ok(())
 }
@@ -128,10 +131,7 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
     trial_k: usize,
     opening_utxo: &UtxoState,
 ) -> Result<DormantNativeGd08SignedPrefixV3, PulseError> {
-    if chain_id.is_empty()
-        || envelopes.is_empty()
-        || envelopes.len() > MAX_DORMANT_V3_DAG_HEADERS
-    {
+    if chain_id.is_empty() || envelopes.is_empty() || envelopes.len() > MAX_DORMANT_V3_DAG_HEADERS {
         return Err(reject("invalid chain identity or bounded envelope count"));
     }
     opening_utxo.validate_deterministic_indexes()?;
@@ -160,7 +160,9 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
             || total_inputs > MAX_TRIAL_TOTAL_INPUTS
             || total_outputs > MAX_TRIAL_TOTAL_OUTPUTS
         {
-            return Err(reject("trial transaction/input/output resource budget exceeded"));
+            return Err(reject(
+                "trial transaction/input/output resource budget exceeded",
+            ));
         }
         headers.insert(hash.clone(), block.header.clone());
     }
@@ -174,7 +176,9 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
         trial_k,
     )?;
     if order.ordered.len() != envelopes.len() {
-        return Err(reject("unrelated bodies or incomplete authenticated native DAG"));
+        return Err(reject(
+            "unrelated bodies or incomplete authenticated native DAG",
+        ));
     }
     if !envelopes
         .get(frozen_genesis_hash)
@@ -191,7 +195,9 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
     let mut eligible_fees_by_block = Vec::new();
 
     for hash in order.ordered.iter().skip(1) {
-        let envelope = envelopes.get(hash).ok_or_else(|| reject("ordered body missing"))?;
+        let envelope = envelopes
+            .get(hash)
+            .ok_or_else(|| reject("ordered body missing"))?;
         let mut block_fees = 0_u64;
         for tx in envelope.transactions.iter().skip(1) {
             // Assemble only referenced UTXOs. This is also the historical
@@ -205,7 +211,9 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
                     conflict = true;
                     input_view.insert(input.previous_output.clone(), coin.clone());
                 } else {
-                    return Err(reject("signed transfer references unauthenticated outpoint"));
+                    return Err(reject(
+                        "signed transfer references unauthenticated outpoint",
+                    ));
                 }
             }
             verify_full_signed_spend(tx, chain_id, &input_view)?;
@@ -226,7 +234,9 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
                         index,
                     };
                     if created_history.contains(&outpoint) {
-                        return Err(reject("duplicate created outpoint (including spent history)"));
+                        return Err(reject(
+                            "duplicate created outpoint (including spent history)",
+                        ));
                     }
                     Ok((outpoint, output))
                 })
@@ -311,12 +321,19 @@ mod tests {
             height: 1,
         };
         let mut utxo = UtxoState::default();
-        utxo.address_index.insert(coin.address.clone(), vec![source.clone()]);
+        utxo.address_index
+            .insert(coin.address.clone(), vec![source.clone()]);
         utxo.utxos.insert(source.clone(), coin);
         (utxo, key, source)
     }
 
-    fn spend(key: &SigningKey, source: &OutPoint, amount: u64, fee: u64, nonce: u64) -> Transaction {
+    fn spend(
+        key: &SigningKey,
+        source: &OutPoint,
+        amount: u64,
+        fee: u64,
+        nonce: u64,
+    ) -> Transaction {
         let mut tx = Transaction {
             txid: String::new(),
             version: TRANSACTION_VERSION_V2,
@@ -338,7 +355,9 @@ mod tests {
         tx
     }
 
-    fn fixture(transfers: Vec<Transaction>) -> (BlockId, BlockId, BTreeMap<BlockId, BlockEnvelopeV3>) {
+    fn fixture(
+        transfers: Vec<Transaction>,
+    ) -> (BlockId, BlockId, BTreeMap<BlockId, BlockEnvelopeV3>) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, TS).unwrap();
         let g = genesis.hash.clone();
         let claim = build_reward_claim_transaction_v3("miner", 1, CHAIN).unwrap();
@@ -363,7 +382,11 @@ mod tests {
         }
         let child = build_block_envelope_v3(CHAIN, header, transactions).unwrap();
         let tip = child.hash.clone();
-        (g.clone(), tip.clone(), BTreeMap::from([(g, genesis), (tip, child)]))
+        (
+            g.clone(),
+            tip.clone(),
+            BTreeMap::from([(g, genesis), (tip, child)]),
+        )
     }
 
     #[test]
@@ -377,7 +400,10 @@ mod tests {
         assert_eq!(result.applied_txids.len(), 1);
         assert!(result.skipped_conflict_txids.is_empty());
         assert_eq!(result.eligible_fees_by_block, vec![(tip, 1)]);
-        assert_ne!(result.resulting_state_root, opening.compute_state_root().unwrap());
+        assert_ne!(
+            result.resulting_state_root,
+            opening.compute_state_root().unwrap()
+        );
     }
 
     #[test]
@@ -419,11 +445,23 @@ mod tests {
         let (opening, key, source) = initial();
         let (genesis, tip, bodies) = fixture(vec![spend(&key, &source, 9, 1, 1)]);
         assert!(inspect_dormant_native_gd08_signed_prefix(
-            CHAIN, TS, &genesis, &tip, &bodies, 0, &UtxoState::default(),
+            CHAIN,
+            TS,
+            &genesis,
+            &tip,
+            &bodies,
+            0,
+            &UtxoState::default(),
         )
         .is_err());
         assert!(inspect_dormant_native_gd08_signed_prefix(
-            "other-chain", TS, &genesis, &tip, &bodies, 0, &opening,
+            "other-chain",
+            TS,
+            &genesis,
+            &tip,
+            &bodies,
+            0,
+            &opening,
         )
         .is_err());
     }
