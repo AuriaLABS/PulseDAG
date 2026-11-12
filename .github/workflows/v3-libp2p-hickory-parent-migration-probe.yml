@@ -1,0 +1,84 @@
+name: v3 libp2p 0.57.1 parent migration proof (DRAFT NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-p2p/Cargo.toml
+      - Cargo.lock
+      - .github/workflows/v3-libp2p-hickory-parent-migration-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-and-check-candidate-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact candidate head, without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install exact supported Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup default 1.91.0
+          rustc --version
+          cargo --version
+      - name: Resolve official libp2p 0.57.1 from its parent dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'version = "=0.57.1"' crates/pulsedag-p2p/Cargo.toml
+          cargo update -p libp2p
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+      - name: Record resolved Hickory and libp2p scope (no ignores)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/libp2p-parent-probe
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          pkgs=tomllib.loads(Path("Cargo.lock").read_text())["package"]
+          names={"libp2p","libp2p-dns","libp2p-mdns","hickory-proto","hickory-resolver","quinn-proto","rustix"}
+          selected=sorted((p["name"],p["version"]) for p in pkgs if p["name"] in names)
+          output="\n".join(f"{n}@{v}" for n,v in selected)+"\n"
+          print(output)
+          Path("ci-evidence/libp2p-parent-probe/selected-locked-packages.txt").write_text(output)
+          assert ("libp2p","0.57.1") in selected, "libp2p version drift"
+          assert ("hickory-proto","0.25.2") not in selected, "old vulnerable Hickory still locked"
+          assert not any(n=="hickory-proto" and v<"0.26.2" for n,v in selected), "unpatched Hickory"
+          PY
+          cargo tree --locked -p pulsedagd -e normal >ci-evidence/libp2p-parent-probe/node-normal.txt
+          cargo tree --locked -p pulsedag-wallet -e normal >ci-evidence/libp2p-parent-probe/wallet-normal.txt
+          cargo tree --locked -p pulsedag-miner -e normal >ci-evidence/libp2p-parent-probe/miner-normal.txt
+          cargo tree --locked -p pulsedag-p2p -e normal >ci-evidence/libp2p-parent-probe/p2p-normal.txt
+          if grep -En 'hickory-proto v0\.25\.2|libp2p-dns|libp2p-mdns|quinn-proto' ci-evidence/libp2p-parent-probe/*-normal.txt; then
+            echo 'unexpected optional DNS/mDNS/QUIC package in clean production roots' >&2
+            exit 1
+          fi
+      - name: Validate P2P, node, wallet and miner with resolved candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-wallet -p pulsedag-miner
+          cargo test --locked -p pulsedag-p2p
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Upload resolved Cargo.lock and analysis, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-unapproved-libp2p-0571-lock-${{ github.run_id }}
+          path: |
+            Cargo.lock
+            ci-evidence/libp2p-parent-probe
+          if-no-files-found: error
+          retention-days: 14
