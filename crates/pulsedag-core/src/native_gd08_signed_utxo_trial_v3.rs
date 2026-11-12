@@ -479,9 +479,23 @@ mod tests {
             txid: losing.txid.clone(),
             index: 0,
         };
-        let descendant = spend(&key, &descendant_source, 7, 1, 3);
-        let (genesis, tip, bodies) =
-            fixture(vec![winning.clone(), losing.clone(), descendant.clone()]);
+        let mut descendant = spend(&key, &descendant_source, 7, 1, 3);
+        descendant.outputs[0].address =
+            address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        let message = signing_message_v2(&descendant, CHAIN).unwrap();
+        descendant.inputs[0].signature = hex::encode(key.sign(&message).to_bytes());
+        descendant.txid = compute_txid_v2(&descendant, CHAIN).unwrap();
+        let grandchild_source = OutPoint {
+            txid: descendant.txid.clone(),
+            index: 0,
+        };
+        let grandchild = spend(&key, &grandchild_source, 6, 1, 4);
+        let (genesis, tip, bodies) = fixture(vec![
+            winning.clone(),
+            losing.clone(),
+            descendant.clone(),
+            grandchild.clone(),
+        ]);
         let observed = inspect_dormant_native_gd08_signed_prefix(
             CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
         )
@@ -489,7 +503,7 @@ mod tests {
         assert_eq!(observed.applied_txids, vec![winning.txid.clone()]);
         assert_eq!(
             observed.skipped_conflict_txids,
-            vec![losing.txid.clone(), descendant.txid]
+            vec![losing.txid.clone(), descendant.txid, grandchild.txid]
         );
         assert_eq!(observed.eligible_fees_by_block, vec![(tip, 1)]);
 
