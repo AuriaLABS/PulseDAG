@@ -31,7 +31,7 @@ jobs:
       - name: Real KHeavyHash multi-parent order, invalid ancestry, wrong anchors
         run: cargo test --locked -p pulsedag-core --test native_gd08_order_kernel_v3 -- --nocapture
       - name: Native signed-UTXO replay, rejected conflict descendants, real Ed25519 signatures
-        run: cargo test --locked -p pulsedag-core --lib native_gd08_signed_utxo_trial_v3::tests:: -- --nocapture
+        run: 'cargo test --locked -p pulsedag-core --lib native_gd08_signed_utxo_trial_v3::tests:: -- --nocapture'
       - name: Strict Clippy for native GD-08 library
         run: cargo clippy --locked -p pulsedag-core --lib -- -D warnings
       - name: Strict Clippy for exact test target
