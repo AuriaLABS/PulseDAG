@@ -56,11 +56,16 @@ REQUIRED_PATCHED = {
     ("crossbeam-epoch", "0.9.20"),
     ("anyhow", "1.0.103"),
     ("event-listener", "5.4.2"),
+    # RustSec 2026-0486 affects rustix >=1.0.0,<1.1.6. Unlike lock-only
+    # Hickory, rustix 1.1.4 was compiler-reachable from node and wallet.
+    ("rustix", "1.1.6"),
 }
 FORBIDDEN_OLD_REACHABLE = {
     ("crossbeam-epoch", "0.9.18"),
     ("anyhow", "1.0.102"),
     ("event-listener", "5.4.1"),
+    ("rustix", "1.1.4"),
+    ("rustix", "1.1.5"),
 }
 
 # These optional transports can remain represented in Cargo.lock by libp2p,
@@ -355,6 +360,15 @@ def main() -> None:
     stale = sorted(FORBIDDEN_OLD_REACHABLE & locked)
     if stale:
         fail(f"previous vulnerable reachable versions returned: {stale}")
+    # Newer lockfiles must not re-introduce ANY rustix 1.0/1.1.x version
+    # that is still affected, even if it is not one of the exact old pins.
+    for name, version in locked:
+        if name == "rustix":
+            parts = version.split(".")
+            if len(parts) >= 3 and all(part.isdecimal() for part in parts[:3]):
+                numeric = tuple(int(part) for part in parts[:3])
+                if (1, 0, 0) <= numeric < (1, 1, 6):
+                    fail(f"RUSTSEC-2026-0486 affected rustix version remains locked: {version}")
 
     missing_blockers = sorted(REQUIRED_VISIBLE_BLOCKERS - locked)
     if missing_blockers:
@@ -387,6 +401,13 @@ def main() -> None:
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
 
+    compiled_rustix_by_root = {
+        root: sorted(version for name, version in compiled if name == "rustix")
+        for root, compiled in compiled_by_root.items()
+    }
+    for root, versions in compiled_rustix_by_root.items():
+        if any(version.startswith("1.") and version != "1.1.6" for version in versions):
+            fail(f"{root} still compiles unreviewed/affected rustix 1.x: {versions}")
     reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root, native_runtime=native_runtime)
     (evidence_dir / "reachable-unmaintained-launch-debt.json").write_text(
         json.dumps(reachable_unmaintained, indent=2, sort_keys=True) + "\n",
@@ -423,6 +444,8 @@ def main() -> None:
         ],
         "faster_hex_0306_affected_api_call_sites": faster_hex_call_sites,
         "compiled_counts": {root: len(compiled) for root, compiled in compiled_by_root.items()},
+        "patched_rustix_1_1_6_compiled_by_launch_root": compiled_rustix_by_root,
+        "rustix_1_1_x_affected_versions_locked": False,
         "final_v3_launch_security_ready": False,
     }
     (evidence_dir / "validation.json").write_text(
@@ -450,6 +473,8 @@ def main() -> None:
         "async_std_1_13_2_advisory=RUSTSEC-2025-0052:unmaintained",
         "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",
         "faster_hex_0306_affected_api_call_sites=0",
+        "rustix_1_1_6_patched_lock_only=false",
+        "rustix_1_1_x_affected_versions_locked=false",
         "final_v3_launch_security_ready=false",
         "",
     ]), encoding="utf-8")
