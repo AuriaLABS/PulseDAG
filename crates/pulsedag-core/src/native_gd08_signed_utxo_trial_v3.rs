@@ -535,6 +535,178 @@ mod tests {
         .is_err());
     }
 
+    /// A complete genuine nanosecond-v3 block body with real KHeavyHash PoW,
+    /// header Merkle commitment and mandatory amountless reward claim.
+    fn mined_trial_body(
+        mut parents: Vec<BlockId>,
+        timestamp_ns: u64,
+        height: u64,
+        blue_score: u64,
+        root_marker: &str,
+        beneficiary: &str,
+        transfers: Vec<Transaction>,
+    ) -> BlockEnvelopeV3 {
+        parents.sort();
+        let claim = build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap();
+        let mut transactions = vec![claim];
+        transactions.extend(transfers);
+        let mut header = BlockHeaderV3 {
+            version: BLOCK_HEADER_VERSION_V3,
+            parents,
+            timestamp_ns,
+            difficulty: 0x207f_ffff,
+            nonce: 0,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: root_marker.repeat(32),
+            blue_score,
+            height,
+        };
+        for nonce in 0..4096_u64 {
+            header.nonce = nonce;
+            if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+                return build_block_envelope_v3(CHAIN, header, transactions).unwrap();
+            }
+        }
+        panic!("easy PoW target nonce not found for multiparent fixture");
+    }
+
+    #[test]
+    fn multiparent_fork_rejoin_has_one_signed_winner_and_no_loser_fees() {
+        for k in [0_usize, 1] {
+            let (opening, key, source) = initial();
+            let spend_a = spend(&key, &source, 9, 1, 11);
+            let spend_b = spend(&key, &source, 8, 2, 12);
+            let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, TS).unwrap();
+            let g = genesis.hash.clone();
+
+            // Two incomparable PoW-valid blocks compete for the same signed
+            // outpoint; a real multiparent block joins them. Test both a
+            // red side block (K=0) and blue side block (K=1) trial.
+            let a = mined_trial_body(
+                vec![g.clone()],
+                TS + 500_000_000,
+                1,
+                1,
+                "11",
+                "miner-branch-a",
+                vec![spend_a.clone()],
+            );
+            let b = mined_trial_body(
+                vec![g.clone()],
+                TS + 600_000_000,
+                1,
+                1,
+                "22",
+                "miner-branch-b",
+                vec![spend_b.clone()],
+            );
+            let join = mined_trial_body(
+                vec![a.hash.clone(), b.hash.clone()],
+                TS + 1_000_000_000,
+                2,
+                2 + k as u64,
+                "33",
+                "miner-merge",
+                vec![],
+            );
+            let tip = join.hash.clone();
+            let bodies = BTreeMap::from([
+                (g.clone(), genesis),
+                (a.hash.clone(), a.clone()),
+                (b.hash.clone(), b.clone()),
+                (tip.clone(), join),
+            ]);
+            let first = inspect_dormant_native_gd08_signed_prefix(
+                CHAIN, TS, &g, &tip, &bodies, k, &opening,
+            )
+            .unwrap();
+            assert_eq!(first.ordered_blocks.len(), 4);
+            assert_eq!(first.ordered_blocks.first(), Some(&g));
+            assert_eq!(first.ordered_blocks.last(), Some(&tip));
+            let a_order = first
+                .ordered_blocks
+                .iter()
+                .position(|hash| hash == &a.hash)
+                .unwrap();
+            let b_order = first
+                .ordered_blocks
+                .iter()
+                .position(|hash| hash == &b.hash)
+                .unwrap();
+            let (winner, loser, expected_fee, winner_block) = if a_order < b_order {
+                (&spend_a, &spend_b, 1_u64, &a.hash)
+            } else {
+                (&spend_b, &spend_a, 2_u64, &b.hash)
+            };
+            assert_eq!(first.applied_txids, vec![winner.txid.clone()]);
+            assert_eq!(first.skipped_conflict_txids, vec![loser.txid.clone()]);
+            assert_eq!(
+                first
+                    .eligible_fees_by_block
+                    .iter()
+                    .map(|(_, fee)| *fee)
+                    .sum::<u64>(),
+                expected_fee
+            );
+            assert!(first.eligible_fees_by_block.iter().all(|(hash, fee)| {
+                if hash == winner_block {
+                    *fee == expected_fee
+                } else {
+                    *fee == 0
+                }
+            }));
+            assert_eq!(first.eligible_fees_by_block.last(), Some(&(tip.clone(), 0)));
+
+            // The resulting UTXOs must be identical to replaying only the
+            // winning signed transfer, independent of losing branch bodies.
+            let (single_genesis, single_tip, single_bodies) = fixture(vec![winner.clone()]);
+            let single = inspect_dormant_native_gd08_signed_prefix(
+                CHAIN,
+                TS,
+                &single_genesis,
+                &single_tip,
+                &single_bodies,
+                0,
+                &opening,
+            )
+            .unwrap();
+            assert_eq!(first.resulting_state_root, single.resulting_state_root);
+
+            // Header arrival/insertion order is not monetary authority.
+            let reverse_insertion = bodies
+                .iter()
+                .rev()
+                .map(|(hash, body)| (hash.clone(), body.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let second = inspect_dormant_native_gd08_signed_prefix(
+                CHAIN,
+                TS,
+                &g,
+                &tip,
+                &reverse_insertion,
+                k,
+                &opening,
+            )
+            .unwrap();
+            assert_eq!(first, second);
+
+            // A missing parallel branch cannot silently change the
+            // authenticated selected spine or exclude its conflicting spend.
+            let mut missing_side = bodies.clone();
+            missing_side.remove(&a.hash);
+            assert!(inspect_dormant_native_gd08_signed_prefix(
+                CHAIN,
+                TS,
+                &g,
+                &tip,
+                &missing_side,
+                k,
+                &opening,
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn forged_signature_and_nonconservation_fail_closed() {
         let (opening, key, source) = initial();
