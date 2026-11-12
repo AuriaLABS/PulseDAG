@@ -37,6 +37,7 @@ from v3_public_testnet_identity_shape_gate import (  # noqa: E402
     POLICY_SHA256,
     MAX_LOCAL_BINARY_BYTES,
     _hash_local_regular_file,
+    _clean_local_checkout_head,
     CandidateError,
     check_candidate,
     check_local_artifact_bytes,
@@ -530,6 +531,46 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             hidden = subprocess.run(args, check=False, text=True, capture_output=True)
             self.assertNotEqual(hidden.returncode, 0)
             self.assertIn("NO-GO", hidden.stderr)
+
+    def test_stale_fsmonitor_cannot_hide_modified_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "Fixture"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "fixture@example.invalid"],
+                check=True,
+            )
+            source = repo / "tracked"
+            source.write_text("original", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "tracked"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-qm", "fixture"],
+                check=True,
+            )
+            self.assertEqual(len(_clean_local_checkout_head(repo)), 40)
+            monitor = repo / ".git" / "stale-fsmonitor.sh"
+            monitor.write_text(
+                '#!/bin/sh\nprintf "unchanged-token\\000"\n',
+                encoding="utf-8",
+            )
+            monitor.chmod(0o755)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "core.fsmonitor", str(monitor)],
+                check=True,
+            )
+            # Warm the hook to register a cached fsmonitor state.
+            subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain"],
+                check=True, capture_output=True,
+            )
+            source.write_text("tampered tracked source", encoding="utf-8")
+            with self.assertRaises(CandidateError):
+                _clean_local_checkout_head(repo)
 
     def test_cli_success_still_prints_explicit_no_go(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
