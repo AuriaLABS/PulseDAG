@@ -11,9 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from validate_v3_dependency_security import (  # noqa: E402
     COMPILE_ROOTS,
+    EXPECTED_PATCHED_RUSTIX_ROOTS,
     REQUIRED_COMPILED_UNMAINTAINED_DEBT,
+    REQUIRED_PATCHED,
     REQUIRED_VISIBLE_BLOCKERS,
     require_compiler_reachable_debt,
+    require_patched_rustix_compiler_evidence,
 )
 
 KNOWN = {("async-std", "1.13.2"), ("pin-utils", "0.1.0")}
@@ -99,6 +102,51 @@ class CompilerReachableDebtTests(unittest.TestCase):
                 {root: set() for root in COMPILE_ROOTS}, native_runtime=True
             )
 
+
+
+def patched_rustix_compiled() -> dict[str, set[tuple[str, str]]]:
+    evidence = {root: {(root, "3.0.0"), ("pulsedag-core", "3.0.0")}
+                for root in COMPILE_ROOTS}
+    for root in EXPECTED_PATCHED_RUSTIX_ROOTS:
+        evidence[root].add(("rustix", "1.1.6"))
+    return evidence
+
+
+class Rustix0486CompiledScopeTests(unittest.TestCase):
+    def test_patch_is_exact_and_witnessed_in_node_and_wallet(self) -> None:
+        self.assertIn(("rustix", "1.1.6"), REQUIRED_PATCHED)
+        self.assertEqual(
+            EXPECTED_PATCHED_RUSTIX_ROOTS, {"pulsedagd", "pulsedag-wallet"}
+        )
+        observed = require_patched_rustix_compiler_evidence(patched_rustix_compiled())
+        for root in COMPILE_ROOTS:
+            expected = ["1.1.6"] if root in EXPECTED_PATCHED_RUSTIX_ROOTS else []
+            self.assertEqual(observed[root], expected)
+
+    def test_affected_or_unreviewed_compiled_rustix_fails_closed(self) -> None:
+        for root in COMPILE_ROOTS:
+            for version in ("1.1.0", "1.1.4", "1.1.5", "1.1.7"):
+                compiled = patched_rustix_compiled()
+                compiled[root].add(("rustix", version))
+                with self.subTest(root=root, version=version), self.assertRaises(SystemExit):
+                    require_patched_rustix_compiler_evidence(compiled)
+
+    def test_missing_positive_compiler_evidence_never_passes(self) -> None:
+        for root in EXPECTED_PATCHED_RUSTIX_ROOTS:
+            compiled = patched_rustix_compiled()
+            compiled[root].remove(("rustix", "1.1.6"))
+            with self.subTest(root=root), self.assertRaises(SystemExit):
+                require_patched_rustix_compiler_evidence(compiled)
+
+    def test_missing_or_unexpected_release_root_fails_closed(self) -> None:
+        compiled = patched_rustix_compiled()
+        compiled.pop("pulsedagd")
+        with self.assertRaises(SystemExit):
+            require_patched_rustix_compiler_evidence(compiled)
+        compiled = patched_rustix_compiled()
+        compiled["unauthorized-root"] = {("rustix", "1.1.6")}
+        with self.assertRaises(SystemExit):
+            require_patched_rustix_compiler_evidence(compiled)
 
 
 if __name__ == "__main__":
