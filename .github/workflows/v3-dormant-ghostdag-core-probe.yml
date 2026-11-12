@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -31,6 +32,7 @@ on:
     branches: [main]
     paths:
       - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
+      - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -84,6 +86,9 @@ jobs:
               Path("crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs"),
               Path("crates/pulsedag-core/tests/native_v3_ghostdag_k_pow_boundaries.rs"),
               Path("crates/pulsedag-core/src/native_v3_envelope_trial.rs"),
+              # GD-08 derives only UNAPPROVED ordering diagnostics from the
+              # authenticated candidate; never an active consensus caller.
+              Path("crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs"),
               Path("crates/pulsedag-core/tests/support/native_v3_trial_order_preview.rs"),
               Path("crates/pulsedag-core/tests/native_v3_trial_order_pow_aba.rs"),
               Path("crates/pulsedag-core/tests/native_v3_mixed_target_real_pow_selection.rs"),
@@ -118,6 +123,32 @@ jobs:
           unexpected = found - expected - optional_research_tests
           assert not unexpected, f"unexpected active or trial-call-site paths: {sorted(map(str, unexpected))}"
           assert expected <= found, f"required dormant files missing: {expected - found}"
+          # The dormant GD-08 diagnostic bridge and the isolated signed UTXO
+          # prefix must also remain unreachable from live runtime sources.
+          # The signed prefix is optional until its separate PR is merged.
+          def consumers(symbol):
+              return {
+                  path for root in (Path("crates"), Path("apps"))
+                  for path in root.rglob("*.rs")
+                  if symbol in path.read_text(encoding="utf-8")
+              }
+          gd08_consumers = consumers("native_gd08_order_kernel_v3")
+          allowed_gd08_consumers = {
+              Path("crates/pulsedag-core/src/lib.rs"),
+              Path("crates/pulsedag-core/tests/native_gd08_order_kernel_v3.rs"),
+              Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
+          }
+          assert not (gd08_consumers - allowed_gd08_consumers), (
+              f"unexpected GD-08 live caller: {sorted(map(str, gd08_consumers - allowed_gd08_consumers))}"
+          )
+          signed_consumers = consumers("native_gd08_signed_utxo_trial_v3")
+          allowed_signed_consumers = {
+              Path("crates/pulsedag-core/src/lib.rs"),
+              Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
+          }
+          assert not (signed_consumers - allowed_signed_consumers), (
+              f"unexpected native signed-UTXO trial live caller: {sorted(map(str, signed_consumers - allowed_signed_consumers))}"
+          )
           print("PASS: native-v3 GHOSTDAG Rust candidate has only dormant module and probe references")
           PY
       - name: Verify independent Python canonical native-v3 PoW fixture
