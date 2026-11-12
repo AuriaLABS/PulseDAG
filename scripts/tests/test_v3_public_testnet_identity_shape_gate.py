@@ -460,6 +460,77 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             self.assertNotEqual(skipped.returncode, 0)
             self.assertIn("NO-GO", skipped.stderr)
 
+    def test_cli_rejects_gitlinks_even_if_submodule_changes_are_ignored(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dependency = root / "upstream"
+            repository = root / "source"
+            for git_root in (dependency, repository):
+                git_root.mkdir()
+                subprocess.run(["git", "-C", str(git_root), "init", "-q"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(git_root), "config", "user.name", "Fixture"],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(git_root), "config", "user.email", "fixture@example.invalid"],
+                    check=True,
+                )
+                (git_root / "tracked").write_text("original", encoding="utf-8")
+                subprocess.run(["git", "-C", str(git_root), "add", "tracked"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(git_root), "commit", "-qm", "synthetic"],
+                    check=True,
+                )
+            subprocess.run(
+                [
+                    "git", "-C", str(repository), "-c", "protocol.file.allow=always",
+                    "submodule", "add", "-q", str(dependency), "nested",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "commit", "-qm", "add synthetic submodule"],
+                check=True,
+            )
+            sha = subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            draft = candidate()
+            draft["source_git_sha"] = sha
+            for name, path in (
+                ("node_artifact_sha256", node),
+                ("miner_artifact_sha256", miner),
+                ("config_sha256", config),
+            ):
+                draft[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            draft_path = root / "unapproved.json"
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            args = [
+                sys.executable, str(script), str(draft_path),
+                "--node-file", str(node), "--miner-file", str(miner),
+                "--config-file", str(config), "--source-repo", str(repository),
+            ]
+            clean = subprocess.run(args, check=False, text=True, capture_output=True)
+            self.assertNotEqual(clean.returncode, 0)
+            self.assertIn("submodules", clean.stderr)
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "submodule.nested.ignore", "all"],
+                check=True,
+            )
+            (repository / "nested" / "tracked").write_text(
+                "dirty but ignored by parent", encoding="utf-8"
+            )
+            hidden = subprocess.run(args, check=False, text=True, capture_output=True)
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("NO-GO", hidden.stderr)
+
     def test_cli_success_still_prints_explicit_no_go(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
         with tempfile.TemporaryDirectory() as work:
