@@ -9,10 +9,12 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,6 +35,8 @@ def cidv1_bytes(raw: bytes) -> str:
 from v3_public_testnet_identity_shape_gate import (  # noqa: E402
     CADENCE_SHA256,
     POLICY_SHA256,
+    MAX_LOCAL_BINARY_BYTES,
+    _hash_local_regular_file,
     CandidateError,
     check_candidate,
     check_local_artifact_bytes,
@@ -335,10 +339,45 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
                 check_local_artifact_bytes(
                     manifest, root, miner, config, manifest["source_git_sha"]
                 )
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            # Must fail promptly, not block trying to read a special file.
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, fifo, miner, config, manifest["source_git_sha"]
+                )
             with self.assertRaises(CandidateError):
                 check_local_artifact_bytes(
                     manifest, node, node, config, manifest["source_git_sha"]
                 )
+
+    def test_reject_atomic_path_replacement_during_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact = root / "node.bin"
+            replacement = root / "replacement.bin"
+            artifact.write_bytes(b"original artifact" * 16)
+            replacement.write_bytes(b"substituted artifact" * 16)
+            actual_sha256 = hashlib.sha256
+
+            class SwapHash:
+                def __init__(self) -> None:
+                    self.digest = actual_sha256()
+                    self.swapped = False
+
+                def update(self, data: bytes) -> None:
+                    if not self.swapped:
+                        os.replace(replacement, artifact)
+                        self.swapped = True
+                    self.digest.update(data)
+
+                def hexdigest(self) -> str:
+                    return self.digest.hexdigest()
+
+            with mock.patch(
+                "v3_public_testnet_identity_shape_gate.hashlib.sha256", side_effect=SwapHash
+            ), self.assertRaises(CandidateError):
+                _hash_local_regular_file(artifact, "node", MAX_LOCAL_BINARY_BYTES)
 
     def test_cli_local_consistency_requires_all_inputs_and_clean_checkout(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
@@ -386,6 +425,27 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             dirty = subprocess.run(args, text=True, capture_output=True, check=False)
             self.assertNotEqual(dirty.returncode, 0)
             self.assertIn("NO-GO", dirty.stderr)
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--assume-unchanged", "readme"],
+                check=True,
+            )
+            source.write_text("changed but hidden from git status", encoding="utf-8")
+            hidden = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("NO-GO", hidden.stderr)
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--no-assume-unchanged", "readme"],
+                check=True,
+            )
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--skip-worktree", "readme"],
+                check=True,
+            )
+            skipped = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(skipped.returncode, 0)
+            self.assertIn("NO-GO", skipped.stderr)
 
     def test_cli_success_still_prints_explicit_no_go(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
