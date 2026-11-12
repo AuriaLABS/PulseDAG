@@ -353,6 +353,14 @@ def _clean_local_checkout_head(repository: Path) -> str:
     if not repository.is_dir() or repository.is_symlink():
         reject("local source path must be a real directory")
     try:
+        root = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+        # git status and ls-files from a subdirectory may omit dirty tracked
+        # siblings outside that subtree. Require exactly the worktree root.
+        if Path(root).resolve() != repository.resolve():
+            reject("local source path must be the Git worktree root")
         head = subprocess.run(
             ["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"],
             capture_output=True, text=True, check=True, timeout=10,
