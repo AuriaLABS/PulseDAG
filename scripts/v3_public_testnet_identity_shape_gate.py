@@ -264,7 +264,7 @@ def _hash_local_regular_file(path: Path, label: str, max_bytes: int) -> tuple[st
     if path.is_symlink():
         reject(f"{label}: symbolic links are not accepted as frozen artifacts")
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
         reject(f"{label}: cannot open local artifact: {exc}")
     try:
@@ -280,10 +280,25 @@ def _hash_local_regular_file(path: Path, label: str, max_bytes: int) -> tuple[st
                     reject(f"{label}: size limit exceeded while hashing")
                 digest.update(chunk)
             after = os.fstat(source.fileno())
-            if (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino) != (
-                total, after.st_mtime_ns, after.st_dev, after.st_ino
-            ):
-                reject(f"{label}: local file changed during hashing")
+            # fstat alone cannot detect a concurrent atomic rename replacing
+            # the pathname while the open descriptor still points at old bytes.
+            # lstat rejects final-path symlinks and requires the same inode.
+            current_path = path.lstat()
+            before_identity = (
+                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+            )
+            after_identity = (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+            )
+            path_identity = (
+                current_path.st_dev, current_path.st_ino,
+                current_path.st_size, current_path.st_mtime_ns,
+            )
+            if (not stat.S_ISREG(current_path.st_mode)
+                    or total != before.st_size
+                    or before_identity != after_identity
+                    or before_identity != path_identity):
+                reject(f"{label}: local file/path changed during hashing")
             return digest.hexdigest(), (before.st_dev, before.st_ino)
     except OSError as exc:
         reject(f"{label}: cannot hash local artifact: {exc}")
@@ -346,10 +361,18 @@ def _clean_local_checkout_head(repository: Path) -> str:
             ["git", "-C", str(repository), "status", "--porcelain", "--untracked-files=no"],
             capture_output=True, text=True, check=True, timeout=10,
         ).stdout
+        # git status/diff trust assume-unchanged or skip-worktree hints.
+        # Refuse all nonstandard index flags, including hidden dirty files.
+        tracked_flags = subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "-v", "-z"],
+            capture_output=True, check=True, timeout=10,
+        ).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         reject(f"local source Git evidence unavailable: {exc}")
     if status.strip():
         reject("local checkout has modified tracked files")
+    if any(entry and not entry.startswith(b"H ") for entry in tracked_flags.split(b"\x00")):
+        reject("local checkout contains assume-unchanged/skip-worktree or unusual index flags")
     return _hex(head, "local_checkout_head", git=True)
 
 
