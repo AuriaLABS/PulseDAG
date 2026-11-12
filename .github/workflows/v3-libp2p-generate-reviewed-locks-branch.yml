@@ -1,0 +1,100 @@
+name: v3 one-shot reviewed dependency lock regeneration (branch only, NO GO)
+
+on:
+  push:
+    branches:
+      - feat/security-libp2p-kaspa-locked-migration-20261112
+    paths:
+      - crates/pulsedag-core/Cargo.toml
+      - crates/pulsedag-p2p/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.toml
+      - .github/workflows/v3-libp2p-generate-reviewed-locks-branch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-exact-locks:
+    if: github.ref == 'refs/heads/feat/security-libp2p-kaspa-locked-migration-20261112'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact protected development branch
+        uses: actions/checkout@v4
+        with:
+          ref: \${{ github.sha }}
+          persist-credentials: true
+      - name: Verify repository and branch exact identity
+        shell: bash
+        env:
+          EXPECTED_SHA: \${{ github.sha }}
+          EXPECTED_REPOSITORY: \${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_REPOSITORY" = 'AuriaLABS/PulseDAG'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'version = "=0.57.1"' crates/pulsedag-p2p/Cargo.toml
+          ! grep -Eq '^(kaspa-hashes|kaspa-pow) = ' crates/pulsedag-core/Cargo.toml
+          grep -Fq 'cfafeb4c093fa37a303f1b9f19c58f986b870ce3' tools/pow-upstream-reference/Cargo.toml
+          grep -Fq 'ignore = []' .cargo/audit.toml
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+      - name: Install exact supported Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup default 1.91.0
+      - name: Generate both independent Cargo.lock files using Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p libp2p
+          cargo update -p rustix --precise 1.1.6
+          cargo generate-lockfile --manifest-path tools/pow-upstream-reference/Cargo.toml
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+          cargo metadata --locked --manifest-path tools/pow-upstream-reference/Cargo.toml --format-version 1 --no-deps >/dev/null
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          def packages(path):
+              return {(pkg["name"], pkg["version"])
+                      for pkg in tomllib.loads(Path(path).read_text())["package"]}
+          main = packages("Cargo.lock")
+          oracle = packages("tools/pow-upstream-reference/Cargo.lock")
+          assert ("libp2p", "0.57.1") in main
+          assert ("rustix", "1.1.6") in main
+          assert ("hickory-proto", "0.26.3") in main
+          for name in ("kaspa-hashes", "kaspa-pow", "async-std", "pin-utils", "faster-hex", "atty"):
+              assert not any(n == name for n, _ in main), name
+          assert ("hickory-proto", "0.25.2") not in main
+          assert ("kaspa-hashes", "2.0.1") in oracle
+          assert ("kaspa-pow", "2.0.1") in oracle
+          assert ("js-sys", "0.3.77") in oracle
+          assert ("js-sys", "0.3.85") in main
+          print("PASS: two independently generated locks with no old Hickory or affected rustix in main")
+          PY
+      - name: Compile and check exact candidate before any branch write
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-wallet -p pulsedag-miner
+          cargo test --locked --manifest-path tools/pow-upstream-reference/Cargo.toml \
+            --test native_pow_backend_migration -- --nocapture
+          git diff --check
+      - name: Commit ONLY both reviewed Cargo.lock files to the development branch
+        shell: bash
+        env:
+          EXPECTED_SHA: \${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Cargo.lock tools/pow-upstream-reference/Cargo.lock
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git diff --cached --name-only | grep -Fx 'Cargo.lock'
+          git diff --cached --name-only | grep -Fx 'tools/pow-upstream-reference/Cargo.lock'
+          git commit -m 'build(security): pin separately Cargo-resolved libp2p/hickory and upstream PoW oracle locks'
+          git push origin HEAD:refs/heads/feat/security-libp2p-kaspa-locked-migration-20261112
