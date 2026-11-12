@@ -189,6 +189,10 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
 
     let mut current = opening_utxo.clone();
     let mut consumed: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
+    // Signed outputs of rejected conflict losers may authenticate their own
+    // losing descendants, but NEVER enter the spendable UTXO set or fees.
+    // Both maps are bounded by MAX_TRIAL_TOTAL_INPUTS/OUTPUTS above.
+    let mut skipped_signed_outputs: BTreeMap<OutPoint, Utxo> = BTreeMap::new();
     let mut created_history: BTreeSet<OutPoint> = current.utxos.keys().cloned().collect();
     let mut applied_txids = Vec::new();
     let mut skipped_conflict_txids = Vec::new();
@@ -210,6 +214,11 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
                 } else if let Some(coin) = consumed.get(&input.previous_output) {
                     conflict = true;
                     input_view.insert(input.previous_output.clone(), coin.clone());
+                } else if let Some(coin) = skipped_signed_outputs.get(&input.previous_output) {
+                    // Historical provenance only. This output was never minted
+                    // into the live view, so its descendants also lose.
+                    conflict = true;
+                    input_view.insert(input.previous_output.clone(), coin.clone());
                 } else {
                     return Err(reject(
                         "signed transfer references unauthenticated outpoint",
@@ -218,6 +227,39 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
             }
             verify_full_signed_spend(tx, chain_id, &input_view)?;
             if conflict {
+                // A rejected signed transaction still authenticates the
+                // addresses and amounts of its outputs. Keep that proof ONLY
+                // for later signature/conservation checks; never materialize
+                // them into current.utxos or give their fees to miners.
+                for (index, output) in tx.outputs.iter().enumerate() {
+                    let index = u32::try_from(index)
+                        .map_err(|_| reject("skipped output index overflow"))?;
+                    let outpoint = OutPoint {
+                        txid: tx.txid.clone(),
+                        index,
+                    };
+                    if created_history.contains(&outpoint) {
+                        // A repeated signed transaction cannot replace an
+                        // already-accepted output with rejected provenance.
+                        continue;
+                    }
+                    if let Some(existing) = skipped_signed_outputs.get(&outpoint) {
+                        if existing.address != output.address || existing.amount != output.amount {
+                            return Err(reject("conflicting skipped output provenance"));
+                        }
+                    } else {
+                        skipped_signed_outputs.insert(
+                            outpoint.clone(),
+                            Utxo {
+                                outpoint,
+                                address: output.address.clone(),
+                                amount: output.amount,
+                                coinbase: false,
+                                height: envelope.header.height,
+                            },
+                        );
+                    }
+                }
                 skipped_conflict_txids.push(tx.txid.clone());
                 continue;
             }
@@ -419,6 +461,65 @@ mod tests {
         assert_eq!(result.applied_txids.len(), 1);
         assert_eq!(result.skipped_conflict_txids.len(), 1);
         assert_eq!(result.eligible_fees_by_block, vec![(tip, 1)]);
+    }
+
+    #[test]
+    fn signed_descendants_of_conflict_losers_remain_unspendable_and_fee_free() {
+        let (opening, key, source) = initial();
+        let winning = spend(&key, &source, 9, 1, 1);
+        let mut losing = spend(&key, &source, 8, 2, 2);
+        // Make the signed losing output payable to a real signing key, so a
+        // descendant can prove ownership without ever gaining spendability.
+        losing.outputs[0].address =
+            address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        let message = signing_message_v2(&losing, CHAIN).unwrap();
+        losing.inputs[0].signature = hex::encode(key.sign(&message).to_bytes());
+        losing.txid = compute_txid_v2(&losing, CHAIN).unwrap();
+        let descendant_source = OutPoint {
+            txid: losing.txid.clone(),
+            index: 0,
+        };
+        let descendant = spend(&key, &descendant_source, 7, 1, 3);
+        let (genesis, tip, bodies) =
+            fixture(vec![winning.clone(), losing.clone(), descendant.clone()]);
+        let observed = inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
+        )
+        .unwrap();
+        assert_eq!(observed.applied_txids, vec![winning.txid.clone()]);
+        assert_eq!(
+            observed.skipped_conflict_txids,
+            vec![losing.txid.clone(), descendant.txid]
+        );
+        assert_eq!(observed.eligible_fees_by_block, vec![(tip, 1)]);
+
+        let (winner_genesis, winner_tip, winner_bodies) = fixture(vec![winning]);
+        let winner_only = inspect_dormant_native_gd08_signed_prefix(
+            CHAIN,
+            TS,
+            &winner_genesis,
+            &winner_tip,
+            &winner_bodies,
+            0,
+            &opening,
+        )
+        .unwrap();
+        assert_eq!(observed.resulting_state_root, winner_only.resulting_state_root);
+
+        // Even if it descends from authenticated losing output provenance, a
+        // forged signature cannot be discarded as an innocuous conflict.
+        let mut forged = spend(&key, &descendant_source, 7, 1, 4);
+        forged.inputs[0].signature = "00".repeat(64);
+        forged.txid = compute_txid_v2(&forged, CHAIN).unwrap();
+        let (genesis, tip, bodies) = fixture(vec![
+            spend(&key, &source, 9, 1, 1),
+            losing,
+            forged,
+        ]);
+        assert!(inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
+        )
+        .is_err());
     }
 
     #[test]
