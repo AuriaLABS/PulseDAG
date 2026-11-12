@@ -375,12 +375,22 @@ def _clean_local_checkout_head(repository: Path) -> str:
             ["git", "-C", str(repository), "ls-files", "-v", "-z"],
             capture_output=True, check=True, timeout=10,
         ).stdout
+        # A gitlink records only the submodule commit. The parent worktree
+        # status can ignore modified submodule files through local Git config
+        # or hidden nested-index flags. This draft gate cannot authenticate
+        # recursive checkout state: refuse any tracked gitlink outright.
+        tracked_index = subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "--stage", "-z"],
+            capture_output=True, check=True, timeout=10,
+        ).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         reject(f"local source Git evidence unavailable: {exc}")
     if status.strip():
         reject("local checkout has modified tracked files")
     if any(entry and not entry.startswith(b"H ") for entry in tracked_flags.split(b"\x00")):
         reject("local checkout contains assume-unchanged/skip-worktree or unusual index flags")
+    if any(entry.startswith(b"160000 ") for entry in tracked_index.split(b"\x00")):
+        reject("local source checkout contains git submodules; recursive source verification unavailable")
     return _hex(head, "local_checkout_head", git=True)
 
 
