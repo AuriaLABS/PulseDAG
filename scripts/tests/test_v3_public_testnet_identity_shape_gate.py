@@ -418,6 +418,14 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             correct = subprocess.run(args, text=True, capture_output=True, check=False)
             self.assertEqual(correct.returncode, 0, correct.stderr)
             self.assertFalse(json.loads(correct.stdout)["public_testnet_launch_authorized"])
+            nested = repository / "clean-subdirectory"
+            nested.mkdir()
+            nested_args = [*args[:-1], str(nested)]
+            nested_result = subprocess.run(
+                nested_args, text=True, capture_output=True, check=False
+            )
+            self.assertNotEqual(nested_result.returncode, 0)
+            self.assertIn("NO-GO", nested_result.stderr)
             incomplete = subprocess.run(args[:-2], text=True, capture_output=True, check=False)
             self.assertNotEqual(incomplete.returncode, 0)
             self.assertIn("NO-GO", incomplete.stderr)
@@ -434,6 +442,11 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
             hidden = subprocess.run(args, text=True, capture_output=True, check=False)
             self.assertNotEqual(hidden.returncode, 0)
             self.assertIn("NO-GO", hidden.stderr)
+            hidden_subdir = subprocess.run(
+                nested_args, text=True, capture_output=True, check=False
+            )
+            self.assertNotEqual(hidden_subdir.returncode, 0)
+            self.assertIn("NO-GO", hidden_subdir.stderr)
             subprocess.run(
                 ["git", "-C", str(repository), "update-index", "--no-assume-unchanged", "readme"],
                 check=True,
