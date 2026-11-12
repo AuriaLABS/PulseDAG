@@ -535,7 +535,6 @@ mod tests {
         .is_err());
     }
 
-
     /// A complete genuine nanosecond-v3 block body with real KHeavyHash PoW,
     /// header Merkle commitment and mandatory amountless reward claim.
     fn mined_trial_body(
@@ -584,17 +583,31 @@ mod tests {
             // outpoint; a real multiparent block joins them. Test both a
             // red side block (K=0) and blue side block (K=1) trial.
             let a = mined_trial_body(
-                vec![g.clone()], TS + 500_000_000, 1, 1, "11",
-                "miner-branch-a", vec![spend_a.clone()],
+                vec![g.clone()],
+                TS + 500_000_000,
+                1,
+                1,
+                "11",
+                "miner-branch-a",
+                vec![spend_a.clone()],
             );
             let b = mined_trial_body(
-                vec![g.clone()], TS + 600_000_000, 1, 1, "22",
-                "miner-branch-b", vec![spend_b.clone()],
+                vec![g.clone()],
+                TS + 600_000_000,
+                1,
+                1,
+                "22",
+                "miner-branch-b",
+                vec![spend_b.clone()],
             );
             let join = mined_trial_body(
                 vec![a.hash.clone(), b.hash.clone()],
-                TS + 1_000_000_000, 2, 2 + k as u64, "33",
-                "miner-merge", vec![],
+                TS + 1_000_000_000,
+                2,
+                2 + k as u64,
+                "33",
+                "miner-merge",
+                vec![],
             );
             let tip = join.hash.clone();
             let bodies = BTreeMap::from([
@@ -628,7 +641,8 @@ mod tests {
             assert_eq!(first.applied_txids, vec![winner.txid.clone()]);
             assert_eq!(first.skipped_conflict_txids, vec![loser.txid.clone()]);
             assert_eq!(
-                first.eligible_fees_by_block
+                first
+                    .eligible_fees_by_block
                     .iter()
                     .map(|(_, fee)| *fee)
                     .sum::<u64>(),
@@ -641,17 +655,19 @@ mod tests {
                     *fee == 0
                 }
             }));
-            assert_eq!(
-                first.eligible_fees_by_block.last(),
-                Some(&(tip.clone(), 0))
-            );
+            assert_eq!(first.eligible_fees_by_block.last(), Some(&(tip.clone(), 0)));
 
             // The resulting UTXOs must be identical to replaying only the
             // winning signed transfer, independent of losing branch bodies.
-            let (single_genesis, single_tip, single_bodies) =
-                fixture(vec![winner.clone()]);
+            let (single_genesis, single_tip, single_bodies) = fixture(vec![winner.clone()]);
             let single = inspect_dormant_native_gd08_signed_prefix(
-                CHAIN, TS, &single_genesis, &single_tip, &single_bodies, 0, &opening,
+                CHAIN,
+                TS,
+                &single_genesis,
+                &single_tip,
+                &single_bodies,
+                0,
+                &opening,
             )
             .unwrap();
             assert_eq!(first.resulting_state_root, single.resulting_state_root);
@@ -663,7 +679,13 @@ mod tests {
                 .map(|(hash, body)| (hash.clone(), body.clone()))
                 .collect::<BTreeMap<_, _>>();
             let second = inspect_dormant_native_gd08_signed_prefix(
-                CHAIN, TS, &g, &tip, &reverse_insertion, k, &opening,
+                CHAIN,
+                TS,
+                &g,
+                &tip,
+                &reverse_insertion,
+                k,
+                &opening,
             )
             .unwrap();
             assert_eq!(first, second);
@@ -673,7 +695,13 @@ mod tests {
             let mut missing_side = bodies.clone();
             missing_side.remove(&a.hash);
             assert!(inspect_dormant_native_gd08_signed_prefix(
-                CHAIN, TS, &g, &tip, &missing_side, k, &opening,
+                CHAIN,
+                TS,
+                &g,
+                &tip,
+                &missing_side,
+                k,
+                &opening,
             )
             .is_err());
         }
