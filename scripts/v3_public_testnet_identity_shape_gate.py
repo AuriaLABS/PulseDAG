@@ -366,7 +366,10 @@ def _clean_local_checkout_head(repository: Path) -> str:
             capture_output=True, text=True, check=True, timeout=10,
         ).stdout.strip()
         status = subprocess.run(
-            ["git", "-C", str(repository), "status", "--porcelain", "--untracked-files=no"],
+            # Never trust a cached or hostile core.fsmonitor hook when
+            # deciding whether tracked bytes match the declared checkout.
+            ["git", "-c", "core.fsmonitor=false", "-C", str(repository),
+             "status", "--porcelain", "--untracked-files=no"],
             capture_output=True, text=True, check=True, timeout=10,
         ).stdout
         # git status/diff trust assume-unchanged or skip-worktree hints.
