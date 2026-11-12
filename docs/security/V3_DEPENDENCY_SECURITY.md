@@ -4,6 +4,45 @@ Status: **active development gate; not final launch security approval**.
 
 Issue authority: #1127 (historical #803). Launch authority: #781. Integrated program: #794. Remaining crate-graph work: #1139.
 
+## 2026-11-12 RustSec new inventory and rustix reachable remediation (development, NO-GO)
+
+Raw audit on the exact pre-fix `main@3dac2bea2d0e464bde4ec6ffbc9a21c4b8f3ef04`
+[run 43208873571](https://github.com/AuriaLABS/PulseDAG/actions/runs/43208873571)
+stored [artifact 13941505515](https://github.com/AuriaLABS/PulseDAG/actions/runs/43208873571/artifacts/13941505515).
+RustSec DB commit `5fe96cf51fde2fd4e749d51ac8bdc59edbdce77b`
+reported **11 vulnerabilities / 12 advisory warnings / 0 yanked**.
+The **four new** Hickory `hickory-proto@0.25.2` vulnerabilities are
+`RUSTSEC-2026-0487`, `-0489`, `-0490`, `-0491`, on top of the
+old two Hickory and five Quinn advisories. The new `rustix 1.1.4`
+informational unsoundness is `RUSTSEC-2026-0486`.
+
+The archived exact-candidate **clean compiler artifacts** record
+`hickory-proto@0.25.2` **absent** from all four release-root builds,
+but `rustix@1.1.4` **present** in `pulsedagd` and `pulsedag-wallet`
+(not `pulsedag-p2p` or `pulsedag-miner`).
+This is reachability evidence only, **not** proof of xattr API invocation or
+of an active exploitable code path. The rustix advisory concerns
+the six `rustix::fs::*xattr` functions receiving a zero-length buffer and
+is fixed by `rustix >=1.1.6`:
+[upstream advisory](https://rustsec.org/advisories/RUSTSEC-2026-0486.html).
+
+**Current remediation candidate:** a reviewed, exact `Cargo.lock` patch to
+`rustix@1.1.6` and exact per-release-root compiler evidence for node and
+wallet. The security validator must refuse any affected Rustix 1.x version
+and fail if a required compiled root lacks patched-package evidence.
+The patch must be compiled and validated on all relevant targets before merge;
+a changed lockfile alone is not proof of release readiness.
+
+The four NEW Hickory advisories remain a **separate open security blocker**:
+their upstream patched line is `>=0.26.2`, but this repository's
+`hickory-proto@0.25.2` is still resolved in the lock. The previous temporary
+development-only lockfile disposition did **not** cover these four new IDs.
+The raw advisory scope gate **must remain RED** until each entry is reviewed
+and a safe parent-package migration or explicitly reviewed new
+scope-disposition is completed with exact source/compilation evidence.
+Do not add blanket or persistent audit ignores; do not flip GO/contract/mining
+flags or count this as testnet uptime.
+
 ## Historical v2.4 exception retirement
 
 The v2.4 lock-only vulnerability exception expired on **2026-08-31 UTC** and is not renewed for the active v3 development line. The active `.cargo/audit.toml` contains no vulnerability advisory ignores.
