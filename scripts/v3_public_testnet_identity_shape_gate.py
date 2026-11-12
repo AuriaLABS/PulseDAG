@@ -10,8 +10,12 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
+import os
 import re
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -249,13 +253,171 @@ def check_candidate(candidate: object) -> dict:
     }
 
 
+# Local byte-consistency evidence ONLY. This is never a release attestation,
+# source-authenticity proof, bootnode proof, executable validation or launch GO.
+MAX_LOCAL_BINARY_BYTES = 2 * 1024 * 1024 * 1024
+MAX_LOCAL_CONFIG_BYTES = 1024 * 1024
+
+
+def _hash_local_regular_file(path: Path, label: str, max_bytes: int) -> tuple[str, tuple[int, int]]:
+    """Reject links, special files and mutable/oversized inputs before reporting a digest."""
+    if path.is_symlink():
+        reject(f"{label}: symbolic links are not accepted as frozen artifacts")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        reject(f"{label}: cannot open local artifact: {exc}")
+    try:
+        with os.fdopen(fd, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= max_bytes:
+                reject(f"{label}: require nonempty, bounded, regular file")
+            digest = hashlib.sha256()
+            total = 0
+            while chunk := source.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    reject(f"{label}: size limit exceeded while hashing")
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+            # fstat alone cannot detect a concurrent atomic rename replacing
+            # the pathname while the open descriptor still points at old bytes.
+            # lstat rejects final-path symlinks and requires the same inode.
+            current_path = path.lstat()
+            before_identity = (
+                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+            )
+            after_identity = (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+            )
+            path_identity = (
+                current_path.st_dev, current_path.st_ino,
+                current_path.st_size, current_path.st_mtime_ns,
+            )
+            if (not stat.S_ISREG(current_path.st_mode)
+                    or total != before.st_size
+                    or before_identity != after_identity
+                    or before_identity != path_identity):
+                reject(f"{label}: local file/path changed during hashing")
+            return digest.hexdigest(), (before.st_dev, before.st_ino)
+    except OSError as exc:
+        reject(f"{label}: cannot hash local artifact: {exc}")
+
+
+def check_local_artifact_bytes(
+    candidate: object,
+    node_file: Path,
+    miner_file: Path,
+    config_file: Path,
+    local_checkout_sha: str,
+) -> dict:
+    """Compare a validated UNAPPROVED draft to locally supplied bytes only.
+
+    An attacker can forge BOTH a manifest and matching bytes. Even success
+    cannot authenticate builds, attest the source, verify genesis, or grant GO.
+    """
+    verdict = check_candidate(candidate)
+    draft = candidate
+    sha = _hex(local_checkout_sha, "local_checkout_sha", git=True)
+    if sha != draft["source_git_sha"]:
+        reject("source_git_sha does not match the local checkout HEAD")
+    artifact_files = (
+        ("node", node_file, "node_artifact_sha256", MAX_LOCAL_BINARY_BYTES),
+        ("miner", miner_file, "miner_artifact_sha256", MAX_LOCAL_BINARY_BYTES),
+        ("config", config_file, "config_sha256", MAX_LOCAL_CONFIG_BYTES),
+    )
+    identities = set()
+    for label, path, digest_key, maximum in artifact_files:
+        observed, identity = _hash_local_regular_file(path, label, maximum)
+        if identity in identities:
+            reject(f"{label}: same local inode reused for multiple distinct artifacts")
+        identities.add(identity)
+        if observed != draft[digest_key]:
+            reject(f"{label}: local SHA256 bytes disagree with UNAPPROVED draft")
+    return {
+        **verdict,
+        "local_artifact_byte_consistency": "PASS_ONLY",
+        "local_checkout_head_matches_draft": True,
+        "source_provenance_attested": False,
+        "builder_and_artifacts_authenticated": False,
+        "genesis_and_consensus_verified": False,
+        "public_testnet_launch_authorized": False,
+        "mainnet_launch_authorized": False,
+        "monetary_runtime_enabled": False,
+        "contracts_enabled": False,
+    }
+
+
+def _clean_local_checkout_head(repository: Path) -> str:
+    """Read a local Git HEAD only; tracked dirty files fail closed."""
+    if not repository.is_dir() or repository.is_symlink():
+        reject("local source path must be a real directory")
+    try:
+        root = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+        # git status and ls-files from a subdirectory may omit dirty tracked
+        # siblings outside that subtree. Require exactly the worktree root.
+        if Path(root).resolve() != repository.resolve():
+            reject("local source path must be the Git worktree root")
+        head = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(
+            # Never trust a cached or hostile core.fsmonitor hook when
+            # deciding whether tracked bytes match the declared checkout.
+            ["git", "-c", "core.fsmonitor=false", "-C", str(repository),
+             "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout
+        # git status/diff trust assume-unchanged or skip-worktree hints.
+        # Refuse all nonstandard index flags, including hidden dirty files.
+        tracked_flags = subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "-v", "-z"],
+            capture_output=True, check=True, timeout=10,
+        ).stdout
+        # A gitlink records only the submodule commit. The parent worktree
+        # status can ignore modified submodule files through local Git config
+        # or hidden nested-index flags. This draft gate cannot authenticate
+        # recursive checkout state: refuse any tracked gitlink outright.
+        tracked_index = subprocess.run(
+            ["git", "-C", str(repository), "ls-files", "--stage", "-z"],
+            capture_output=True, check=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        reject(f"local source Git evidence unavailable: {exc}")
+    if status.strip():
+        reject("local checkout has modified tracked files")
+    if any(entry and not entry.startswith(b"H ") for entry in tracked_flags.split(b"\x00")):
+        reject("local checkout contains assume-unchanged/skip-worktree or unusual index flags")
+    if any(entry.startswith(b"160000 ") for entry in tracked_index.split(b"\x00")):
+        reject("local source checkout contains git submodules; recursive source verification unavailable")
+    return _hex(head, "local_checkout_head", git=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate_json", type=Path, help="offline candidate manifest; never a live env file")
+    parser.add_argument("--node-file", type=Path, help="local node bytes to hash (not execute)")
+    parser.add_argument("--miner-file", type=Path, help="local miner bytes to hash (not execute)")
+    parser.add_argument("--config-file", type=Path, help="local config bytes to hash (not load)")
+    parser.add_argument("--source-repo", type=Path, help="clean local source Git checkout")
     args = parser.parse_args()
     try:
         raw = args.candidate_json.read_bytes()
-        result = check_candidate(parse_manifest(raw))
+        candidate = parse_manifest(raw)
+        requested = (args.node_file, args.miner_file, args.config_file, args.source_repo)
+        if any(value is not None for value in requested):
+            if not all(value is not None for value in requested):
+                reject("local consistency requires all four --node/--miner/--config/--source arguments")
+            result = check_local_artifact_bytes(
+                candidate, args.node_file, args.miner_file, args.config_file,
+                _clean_local_checkout_head(args.source_repo),
+            )
+        else:
+            result = check_candidate(candidate)
     except (CandidateError, OSError) as exc:
         print(f"FAIL (NO-GO): {exc}", file=sys.stderr)
         return 1

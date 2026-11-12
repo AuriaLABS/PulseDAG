@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -32,8 +35,12 @@ def cidv1_bytes(raw: bytes) -> str:
 from v3_public_testnet_identity_shape_gate import (  # noqa: E402
     CADENCE_SHA256,
     POLICY_SHA256,
+    MAX_LOCAL_BINARY_BYTES,
+    _hash_local_regular_file,
+    _clean_local_checkout_head,
     CandidateError,
     check_candidate,
+    check_local_artifact_bytes,
     parse_manifest,
 )
 
@@ -259,6 +266,311 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
         with self.assertRaises(CandidateError):
             parse_manifest(b"\xff")
         self.assertEqual(check_candidate(parse_manifest(json.dumps(candidate()).encode()))["schema_shape"], "PASS_ONLY")
+
+    def test_local_artifacts_match_draft_bytes_without_any_go(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            node, miner, config = (root / name for name in ("node.bin", "miner.bin", "node.conf"))
+            node.write_bytes(b"node:nonexecuted:snapshot-a")
+            miner.write_bytes(b"miner:nonexecuted:snapshot-b")
+            config.write_bytes(b"public_testnet_ready=false\ncontracts_enabled=false\n")
+            manifest = candidate()
+            manifest["node_artifact_sha256"] = hashlib.sha256(node.read_bytes()).hexdigest()
+            manifest["miner_artifact_sha256"] = hashlib.sha256(miner.read_bytes()).hexdigest()
+            manifest["config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+            result = check_local_artifact_bytes(
+                manifest, node, miner, config, manifest["source_git_sha"]
+            )
+            self.assertEqual(result["local_artifact_byte_consistency"], "PASS_ONLY")
+            self.assertTrue(result["local_checkout_head_matches_draft"])
+            for name in (
+                "public_testnet_launch_authorized",
+                "mainnet_launch_authorized",
+                "source_provenance_attested",
+                "builder_and_artifacts_authenticated",
+                "source_and_artifacts_authenticated",
+                "genesis_and_consensus_verified",
+                "monetary_runtime_enabled",
+                "contracts_enabled",
+            ):
+                self.assertIs(result[name], False)
+
+            for label, mutate in (
+                ("miner", miner),
+                ("node", node),
+                ("config", config),
+            ):
+                with self.subTest(label=label):
+                    before = mutate.read_bytes()
+                    mutate.write_bytes(before + b"tampered")
+                    with self.assertRaises(CandidateError):
+                        check_local_artifact_bytes(
+                            manifest, node, miner, config, manifest["source_git_sha"]
+                        )
+                    mutate.write_bytes(before)
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(manifest, node, miner, config, "ab" * 20)
+            manifest["contracts_enabled"] = True
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, node, miner, config, manifest["source_git_sha"]
+                )
+
+    def test_local_artifact_checker_rejects_links_and_nonregular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            manifest = candidate()
+            for path, key in (
+                (node, "node_artifact_sha256"),
+                (miner, "miner_artifact_sha256"),
+                (config, "config_sha256"),
+            ):
+                manifest[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+            alias = root / "alias"
+            alias.symlink_to(node)
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, alias, miner, config, manifest["source_git_sha"]
+                )
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, root, miner, config, manifest["source_git_sha"]
+                )
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            # Must fail promptly, not block trying to read a special file.
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, fifo, miner, config, manifest["source_git_sha"]
+                )
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, node, node, config, manifest["source_git_sha"]
+                )
+
+    def test_reject_atomic_path_replacement_during_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact = root / "node.bin"
+            replacement = root / "replacement.bin"
+            artifact.write_bytes(b"original artifact" * 16)
+            replacement.write_bytes(b"substituted artifact" * 16)
+            actual_sha256 = hashlib.sha256
+
+            class SwapHash:
+                def __init__(self) -> None:
+                    self.digest = actual_sha256()
+                    self.swapped = False
+
+                def update(self, data: bytes) -> None:
+                    if not self.swapped:
+                        os.replace(replacement, artifact)
+                        self.swapped = True
+                    self.digest.update(data)
+
+                def hexdigest(self) -> str:
+                    return self.digest.hexdigest()
+
+            with mock.patch(
+                "v3_public_testnet_identity_shape_gate.hashlib.sha256", side_effect=SwapHash
+            ), self.assertRaises(CandidateError):
+                _hash_local_regular_file(artifact, "node", MAX_LOCAL_BINARY_BYTES)
+
+    def test_cli_local_consistency_requires_all_inputs_and_clean_checkout(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"], check=True)
+            subprocess.run(["git", "-C", str(repository), "config", "user.email", "fixture@example.invalid"], check=True)
+            source = repository / "readme"
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "readme"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "synthetic"], check=True)
+            sha = subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            manifest = candidate()
+            manifest["source_git_sha"] = sha
+            for path, name in (
+                (node, "node_artifact_sha256"),
+                (miner, "miner_artifact_sha256"),
+                (config, "config_sha256"),
+            ):
+                manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            draft = root / "draft.json"
+            draft.write_text(json.dumps(manifest), encoding="utf-8")
+            args = [
+                sys.executable, str(script), str(draft),
+                "--node-file", str(node), "--miner-file", str(miner),
+                "--config-file", str(config), "--source-repo", str(repository),
+            ]
+            correct = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertEqual(correct.returncode, 0, correct.stderr)
+            self.assertFalse(json.loads(correct.stdout)["public_testnet_launch_authorized"])
+            nested = repository / "clean-subdirectory"
+            nested.mkdir()
+            nested_args = [*args[:-1], str(nested)]
+            nested_result = subprocess.run(
+                nested_args, text=True, capture_output=True, check=False
+            )
+            self.assertNotEqual(nested_result.returncode, 0)
+            self.assertIn("NO-GO", nested_result.stderr)
+            incomplete = subprocess.run(args[:-2], text=True, capture_output=True, check=False)
+            self.assertNotEqual(incomplete.returncode, 0)
+            self.assertIn("NO-GO", incomplete.stderr)
+            source.write_text("dirty source", encoding="utf-8")
+            dirty = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(dirty.returncode, 0)
+            self.assertIn("NO-GO", dirty.stderr)
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--assume-unchanged", "readme"],
+                check=True,
+            )
+            source.write_text("changed but hidden from git status", encoding="utf-8")
+            hidden = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("NO-GO", hidden.stderr)
+            hidden_subdir = subprocess.run(
+                nested_args, text=True, capture_output=True, check=False
+            )
+            self.assertNotEqual(hidden_subdir.returncode, 0)
+            self.assertIn("NO-GO", hidden_subdir.stderr)
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--no-assume-unchanged", "readme"],
+                check=True,
+            )
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "update-index", "--skip-worktree", "readme"],
+                check=True,
+            )
+            skipped = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(skipped.returncode, 0)
+            self.assertIn("NO-GO", skipped.stderr)
+
+    def test_cli_rejects_gitlinks_even_if_submodule_changes_are_ignored(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dependency = root / "upstream"
+            repository = root / "source"
+            for git_root in (dependency, repository):
+                git_root.mkdir()
+                subprocess.run(["git", "-C", str(git_root), "init", "-q"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(git_root), "config", "user.name", "Fixture"],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(git_root), "config", "user.email", "fixture@example.invalid"],
+                    check=True,
+                )
+                (git_root / "tracked").write_text("original", encoding="utf-8")
+                subprocess.run(["git", "-C", str(git_root), "add", "tracked"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(git_root), "commit", "-qm", "synthetic"],
+                    check=True,
+                )
+            subprocess.run(
+                [
+                    "git", "-C", str(repository), "-c", "protocol.file.allow=always",
+                    "submodule", "add", "-q", str(dependency), "nested",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "commit", "-qm", "add synthetic submodule"],
+                check=True,
+            )
+            sha = subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            draft = candidate()
+            draft["source_git_sha"] = sha
+            for name, path in (
+                ("node_artifact_sha256", node),
+                ("miner_artifact_sha256", miner),
+                ("config_sha256", config),
+            ):
+                draft[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            draft_path = root / "unapproved.json"
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            args = [
+                sys.executable, str(script), str(draft_path),
+                "--node-file", str(node), "--miner-file", str(miner),
+                "--config-file", str(config), "--source-repo", str(repository),
+            ]
+            clean = subprocess.run(args, check=False, text=True, capture_output=True)
+            self.assertNotEqual(clean.returncode, 0)
+            self.assertIn("submodules", clean.stderr)
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "submodule.nested.ignore", "all"],
+                check=True,
+            )
+            (repository / "nested" / "tracked").write_text(
+                "dirty but ignored by parent", encoding="utf-8"
+            )
+            hidden = subprocess.run(args, check=False, text=True, capture_output=True)
+            self.assertNotEqual(hidden.returncode, 0)
+            self.assertIn("NO-GO", hidden.stderr)
+
+    def test_stale_fsmonitor_cannot_hide_modified_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "Fixture"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "fixture@example.invalid"],
+                check=True,
+            )
+            source = repo / "tracked"
+            source.write_text("original", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "tracked"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-qm", "fixture"],
+                check=True,
+            )
+            self.assertEqual(len(_clean_local_checkout_head(repo)), 40)
+            monitor = repo / ".git" / "stale-fsmonitor.sh"
+            monitor.write_text(
+                '#!/bin/sh\nprintf "unchanged-token\\000"\n',
+                encoding="utf-8",
+            )
+            monitor.chmod(0o755)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "core.fsmonitor", str(monitor)],
+                check=True,
+            )
+            # Warm the hook to register a cached fsmonitor state.
+            subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain"],
+                check=True, capture_output=True,
+            )
+            source.write_text("tampered tracked source", encoding="utf-8")
+            with self.assertRaises(CandidateError):
+                _clean_local_checkout_head(repo)
 
     def test_cli_success_still_prints_explicit_no_go(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"

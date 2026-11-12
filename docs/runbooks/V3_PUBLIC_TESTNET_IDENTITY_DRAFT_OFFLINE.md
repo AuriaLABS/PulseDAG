@@ -31,6 +31,22 @@ python3 -m unittest discover -v -s scripts/tests -p 'test_v3_public_testnet_iden
 
 A successful output explicitly sets `public_testnet_launch_authorized=false`, `mainnet_launch_authorized=false`, `mainnet_cross_identity_frozen=false`, `source_and_artifacts_authenticated=false` and `monetary_runtime_enabled=false`. A supplied future-mainnet draft only sets `future_mainnet_identity_shape_checked=true` (syntactic validation, not proof). It must **never** be interpreted as a runnable config, attestation, readiness clock start or approval to deploy a network.
 
+## Optional local artifact-byte consistency (still NO-GO)
+
+In addition to manifest syntax, the gate can now hash **locally supplied** node binary, miner binary and configuration bytes with SHA-256, compare the exact bytes to the three declared candidate digests, and check the manifest's source Git SHA against a **clean local checkout HEAD**. It never executes the binaries or configuration, contacts a peer, or changes any activation flags. All four arguments are required together; default one-argument use still checks shape only.
+
+```bash
+python3 scripts/v3_public_testnet_identity_shape_gate.py /path/to/UNAPPROVED-DRAFT.json \\
+  --node-file /path/to/pulsedagd \\
+  --miner-file /path/to/pulsedag-miner \\
+  --config-file /path/to/testnet-config \\
+  --source-repo /path/to/clean/source-checkout
+```
+
+The checker requires `--source-repo` to point to the Git worktree **root**, not a subdirectory, and rejects any tracked Git submodule outright (recursive source verification is not yet provided), even when its changes are hidden by `submodule.*.ignore=all`; it refuses an incorrect SHA, altered tracked Git files, hidden `assume-unchanged` or `skip-worktree` index flags, dirty source concealed by stale or hostile `core.fsmonitor` results (disabled for the Git status check), missing or symbolic-linked local files, FIFO/device/nonregular or empty files, atomic pathname/inode replacement while hashing, reused artifact inodes, oversized input bytes, different node/miner hashes, and any manifest shape/activation violations. It reports `local_artifact_byte_consistency=PASS_ONLY` and `local_checkout_head_matches_draft=true` **only** for byte matches; all authorization and activation outputs remain false. The executable artifacts are capped at 2 GiB each and the proposed config at 1 MiB, purely for this offline verifier.
+
+**Crucial security limit:** a self-authored manifest can include hashes of attacker-supplied files; matching those bytes does **not** authenticate the builder, prove reproducibility, attest source provenance, validate the chain's genesis or PoW/GD-08, authenticate bootnode ownership, establish a signed release manifest, or grant testnet/mainnet GO. The configured node/miner binaries still do **not** implement approved native-v3 public monetary admission; this checker does not make them deployable.
+
 ## Independent remaining release gates
 
 Before an actual `GO_PUBLIC_TESTNET`: implement and freeze native-v3 GHOSTDAG/GD-08 and the monetary/PoW/UTXO/reward runtime, verify exact source-to-artifact/identity consistency **independently of this tool**, make the future native-v3 testnet-only activation explicitly identity-bound and fail-closed for mainnet/legacy, prove security and operator readiness, then obtain the explicit decision in #781.
