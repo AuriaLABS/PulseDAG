@@ -22,13 +22,13 @@ jobs:
       - name: Checkout exact protected development branch
         uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: true
       - name: Verify repository and branch exact identity
         shell: bash
         env:
-          EXPECTED_SHA: \${{ github.sha }}
-          EXPECTED_REPOSITORY: \${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           test "$EXPECTED_REPOSITORY" = 'AuriaLABS/PulseDAG'
@@ -85,7 +85,7 @@ jobs:
       - name: Commit ONLY both reviewed Cargo.lock files to the development branch
         shell: bash
         env:
-          EXPECTED_SHA: \${{ github.sha }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
