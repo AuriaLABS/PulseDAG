@@ -91,6 +91,22 @@ jobs:
             echo 'unexpected optional DNS/mDNS/QUIC package in clean production roots' >&2
             exit 1
           fi
+      - name: Resolve independent pinned Kaspa reference Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile --manifest-path tools/pow-upstream-reference/Cargo.toml
+          cargo metadata --locked --manifest-path tools/pow-upstream-reference/Cargo.toml --format-version 1 --no-deps >/dev/null
+      - name: Upload early generated locks for source-reviewed migration (NOT RELEASE)
+        uses: actions/upload-artifact@v4
+        with:
+          name: unapproved-resolved-production-and-parity-locks-${{ github.run_id }}
+          path: |
+            Cargo.lock
+            tools/pow-upstream-reference/Cargo.lock
+            ci-evidence/libp2p-parent-probe/selected-locked-packages.txt
+          if-no-files-found: error
+          retention-days: 14
       - name: Validate P2P, node, wallet and miner with resolved candidate
         shell: bash
         run: |
