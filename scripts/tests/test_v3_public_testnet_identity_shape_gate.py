@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from v3_public_testnet_identity_shape_gate import (  # noqa: E402
     POLICY_SHA256,
     CandidateError,
     check_candidate,
+    check_local_artifact_bytes,
     parse_manifest,
 )
 
@@ -259,6 +261,131 @@ class DraftIdentityShapeGateTests(unittest.TestCase):
         with self.assertRaises(CandidateError):
             parse_manifest(b"\xff")
         self.assertEqual(check_candidate(parse_manifest(json.dumps(candidate()).encode()))["schema_shape"], "PASS_ONLY")
+
+    def test_local_artifacts_match_draft_bytes_without_any_go(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            node, miner, config = (root / name for name in ("node.bin", "miner.bin", "node.conf"))
+            node.write_bytes(b"node:nonexecuted:snapshot-a")
+            miner.write_bytes(b"miner:nonexecuted:snapshot-b")
+            config.write_bytes(b"public_testnet_ready=false\ncontracts_enabled=false\n")
+            manifest = candidate()
+            manifest["node_artifact_sha256"] = hashlib.sha256(node.read_bytes()).hexdigest()
+            manifest["miner_artifact_sha256"] = hashlib.sha256(miner.read_bytes()).hexdigest()
+            manifest["config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+            result = check_local_artifact_bytes(
+                manifest, node, miner, config, manifest["source_git_sha"]
+            )
+            self.assertEqual(result["local_artifact_byte_consistency"], "PASS_ONLY")
+            self.assertTrue(result["local_checkout_head_matches_draft"])
+            for name in (
+                "public_testnet_launch_authorized",
+                "mainnet_launch_authorized",
+                "source_provenance_attested",
+                "builder_and_artifacts_authenticated",
+                "source_and_artifacts_authenticated",
+                "genesis_and_consensus_verified",
+                "monetary_runtime_enabled",
+                "contracts_enabled",
+            ):
+                self.assertIs(result[name], False)
+
+            for label, mutate in (
+                ("miner", miner),
+                ("node", node),
+                ("config", config),
+            ):
+                with self.subTest(label=label):
+                    before = mutate.read_bytes()
+                    mutate.write_bytes(before + b"tampered")
+                    with self.assertRaises(CandidateError):
+                        check_local_artifact_bytes(
+                            manifest, node, miner, config, manifest["source_git_sha"]
+                        )
+                    mutate.write_bytes(before)
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(manifest, node, miner, config, "ab" * 20)
+            manifest["contracts_enabled"] = True
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, node, miner, config, manifest["source_git_sha"]
+                )
+
+    def test_local_artifact_checker_rejects_links_and_nonregular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            manifest = candidate()
+            for path, key in (
+                (node, "node_artifact_sha256"),
+                (miner, "miner_artifact_sha256"),
+                (config, "config_sha256"),
+            ):
+                manifest[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+            alias = root / "alias"
+            alias.symlink_to(node)
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, alias, miner, config, manifest["source_git_sha"]
+                )
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, root, miner, config, manifest["source_git_sha"]
+                )
+            with self.assertRaises(CandidateError):
+                check_local_artifact_bytes(
+                    manifest, node, node, config, manifest["source_git_sha"]
+                )
+
+    def test_cli_local_consistency_requires_all_inputs_and_clean_checkout(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"], check=True)
+            subprocess.run(["git", "-C", str(repository), "config", "user.email", "fixture@example.invalid"], check=True)
+            source = repository / "readme"
+            source.write_text("synthetic source", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "readme"], check=True)
+            subprocess.run(["git", "-C", str(repository), "commit", "-qm", "synthetic"], check=True)
+            sha = subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            node, miner, config = (root / name for name in ("node", "miner", "config"))
+            node.write_bytes(b"node")
+            miner.write_bytes(b"miner")
+            config.write_bytes(b"config")
+            manifest = candidate()
+            manifest["source_git_sha"] = sha
+            for path, name in (
+                (node, "node_artifact_sha256"),
+                (miner, "miner_artifact_sha256"),
+                (config, "config_sha256"),
+            ):
+                manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            draft = root / "draft.json"
+            draft.write_text(json.dumps(manifest), encoding="utf-8")
+            args = [
+                sys.executable, str(script), str(draft),
+                "--node-file", str(node), "--miner-file", str(miner),
+                "--config-file", str(config), "--source-repo", str(repository),
+            ]
+            correct = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertEqual(correct.returncode, 0, correct.stderr)
+            self.assertFalse(json.loads(correct.stdout)["public_testnet_launch_authorized"])
+            incomplete = subprocess.run(args[:-2], text=True, capture_output=True, check=False)
+            self.assertNotEqual(incomplete.returncode, 0)
+            self.assertIn("NO-GO", incomplete.stderr)
+            source.write_text("dirty source", encoding="utf-8")
+            dirty = subprocess.run(args, text=True, capture_output=True, check=False)
+            self.assertNotEqual(dirty.returncode, 0)
+            self.assertIn("NO-GO", dirty.stderr)
 
     def test_cli_success_still_prints_explicit_no_go(self) -> None:
         script = Path(__file__).resolve().parents[1] / "v3_public_testnet_identity_shape_gate.py"
