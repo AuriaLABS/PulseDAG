@@ -99,6 +99,11 @@ REQUIRED_COMPILED_UNMAINTAINED_DEBT = {
     ("pin-utils", "0.1.0"): "RUSTSEC-2026-0441",
 }
 
+# Compiler evidence from the exact historical affected candidate shows that
+# rustix 1.1.4 was built by pulsedagd and pulsedag-wallet (not miner or p2p).
+# A silently missing positive compilation inventory must not look like safety.
+EXPECTED_PATCHED_RUSTIX_ROOTS = {"pulsedagd", "pulsedag-wallet"}
+
 AFFECTED_FASTER_HEX_SYMBOL = "hex_decode_unchecked"
 
 
@@ -221,6 +226,30 @@ def compile_clean(root: str, evidence_dir: Path, by_id: dict[str, tuple[str, str
         encoding="utf-8",
     )
     return compiled
+
+
+def require_patched_rustix_compiler_evidence(
+    compiled_by_root: dict[str, set[tuple[str, str]]],
+) -> dict[str, list[str]]:
+    """Prove the patched rustix version in real affected launch roots.
+
+    New/outdated crate versions, missing roots and incomplete positive proof
+    must fail closed. This is a *specific* RUSTSEC-2026-0486 disposition,
+    not a security or public launch GO.
+    """
+    if set(compiled_by_root) != set(COMPILE_ROOTS):
+        fail("rustix compiler evidence missing a launch root")
+    evidence: dict[str, list[str]] = {}
+    for root in COMPILE_ROOTS:
+        versions = sorted(
+            version for name, version in compiled_by_root[root] if name == "rustix"
+        )
+        if any(version.startswith("1.") and version != "1.1.6" for version in versions):
+            fail(f"{root} compiled an affected/unreviewed rustix 1.x: {versions}")
+        if root in EXPECTED_PATCHED_RUSTIX_ROOTS and versions != ["1.1.6"]:
+            fail(f"{root} missing positive compiled patched rustix 1.1.6 evidence: {versions}")
+        evidence[root] = versions
+    return evidence
 
 
 def validate_faster_hex_advisory_scope(
@@ -401,13 +430,7 @@ def main() -> None:
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
 
-    compiled_rustix_by_root = {
-        root: sorted(version for name, version in compiled if name == "rustix")
-        for root, compiled in compiled_by_root.items()
-    }
-    for root, versions in compiled_rustix_by_root.items():
-        if any(version.startswith("1.") and version != "1.1.6" for version in versions):
-            fail(f"{root} still compiles unreviewed/affected rustix 1.x: {versions}")
+    compiled_rustix_by_root = require_patched_rustix_compiler_evidence(compiled_by_root)
     reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root, native_runtime=native_runtime)
     (evidence_dir / "reachable-unmaintained-launch-debt.json").write_text(
         json.dumps(reachable_unmaintained, indent=2, sort_keys=True) + "\n",
