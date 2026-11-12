@@ -504,18 +504,17 @@ mod tests {
             &opening,
         )
         .unwrap();
-        assert_eq!(observed.resulting_state_root, winner_only.resulting_state_root);
+        assert_eq!(
+            observed.resulting_state_root,
+            winner_only.resulting_state_root
+        );
 
         // Even if it descends from authenticated losing output provenance, a
         // forged signature cannot be discarded as an innocuous conflict.
         let mut forged = spend(&key, &descendant_source, 7, 1, 4);
         forged.inputs[0].signature = "00".repeat(64);
         forged.txid = compute_txid_v2(&forged, CHAIN).unwrap();
-        let (genesis, tip, bodies) = fixture(vec![
-            spend(&key, &source, 9, 1, 1),
-            losing,
-            forged,
-        ]);
+        let (genesis, tip, bodies) = fixture(vec![spend(&key, &source, 9, 1, 1), losing, forged]);
         assert!(inspect_dormant_native_gd08_signed_prefix(
             CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
         )
