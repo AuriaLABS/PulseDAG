@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - crates/pulsedag-p2p/Cargo.toml
+      - tools/pow-upstream-reference/**
       - Cargo.lock
       - .github/workflows/v3-libp2p-hickory-parent-migration-probe.yml
   workflow_dispatch:
@@ -99,6 +100,17 @@ jobs:
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
           grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
           grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Preserve full upstream KHeavyHash parity in independently locked oracle workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Standalone workspace is NOT a member of the public-node root.
+          # It retains original pinned kaspa-hashes/pow with incompatible
+          # js-sys 0.3.77 while production libp2p resolves js-sys 0.3.85.
+          cargo test --manifest-path tools/pow-upstream-reference/Cargo.toml \
+            --test native_pow_backend_migration -- --nocapture
+          cargo clippy --manifest-path tools/pow-upstream-reference/Cargo.toml \
+            --test native_pow_backend_migration -- -D warnings
       - name: Record source-manifest divergence for explicit NON-RELEASE provenance
         if: always()
         shell: bash
@@ -114,6 +126,7 @@ jobs:
           name: offline-unapproved-libp2p-0571-lock-${{ github.run_id }}
           path: |
             Cargo.lock
+            tools/pow-upstream-reference/Cargo.lock
             ci-evidence/libp2p-parent-probe
           if-no-files-found: error
           retention-days: 14
