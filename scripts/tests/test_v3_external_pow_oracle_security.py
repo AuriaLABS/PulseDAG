@@ -49,6 +49,33 @@ class PublicLockMigrationTests(unittest.TestCase):
         self.assertNotIn(("hickory-proto", "0.25.2"), locked)
         self.assertIn(("quinn-proto", "0.11.16"), locked)
 
+    def test_unselected_optional_dns_and_mdns_remain_visible_in_full_lock(self) -> None:
+        # The default cargo metadata package list omits unselected DNS/mDNS,
+        # but the raw Cargo.lock retains both exact reviewed parent versions.
+        inventory = gate.complete_public_lock_inventory()
+        self.assertIn(("libp2p-dns", "0.45.0"), inventory)
+        self.assertIn(("libp2p-mdns", "0.49.0"), inventory)
+        self.assertIn(("hickory-resolver", "0.26.3"), inventory)
+        self.assertIn(("hickory-proto", "0.26.3"), inventory)
+        self.assertIn(("quinn-proto", "0.11.16"), inventory)
+
+    def test_empty_or_duplicate_public_lock_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.object(gate, "ROOT", root):
+                (root / "Cargo.lock").write_text(
+                    'version = 4\\n', encoding="utf-8"
+                )
+                with self.assertRaises(SystemExit):
+                    gate.complete_public_lock_inventory()
+                (root / "Cargo.lock").write_text(
+                    'version = 4\\n[[package]]\\nname = "p"\\nversion = "1"\\n'
+                    '[[package]]\\nname = "p"\\nversion = "1"\\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaises(SystemExit):
+                    gate.complete_public_lock_inventory()
+
     def test_external_lock_preserves_pinned_kaspa_without_polluting_main(self) -> None:
         locked = packages(ROOT / "tools/pow-upstream-reference/Cargo.lock")
         self.assertTrue(gate.REQUIRED_KASPA <= locked)
