@@ -100,7 +100,15 @@ jobs:
           import json
           import re
           from pathlib import Path
+          from scripts.validate_v3_dependency_security import (
+              require_complete_zero_vulnerability_audit,
+          )
 
+          raw_exit = Path('ci-evidence/dependency-audit/raw-exit-status.txt').read_text(
+              encoding='utf-8'
+          ).strip()
+          if raw_exit != 'raw_exit_status=0':
+              raise SystemExit(f'raw cargo-audit must exit successfully: {raw_exit!r}')
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
           advisory_db = report.get('database') or {}
           advisory_commit = advisory_db.get('last-commit')
@@ -109,7 +117,7 @@ jobs:
               raise SystemExit('raw cargo-audit report lacks exact RustSec advisory DB commit')
           if not isinstance(advisory_updated, str) or not advisory_updated.strip():
               raise SystemExit('raw cargo-audit report lacks RustSec advisory DB last-updated provenance')
-          vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
+          vulnerabilities = require_complete_zero_vulnerability_audit(report)
           observed_vulnerabilities = {
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
