@@ -1,6 +1,7 @@
 //! Byte parity between PulseDAG's new canonical native KHeavyHash backend
-//! and the pinned upstream Kaspa implementation retained as TEST-only reference.
-//! This does not establish GD-08 policy, full consensus correctness or testnet GO.
+//! and the pinned upstream Kaspa implementation in an EXTERNAL TEST-ONLY workspace.
+//! This crate has its own Cargo.lock, isolated from public node libp2p.
+//! It does not establish GD-08 policy, full consensus correctness or testnet GO.
 
 use kaspa_hashes::{Hash as KaspaHash, PowHash};
 use kaspa_pow::matrix::Matrix;

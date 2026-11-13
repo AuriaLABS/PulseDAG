@@ -11,6 +11,9 @@ on:
       - crates/**/Cargo.toml
       - .cargo/audit.toml
       - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
@@ -24,6 +27,9 @@ on:
       - crates/**/Cargo.toml
       - .cargo/audit.toml
       - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
@@ -109,10 +115,9 @@ jobs:
               for item in vulnerabilities
           }
           expected_vulnerabilities = {
-              ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
-              ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
-              # #1298: exact versions/advisories, still visible in RAW audit.
-              # Any inventory drift must fail; never generalize this set.
+              # Former Hickory 0.25.2 advisories (0118/0119/0487/0489/
+              # 0490/0491) must DISAPPEAR with the audited upstream parent.
+              # Quinn remains exact lock-only scope, never a broad exception.
               ('RUSTSEC-2026-0338', 'quinn-proto', '0.11.16'),
               ('RUSTSEC-2026-0339', 'quinn-proto', '0.11.16'),
               ('RUSTSEC-2026-0340', 'quinn-proto', '0.11.16'),
@@ -121,20 +126,10 @@ jobs:
           }
 
           expected_advisory_warnings = {
-              ('unmaintained', 'RUSTSEC-2025-0052', 'async-std', '1.13.2'),
-              # #1387 / DB 26fd2d43 (2026-11-05): upstream archived.
-              # Informational UNMAINTAINED, NOT a patched vulnerability or a waiver.
-              # Compiler-reachable via fixed-rev Kaspa -> workflow-core -> async-std.
-              ('unmaintained', 'RUSTSEC-2026-0441', 'pin-utils', '0.1.0'),
-              ('unmaintained', 'RUSTSEC-2024-0375', 'atty', '0.2.14'),
-              ('unsound', 'RUSTSEC-2021-0145', 'atty', '0.2.14'),
+              # The Kaspa dev-only packages now live in separately locked
+              # tools/pow-upstream-reference, not the public Cargo.lock.
               ('unmaintained', 'RUSTSEC-2025-0141', 'bincode', '1.3.3'),
-              ('unmaintained', 'RUSTSEC-2024-0384', 'instant', '0.1.13'),
-              ('unmaintained', 'RUSTSEC-2024-0388', 'derivative', '2.2.0'),
               ('unmaintained', 'RUSTSEC-2024-0436', 'paste', '1.0.15'),
-              ('unmaintained', 'RUSTSEC-2024-0449', 'unsafe-libyaml', '0.2.11'),
-              ('unmaintained', 'RUSTSEC-2024-0370', 'proc-macro-error', '1.0.4'),
-              ('unsound', 'RUSTSEC-2026-0306', 'faster-hex', '0.9.0'),
           }
 
           warnings = report.get('warnings', {})
@@ -181,70 +176,66 @@ jobs:
           if observed_yanked != expected_yanked:
               raise SystemExit(f'unexpected raw yanked set: {sorted(observed_yanked)}')
 
-          # #1387: make the newly observed transitive advisory and its
-          # exact parent path REPRODUCIBLE, not an arbitrary expected-count bump.
-          # This will fail if the dependency disappears or changes and requires
-          # revisiting the advisory disposition at that new candidate.
+          # The new main Cargo.lock is separate from the upstream Kaspa
+          # PoW-test oracle lock. Prove both exact inventories rather than
+          # silently treating a missing advisory as compiler-unreachable.
           import tomllib
-          lock_packages = tomllib.loads(Path('Cargo.lock').read_text(encoding='utf-8'))['package']
+          root_packages = tomllib.loads(Path('Cargo.lock').read_text(encoding='utf-8'))['package']
+          oracle_packages = tomllib.loads(Path(
+              'tools/pow-upstream-reference/Cargo.lock'
+          ).read_text(encoding='utf-8'))['package']
           by_name = {}
-          for p in lock_packages:
+          for p in root_packages:
               by_name.setdefault(p['name'], []).append(p)
-          # Check BOTH independently present Kaspa routes to pin-utils.
-          # Disabling kaspa-hashes' optional workflow feature alone cannot
-          # clear kaspa-pow's direct workflow-wasm dependency (#1387).
-          upstream_path = (
-              ('pulsedag-core', 'kaspa-hashes'),
-              ('kaspa-hashes', 'workflow-wasm'),
-              ('pulsedag-core', 'kaspa-pow'),
-              ('kaspa-pow', 'workflow-wasm'),
-              ('workflow-wasm', 'workflow-core'),
-              ('workflow-core', 'async-std'),
-              ('async-std', 'pin-utils'),
-          )
-          expected_versions = {
-              'pin-utils': '0.1.0',
-              'async-std': '1.13.2',
-              'workflow-core': '0.18.0',
-              'workflow-wasm': '0.18.0',
-              'kaspa-hashes': '2.0.1',
-              'kaspa-pow': '2.0.1',
-          }
-          for name, version in expected_versions.items():
-              resolved = by_name.get(name, [])
-              if len(resolved) != 1 or resolved[0]['version'] != version:
-                  raise SystemExit(f'pin-utils inherited path/version drift: {name} {resolved}')
-          for parent, child in upstream_path:
-              dependencies = by_name[parent][0].get('dependencies', [])
-              if not any(dep == child or dep.startswith(child + ' ') for dep in dependencies):
-                  raise SystemExit(f'pin-utils upstream parent edge drift: {parent} -> {child}')
+          oracle_by_name = {}
+          for p in oracle_packages:
+              oracle_by_name.setdefault(p['name'], []).append(p)
+          archived = {'kaspa-hashes', 'kaspa-pow', 'workflow-core',
+                      'workflow-wasm', 'async-std', 'pin-utils',
+                      'faster-hex', 'atty'}
+          leaked = sorted(archived & set(by_name))
+          if leaked:
+              raise SystemExit(f'archived Kaspa dependency leaked into public lock: {leaked}')
+          for name, version in {
+              'libp2p': '0.57.1', 'hickory-proto': '0.26.3',
+              'hickory-resolver': '0.26.3', 'rustix': '1.1.6',
+              'quinn-proto': '0.11.16',
+          }.items():
+              actual = by_name.get(name, [])
+              if len(actual) != 1 or actual[0]['version'] != version:
+                  raise SystemExit(f'public lock version not source-reviewed: {name} {actual}')
+          for name in ('kaspa-hashes', 'kaspa-pow'):
+              actual = oracle_by_name.get(name, [])
+              if len(actual) != 1 or actual[0]['version'] != '2.0.1':
+                  raise SystemExit(f'upstream oracle missing exact Kaspa {name}: {actual}')
+              if not str(actual[0].get('source','')).startswith(
+                  'git+https://github.com/kaspanet/rusty-kaspa?rev=cfafeb4c093fa37a303f1b9f19c58f986b870ce3#'
+              ):
+                  raise SystemExit(f'upstream oracle Kaspa source drift: {name}')
           security = json.loads(Path(
               'ci-evidence/dependency-audit/v3-validation.json'
           ).read_text(encoding='utf-8'))
           mode = security['kaspa_dependency_mode']
-          if mode not in {'pinned_runtime', 'native_runtime_dev_reference'}:
-              raise SystemExit(f'unrecognized runtime PoW security disposition: {mode}')
+          if mode != 'native_runtime_external_reference':
+              raise SystemExit(f'public source must use separate PoW oracle: {mode}')
+          if not security.get('public_root_retired_kaspa_advisory_packages_absent'):
+              raise SystemExit('missing positive root-lock removal evidence')
+          if not security.get('upstream_oracle_separate_locked_workspace'):
+              raise SystemExit('missing positive separate PoW oracle proof')
           for root in ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet'):
               packages = set(Path(
                   f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt'
               ).read_text(encoding='utf-8').splitlines())
-              if mode == 'pinned_runtime':
-                  if 'pin-utils@0.1.0' not in packages or 'async-std@1.13.2' not in packages:
-                      raise SystemExit(f'pin-utils exact inherited runtime exposure changed in {root}')
-                  print('informational-unmaintained-compiled', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
-              else:
-                  forbidden = sorted(p for p in packages if p.split('@', 1)[0].startswith(
-                      ('kaspa-', 'workflow-')
-                  ) or p.split('@', 1)[0] in {'pin-utils', 'async-std', 'faster-hex'})
-                  if forbidden:
-                      raise SystemExit(f'unmaintained runtime packages remain in {root}: {forbidden}')
-                  print('unreachable-release-root', root, 'pin-utils@0.1.0', 'RUSTSEC-2026-0441')
+              forbidden = sorted(p for p in packages
+                  if p.split('@', 1)[0] in archived)
+              if forbidden:
+                  raise SystemExit(f'archived Kaspa runtime compiler exposure: {root}: {forbidden}')
+              print('absent-public-runtime', root, 'archived-kaspa-and-unmaintained-chain')
 
-          # The Hickory and Quinn advisories are conditionally disposed only
-          # as lockfile-only residues. QUIC may also enter through reqwest,
-          # so disabled libp2p QUIC is NOT enough: measure exact clean
-          # compiler-artifact evidence from every production launch root.
-          lock_only = {'hickory-proto@0.25.2', 'quinn-proto@0.11.16'}
+          # Hickory is patched and retired from old lock; ONLY Quinn's
+          # five known advisories remain conditional lock-only exposure.
+          # Check real compiler artifacts from EVERY launch root.
+          lock_only = {'quinn-proto@0.11.16'}
           forbidden_quic = {'libp2p-quic', 'quinn', 'quinn-proto', 'quinn-udp'}
           roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet')
           for root in roots:
@@ -268,13 +259,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Only after proving both vulnerable packages compiler-unreachable
-          # from ALL four launch roots, permit explicit per-run ignores. The
-          # raw 7-advisory report is kept intact. No ignores in audit.toml;
-          # any new advisory/version OR compiled QUIC stack still fails closed.
+          # The raw expected advisory set and 4-root compiled QUIC absence
+          # must both pass before narrow per-run Quinn-only exceptions.
+          # Raw audit remains unmodified; no persisted audit.toml ignores.
           cargo audit --json \
-            --ignore RUSTSEC-2026-0118 \
-            --ignore RUSTSEC-2026-0119 \
             --ignore RUSTSEC-2026-0338 \
             --ignore RUSTSEC-2026-0339 \
             --ignore RUSTSEC-2026-0340 \

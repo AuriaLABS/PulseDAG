@@ -8,7 +8,9 @@ on:
       - crates/pulsedag-core/src/pow.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/Cargo.toml
-      - crates/pulsedag-core/tests/native_pow_backend_migration.rs
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
+      - tools/pow-upstream-reference/tests/native_pow_backend_migration.rs
       - .github/workflows/v3-native-pow-runtime-migration.yml
       - Cargo.lock
   workflow_dispatch:
@@ -39,14 +41,14 @@ jobs:
           components: rustfmt, clippy
       - name: Strict formatting
         run: cargo fmt --all -- --check
-      - name: Native release implementation versus original upstream
-        run: cargo test --locked -p pulsedag-core --test native_pow_backend_migration -- --nocapture
+      - name: Native release implementation versus isolated, pinned upstream Kaspa
+        run: cargo test --manifest-path tools/pow-upstream-reference/Cargo.toml --locked --test native_pow_backend_migration -- --nocapture
       - name: Independent Python/Rust golden candidate versus new canonical path
         run: cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial -- --nocapture
       - name: Prepared CPU nonce search release-performance gate vs pinned upstream
-        run: cargo test --locked --release -p pulsedag-core --test native_pow_backend_migration -- --ignored --nocapture
+        run: cargo test --manifest-path tools/pow-upstream-reference/Cargo.toml --locked --release --test native_pow_backend_migration -- --ignored --nocapture
       - name: Strict Clippy including reference parity
-        run: cargo clippy --locked -p pulsedag-core --test native_pow_backend_migration -- -D warnings
+        run: cargo clippy --manifest-path tools/pow-upstream-reference/Cargo.toml --locked --test native_pow_backend_migration -- -D warnings
       - name: Normal release dependency trees exclude archived Kaspa across Linux Windows and macOS
         shell: bash
         run: |
@@ -69,5 +71,9 @@ jobs:
               echo "PASS $target/$root: normal dependency resolution excludes pinned legacy Kaspa stack"
             done
           done
-      - name: Cargo.lock must remain untouched for reference-only migration
-        run: git diff --exit-code -- Cargo.lock
+      - name: Both source-reviewed and committed Cargo locks must stay exact
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+          cargo metadata --manifest-path tools/pow-upstream-reference/Cargo.toml --locked --format-version 1 --no-deps >/dev/null
+          git diff --exit-code -- Cargo.lock tools/pow-upstream-reference/Cargo.lock

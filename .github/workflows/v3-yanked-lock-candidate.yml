@@ -48,7 +48,6 @@ jobs:
           for package in packages:
               versions.setdefault(package['name'], set()).add(package['version'])
           expected = {
-              'async-executor': '1.14.1',
               'chacha20': '0.10.2',
               'tokio': '1.53.3',
               'zstd-sys': '2.1.2+zstd.1.5.7',
@@ -61,6 +60,22 @@ jobs:
                   assert versions.get(name) == {'0.9.1', wanted}, (name, versions.get(name))
               else:
                   assert versions.get(name) == {wanted}, (name, versions.get(name))
+          # In the new independent-oracle architecture the archived async
+          # executor/Kaspa stack must be ABSENT from the public lock, not
+          # mistaken for a missing patch or hidden via a cargo-audit ignore.
+          retired = {
+              'async-executor', 'kaspa-hashes', 'kaspa-pow',
+              'async-std', 'pin-utils', 'atty', 'faster-hex',
+          }
+          for name in sorted(retired):
+              assert name not in versions, f'archived public dependency returned: {name}'
+          for name, version in {
+              'libp2p': '0.57.1',
+              'hickory-proto': '0.26.3',
+              'hickory-resolver': '0.26.3',
+              'rustix': '1.1.6',
+          }.items():
+              assert versions.get(name) == {version}, (name, versions.get(name))
           audit = tomllib.loads(Path('.cargo/audit.toml').read_text())
           assert not audit.get('advisories', {}).get('ignore', []), 'Do not ignore RustSec'
           print('Exact versions and active fail-closed audit policy verified')
