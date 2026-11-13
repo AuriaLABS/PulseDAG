@@ -123,6 +123,35 @@ def fail(message: str) -> None:
     raise SystemExit(f"v3 dependency security validation failed: {message}")
 
 
+def require_complete_zero_vulnerability_audit(report: Any) -> list[dict[str, Any]]:
+    """Reject malformed/truncated cargo-audit JSON, even if list defaults to empty.
+
+    The *raw* CLI exit code is checked separately in the workflow before calling
+    this helper. A known-new advisory must fail closed, never become an ignore.
+    """
+    if not isinstance(report, dict):
+        fail("raw cargo-audit report is not a JSON object")
+    section = report.get("vulnerabilities")
+    if not isinstance(section, dict):
+        fail("raw cargo-audit vulnerability section missing or not an object")
+    if not {"list", "count", "found"}.issubset(section):
+        fail("raw cargo-audit missing vulnerability list/count/found")
+    entries = section["list"]
+    count = section["count"]
+    found = section["found"]
+    if not isinstance(entries, list):
+        fail("raw cargo-audit vulnerability list is not an array")
+    if type(count) is not int or count < 0:
+        fail("raw cargo-audit vulnerability count must be a nonnegative integer")
+    if type(found) is not bool:
+        fail("raw cargo-audit vulnerability found must be boolean")
+    if count != len(entries) or found != bool(entries):
+        fail("raw cargo-audit vulnerability list/count/found disagree")
+    if count != 0 or found:
+        fail("raw cargo-audit reports vulnerabilities; patch before release")
+    return entries
+
+
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
