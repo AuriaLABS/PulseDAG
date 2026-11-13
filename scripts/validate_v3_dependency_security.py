@@ -30,17 +30,18 @@ FORBIDDEN_LOCKED = {
     ("ring", "0.16.20"),
     ("rustls-webpki", "0.101.7"),
     ("hickory-proto", "0.24.4"),
+    ("hickory-proto", "0.25.2"),
+    ("rustix", "1.1.4"),
+    ("rustix", "1.1.5"),
     ("h2", "0.3.27"),
     ("lru", "0.12.5"),
     ("linkme", "0.2.10"),
     ("intertrait", "0.2.2"),
 }
 
-# Rusty Kaspa 2.0.1 currently leaves Hickory 0.25.2 represented in Cargo.lock.
-# The active disposition is valid only while clean compiler-artifact evidence
-# proves this exact package is absent from every packaged launch root.
+# The libp2p parent migration retires Hickory 0.25.2 from the public lock.
+# Quinn stays visible as exact lock-only debt, not an advisory waiver.
 REQUIRED_LOCK_ONLY = {
-    ("hickory-proto", "0.25.2"),
     # #1298: development-only disposition requires exact clean-compiler proof
     # across ALL four launch roots. reqwest also retains the optional quinn
     # parent path; disabled libp2p QUIC alone is not sufficient.
@@ -56,11 +57,14 @@ REQUIRED_PATCHED = {
     ("crossbeam-epoch", "0.9.20"),
     ("anyhow", "1.0.103"),
     ("event-listener", "5.4.2"),
+    ("rustix", "1.1.6"),
 }
 FORBIDDEN_OLD_REACHABLE = {
     ("crossbeam-epoch", "0.9.18"),
     ("anyhow", "1.0.102"),
     ("event-listener", "5.4.1"),
+    ("rustix", "1.1.4"),
+    ("rustix", "1.1.5"),
 }
 
 # These optional transports can remain represented in Cargo.lock by libp2p,
@@ -93,6 +97,13 @@ REQUIRED_COMPILED_UNMAINTAINED_DEBT = {
     ("async-std", "1.13.2"): "RUSTSEC-2025-0052",
     ("pin-utils", "0.1.0"): "RUSTSEC-2026-0441",
 }
+
+EXPECTED_PATCHED_RUSTIX_ROOTS = {"pulsedagd", "pulsedag-wallet"}
+RETIRED_PUBLIC_ROOT_NAMES = {
+    "kaspa-hashes", "kaspa-pow", "async-std", "pin-utils",
+    "faster-hex", "atty",
+}
+REQUIRED_HICKORY = {("hickory-proto", "0.26.3"), ("hickory-resolver", "0.26.3")}
 
 AFFECTED_FASTER_HEX_SYMBOL = "hex_decode_unchecked"
 
@@ -139,6 +150,48 @@ def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> str:
     # pinned crates remain only an independent test oracle, NOT a release root.
     normal = {name for name in EXPECTED_KASPA_DIRECT if name in dependencies}
     dev = {name for name in EXPECTED_KASPA_DIRECT if name in dev_dependencies}
+    if not normal and not dev:
+        # The upstream Kaspa oracle moved into an independent Cargo workspace.
+        # Prove its complete pinned provenance while requiring absence from
+        # production root metadata/lock; never infer security from missing data.
+        oracle = ROOT / "tools" / "pow-upstream-reference" / "Cargo.toml"
+        oracle_lock = oracle.with_name("Cargo.lock")
+        manifest_ref = tomllib.loads(oracle.read_text(encoding="utf-8"))
+        if manifest_ref.get("workspace", {}).get("resolver") != "2":
+            fail("upstream PoW oracle must have separate Cargo workspace")
+        selected = manifest_ref.get("dependencies", {})
+        oracle_packages = tomllib.loads(oracle_lock.read_text(encoding="utf-8"))["package"]
+        for name in EXPECTED_KASPA_DIRECT:
+            value = selected.get(name)
+            if not isinstance(value, dict) or value.get("git") != EXPECTED_KASPA_GIT:
+                fail(f"separate PoW oracle {name} official upstream Git missing")
+            if value.get("rev") != EXPECTED_KASPA_REV:
+                fail(f"separate PoW oracle {name} pinned revision drift")
+            if any(k in value for k in ("branch", "tag", "path")):
+                fail(f"separate PoW oracle {name} has unapproved source override")
+            found = [p for p in oracle_packages if p.get("name") == name]
+            if len(found) != 1 or found[0].get("version") != EXPECTED_KASPA_VERSION:
+                fail(f"separate PoW oracle {name} resolved version drift")
+            if not str(found[0].get("source", "")).startswith(
+                f"git+{EXPECTED_KASPA_GIT}?rev={EXPECTED_KASPA_REV}#"
+            ):
+                fail(f"separate PoW oracle {name} origin or revision drift")
+        run(["cargo", "metadata", "--locked", "--manifest-path", str(oracle),
+             "--format-version", "1", "--no-deps"])
+        pow_text = (ROOT / "crates/pulsedag-core/src/pow.rs").read_text(encoding="utf-8")
+        lib_text = (ROOT / "crates/pulsedag-core/src/lib.rs").read_text(encoding="utf-8")
+        backend = ROOT / "crates/pulsedag-core/src/pow_native_kheavyhash.rs"
+        if not backend.is_file() or "mod pow_native_kheavyhash;" not in lib_text:
+            fail("native production PoW backend missing")
+        if any(marker in pow_text for marker in (
+            "use kaspa_hashes", "use kaspa_pow", "kaspa_hashes::", "kaspa_pow::"
+        )):
+            fail("production PoW still imports test-only Kaspa")
+        if "native_kheavyhash_digest" not in pow_text or "NativeKHeavyHasher" not in pow_text:
+            fail("production native PoW backend not fully wired")
+        if any(p.get("name") in EXPECTED_KASPA_DIRECT for p in metadata["packages"]):
+            fail("upstream Kaspa oracle leaked into public-root metadata")
+        return "native_runtime_external_reference"
     if normal == EXPECTED_KASPA_DIRECT and not dev:
         mode = "pinned_runtime"
         selected = dependencies
@@ -216,6 +269,23 @@ def compile_clean(root: str, evidence_dir: Path, by_id: dict[str, tuple[str, str
         encoding="utf-8",
     )
     return compiled
+
+
+def require_patched_rustix_compiler_evidence(
+    compiled_by_root: dict[str, set[tuple[str, str]]],
+) -> dict[str, list[str]]:
+    """Require positive compiled-patch evidence for the actual launch roots."""
+    if set(compiled_by_root) != set(COMPILE_ROOTS):
+        fail("rustix compiler evidence missing or unexpected launch root")
+    evidence: dict[str, list[str]] = {}
+    for root in COMPILE_ROOTS:
+        versions = sorted(v for n, v in compiled_by_root[root] if n == "rustix")
+        if any(v != "1.1.6" for v in versions):
+            fail(f"{root} compiled affected or unreviewed rustix versions: {versions}")
+        if root in EXPECTED_PATCHED_RUSTIX_ROOTS and versions != ["1.1.6"]:
+            fail(f"{root} lacks exact patched rustix compiler evidence: {versions}")
+        evidence[root] = versions
+    return evidence
 
 
 def validate_faster_hex_advisory_scope(
