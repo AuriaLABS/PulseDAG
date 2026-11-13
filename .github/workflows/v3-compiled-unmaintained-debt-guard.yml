@@ -6,6 +6,10 @@ on:
     paths:
       - scripts/validate_v3_dependency_security.py
       - scripts/tests/test_v3_compiled_unmaintained_debt.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - Cargo.lock
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/v3-compiled-unmaintained-debt-guard.yml
   push:
@@ -13,6 +17,10 @@ on:
     paths:
       - scripts/validate_v3_dependency_security.py
       - scripts/tests/test_v3_compiled_unmaintained_debt.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - Cargo.lock
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/v3-compiled-unmaintained-debt-guard.yml
   workflow_dispatch:
@@ -40,12 +48,13 @@ jobs:
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
           grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
           grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
-      - name: Python stdlib 5 exact per-root negative tests
+      - name: Python stdlib exact per-root and external-oracle negative tests
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/validate_v3_dependency_security.py scripts/tests/test_v3_compiled_unmaintained_debt.py
+          python3 -m py_compile scripts/validate_v3_dependency_security.py scripts/tests/test_v3_compiled_unmaintained_debt.py scripts/tests/test_v3_external_pow_oracle_security.py
           python3 -m unittest discover -v -s scripts/tests -p 'test_v3_compiled_unmaintained_debt.py'
+          python3 -m unittest discover -v -s scripts/tests -p 'test_v3_external_pow_oracle_security.py'
       - name: No advisory ignore and no release-ready claim
         shell: bash
         run: |
