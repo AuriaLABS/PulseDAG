@@ -114,16 +114,10 @@ jobs:
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
           }
-          expected_vulnerabilities = {
-              # Former Hickory 0.25.2 advisories (0118/0119/0487/0489/
-              # 0490/0491) must DISAPPEAR with the audited upstream parent.
-              # Quinn remains exact lock-only scope, never a broad exception.
-              ('RUSTSEC-2026-0338', 'quinn-proto', '0.11.16'),
-              ('RUSTSEC-2026-0339', 'quinn-proto', '0.11.16'),
-              ('RUSTSEC-2026-0340', 'quinn-proto', '0.11.16'),
-              ('RUSTSEC-2026-0341', 'quinn-proto', '0.11.16'),
-              ('RUSTSEC-2026-0342', 'quinn-proto', '0.11.16'),
-          }
+          # Real patched Quinn/Hickory in the Cargo-generated lock:
+          # any raw vulnerability, including a future RustSec DB addition,
+          # must fail without exception or broad advisory ignores.
+          expected_vulnerabilities = set()
 
           expected_advisory_warnings = {
               # The Kaspa dev-only packages now live in separately locked
@@ -199,7 +193,8 @@ jobs:
           for name, version in {
               'libp2p': '0.57.1', 'hickory-proto': '0.26.3',
               'hickory-resolver': '0.26.3', 'rustix': '1.1.6',
-              'quinn-proto': '0.11.16',
+              'quinn-proto': '0.11.19',
+              'quinn-udp': '0.5.16',
           }.items():
               actual = by_name.get(name, [])
               if len(actual) != 1 or actual[0]['version'] != version:
@@ -232,10 +227,10 @@ jobs:
                   raise SystemExit(f'archived Kaspa runtime compiler exposure: {root}: {forbidden}')
               print('absent-public-runtime', root, 'archived-kaspa-and-unmaintained-chain')
 
-          # Hickory is patched and retired from old lock; ONLY Quinn's
-          # five known advisories remain conditional lock-only exposure.
-          # Check real compiler artifacts from EVERY launch root.
-          lock_only = {'quinn-proto@0.11.16'}
+          # Hickory and Quinn are now patched; no known raw vulnerabilities.
+          # Still check real compiler artifacts in EVERY clean launch root,
+          # to prohibit accidental activation of optional QUIC transports.
+          reviewed_optional_quic = {'quinn-proto@0.11.19', 'quinn-udp@0.5.16'}
           forbidden_quic = {'libp2p-quic', 'quinn', 'quinn-proto', 'quinn-udp'}
           roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet')
           for root in roots:
@@ -243,14 +238,14 @@ jobs:
               packages = set(compiled.read_text(encoding='utf-8').splitlines())
               forbidden = sorted(
                   package for package in packages
-                  if package in lock_only or package.split('@', 1)[0] in forbidden_quic
+                  if package in reviewed_optional_quic or package.split('@', 1)[0] in forbidden_quic
               )
               if forbidden:
                   raise SystemExit(
                       f'vulnerable/optional QUIC compiler-reachable from {root}: {forbidden}; '
                       'lock-only disposition invalid'
                   )
-              for package in sorted(lock_only):
+              for package in sorted(reviewed_optional_quic):
                   print('unreachable', root, package)
               print('unreachable', root, 'quinn-stack')
           PY
@@ -259,16 +254,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The raw expected advisory set and 4-root compiled QUIC absence
-          # must both pass before narrow per-run Quinn-only exceptions.
-          # Raw audit remains unmodified; no persisted audit.toml ignores.
-          cargo audit --json \
-            --ignore RUSTSEC-2026-0338 \
-            --ignore RUSTSEC-2026-0339 \
-            --ignore RUSTSEC-2026-0340 \
-            --ignore RUSTSEC-2026-0341 \
-            --ignore RUSTSEC-2026-0342 \
-            | tee ci-evidence/dependency-audit/cargo-audit-configured.json
+          # No vulnerability waivers: the exact raw report has already been
+          # checked for ZERO vulnerabilities and the persisted .cargo/audit.toml
+          # remains ignore=[]. A fresh DB advisory fails this command.
+          cargo audit --json | tee ci-evidence/dependency-audit/cargo-audit-configured.json
 
       - name: Record exact-candidate audit provenance
         if: always()
