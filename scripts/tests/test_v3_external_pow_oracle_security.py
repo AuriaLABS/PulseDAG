@@ -47,7 +47,10 @@ class PublicLockMigrationTests(unittest.TestCase):
         self.assertTrue(gate.FORBIDDEN_LOCKED.isdisjoint(locked))
         self.assertNotIn(("rustix", "1.1.4"), locked)
         self.assertNotIn(("hickory-proto", "0.25.2"), locked)
-        self.assertIn(("quinn-proto", "0.11.16"), locked)
+        self.assertIn(("quinn-proto", "0.11.19"), locked)
+        self.assertIn(("quinn-udp", "0.5.16"), locked)
+        self.assertNotIn(("quinn-proto", "0.11.16"), locked)
+        self.assertNotIn(("quinn-udp", "0.5.14"), locked)
 
     def test_unselected_optional_dns_and_mdns_remain_visible_in_full_lock(self) -> None:
         # The default cargo metadata package list omits unselected DNS/mDNS,
@@ -57,7 +60,8 @@ class PublicLockMigrationTests(unittest.TestCase):
         self.assertIn(("libp2p-mdns", "0.49.0"), inventory)
         self.assertIn(("hickory-resolver", "0.26.3"), inventory)
         self.assertIn(("hickory-proto", "0.26.3"), inventory)
-        self.assertIn(("quinn-proto", "0.11.16"), inventory)
+        self.assertIn(("quinn-proto", "0.11.19"), inventory)
+        self.assertIn(("quinn-udp", "0.5.16"), inventory)
 
     def test_empty_or_duplicate_public_lock_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
