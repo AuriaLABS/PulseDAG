@@ -64,13 +64,13 @@ class PublicLockMigrationTests(unittest.TestCase):
             root = Path(temp)
             with patch.object(gate, "ROOT", root):
                 (root / "Cargo.lock").write_text(
-                    'version = 4\\n', encoding="utf-8"
+                    'version = 4\n', encoding="utf-8"
                 )
                 with self.assertRaises(SystemExit):
                     gate.complete_public_lock_inventory()
                 (root / "Cargo.lock").write_text(
-                    'version = 4\\n[[package]]\\nname = "p"\\nversion = "1"\\n'
-                    '[[package]]\\nname = "p"\\nversion = "1"\\n',
+                    'version = 4\n[[package]]\nname = "p"\nversion = "1"\n'
+                    '[[package]]\nname = "p"\nversion = "1"\n',
                     encoding="utf-8",
                 )
                 with self.assertRaises(SystemExit):
