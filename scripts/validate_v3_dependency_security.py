@@ -31,6 +31,8 @@ FORBIDDEN_LOCKED = {
     ("rustls-webpki", "0.101.7"),
     ("hickory-proto", "0.24.4"),
     ("hickory-proto", "0.25.2"),
+    ("quinn-proto", "0.11.16"),
+    ("quinn-udp", "0.5.14"),
     ("rustix", "1.1.4"),
     ("rustix", "1.1.5"),
     ("h2", "0.3.27"),
@@ -39,13 +41,12 @@ FORBIDDEN_LOCKED = {
     ("intertrait", "0.2.2"),
 }
 
-# The libp2p parent migration retires Hickory 0.25.2 from the public lock.
-# Quinn stays visible as exact lock-only debt, not an advisory waiver.
-REQUIRED_LOCK_ONLY = {
-    # #1298: development-only disposition requires exact clean-compiler proof
-    # across ALL four launch roots. reqwest also retains the optional quinn
-    # parent path; disabled libp2p QUIC alone is not sufficient.
-    ("quinn-proto", "0.11.16"),
+# Exact patched Quinn packages remain in Cargo.lock via DISABLED optional
+# QUIC transport dependencies. They must also remain non-compiled in all
+# launch roots. No vulnerability advisory is ignored or waived.
+REQUIRED_REVIEWED_OPTIONAL_QUIC = {
+    ("quinn-proto", "0.11.19"),
+    ("quinn-udp", "0.5.16"),
 }
 
 REQUIRED_KASPA = {
@@ -58,6 +59,8 @@ REQUIRED_PATCHED = {
     ("anyhow", "1.0.103"),
     ("event-listener", "5.4.2"),
     ("rustix", "1.1.6"),
+    ("quinn-proto", "0.11.19"),
+    ("quinn-udp", "0.5.16"),
 }
 FORBIDDEN_OLD_REACHABLE = {
     ("crossbeam-epoch", "0.9.18"),
@@ -74,8 +77,8 @@ FORBIDDEN_COMPILED_NAMES = {
     # Updated Hickory packages may remain locked by optional DNS/mDNS,
     # but no release root can compile them with these features disabled.
     "hickory-proto", "hickory-resolver",
-    # None of the QUIC stack may compile through libp2p OR reqwest while
-    # quinn-proto 0.11.16 has unpatched RUSTSEC-2026-0338..0342.
+    # No optional QUIC stack may compile through libp2p or reqwest;
+    # version upgrades must never silently activate unused transports.
     "quinn", "quinn-proto", "quinn-udp",
 }
 COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd", "pulsedag-miner", "pulsedag-wallet")
@@ -442,11 +445,11 @@ def main() -> None:
     if forbidden_present:
         fail(f"forbidden legacy/vulnerable versions remain locked: {forbidden_present}")
 
-    missing_lock_only = sorted(REQUIRED_LOCK_ONLY - locked)
-    if missing_lock_only:
+    missing_reviewed_quic = sorted(REQUIRED_REVIEWED_OPTIONAL_QUIC - locked)
+    if missing_reviewed_quic:
         fail(
-            "reviewed lock-only vulnerability inventory drifted; review before changing disposition: "
-            f"{missing_lock_only}"
+            "reviewed patched optional-QUIC lock versions drifted; review before changing: "
+            f"{missing_reviewed_quic}"
         )
 
     if kaspa_mode != "native_runtime_external_reference":
@@ -483,9 +486,9 @@ def main() -> None:
         compiled_forbidden_versions = sorted(compiled & FORBIDDEN_LOCKED)
         if compiled_forbidden_versions:
             fail(f"{root} compiles forbidden legacy/vulnerable versions: {compiled_forbidden_versions}")
-        compiled_lock_only = sorted(compiled & REQUIRED_LOCK_ONLY)
-        if compiled_lock_only:
-            fail(f"{root} compiles lock-only vulnerability disposition: {compiled_lock_only}")
+        compiled_reviewed_quic = sorted(compiled & REQUIRED_REVIEWED_OPTIONAL_QUIC)
+        if compiled_reviewed_quic:
+            fail(f"{root} compiles unexpected optional QUIC stack: {compiled_reviewed_quic}")
         compiled_names = {name for name, _version in compiled}
         forbidden_names = sorted(compiled_names & FORBIDDEN_COMPILED_NAMES)
         if forbidden_names:
@@ -510,16 +513,14 @@ def main() -> None:
         "native_runtime_compiled_kaspa_tree_absent": native_runtime,
         "kaspa_upstream_rev": EXPECTED_KASPA_REV,
         "forbidden_legacy_or_vulnerable_locked": False,
-        "lock_only_vulnerability_disposition": [
-            f"{name}@{ver}" for name, ver in sorted(REQUIRED_LOCK_ONLY)
+        "reviewed_patched_optional_quic_lock_inventory": [
+            f"{name}@{ver}" for name, ver in sorted(REQUIRED_REVIEWED_OPTIONAL_QUIC)
         ],
-        "lock_only_vulnerabilities_compiled": False,
+        "optional_quic_stack_compiled": False,
         "lru_0_12_5_present": ("lru", "0.12.5") in locked,
         "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
         "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
-        "remaining_launch_blockers": [
-            f"{name}@{ver}" for name, ver in sorted(REQUIRED_LOCK_ONLY)
-        ],
+        "remaining_launch_blockers": [],
         "retired_compiler_reachable_unmaintained_packages": sorted(
             f"{name}@{ver}" for name, ver in REQUIRED_COMPILED_UNMAINTAINED_DEBT
         ),
@@ -552,8 +553,10 @@ def main() -> None:
         "hickory_proto_0_25_2_locked=false",
         "hickory_proto_0_26_3_locked=true",
         "hickory_proto_0_25_2_compiled=false",
-        "quinn_proto_0_11_16_lock_only=true",
-        "quinn_proto_0_11_16_compiled=false",
+        "quinn_proto_0_11_19_lock_only=true",
+        "quinn_udp_0_5_16_lock_only=true",
+        "quinn_proto_0_11_19_compiled=false",
+        "quinn_udp_0_5_16_compiled=false",
         "quinn_stack_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "retired_public_root_advisory_chain=atty,async-std,pin-utils,faster-hex",
