@@ -35,6 +35,37 @@ def compiled_patched() -> dict[str, set[tuple[str, str]]]:
 
 
 class PublicLockMigrationTests(unittest.TestCase):
+    def test_raw_zero_vulnerability_report_must_be_complete_and_consistent(self) -> None:
+        valid = {"vulnerabilities": {"found": False, "count": 0, "list": []}}
+        self.assertEqual(gate.require_complete_zero_vulnerability_audit(valid), [])
+        malformed = [
+            {},
+            None,
+            [],
+            {"vulnerabilities": None},
+            {"vulnerabilities": {}},
+            {"vulnerabilities": {"list": []}},
+            {"vulnerabilities": {"list": [], "count": 0}},
+            {"vulnerabilities": {"list": [], "found": False}},
+            {"vulnerabilities": {"list": None, "count": 0, "found": False}},
+            {"vulnerabilities": {"list": "[]", "count": 0, "found": False}},
+            {"vulnerabilities": {"list": [], "count": True, "found": False}},
+            {"vulnerabilities": {"list": [], "count": "0", "found": False}},
+            {"vulnerabilities": {"list": [], "count": -1, "found": False}},
+            {"vulnerabilities": {"list": [], "count": 1, "found": False}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": True}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": 0}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": "false"}},
+            {"vulnerabilities": {"list": [], "count": 1, "found": True}},
+            {"vulnerabilities": {
+                "list": [{"advisory": {"id": "RUSTSEC-TEST"}}],
+                "count": 1, "found": True,
+            }},
+        ]
+        for i, payload in enumerate(malformed):
+            with self.subTest(malformed_case=i), self.assertRaises(SystemExit):
+                gate.require_complete_zero_vulnerability_audit(payload)
+
     def test_main_lock_has_exact_patched_parents_no_old_kaspa_chain(self) -> None:
         locked = packages(ROOT / "Cargo.lock")
         self.assertTrue(gate.REQUIRED_HICKORY <= locked)
