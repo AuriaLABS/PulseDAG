@@ -1,0 +1,96 @@
+name: v3 Quinn patched Cargo.lock resolver (ONE SHOT / DEVELOPMENT BRANCH ONLY)
+
+on:
+  push:
+    branches:
+      - fix/security-quinn-lock-20261113
+    paths:
+      - .github/workflows/v3-quinn-patched-lock-branch-generator.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-checked-lock:
+    if: github.ref == 'refs/heads/fix/security-quinn-lock-20261113' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact development branch; never main
+        uses: actions/checkout@v4
+        with:
+          ref: fix/security-quinn-lock-20261113
+          persist-credentials: true
+      - name: Verify strict scope and exact triggering revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/fix/security-quinn-lock-20261113'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Install pinned Rust 1.91
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Resolve ONLY patched Quinn crates using Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p quinn-proto --precise 0.11.19
+          cargo update -p quinn-udp --precise 0.5.16
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          original = tomllib.loads(subprocess.check_output(
+              ['git', 'show', f'{os.environ["GITHUB_SHA"]}:Cargo.lock'], text=True
+          ))
+          candidate = tomllib.loads(Path('Cargo.lock').read_text(encoding='utf-8'))
+          def packages(doc):
+              return {p['name']: p for p in doc['package']}
+          old = packages(original)
+          new = packages(candidate)
+          if set(old) != set(new):
+              raise SystemExit('cargo update changed package name inventory; manual review required')
+          desired = {'quinn-proto': ('0.11.16', '0.11.19'),
+                     'quinn-udp': ('0.5.14', '0.5.16')}
+          for name, (before, after) in desired.items():
+              if old[name]['version'] != before or new[name]['version'] != after:
+                  raise SystemExit(f'{name} old/new versions not reviewed')
+              for p in (old[name], new[name]):
+                  if p.get('source') != 'registry+https://github.com/rust-lang/crates.io-index':
+                      raise SystemExit(f'{name} source not crates.io')
+                  if len(p.get('checksum', '')) != 64:
+                      raise SystemExit(f'{name} missing Cargo-generated checksum')
+          for name in sorted(set(old) - set(desired)):
+              if old[name] != new[name]:
+                  raise SystemExit(f'unreviewed lock package changed: {name}')
+          if original.get('version') != candidate.get('version'):
+              raise SystemExit('Cargo.lock format changed')
+          print(json.dumps({name: {'from': before, 'to': after}
+                            for name, (before, after) in desired.items()}, sort_keys=True))
+          PY
+      - name: Validate compiled P2P, node, miner, wallet and independent PoW
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked --release -p pulsedag-p2p -p pulsedagd -p pulsedag-miner -p pulsedag-wallet
+          cargo test --locked -p pulsedag-core --test native_v3_kaspa_free_pow_oracle_trial
+          cargo test --locked --manifest-path tools/pow-upstream-reference/Cargo.toml --test native_pow_backend_migration
+      - name: Commit only Cargo-generated lock to this temporary development branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = 'refs/heads/fix/security-quinn-lock-20261113'
+          git add Cargo.lock
+          test "$(git diff --cached --name-only)" = 'Cargo.lock'
+          test -z "$(git diff --name-only)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(security): Cargo-resolve quinn-proto 0.11.19 and quinn-udp 0.5.16"
+          git push origin HEAD:refs/heads/fix/security-quinn-lock-20261113
