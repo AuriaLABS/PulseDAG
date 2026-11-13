@@ -1,3 +1,52 @@
+# Current v3.0 dependency migration candidate — 2026-11-13 (NO-GO)
+
+This section **supersedes historical Kaspa/libp2p 0.56 and old Hickory
+lockfile disposition statements further below**. Archived sections remain for
+the audit trail only. The following candidate is not mainnet/testnet approved.
+
+- The public workspace now requests exactly **libp2p =0.57.1** with
+  `default-features=false` and precisely `tokio,gossipsub,identify,kad,macros,
+  tcp,noise,yamux,ping`. Cargo-resolved **`hickory-proto@0.26.3`** and
+  **`hickory-resolver@0.26.3`** replace vulnerable 0.25.2, whose advisory
+  IDs `RUSTSEC-2026-0118/0119/0487/0489/0490/0491` may no longer occur in
+  the public root. The DNS/mDNS features remain unselected and their crate
+  packages must not appear in exact release-root compiled artifacts.
+- The public root additionally pins **`rustix@1.1.6`**, patched for
+  `RUSTSEC-2026-0486`. The security gate requires both the exact patched
+  lock version and positive node and wallet compiler-artifact evidence.
+- The former production-workspace **dev-only** `kaspa-hashes/pow` dependencies,
+  transitive `workflow-core`, `async-std`, `pin-utils`, `faster-hex` and
+  `atty` must be **absent from the main `Cargo.lock`**. They are not claimed
+  globally removed from source or developer tools: `tools/pow-upstream-reference`
+  has its **own separately generated, committed lockfile**, pinned to upstream
+  revision `cfafeb4c093fa37a303f1b9f19c58f986b870ce3`, and independently
+  runs all original 96×5=480 Kaspa/native KHeavyHash nonce comparisons plus
+  CPU miner throughput parity on the same release runner.
+- The public lock still contains **`quinn-proto@0.11.16`** via unused
+  reqwest/libp2p optional paths. Its five known
+  `RUSTSEC-2026-0338..0342` advisories remain exact, visible raw
+  vulnerabilities, and are permitted only as individually enumerated
+  **per-run** exceptions AFTER exact clean compiler-artifact absence is proved
+  in all four release roots. No persistent `.cargo/audit.toml` ignores.
+- **Any novel RustSec advisory, new package version, missing evidence,
+  unexpected compiled DNS/QUIC packages, stale Kaspa root dependencies or
+  altered upstream oracle must fail closed.** A successful dependency check is
+  not a proof of overall security, a freeze of genesis or GD-08 monetary
+  policy, or authorization to open public testnet.
+
+The first migration feasibility job
+[43222868271](https://github.com/AuriaLABS/PulseDAG/actions/runs/43222868271)
+passed P2P/node/wallet/miner builds and 480 upstream oracle comparisons.
+The branch-specific separate-lock generation job
+[43307598949](https://github.com/AuriaLABS/PulseDAG/actions/runs/43307598949)
+successfully generated, compiled, tested and committed the two
+resolver-generated lockfiles to a **development branch**, not main.
+The release security gate and full exact-head CI still require independent
+review and completion before integration. All launch flags remain NO-GO/OFF,
+smart contracts remain INACTIVE.
+
+---
+
 # PulseDAG v3 dependency-security boundary
 
 Status: **active development gate; not final launch security approval**.
