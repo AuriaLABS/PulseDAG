@@ -71,6 +71,9 @@ FORBIDDEN_OLD_REACHABLE = {
 # but must not be compiler-reachable from PulseDAG's selected feature set.
 FORBIDDEN_COMPILED_NAMES = {
     "libp2p-dns", "libp2p-mdns", "libp2p-quic", "libp2p-upnp",
+    # Updated Hickory packages may remain locked by optional DNS/mDNS,
+    # but no release root can compile them with these features disabled.
+    "hickory-proto", "hickory-resolver",
     # None of the QUIC stack may compile through libp2p OR reqwest while
     # quinn-proto 0.11.16 has unpatched RUSTSEC-2026-0338..0342.
     "quinn", "quinn-proto", "quinn-udp",
@@ -103,7 +106,12 @@ RETIRED_PUBLIC_ROOT_NAMES = {
     "kaspa-hashes", "kaspa-pow", "async-std", "pin-utils",
     "faster-hex", "atty",
 }
-REQUIRED_HICKORY = {("hickory-proto", "0.26.3"), ("hickory-resolver", "0.26.3")}
+REQUIRED_HICKORY = {
+    ("hickory-proto", "0.26.3"),
+    ("hickory-resolver", "0.26.3"),
+    ("libp2p-dns", "0.45.0"),
+    ("libp2p-mdns", "0.49.0"),
+}
 
 AFFECTED_FASTER_HEX_SYMBOL = "hex_decode_unchecked"
 
@@ -523,8 +531,8 @@ def main() -> None:
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "retired_public_root_advisory_chain=atty,async-std,pin-utils,faster-hex",
         f"pin_utils_0_1_0_compiled_all_four_launch_roots={str(not native_runtime).lower()}",
-        "pin_utils_0_1_0_advisory=RUSTSEC-2026-0441:unmaintained",
-        "async_std_1_13_2_advisory=RUSTSEC-2025-0052:unmaintained",
+        "retired_oracle_pin_utils_advisory=RUSTSEC-2026-0441:unmaintained_external_only",
+        "retired_oracle_async_std_advisory=RUSTSEC-2025-0052:unmaintained_external_only",
         "visible_informational_advisories_public_root=none_from_archived_kaspa_chain",
         "rustix_1_1_6_patched_lock_only=false",
         "faster_hex_0306_affected_api_call_sites=0",
