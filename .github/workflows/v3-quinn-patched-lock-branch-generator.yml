@@ -51,30 +51,45 @@ jobs:
           ))
           candidate = tomllib.loads(Path('Cargo.lock').read_text(encoding='utf-8'))
           def packages(doc):
-              return {p['name']: p for p in doc['package']}
+              return {(p['name'], p['version']): p for p in doc['package']}
           old = packages(original)
           new = packages(candidate)
-          if set(old) != set(new):
-              raise SystemExit('cargo update changed package name inventory; manual review required')
+          removed = set(old) - set(new)
+          added = set(new) - set(old)
+          if removed != {('quinn-proto', '0.11.16'),
+                         ('quinn-udp', '0.5.14'),
+                         ('windows-sys', '0.59.0')}:
+              raise SystemExit(f'unreviewed removed Cargo packages: {sorted(removed)}')
+          if added != {('quinn-proto', '0.11.19'),
+                       ('quinn-udp', '0.5.16')}:
+              raise SystemExit(f'unreviewed added Cargo packages: {sorted(added)}')
+          for name, version in sorted(added):
+              p = new[(name, version)]
+              if p.get('source') != 'registry+https://github.com/rust-lang/crates.io-index':
+                  raise SystemExit(f'{name} source not crates.io')
+              if len(p.get('checksum', '')) != 64:
+                  raise SystemExit(f'{name} missing Cargo-generated checksum')
+          # Cargo removed orphan windows-sys@0.59.0; nu-ansi-term@0.50.3
+          # now resolves the existing windows-sys@0.61.2. Verify the EXACT
+          # revised edge and that its published crate checksum did not change.
+          dep_key = ('nu-ansi-term', '0.50.3')
+          old_dep = old[dep_key]
+          new_dep = new[dep_key]
+          old_without_deps = {k: v for k, v in old_dep.items() if k != 'dependencies'}
+          new_without_deps = {k: v for k, v in new_dep.items() if k != 'dependencies'}
+          if old_without_deps != new_without_deps:
+              raise SystemExit('nu-ansi-term package source/checksum drift')
+          if old_dep.get('dependencies') != ['windows-sys 0.59.0']:
+              raise SystemExit('old nu-ansi-term windows edge differs from reviewed baseline')
+          if new_dep.get('dependencies') != ['windows-sys 0.61.2']:
+              raise SystemExit('new nu-ansi-term windows edge differs from reviewed Cargo result')
+          for key in sorted(set(old) & set(new)):
+              if key != dep_key and old[key] != new[key]:
+                  raise SystemExit(f'unreviewed same-version Cargo package drift: {key}')
+          print('CARGO_REVIEWED_TRANSITIVE_DELTA windows-sys 0.59.0 removed; '
+                'nu-ansi-term 0.50.3 windows edge 0.59.0 -> 0.61.2')
           desired = {'quinn-proto': ('0.11.16', '0.11.19'),
                      'quinn-udp': ('0.5.14', '0.5.16')}
-          for name, (before, after) in desired.items():
-              if old[name]['version'] != before or new[name]['version'] != after:
-                  raise SystemExit(f'{name} old/new versions not reviewed')
-              for p in (old[name], new[name]):
-                  if p.get('source') != 'registry+https://github.com/rust-lang/crates.io-index':
-                      raise SystemExit(f'{name} source not crates.io')
-                  if len(p.get('checksum', '')) != 64:
-                      raise SystemExit(f'{name} missing Cargo-generated checksum')
-          changed_other = []
-          for name in sorted(set(old) - set(desired)):
-              if old[name] != new[name]:
-                  changed_other.append((name, old[name], new[name]))
-          for name, before, after in changed_other:
-              print('CARGO_TRANSITIVE_REVIEW_DIFF', name,
-                    json.dumps({'before': before, 'after': after}, sort_keys=True))
-          if changed_other:
-              raise SystemExit('Cargo updated additional package entries; inspect exact delta before allowing push')
           if original.get('version') != candidate.get('version'):
               raise SystemExit('Cargo.lock format changed')
           print(json.dumps({name: {'from': before, 'to': after}
