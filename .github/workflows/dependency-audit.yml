@@ -11,6 +11,9 @@ on:
       - crates/**/Cargo.toml
       - .cargo/audit.toml
       - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
@@ -24,6 +27,9 @@ on:
       - crates/**/Cargo.toml
       - .cargo/audit.toml
       - scripts/validate_v3_dependency_security.py
+      - scripts/tests/test_v3_external_pow_oracle_security.py
+      - tools/pow-upstream-reference/Cargo.toml
+      - tools/pow-upstream-reference/Cargo.lock
       - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
