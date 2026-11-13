@@ -26,8 +26,23 @@ HELPER_DIRECT_PACKAGES = {
     "ed25519-dalek": "2.2.0",
     "hex": "0.4.3",
     "serde_json": "1.0.149",
-    "wasm-bindgen": "0.2.100",
 }
+
+
+def exact_candidate_wasm_bindgen_version(candidate_packages: list[dict[str, object]]) -> str:
+    """The standalone helper may use ONLY the candidate lock's wasm-bindgen.
+
+    Reject a missing/ambiguous exact package instead of inventing a version
+    or allowing a helper dependency absent from the candidate graph.
+    """
+    versions = [version for package in candidate_packages
+                for name, version, _ in [lock_identity(package)]
+                if name == "wasm-bindgen"]
+    if len(versions) != 1:
+        raise SystemExit(
+            f"Task30 candidate lock expected exactly one wasm-bindgen; found={len(versions)}"
+        )
+    return versions[0]
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -80,7 +95,11 @@ def verify_helper_lock(candidate_lock: Path, helper_lock: Path) -> None:
             f"found={len(helper_roots)}"
         )
 
-    for name, version in HELPER_DIRECT_PACKAGES.items():
+    required = {
+        **HELPER_DIRECT_PACKAGES,
+        "wasm-bindgen": exact_candidate_wasm_bindgen_version(candidate_packages),
+    }
+    for name, version in required.items():
         matches = [
             package
             for package in helper_packages
@@ -378,7 +397,11 @@ def emit_relay_helper(root: Path, target: Path) -> None:
     if not candidate_lock.is_file():
         raise SystemExit(f"Task30 relay helper missing exact candidate lock: {candidate_lock}")
     candidate_packages = load_lock_packages(candidate_lock)
-    for name, version in HELPER_DIRECT_PACKAGES.items():
+    required = {
+        **HELPER_DIRECT_PACKAGES,
+        "wasm-bindgen": exact_candidate_wasm_bindgen_version(candidate_packages),
+    }
+    for name, version in required.items():
         matches = [
             package
             for package in candidate_packages
@@ -390,6 +413,7 @@ def emit_relay_helper(root: Path, target: Path) -> None:
             )
     target.mkdir(parents=True, exist_ok=True)
     (target / "src").mkdir(parents=True, exist_ok=True)
+    wasm_bindgen_version = exact_candidate_wasm_bindgen_version(candidate_packages)
     cargo = f'''[package]
 name = "task30-tx-helper"
 version = "0.1.0"
@@ -403,7 +427,7 @@ pulsedag-core = {{ path = "{core.as_posix()}" }}
 ed25519-dalek = "=2.2.0"
 hex = "=0.4.3"
 serde_json = "=1.0.149"
-wasm-bindgen = "=0.2.100"
+wasm-bindgen = "={wasm_bindgen_version}"
 '''
     main_rs = r'''use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{address_from_public_key, compute_txid, signing_message, Transaction};
