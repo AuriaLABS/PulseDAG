@@ -150,6 +150,30 @@ def package_index(metadata: dict[str, Any]) -> dict[str, tuple[str, str]]:
     }
 
 
+def complete_public_lock_inventory() -> set[tuple[str, str]]:
+    """Read optional/disabled package versions from Cargo.lock itself.
+
+    Cargo metadata without --all-features omits optional DNS/mDNS packages
+    even though a prior Cargo resolution retains them in Cargo.lock.
+    Compiler-artifact identification still uses the narrower metadata IDs.
+    """
+    data = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    packages = data.get("package")
+    if not isinstance(packages, list) or not packages:
+        fail("public Cargo.lock missing resolved package inventory")
+    inventory: set[tuple[str, str]] = set()
+    for entry in packages:
+        if not isinstance(entry, dict):
+            fail("public Cargo.lock contains a malformed package")
+        name, version = entry.get("name"), entry.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail("public Cargo.lock package missing exact name/version")
+        if (name, version) in inventory:
+            fail(f"duplicate Cargo.lock package entry: {name}@{version}")
+        inventory.add((name, version))
+    return inventory
+
+
 def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> str:
     manifest = tomllib.loads((ROOT / "crates" / "pulsedag-core" / "Cargo.toml").read_text(encoding="utf-8"))
     dependencies = manifest.get("dependencies", {})
@@ -409,7 +433,10 @@ def main() -> None:
     kaspa_mode = validate_kaspa_parent_stack(metadata)
     native_runtime = kaspa_mode in {"native_runtime_dev_reference", "native_runtime_external_reference"}
     by_id = package_index(metadata)
-    locked = set(by_id.values())
+    # LOCK inventory must include unselected DNS/mDNS optional dependencies.
+    # Actual compiled reachability continues to come from compiler-artifact
+    # messages mapped against Cargo metadata's exact package IDs.
+    locked = complete_public_lock_inventory()
 
     forbidden_present = sorted(FORBIDDEN_LOCKED & locked)
     if forbidden_present:
