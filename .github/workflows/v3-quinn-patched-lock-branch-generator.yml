@@ -66,9 +66,15 @@ jobs:
                       raise SystemExit(f'{name} source not crates.io')
                   if len(p.get('checksum', '')) != 64:
                       raise SystemExit(f'{name} missing Cargo-generated checksum')
+          changed_other = []
           for name in sorted(set(old) - set(desired)):
               if old[name] != new[name]:
-                  raise SystemExit(f'unreviewed lock package changed: {name}')
+                  changed_other.append((name, old[name], new[name]))
+          for name, before, after in changed_other:
+              print('CARGO_TRANSITIVE_REVIEW_DIFF', name,
+                    json.dumps({'before': before, 'after': after}, sort_keys=True))
+          if changed_other:
+              raise SystemExit('Cargo updated additional package entries; inspect exact delta before allowing push')
           if original.get('version') != candidate.get('version'):
               raise SystemExit('Cargo.lock format changed')
           print(json.dumps({name: {'from': before, 'to': after}
