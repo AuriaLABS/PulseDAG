@@ -387,8 +387,8 @@ def main() -> None:
     if not isinstance(libp2p, dict):
         fail("libp2p must remain an explicit dependency table")
     version = str(libp2p.get("version", ""))
-    if not (version == "0.56" or version.startswith("0.56.")):
-        fail(f"v3 remediation is validated against supported libp2p 0.56.x, found {version!r}")
+    if version != "=0.57.1":
+        fail(f"v3 migration requires exact reviewed libp2p =0.57.1, found {version!r}")
     if libp2p.get("default-features") is not False:
         fail("libp2p default features must remain disabled")
     features = set(libp2p.get("features", []))
@@ -399,7 +399,7 @@ def main() -> None:
 
     metadata = cargo_metadata()
     kaspa_mode = validate_kaspa_parent_stack(metadata)
-    native_runtime = kaspa_mode == "native_runtime_dev_reference"
+    native_runtime = kaspa_mode in {"native_runtime_dev_reference", "native_runtime_external_reference"}
     by_id = package_index(metadata)
     locked = set(by_id.values())
 
@@ -414,9 +414,19 @@ def main() -> None:
             f"{missing_lock_only}"
         )
 
-    missing_kaspa = sorted(REQUIRED_KASPA - locked)
-    if missing_kaspa:
-        fail(f"required reviewed Kaspa parent-stack packages missing: {missing_kaspa}")
+    if kaspa_mode != "native_runtime_external_reference":
+        fail(f"public-root migration requires independent Kaspa oracle: {kaspa_mode}")
+    retired = sorted((name, ver) for name, ver in locked
+                     if name in RETIRED_PUBLIC_ROOT_NAMES)
+    if retired:
+        fail(f"retired advisory-bearing packages remain in public root: {retired}")
+    missing_hickory = sorted(REQUIRED_HICKORY - locked)
+    if missing_hickory:
+        fail(f"patched libp2p Hickory parent packages missing: {missing_hickory}")
+    if any(name == "hickory-proto" and ver != "0.26.3" for name, ver in locked):
+        fail("Hickory 0.25.x or unreviewed version remains in public lock")
+    if ("libp2p", "0.57.1") not in locked:
+        fail("reviewed libp2p 0.57.1 parent missing from public lock")
 
     missing_patched = sorted(REQUIRED_PATCHED - locked)
     if missing_patched:
@@ -426,19 +436,8 @@ def main() -> None:
     if stale:
         fail(f"previous vulnerable reachable versions returned: {stale}")
 
-    missing_blockers = sorted(REQUIRED_VISIBLE_BLOCKERS - locked)
-    if missing_blockers:
-        fail(
-            "#803 blocker inventory drifted; review the removal before changing the gate: "
-            f"{missing_blockers}"
-        )
-
-    missing_informational = sorted(REQUIRED_VISIBLE_INFORMATIONAL - locked)
-    if missing_informational:
-        fail(
-            "informational advisory inventory drifted; review before changing the gate: "
-            f"{missing_informational}"
-        )
+    if any(name == "rustix" and ver != "1.1.6" for name, ver in locked):
+        fail("vulnerable or unreviewed rustix in public Cargo.lock")
 
     evidence_dir = ROOT / "ci-evidence" / "dependency-v3-security"
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -457,6 +456,7 @@ def main() -> None:
         if forbidden_names:
             fail(f"{root} compiles unselected optional libp2p packages: {forbidden_names}")
 
+    patched_rustix_by_root = require_patched_rustix_compiler_evidence(compiled_by_root)
     reachable_unmaintained = require_compiler_reachable_debt(compiled_by_root, native_runtime=native_runtime)
     (evidence_dir / "reachable-unmaintained-launch-debt.json").write_text(
         json.dumps(reachable_unmaintained, indent=2, sort_keys=True) + "\n",
@@ -483,16 +483,22 @@ def main() -> None:
         "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
         "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
         "remaining_launch_blockers": [
-            f"{name}@{ver}" for name, ver in
-            sorted(REQUIRED_VISIBLE_BLOCKERS | set(REQUIRED_COMPILED_UNMAINTAINED_DEBT))
+            f"{name}@{ver}" for name, ver in sorted(REQUIRED_LOCK_ONLY)
         ],
+        "retired_compiler_reachable_unmaintained_packages": sorted(
+            f"{name}@{ver}" for name, ver in REQUIRED_COMPILED_UNMAINTAINED_DEBT
+        ),
         "reachable_unmaintained_compiler_debt_by_launch_root": reachable_unmaintained,
         "reachable_unmaintained_inventory_does_not_authorize_release": True,
-        "visible_informational_advisories": [
+        "visible_informational_advisories": [],
+        "retired_public_root_informational_advisories": [
             f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_INFORMATIONAL)
         ],
         "faster_hex_0306_affected_api_call_sites": faster_hex_call_sites,
         "compiled_counts": {root: len(compiled) for root, compiled in compiled_by_root.items()},
+        "patched_rustix_compiled_by_root": patched_rustix_by_root,
+        "public_root_retired_kaspa_advisory_packages_absent": True,
+        "upstream_oracle_separate_locked_workspace": True,
         "final_v3_launch_security_ready": False,
     }
     (evidence_dir / "validation.json").write_text(
@@ -508,17 +514,19 @@ def main() -> None:
         "lru_0_12_5_present=false",
         "linkme_0_2_10_present=false",
         "intertrait_0_2_2_present=false",
-        "hickory_proto_0_25_2_lock_only=true",
+        "hickory_proto_0_25_2_locked=false",
+        "hickory_proto_0_26_3_locked=true",
         "hickory_proto_0_25_2_compiled=false",
         "quinn_proto_0_11_16_lock_only=true",
         "quinn_proto_0_11_16_compiled=false",
         "quinn_stack_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
-        "remaining_launch_blockers=atty@0.2.14,async-std@1.13.2,pin-utils@0.1.0",
+        "retired_public_root_advisory_chain=atty,async-std,pin-utils,faster-hex",
         f"pin_utils_0_1_0_compiled_all_four_launch_roots={str(not native_runtime).lower()}",
         "pin_utils_0_1_0_advisory=RUSTSEC-2026-0441:unmaintained",
         "async_std_1_13_2_advisory=RUSTSEC-2025-0052:unmaintained",
-        "visible_informational_advisories=faster-hex@0.9.0:RUSTSEC-2026-0306",
+        "visible_informational_advisories_public_root=none_from_archived_kaspa_chain",
+        "rustix_1_1_6_patched_lock_only=false",
         "faster_hex_0306_affected_api_call_sites=0",
         "final_v3_launch_security_ready=false",
         "",
