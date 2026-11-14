@@ -218,7 +218,6 @@ fn independent_rust_dag_rejects_invalid_pow_on_unselected_side_branch() {
         "invalid-PoW side ancestry may not be omitted by selected-parent choice"
     );
 }
-
 #[test]
 fn authenticated_side_branch_commitment_cannot_be_mutated_or_rehashed_in_place() {
     let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
