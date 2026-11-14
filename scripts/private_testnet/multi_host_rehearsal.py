@@ -684,7 +684,8 @@ def verify_evidence(path: Path) -> None:
                 if phase.get("name") == "partition-backlog" and phase.get("result") == "PASS"
             )
             require(
-                observed.get("required_backlog_blocks") == backlog_required
+                type(observed.get("required_backlog_blocks")) is int
+                and observed["required_backlog_blocks"] == backlog_required
                 and type(observed.get("observed_backlog_blocks")) is int
                 and observed["observed_backlog_blocks"] >= backlog_required
                 and type(observed.get("connected_peer_progress_blocks")) is int
