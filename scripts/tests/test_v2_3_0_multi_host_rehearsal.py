@@ -200,14 +200,61 @@ class RehearsalTests(unittest.TestCase):
             self.assertGreaterEqual(backlog["details"]["connected_peer_progress_blocks"], 32)
             module.verify_evidence(runner.out_dir)
 
-            # A forged low-lag GO must not be allowed to certify a 32-block backlog.
-            manifest["phases"] = [
-                {**p, "details": {**p["details"], "observed_backlog_blocks": 2}}
-                if p["name"] == "partition-backlog" else p
-                for p in manifest["phases"]
-            ]
-            (runner.out_dir / "decision.json").write_text(
-                json.dumps(manifest), encoding="utf-8"
+            # Even when a forged reporter updates SHA256SUMS, low block
+            # counts or a float pretending to be integer 32 must fail closed.
+            for key, fake in (
+                ("observed_backlog_blocks", 2),
+                ("required_backlog_blocks", 32.0),
+                ("connected_peer_progress_blocks", 2),
+            ):
+                with self.subTest(field=key, value=fake):
+                    altered = json.loads(json.dumps(manifest))
+                    forged_phase = next(
+                        p for p in altered["phases"] if p["name"] == "partition-backlog"
+                    )
+                    forged_phase["details"][key] = fake
+                    decision = runner.out_dir / "decision.json"
+                    decision.write_text(
+                        json.dumps(altered, sort_keys=True) + "\n", encoding="utf-8"
+                    )
+                    checksums = runner.out_dir / "SHA256SUMS"
+                    lines = checksums.read_text(encoding="utf-8").splitlines()
+                    new_hash = hashlib.sha256(decision.read_bytes()).hexdigest()
+                    checksums.write_text(
+                        "\n".join(
+                            f"{new_hash}  decision.json"
+                            if line.endswith("  decision.json") else line
+                            for line in lines
+                        ) + "\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(module.RehearsalError, "does not prove"):
+                        module.verify_evidence(runner.out_dir)
+
+    def test_backlog_required_field_rejects_bool_when_threshold_is_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = inventory_payload()
+            payload["thresholds"]["partition_backlog_min_blocks"] = 1
+            runner = module.RehearsalRunner(
+                module.load_inventory(self.write_inventory(root, payload)),
+                root / "evidence",
+                executor=FakeExecutor(),
+            )
+            self.assertEqual(runner.run(), 0)
+            decision = runner.out_dir / "decision.json"
+            manifest = json.loads(decision.read_text(encoding="utf-8"))
+            phase = next(p for p in manifest["phases"] if p["name"] == "partition-backlog")
+            phase["details"]["required_backlog_blocks"] = True
+            decision.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+            digest = hashlib.sha256(decision.read_bytes()).hexdigest()
+            checksums = runner.out_dir / "SHA256SUMS"
+            checksums.write_text(
+                "\n".join(
+                    f"{digest}  decision.json"
+                    if line.endswith("  decision.json") else line
+                    for line in checksums.read_text(encoding="utf-8").splitlines()
+                ) + "\n", encoding="utf-8",
             )
             with self.assertRaisesRegex(module.RehearsalError, "does not prove"):
                 module.verify_evidence(runner.out_dir)
