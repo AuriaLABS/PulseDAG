@@ -7037,6 +7037,25 @@ async fn run_libp2p_real_runtime(
                         (wire, topic_name, "get-block", message_id)
                     }
                     OutboundMessage::GetBlockFrom { peer_id, hash, request_id } => {
+                        // Only a tracked, authenticated, directly connected
+                        // recovery neighbour is pinned. The normal Gossipsub
+                        // topic mesh may otherwise omit it after a partition,
+                        // even when the TCP connection has recovered.
+                        let directly_connected = inner
+                            .lock()
+                            .map(|guard| {
+                                guard.active_connections.get(&peer_id).copied().unwrap_or(0) > 0
+                            })
+                            .unwrap_or(false);
+                        if directly_connected {
+                            if let Ok(target_peer) = peer_id.parse::<PeerId>() {
+                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&target_peer);
+                                note_swarm_event(
+                                    &inner,
+                                    format!("getblock-explicit-direct-neighbor:{peer_id}"),
+                                );
+                            }
+                        }
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block:{request_id}");
                         let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash, request_id: Some(request_id), requesting_peer_id: None, requested_peer_id: Some(peer_id), request_kind: Some("generic".into()) });
@@ -7123,6 +7142,9 @@ async fn run_libp2p_real_runtime(
                             direction,
                         );
                         if should_mark_disconnected {
+                            // Never retain a pinned recovery peer after the
+                            // final authenticated transport session closes.
+                            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
