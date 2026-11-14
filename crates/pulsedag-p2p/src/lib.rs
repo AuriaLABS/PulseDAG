@@ -1250,6 +1250,9 @@ struct InnerState {
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
     getblock_requests_sent_total: u64,
+    // An exact-peer/hash request may be retried more than once per second.
+    // Use a monotonic sequence to prevent request-id and gossip dedup collisions.
+    getblock_request_sequence: u64,
     getblock_responses_correlated_total: u64,
     generic_getblock_response_total: u64,
     wrong_peer_response_total: u64,
@@ -1276,6 +1279,23 @@ struct InnerState {
     remote_tip_inventory_rejected_total: HashMap<String, u64>,
     remote_tip_inventory_replaced_total: u64,
     remote_tip_inventory_pruned_total: HashMap<String, u64>,
+}
+
+/// Allocate an unambiguous correlation id even for same-second GetBlock retries.
+/// Serialize allocation under InnerState's mutex, never overwrite a pending
+/// correlation or emit an apparently successful request on sequence overflow.
+fn next_peer_getblock_request_id(
+    inner: &mut InnerState,
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+) -> Result<String, PulseError> {
+    let sequence = inner
+        .getblock_request_sequence
+        .checked_add(1)
+        .ok_or_else(|| PulseError::Internal("GetBlock request id sequence exhausted".into()))?;
+    inner.getblock_request_sequence = sequence;
+    Ok(format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}"))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1646,7 +1666,6 @@ impl P2pHandle for MemoryP2pHandle {
         hash: &PulseHash,
     ) -> Result<PeerAddressedBlockRequest, PulseError> {
         let sent_at = now_unix();
-        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
         let mut inner = self
             .inner
             .lock()
@@ -1661,6 +1680,7 @@ impl P2pHandle for MemoryP2pHandle {
                 "peer {peer_id} is not a direct request-capable session"
             )));
         }
+        let request_id = next_peer_getblock_request_id(&mut inner, peer_id, hash, sent_at)?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.blocks_requested = inner.blocks_requested.saturating_add(1);
@@ -7706,7 +7726,7 @@ impl P2pHandle for Libp2pHandle {
         hash: &PulseHash,
     ) -> Result<PeerAddressedBlockRequest, PulseError> {
         let sent_at = now_unix();
-        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
+        let request_id;
         {
             let mut inner = self
                 .inner
@@ -7720,6 +7740,7 @@ impl P2pHandle for Libp2pHandle {
                     "peer {peer_id} is not a direct request-capable session"
                 )));
             }
+            request_id = next_peer_getblock_request_id(&mut inner, peer_id, hash, sent_at)?;
             inner.getblock_requests_sent_total =
                 inner.getblock_requests_sent_total.saturating_add(1);
             inner.peer_addressed_getblock_sent_total =
@@ -8214,6 +8235,69 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
+
+    #[test]
+    fn same_second_getblock_retries_do_not_overwrite_peer_hash_correlation() {
+        let mut state = InnerState::default();
+        let hash = "same-hash".to_string();
+        let first = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
+        let retry = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
+        let other_peer = next_peer_getblock_request_id(&mut state, "peer-b", &hash, 42).unwrap();
+        assert_ne!(
+            first, retry,
+            "same-second retries must have distinct gossip IDs"
+        );
+        assert_ne!(retry, other_peer);
+        assert!(first.starts_with("getblock:peer-a:same-hash:42:"));
+        for (id, peer) in [
+            (first.clone(), "peer-a"),
+            (retry.clone(), "peer-a"),
+            (other_peer.clone(), "peer-b"),
+        ] {
+            state.outstanding_getblock_requests.insert(
+                id.clone(),
+                OutstandingGetBlockRequest {
+                    request_id: id,
+                    target_peer_id: peer.to_string(),
+                    block_hash: hash.clone(),
+                    completed: false,
+                },
+            );
+        }
+        assert_eq!(state.outstanding_getblock_requests.len(), 3);
+        assert_eq!(state.getblock_request_sequence, 3);
+    }
+
+    #[test]
+    fn getblock_correlation_sequence_overflow_fails_closed() {
+        let mut state = InnerState {
+            getblock_request_sequence: u64::MAX,
+            ..InnerState::default()
+        };
+        let result = next_peer_getblock_request_id(&mut state, "peer-a", &"h".into(), 42);
+        assert!(result.is_err());
+        assert_eq!(state.getblock_request_sequence, u64::MAX);
+        assert!(state.outstanding_getblock_requests.is_empty());
+    }
+
+    #[test]
+    fn memory_getblock_retries_are_distinct_even_without_clock_advance() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new(
+            "getblock-correlation-regression".into(),
+            vec!["peer-a".into()],
+        );
+        let first = handle
+            .request_block_from("peer-a", &"same-hash".into())
+            .unwrap();
+        let second = handle
+            .request_block_from("peer-a", &"same-hash".into())
+            .unwrap();
+        assert_ne!(first.request_id, second.request_id);
+        assert_eq!(first.block_hash, second.block_hash);
+        let state = handle.inner.lock().unwrap();
+        assert_eq!(state.outstanding_getblock_requests.len(), 2);
+        assert_eq!(state.peer_addressed_getblock_sent_total, 2);
+    }
 
     fn peers_for_bucket(bucket: usize, count: usize) -> Vec<String> {
         let mut peers = Vec::new();
