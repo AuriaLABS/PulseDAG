@@ -8243,7 +8243,10 @@ mod tests {
         let first = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
         let retry = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
         let other_peer = next_peer_getblock_request_id(&mut state, "peer-b", &hash, 42).unwrap();
-        assert_ne!(first, retry, "same-second retries must have distinct gossip IDs");
+        assert_ne!(
+            first, retry,
+            "same-second retries must have distinct gossip IDs"
+        );
         assert_ne!(retry, other_peer);
         assert!(first.starts_with("getblock:peer-a:same-hash:42:"));
         for (id, peer) in [
@@ -8283,8 +8286,12 @@ mod tests {
             "getblock-correlation-regression".into(),
             vec!["peer-a".into()],
         );
-        let first = handle.request_block_from("peer-a", &"same-hash".into()).unwrap();
-        let second = handle.request_block_from("peer-a", &"same-hash".into()).unwrap();
+        let first = handle
+            .request_block_from("peer-a", &"same-hash".into())
+            .unwrap();
+        let second = handle
+            .request_block_from("peer-a", &"same-hash".into())
+            .unwrap();
         assert_ne!(first.request_id, second.request_id);
         assert_eq!(first.block_hash, second.block_hash);
         let state = handle.inner.lock().unwrap();
