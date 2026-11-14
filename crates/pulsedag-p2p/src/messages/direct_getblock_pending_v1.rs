@@ -364,7 +364,10 @@ mod tests {
             Err(DirectGetBlockPendingError::Expired)
         ));
         assert!(book.is_empty());
-        book.begin(a, "peerB", expired_at).unwrap();
+        // Old request IDs remain invalid even after a disconnect or TTL.
+        // Allocate a fresh sequence for the separate expiry-cleanup assertion.
+        book.begin(request(3, "peerB"), "peerB", expired_at)
+            .unwrap();
         assert_eq!(book.expire(expired_at + DIRECT_GETBLOCK_REQUEST_TTL), 1);
         assert!(book.is_empty());
     }
