@@ -201,9 +201,9 @@ mod tests {
         DirectGetBlockRequestV1 {
             version: DIRECT_GETBLOCK_PROTOCOL_V1,
             chain_id: "pulsedag-testnet-v3".into(),
-            request_id: format!("getblock:peer-a:{}:42:1", "a".repeat(64)),
-            requesting_peer_id: "peer-a".into(),
-            requested_peer_id: "peer-b".into(),
+            request_id: format!("getblock:peerA:{}:42:1", "a".repeat(64)),
+            requesting_peer_id: "peerA".into(),
+            requested_peer_id: "peerB".into(),
             block_hash: "a".repeat(64),
         }
     }
@@ -213,7 +213,7 @@ mod tests {
             version: DIRECT_GETBLOCK_PROTOCOL_V1,
             chain_id: "pulsedag-testnet-v3".into(),
             request_id: request().request_id,
-            responding_peer_id: "peer-b".into(),
+            responding_peer_id: "peerB".into(),
             block_hash: "a".repeat(64),
             block: None,
         }
@@ -225,17 +225,17 @@ mod tests {
         let raw = encode_direct_getblock_request(
             &req,
             "pulsedag-testnet-v3",
-            "peer-a",
-            "peer-b",
+            "peerA",
+            "peerB",
         )
         .unwrap();
         assert_eq!(
-            decode_direct_getblock_request(&raw, "pulsedag-testnet-v3", "peer-a", "peer-b"),
+            decode_direct_getblock_request(&raw, "pulsedag-testnet-v3", "peerA", "peerB"),
             Ok(req.clone())
         );
         let reply = response();
-        let reply_raw = encode_direct_getblock_response(&reply, &req, "peer-b").unwrap();
-        let decoded = decode_direct_getblock_response(&reply_raw, &req, "peer-b").unwrap();
+        let reply_raw = encode_direct_getblock_response(&reply, &req, "peerB").unwrap();
+        let decoded = decode_direct_getblock_response(&reply_raw, &req, "peerB").unwrap();
         assert!(decoded.block.is_none());
         assert_eq!(decoded.request_id, req.request_id);
     }
@@ -244,9 +244,9 @@ mod tests {
     fn rejects_foreign_and_swapped_authenticated_peers_and_chain() {
         let req = request();
         for (chain, remote, local) in [
-            ("pulsedag-mainnet-v3", "peer-a", "peer-b"),
-            ("pulsedag-testnet-v3", "peer-evil", "peer-b"),
-            ("pulsedag-testnet-v3", "peer-a", "peer-evil"),
+            ("pulsedag-mainnet-v3", "peerA", "peerB"),
+            ("pulsedag-testnet-v3", "peerEvil", "peerB"),
+            ("pulsedag-testnet-v3", "peerA", "peerEvil"),
         ] {
             assert!(
                 validate_direct_getblock_request(&req, chain, remote, local).is_err()
@@ -257,8 +257,8 @@ mod tests {
         assert!(validate_direct_getblock_request(
             &invalid,
             "pulsedag-testnet-v3",
-            "peer-a",
-            "peer-b"
+            "peerA",
+            "peerB"
         )
         .is_err());
     }
@@ -267,17 +267,17 @@ mod tests {
     fn response_must_match_exact_authenticated_request() {
         let req = request();
         let good = response();
-        assert!(validate_direct_getblock_response(&good, &req, "peer-b").is_ok());
+        assert!(validate_direct_getblock_response(&good, &req, "peerB").is_ok());
         let mut wrong = response();
         wrong.request_id.push('x');
-        assert!(validate_direct_getblock_response(&wrong, &req, "peer-b").is_err());
+        assert!(validate_direct_getblock_response(&wrong, &req, "peerB").is_err());
         let mut wrong = response();
         wrong.block_hash = "b".repeat(64);
-        assert!(validate_direct_getblock_response(&wrong, &req, "peer-b").is_err());
+        assert!(validate_direct_getblock_response(&wrong, &req, "peerB").is_err());
         let mut wrong = response();
-        wrong.responding_peer_id = "peer-evil".into();
-        assert!(validate_direct_getblock_response(&wrong, &req, "peer-b").is_err());
-        assert!(validate_direct_getblock_response(&good, &req, "peer-evil").is_err());
+        wrong.responding_peer_id = "peerEvil".into();
+        assert!(validate_direct_getblock_response(&wrong, &req, "peerB").is_err());
+        assert!(validate_direct_getblock_response(&good, &req, "peerEvil").is_err());
     }
 
     #[test]
@@ -287,16 +287,16 @@ mod tests {
         assert!(decode_direct_getblock_request(
             &raw[..raw.len() - 1],
             "pulsedag-testnet-v3",
-            "peer-a",
-            "peer-b"
+            "peerA",
+            "peerB"
         )
         .is_err());
         assert_eq!(
             decode_direct_getblock_request(
                 &vec![b' '; DIRECT_GETBLOCK_REQUEST_MAX_BYTES + 1],
                 "pulsedag-testnet-v3",
-                "peer-a",
-                "peer-b"
+                "peerA",
+                "peerB"
             ),
             Err(DirectGetBlockWireError::TooLarge)
         );
@@ -305,13 +305,13 @@ mod tests {
         assert!(decode_direct_getblock_request(
             &serde_json::to_vec(&extra).unwrap(),
             "pulsedag-testnet-v3",
-            "peer-a",
-            "peer-b"
+            "peerA",
+            "peerB"
         )
         .is_err());
         let reply = vec![b' '; DIRECT_GETBLOCK_RESPONSE_MAX_BYTES + 1];
         assert!(matches!(
-            decode_direct_getblock_response(&reply, &req, "peer-b"),
+            decode_direct_getblock_response(&reply, &req, "peerB"),
             Err(DirectGetBlockWireError::TooLarge)
         ));
     }
