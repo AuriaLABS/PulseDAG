@@ -25,6 +25,7 @@ on:
       - crates/pulsedag-p2p/**
       - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
+      - scripts/tests/test_v2_3_0_multi_host_rehearsal.py
       # Main miner CLI can change exhaustion classification or its evidence.
       # Include it so every miner telemetry patch gets full 5N/64-block checks.
       - apps/pulsedag-miner/src/main.rs
@@ -53,6 +54,7 @@ on:
       - crates/pulsedag-p2p/**
       - crates/pulsedag-rpc/src/handlers/status.rs
       - scripts/private_testnet/**
+      - scripts/tests/test_v2_3_0_multi_host_rehearsal.py
       # Main miner CLI can change exhaustion classification or its evidence.
       # Include it so every miner telemetry patch gets full 5N/64-block checks.
       - apps/pulsedag-miner/src/main.rs
@@ -101,6 +103,8 @@ jobs:
             scripts/lib/patch_task30_v24_runtime_compat.py \
             scripts/lib/test_task30_candidate_lock_wasm.py
           python3 -m unittest discover -v -s scripts/lib -p 'test_task30_candidate_lock_wasm.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py
+          bash -n scripts/private_testnet/netns_rehearsal.sh
           PULSEDAG_REHEARSAL_VERSION=v3.0.0 \
           PULSEDAG_REHEARSAL_VERSION_SLUG=v3_0_0 \
           OUT_DIR="$out/version-preflight" \
@@ -245,6 +249,9 @@ jobs:
       - name: Run isolated five-node partition and restart rehearsal
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
+          # Strong default: the still-mining peers MUST build 32 real blocks
+          # during isolation before node-4 is permitted to rejoin.
+          PULSEDAG_TASK30_PARTITION_BACKLOG_MIN_BLOCKS: "32"
         run: |
           bash scripts/private_testnet/netns_rehearsal.sh \
             --candidate-sha "$CANDIDATE_SHA" \
@@ -255,7 +262,19 @@ jobs:
         if: success()
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
-        run: python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
+        run: |
+          set -euo pipefail
+          python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
+          jq -e '
+            .partition_backlog_min_blocks == 32 and
+            ([.phases[] | select(
+              .name == "partition-backlog" and .result == "PASS" and
+              .details.required_backlog_blocks == 32 and
+              .details.observed_backlog_blocks >= 32 and
+              .details.connected_peer_progress_blocks >= 32
+            )] | length) == 1 and
+            .public_testnet_ready == false
+          ' "$EVIDENCE_ROOT/controller/decision.json" >/dev/null
 
       - name: Upload partition and restart evidence
         if: always()

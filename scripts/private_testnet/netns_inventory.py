@@ -15,7 +15,13 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--fault-hook", type=Path, required=True)
+    parser.add_argument(
+        "--partition-backlog-min-blocks", type=int, default=0,
+        help="Require real block backlog while the fault target is isolated (0 disables)",
+    )
     args = parser.parse_args()
+    if not 0 <= args.partition_backlog_min_blocks <= 128:
+        parser.error("--partition-backlog-min-blocks must be from 0 to 128")
     if len(args.candidate_sha) != 40 or any(char not in "0123456789abcdef" for char in args.candidate_sha):
         parser.error("--candidate-sha must be 40 lowercase hexadecimal characters")
     for value in (args.output, args.workspace, args.state_root, args.fault_hook):
@@ -56,6 +62,7 @@ def main() -> int:
         "thresholds": {
             "max_height_spread": 2,
             "min_progress_blocks": 2,
+            "partition_backlog_min_blocks": args.partition_backlog_min_blocks,
             "poll_interval_seconds": 2,
             "phase_timeout_seconds": 300,
         },

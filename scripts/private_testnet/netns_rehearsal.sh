@@ -168,12 +168,19 @@ for index in 1 2 3 4; do
   install_node_release "$index"
 done
 
+partition_backlog_args=()
+if [[ -n "${PULSEDAG_TASK30_PARTITION_BACKLOG_MIN_BLOCKS:-}" ]]; then
+  partition_backlog_args+=(
+    --partition-backlog-min-blocks "$PULSEDAG_TASK30_PARTITION_BACKLOG_MIN_BLOCKS"
+  )
+fi
 python3 "$INVENTORY_WRITER" \
   --output "$INVENTORY" \
   --candidate-sha "$CANDIDATE_SHA" \
   --workspace "$WORKSPACE" \
   --state-root "$STATE_ROOT" \
-  --fault-hook "$FAULT_HOOK"
+  --fault-hook "$FAULT_HOOK" \
+  "${partition_backlog_args[@]}"
 python3 "$CONTROLLER" validate-inventory --inventory "$INVENTORY"
 
 external_miner_loop &
