@@ -35,6 +35,37 @@ def compiled_patched() -> dict[str, set[tuple[str, str]]]:
 
 
 class PublicLockMigrationTests(unittest.TestCase):
+    def test_raw_zero_vulnerability_report_must_be_complete_and_consistent(self) -> None:
+        valid = {"vulnerabilities": {"found": False, "count": 0, "list": []}}
+        self.assertEqual(gate.require_complete_zero_vulnerability_audit(valid), [])
+        malformed = [
+            {},
+            None,
+            [],
+            {"vulnerabilities": None},
+            {"vulnerabilities": {}},
+            {"vulnerabilities": {"list": []}},
+            {"vulnerabilities": {"list": [], "count": 0}},
+            {"vulnerabilities": {"list": [], "found": False}},
+            {"vulnerabilities": {"list": None, "count": 0, "found": False}},
+            {"vulnerabilities": {"list": "[]", "count": 0, "found": False}},
+            {"vulnerabilities": {"list": [], "count": True, "found": False}},
+            {"vulnerabilities": {"list": [], "count": "0", "found": False}},
+            {"vulnerabilities": {"list": [], "count": -1, "found": False}},
+            {"vulnerabilities": {"list": [], "count": 1, "found": False}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": True}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": 0}},
+            {"vulnerabilities": {"list": [], "count": 0, "found": "false"}},
+            {"vulnerabilities": {"list": [], "count": 1, "found": True}},
+            {"vulnerabilities": {
+                "list": [{"advisory": {"id": "RUSTSEC-TEST"}}],
+                "count": 1, "found": True,
+            }},
+        ]
+        for i, payload in enumerate(malformed):
+            with self.subTest(malformed_case=i), self.assertRaises(SystemExit):
+                gate.require_complete_zero_vulnerability_audit(payload)
+
     def test_main_lock_has_exact_patched_parents_no_old_kaspa_chain(self) -> None:
         locked = packages(ROOT / "Cargo.lock")
         self.assertTrue(gate.REQUIRED_HICKORY <= locked)
@@ -47,7 +78,10 @@ class PublicLockMigrationTests(unittest.TestCase):
         self.assertTrue(gate.FORBIDDEN_LOCKED.isdisjoint(locked))
         self.assertNotIn(("rustix", "1.1.4"), locked)
         self.assertNotIn(("hickory-proto", "0.25.2"), locked)
-        self.assertIn(("quinn-proto", "0.11.16"), locked)
+        self.assertIn(("quinn-proto", "0.11.19"), locked)
+        self.assertIn(("quinn-udp", "0.5.16"), locked)
+        self.assertNotIn(("quinn-proto", "0.11.16"), locked)
+        self.assertNotIn(("quinn-udp", "0.5.14"), locked)
 
     def test_unselected_optional_dns_and_mdns_remain_visible_in_full_lock(self) -> None:
         # The default cargo metadata package list omits unselected DNS/mDNS,
@@ -57,7 +91,8 @@ class PublicLockMigrationTests(unittest.TestCase):
         self.assertIn(("libp2p-mdns", "0.49.0"), inventory)
         self.assertIn(("hickory-resolver", "0.26.3"), inventory)
         self.assertIn(("hickory-proto", "0.26.3"), inventory)
-        self.assertIn(("quinn-proto", "0.11.16"), inventory)
+        self.assertIn(("quinn-proto", "0.11.19"), inventory)
+        self.assertIn(("quinn-udp", "0.5.16"), inventory)
 
     def test_empty_or_duplicate_public_lock_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

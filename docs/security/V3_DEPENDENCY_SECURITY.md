@@ -1,3 +1,39 @@
+# 2026-11-13 Quinn RustSec post-merge drift — PATCH CANDIDATE, NOT GO
+
+**New evidence supersedes all older Quinn lock-only advisory allowances below.**
+After merging security #1458, the exact `main@48c5832262b701fb4570676526011f439c18611e`
+RustSec run [43440084861](https://github.com/AuriaLABS/PulseDAG/actions/runs/43440084861)
+**failed closed** on eight raw vulnerability advisories: the five previously
+enumerated `RUSTSEC-2026-0338..0342` on `quinn-proto@0.11.16`, plus new
+`RUSTSEC-2026-0523` and `RUSTSEC-2026-0524` on the same crate, and
+`RUSTSEC-2026-0538` on `quinn-udp@0.5.14`. Two informational unmaintained
+warnings (`paste@1.0.15`, `bincode@1.3.3`), zero yanked. The prior
+raw inventory proof rejected the unexpected advisories as intended.
+
+**Proposed actual source remediation (NOT a RustSec exception):** update the
+public **Cargo-generated** lock to `quinn-proto@0.11.19` and
+`quinn-udp@0.5.16`. The exact Cargo resolver removes orphaned
+`windows-sys@0.59.0` and rewires unchanged `nu-ansi-term@0.50.3`
+to existing `windows-sys@0.61.2`, with the same package source and
+checksum. Those exact changes must be source-reviewed and their Windows
+compilation tested; unknown transitive drift must fail.
+
+The revised CI insists on **ZERO raw RustSec vulnerabilities**, no persistent
+`.cargo/audit.toml` ignores and no CLI `--ignore` bypass. It also checks
+that every optional QUIC/Hickory transport remains **uncompiled** from all
+four launch roots (P2P, node, miner, wallet), even though patched packages
+remain present in `Cargo.lock`. A real new advisory, source mismatch,
+optional feature activation, absent Windows validation, or nonmatching
+generated lock must FAIL. Historical 5-Quinn-advisory per-run exceptions
+below are retired only after the **exact patched candidate** satisfies these
+checks, not retroactively.
+
+**Public testnet NO-GO / mainnet NO-GO / monetary mining OFF /
+contracts INACTIVE.** Complete exact-head CI, review and post-merge CI
+before considering this security debt closed; this is not release approval.
+
+---
+
 # Current v3.0 dependency migration candidate — 2026-11-13 (NO-GO)
 
 This section **supersedes historical Kaspa/libp2p 0.56 and old Hickory
