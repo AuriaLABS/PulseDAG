@@ -751,4 +751,97 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn mixed_input_conflict_preserves_unspent_inputs_and_rejects_forgery() {
+        let (mut opening, key, first_source) = initial();
+        let second_source = OutPoint {
+            txid: "independent-funding-test-only".into(),
+            index: 0,
+        };
+        let address = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        opening.utxos.insert(
+            second_source.clone(),
+            Utxo {
+                outpoint: second_source.clone(),
+                address: address.clone(),
+                amount: 7,
+                coinbase: false,
+                height: 1,
+            },
+        );
+        opening
+            .address_index
+            .entry(address)
+            .or_default()
+            .push(second_source.clone());
+        opening.validate_deterministic_indexes().unwrap();
+
+        let winner = spend(&key, &first_source, 9, 1, 41);
+        // A valid two-input transfer loses because its first input was just
+        // spent by winner. Its *other* still-unspent input MUST remain intact,
+        // and the loser must not pay fees or create spendable outputs.
+        let mut loser = Transaction {
+            txid: String::new(),
+            version: TRANSACTION_VERSION_V2,
+            inputs: vec![
+                TxInput {
+                    previous_output: first_source.clone(),
+                    public_key: hex::encode(key.verifying_key().to_bytes()),
+                    signature: String::new(),
+                },
+                TxInput {
+                    previous_output: second_source.clone(),
+                    public_key: hex::encode(key.verifying_key().to_bytes()),
+                    signature: String::new(),
+                },
+            ],
+            outputs: vec![TxOutput {
+                address: "pulsedag-trial-recipient".to_string(),
+                amount: 14,
+            }],
+            fee: 3,
+            nonce: 42,
+        };
+        let message = signing_message_v2(&loser, CHAIN).unwrap();
+        for input in &mut loser.inputs {
+            input.signature = hex::encode(key.sign(&message).to_bytes());
+        }
+        loser.txid = compute_txid_v2(&loser, CHAIN).unwrap();
+        let independent = spend(&key, &second_source, 6, 1, 43);
+
+        let (genesis, tip, bodies) =
+            fixture(vec![winner.clone(), loser.clone(), independent.clone()]);
+        let observed = inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
+        )
+        .unwrap();
+        assert_eq!(
+            observed.applied_txids,
+            vec![winner.txid.clone(), independent.txid.clone()]
+        );
+        assert_eq!(observed.skipped_conflict_txids, vec![loser.txid.clone()]);
+        // In particular, do not charge the rejected multi-input fee of 3.
+        assert_eq!(observed.eligible_fees_by_block, vec![(tip, 2)]);
+
+        let (genesis, tip, bodies) = fixture(vec![winner.clone(), independent.clone()]);
+        let without_loser = inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
+        )
+        .unwrap();
+        assert_eq!(
+            observed.resulting_state_root,
+            without_loser.resulting_state_root
+        );
+
+        // A previously consumed input is not an excuse to skip checking the
+        // *other* signature: even this losing transfer must be authentic.
+        loser.inputs[1].signature = "00".repeat(64);
+        loser.txid = compute_txid_v2(&loser, CHAIN).unwrap();
+        let (genesis, tip, bodies) = fixture(vec![winner, loser, independent]);
+        assert!(inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &tip, &bodies, 0, &opening,
+        )
+        .is_err());
+    }
 }
