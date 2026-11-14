@@ -182,6 +182,20 @@ pub fn decode_direct_getblock_response(
     }
     let response: DirectGetBlockResponseV1 =
         serde_json::from_slice(raw).map_err(|_| DirectGetBlockWireError::InvalidJson)?;
+    // Core Block/Header/Transaction types intentionally retain legacy tolerant
+    // serde deserialization. Do not silently discard unknown nested wire keys
+    // before the separately authenticated, exact-hash consensus validation.
+    // This structural roundtrip is intentionally strict at every nested array
+    // and object depth and covers fields in future core type extensions.
+    let supplied: serde_json::Value =
+        serde_json::from_slice(raw).map_err(|_| DirectGetBlockWireError::InvalidJson)?;
+    let canonical =
+        serde_json::to_value(&response).map_err(|_| DirectGetBlockWireError::InvalidJson)?;
+    if supplied != canonical {
+        return Err(DirectGetBlockWireError::Invalid(
+            "unknown or noncanonical nested block response fields",
+        ));
+    }
     validate_direct_getblock_response(&response, request, authenticated_remote_peer_id)?;
     Ok(response)
 }
@@ -277,6 +291,71 @@ mod tests {
         wrong.responding_peer_id = "peerEvil".into();
         assert!(validate_direct_getblock_response(&wrong, &req, "peerB").is_err());
         assert!(validate_direct_getblock_response(&good, &req, "peerEvil").is_err());
+    }
+
+    #[test]
+    fn reject_unknown_fields_inside_nonnull_block_header_and_signed_transaction() {
+        use pulsedag_core::types::{BlockHeader, OutPoint, Transaction, TxInput, TxOutput};
+
+        let req = request();
+        let mut reply = response();
+        reply.block = Some(Block {
+            hash: req.block_hash.clone(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 123,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "c".repeat(64),
+                state_root: "d".repeat(64),
+                blue_score: 0,
+                height: 1,
+            },
+            transactions: vec![Transaction {
+                txid: "e".repeat(64),
+                version: 1,
+                inputs: vec![TxInput {
+                    previous_output: OutPoint {
+                        txid: "f".repeat(64),
+                        index: 0,
+                    },
+                    public_key: "11".repeat(32),
+                    signature: "22".repeat(64),
+                }],
+                outputs: vec![TxOutput {
+                    address: "test-only".into(),
+                    amount: 10,
+                }],
+                fee: 1,
+                nonce: 1,
+            }],
+        });
+        let valid = encode_direct_getblock_response(&reply, &req, "peerB").unwrap();
+        assert!(decode_direct_getblock_response(&valid, &req, "peerB").is_ok());
+        let original: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+        for pointer in [
+            "/block/unapproved_activation",
+            "/block/header/unapproved_activation",
+            "/block/transactions/0/unapproved_activation",
+            "/block/transactions/0/inputs/0/unapproved_activation",
+            "/block/transactions/0/inputs/0/previous_output/unapproved_activation",
+            "/block/transactions/0/outputs/0/unapproved_activation",
+        ] {
+            let mut forged = original.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            forged.pointer_mut(parent).unwrap()[key] = serde_json::json!(true);
+            let tampered = serde_json::to_vec(&forged).unwrap();
+            assert!(
+                matches!(
+                    decode_direct_getblock_response(&tampered, &req, "peerB"),
+                    Err(DirectGetBlockWireError::Invalid(
+                        "unknown or noncanonical nested block response fields"
+                    ))
+                ),
+                "unexpected accepted nested field: {pointer}"
+            );
+        }
     }
 
     #[test]
