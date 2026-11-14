@@ -59,6 +59,7 @@ class FakeExecutor:
     def __init__(self) -> None:
         self.status_calls = 0
         self.isolated = False
+        self.isolated_height: int | None = None
 
     def peer_count(self, node: module.Node) -> int:
         return 0 if self.isolated and node.name == "node-4" else 1
@@ -66,9 +67,11 @@ class FakeExecutor:
     def __call__(self, node: module.Node, argv: Sequence[str], _timeout: float) -> str:
         if tuple(argv[:2]) == ("/usr/local/sbin/fault-hook", "isolate"):
             self.isolated = True
+            self.isolated_height = 100 + (self.status_calls // module.EXPECTED_NODE_COUNT) * 2
             return "isolated\n"
         if tuple(argv[:2]) == ("/usr/local/sbin/fault-hook", "restore"):
             self.isolated = False
+            self.isolated_height = None
             return "restored\n"
         if len(argv) >= 2 and argv[0] == "python3" and argv[1] == "-c":
             url = argv[-2]
@@ -89,7 +92,11 @@ class FakeExecutor:
                 self.status_calls += 1
                 data = {
                     "chain_id": module.EXPECTED_CHAIN_ID,
-                    "best_height": 100 + (round_index * 2),
+                    "best_height": (
+                        self.isolated_height
+                        if isolated_target and self.isolated_height is not None
+                        else 100 + (round_index * 2)
+                    ),
                     "p2p_mode": "libp2p-real",
                     "connected_peers_are_real_network": True,
                     "rpc_response_degraded": False,
@@ -173,6 +180,50 @@ class RehearsalTests(unittest.TestCase):
             self.assertFalse(manifest["public_testnet_ready"])
             self.assertFalse(manifest["thirty_day_public_testnet_clock_started"])
             module.verify_evidence(runner.out_dir)
+
+    def test_partition_backlog_is_observed_from_real_rpc_heights_not_just_rejoin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = inventory_payload()
+            payload["thresholds"]["partition_backlog_min_blocks"] = 32
+            runner = module.RehearsalRunner(
+                module.load_inventory(self.write_inventory(root, payload)),
+                root / "evidence",
+                executor=FakeExecutor(),
+            )
+            self.assertEqual(runner.run(), 0)
+            manifest = json.loads((runner.out_dir / "decision.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["partition_backlog_min_blocks"], 32)
+            backlog = next(p for p in manifest["phases"] if p["name"] == "partition-backlog")
+            self.assertEqual(backlog["result"], "PASS")
+            self.assertGreaterEqual(backlog["details"]["observed_backlog_blocks"], 32)
+            self.assertGreaterEqual(backlog["details"]["connected_peer_progress_blocks"], 32)
+            module.verify_evidence(runner.out_dir)
+
+            # A forged low-lag GO must not be allowed to certify a 32-block backlog.
+            manifest["phases"] = [
+                {**p, "details": {**p["details"], "observed_backlog_blocks": 2}}
+                if p["name"] == "partition-backlog" else p
+                for p in manifest["phases"]
+            ]
+            (runner.out_dir / "decision.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(module.RehearsalError, "does not prove"):
+                module.verify_evidence(runner.out_dir)
+
+    def test_partition_backlog_threshold_rejects_invalid_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for invalid in (-1, 129, True, "32"):
+                payload = inventory_payload()
+                payload["thresholds"]["partition_backlog_min_blocks"] = invalid
+                with self.subTest(invalid=invalid):
+                    path = self.write_inventory(root, payload)
+                    with self.assertRaisesRegex(
+                        module.RehearsalError, "partition_backlog_min_blocks"
+                    ):
+                        module.load_inventory(path)
 
     def test_failed_node_checks_prevent_convergence(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
