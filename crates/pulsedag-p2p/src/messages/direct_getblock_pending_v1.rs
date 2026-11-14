@@ -211,10 +211,10 @@ mod tests {
         let reply = book.complete(response(&req), "peerB", now).unwrap();
         assert!(reply.block.is_none());
         assert!(book.is_empty());
-        assert_eq!(
+        assert!(matches!(
             book.complete(response(&req), "peerB", now),
             Err(DirectGetBlockPendingError::Unsolicited)
-        );
+        ));
     }
 
     #[test]
@@ -263,10 +263,10 @@ mod tests {
         assert_eq!(book.cancel_peer("peerB"), 1);
         assert_eq!(book.len(), 1);
         let expired_at = now + DIRECT_GETBLOCK_REQUEST_TTL;
-        assert_eq!(
+        assert!(matches!(
             book.complete(response(&b), "peerC", expired_at),
             Err(DirectGetBlockPendingError::Expired)
-        );
+        ));
         assert!(book.is_empty());
         book.begin(a, "peerB", expired_at).unwrap();
         assert_eq!(book.expire(expired_at + DIRECT_GETBLOCK_REQUEST_TTL), 1);
