@@ -1,0 +1,148 @@
+name: v3 libp2p 0.57.1 parent migration proof (DRAFT NO GO)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/pulsedag-p2p/Cargo.toml
+      - tools/pow-upstream-reference/**
+      - Cargo.lock
+      - .github/workflows/v3-libp2p-hickory-parent-migration-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-and-check-candidate-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact candidate head, without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install exact supported Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.0 --profile minimal
+          rustup default 1.91.0
+          rustc --version
+          cargo --version
+      - name: Isolate incompatible pinned Kaspa dev-only parity in temporary runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A trial-only resolver experiment. The repository commit is NOT
+          # changed: pinned Kaspa has js-sys =0.3.77, while libp2p 0.57.1
+          # requires wasm-bindgen-futures -> js-sys =0.3.85.
+          # Future permanent migration MUST preserve the 480 upstream PoW
+          # parity cases in a separately locked external oracle workspace.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/pulsedag-core/Cargo.toml")
+          text = path.read_text()
+          names = ("kaspa-hashes", "kaspa-pow")
+          lines = text.splitlines(keepends=True)
+          for name in names:
+              matching = [line for line in lines if line.startswith(name + " = { git = ")]
+              if len(matching) != 1 or 'cfafeb4c093fa37a303f1b9f19c58f986b870ce3' not in matching[0]:
+                  raise SystemExit(f"unexpected pinned dev oracle scope: {name}")
+          changed = "".join(line for line in lines if not any(
+              line.startswith(name + " = { git = ") for name in names))
+          path.write_text(changed)
+          print("UNAPPROVED resolver trial only: excluded pinned Kaspa dev dependencies in runner")
+          PY
+      - name: Resolve official libp2p 0.57.1 from its parent dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'version = "=0.57.1"' crates/pulsedag-p2p/Cargo.toml
+          cargo update -p libp2p
+          cargo metadata --locked --format-version 1 --no-deps >/dev/null
+      - name: Record resolved Hickory and libp2p scope (no ignores)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/libp2p-parent-probe
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          pkgs=tomllib.loads(Path("Cargo.lock").read_text())["package"]
+          names={"libp2p","libp2p-dns","libp2p-mdns","hickory-proto","hickory-resolver","quinn-proto","rustix"}
+          selected=sorted((p["name"],p["version"]) for p in pkgs if p["name"] in names)
+          output="\n".join(f"{n}@{v}" for n,v in selected)+"\n"
+          print(output)
+          Path("ci-evidence/libp2p-parent-probe/selected-locked-packages.txt").write_text(output)
+          assert ("libp2p","0.57.1") in selected, "libp2p version drift"
+          assert ("hickory-proto","0.25.2") not in selected, "old vulnerable Hickory still locked"
+          def version_tuple(version: str) -> tuple[int, int, int]:
+              return tuple(int(x) for x in version.split(".")[:3])
+          assert not any(n=="hickory-proto" and version_tuple(v)<(0,26,2)
+                         for n,v in selected), "unpatched Hickory"
+          PY
+          cargo tree --locked -p pulsedagd -e normal >ci-evidence/libp2p-parent-probe/node-normal.txt
+          cargo tree --locked -p pulsedag-wallet -e normal >ci-evidence/libp2p-parent-probe/wallet-normal.txt
+          cargo tree --locked -p pulsedag-miner -e normal >ci-evidence/libp2p-parent-probe/miner-normal.txt
+          cargo tree --locked -p pulsedag-p2p -e normal >ci-evidence/libp2p-parent-probe/p2p-normal.txt
+          if grep -En 'hickory-proto v0\.25\.2|libp2p-dns|libp2p-mdns|quinn-proto' ci-evidence/libp2p-parent-probe/*-normal.txt; then
+            echo 'unexpected optional DNS/mDNS/QUIC package in clean production roots' >&2
+            exit 1
+          fi
+      - name: Resolve independent pinned Kaspa reference Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile --manifest-path tools/pow-upstream-reference/Cargo.toml
+          cargo metadata --locked --manifest-path tools/pow-upstream-reference/Cargo.toml --format-version 1 --no-deps >/dev/null
+      - name: Upload early generated locks for source-reviewed migration (NOT RELEASE)
+        uses: actions/upload-artifact@v4
+        with:
+          name: unapproved-resolved-production-and-parity-locks-${{ github.run_id }}
+          path: |
+            Cargo.lock
+            tools/pow-upstream-reference/Cargo.lock
+            ci-evidence/libp2p-parent-probe/selected-locked-packages.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Validate P2P, node, wallet and miner with resolved candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p -p pulsedagd -p pulsedag-wallet -p pulsedag-miner
+          cargo test --locked -p pulsedag-p2p
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' configs/public-testnet/node.env.template
+          grep -Fq 'assert!(StartupProtocolMode::parse("monetary_v3").is_err());' apps/pulsedagd/src/startup_protocol.rs
+      - name: Preserve full upstream KHeavyHash parity in independently locked oracle workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Standalone workspace is NOT a member of the public-node root.
+          # It retains original pinned kaspa-hashes/pow with incompatible
+          # js-sys 0.3.77 while production libp2p resolves js-sys 0.3.85.
+          cargo test --manifest-path tools/pow-upstream-reference/Cargo.toml \
+            --test native_pow_backend_migration -- --nocapture
+          cargo clippy --manifest-path tools/pow-upstream-reference/Cargo.toml \
+            --test native_pow_backend_migration -- -D warnings
+      - name: Record source-manifest divergence for explicit NON-RELEASE provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/libp2p-parent-probe
+          git diff -- crates/pulsedag-core/Cargo.toml crates/pulsedag-p2p/Cargo.toml Cargo.lock >ci-evidence/libp2p-parent-probe/runner-only-resolution.diff
+          printf 'NOT RELEASE READY: dev-only Kaspa dependency lines were removed ONLY on runner for resolver feasibility. Upstream PoW test oracle must be independently separated before merging.\n' >ci-evidence/libp2p-parent-probe/NOT-A-RELEASE-CANDIDATE.txt
+      - name: Upload resolved Cargo.lock and analysis, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-unapproved-libp2p-0571-lock-${{ github.run_id }}
+          path: |
+            Cargo.lock
+            tools/pow-upstream-reference/Cargo.lock
+            ci-evidence/libp2p-parent-probe
+          if-no-files-found: error
+          retention-days: 14
