@@ -55,17 +55,15 @@ fn valid_request_id(request_id: &str) -> bool {
     request_id.len() >= 10
         && request_id.len() <= 256
         && request_id.starts_with("getblock:")
-        && request_id.bytes().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')
-        })
+        && request_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/'))
 }
 
 fn valid_peer_id(peer_id: &str) -> bool {
     !peer_id.is_empty()
         && peer_id.len() <= 128
-        && peer_id
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric())
+        && peer_id.bytes().all(|c| c.is_ascii_alphanumeric())
 }
 
 pub fn validate_direct_getblock_request(
@@ -88,13 +86,19 @@ pub fn validate_direct_getblock_request(
         || request.requesting_peer_id != authenticated_remote_peer_id
         || request.requested_peer_id != authenticated_local_peer_id
     {
-        return Err(DirectGetBlockWireError::Invalid("authenticated peer mismatch"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "authenticated peer mismatch",
+        ));
     }
     if !valid_request_id(&request.request_id) {
-        return Err(DirectGetBlockWireError::Invalid("invalid request correlation id"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "invalid request correlation id",
+        ));
     }
     if !valid_hash(&request.block_hash) {
-        return Err(DirectGetBlockWireError::Invalid("noncanonical requested block hash"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "noncanonical requested block hash",
+        ));
     }
     Ok(())
 }
@@ -143,9 +147,7 @@ pub fn validate_direct_getblock_response(
     request: &DirectGetBlockRequestV1,
     authenticated_remote_peer_id: &str,
 ) -> Result<(), DirectGetBlockWireError> {
-    if response.version != DIRECT_GETBLOCK_PROTOCOL_V1
-        || response.version != request.version
-    {
+    if response.version != DIRECT_GETBLOCK_PROTOCOL_V1 || response.version != request.version {
         return Err(DirectGetBlockWireError::Invalid("unknown response version"));
     }
     if response.chain_id != request.chain_id
@@ -154,14 +156,18 @@ pub fn validate_direct_getblock_response(
         || authenticated_remote_peer_id != request.requested_peer_id
         || response.responding_peer_id != authenticated_remote_peer_id
     {
-        return Err(DirectGetBlockWireError::Invalid("response origin/hash mismatch"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "response origin/hash mismatch",
+        ));
     }
     if response
         .block
         .as_ref()
         .is_some_and(|block| block.hash != request.block_hash)
     {
-        return Err(DirectGetBlockWireError::Invalid("block hash does not match request"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "block hash does not match request",
+        ));
     }
     Ok(())
 }
@@ -222,13 +228,8 @@ mod tests {
     #[test]
     fn exact_authenticated_peers_and_chain_roundtrip() {
         let req = request();
-        let raw = encode_direct_getblock_request(
-            &req,
-            "pulsedag-testnet-v3",
-            "peerA",
-            "peerB",
-        )
-        .unwrap();
+        let raw =
+            encode_direct_getblock_request(&req, "pulsedag-testnet-v3", "peerA", "peerB").unwrap();
         assert_eq!(
             decode_direct_getblock_request(&raw, "pulsedag-testnet-v3", "peerA", "peerB"),
             Ok(req.clone())
@@ -248,9 +249,7 @@ mod tests {
             ("pulsedag-testnet-v3", "peerEvil", "peerB"),
             ("pulsedag-testnet-v3", "peerA", "peerEvil"),
         ] {
-            assert!(
-                validate_direct_getblock_request(&req, chain, remote, local).is_err()
-            );
+            assert!(validate_direct_getblock_request(&req, chain, remote, local).is_err());
         }
         let mut invalid = req.clone();
         invalid.block_hash = "A".repeat(64);
