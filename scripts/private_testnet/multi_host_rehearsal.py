@@ -54,6 +54,7 @@ class Inventory:
     restore_command: tuple[str, ...]
     max_height_spread: int
     min_progress_blocks: int
+    partition_backlog_min_blocks: int
     poll_interval_seconds: float
     phase_timeout_seconds: float
 
@@ -174,6 +175,7 @@ def load_inventory(path: Path) -> Inventory:
     require(isinstance(thresholds, dict), "thresholds must be an object")
     max_height_spread = thresholds.get("max_height_spread", 2)
     min_progress_blocks = thresholds.get("min_progress_blocks", 3)
+    partition_backlog_min_blocks = thresholds.get("partition_backlog_min_blocks", 0)
     poll_interval_seconds = thresholds.get("poll_interval_seconds", 5)
     phase_timeout_seconds = thresholds.get("phase_timeout_seconds", 180)
     require(
@@ -183,6 +185,10 @@ def load_inventory(path: Path) -> Inventory:
     require(
         isinstance(min_progress_blocks, int) and 1 <= min_progress_blocks <= 1000,
         "min_progress_blocks must be an integer from 1 to 1000",
+    )
+    require(
+        type(partition_backlog_min_blocks) is int and 0 <= partition_backlog_min_blocks <= 128,
+        "partition_backlog_min_blocks must be an integer from 0 to 128",
     )
     require(
         isinstance(poll_interval_seconds, (int, float))
@@ -203,6 +209,7 @@ def load_inventory(path: Path) -> Inventory:
         restore_command=command_argv(fault.get("restore_command"), "fault.restore_command"),
         max_height_spread=max_height_spread,
         min_progress_blocks=min_progress_blocks,
+        partition_backlog_min_blocks=partition_backlog_min_blocks,
         poll_interval_seconds=float(poll_interval_seconds),
         phase_timeout_seconds=float(phase_timeout_seconds),
     )
@@ -503,6 +510,51 @@ class RehearsalRunner:
         _, summary = self.wait_for_convergence("post-restart")
         self.record_phase("restart-rejoin", "PASS", summary)
 
+    def wait_for_partition_backlog(self, isolated: dict[str, Any]) -> dict[str, Any]:
+        """Verify a real post-fault backlog formed while the target stayed isolated.
+
+        Evidence comes from all five live RPC nodes and the still-running miner.
+        A healthy network merely rejoining at height 4 or 5 cannot satisfy this
+        optional stronger Task30 trial. Never simulate heights or bypass sync.
+        """
+
+        required = self.inventory.partition_backlog_min_blocks
+        require(required > 0, "partition backlog trial requires a positive threshold")
+        target = self.inventory.fault_target
+        first_heights = isolated["heights"]
+        start_healthy = min(height for name, height in first_heights.items() if name != target)
+        deadline = time.monotonic() + self.inventory.phase_timeout_seconds
+        attempt = 0
+        last_error = "no post-isolation RPC snapshot"
+        while time.monotonic() < deadline:
+            attempt += 1
+            try:
+                snapshot = self.snapshot(f"partition-backlog-attempt-{attempt:02d}")
+                summary = self.validate_convergence(snapshot, allow_isolated_target=True)
+                healthy_min = min(
+                    height for name, height in summary["heights"].items() if name != target
+                )
+                target_height = summary["heights"][target]
+                progress = healthy_min - start_healthy
+                gap = healthy_min - target_height
+                if progress >= required and gap >= required:
+                    return {
+                        **summary,
+                        "required_backlog_blocks": required,
+                        "observed_backlog_blocks": gap,
+                        "connected_peer_progress_blocks": progress,
+                        "baseline_connected_min_height": start_healthy,
+                        "attempts": attempt,
+                    }
+                last_error = (
+                    f"connected peers mined {progress}/{required} blocks; "
+                    f"isolated target gap {gap}/{required} blocks"
+                )
+            except RehearsalError as exc:
+                last_error = str(exc)
+            time.sleep(self.inventory.poll_interval_seconds)
+        raise RehearsalError(f"partition backlog never reached {required} real blocks: {last_error}")
+
     def partition_and_rejoin(self) -> None:
         """Isolate the target through explicit remote hooks, restore it, and require catch-up."""
 
@@ -513,6 +565,9 @@ class RehearsalRunner:
             self.run_remote(node, self.inventory.isolate_command)
             _, isolated_summary = self.wait_for_convergence("partition", allow_isolated_target=True)
             self.record_phase("partition", "PASS", isolated_summary)
+            if self.inventory.partition_backlog_min_blocks > 0:
+                observed = self.wait_for_partition_backlog(isolated_summary)
+                self.record_phase("partition-backlog", "PASS", observed)
         finally:
             if isolate_attempted:
                 self.run_remote(node, self.inventory.restore_command)
@@ -529,6 +584,7 @@ class RehearsalRunner:
             "chain_id": EXPECTED_CHAIN_ID,
             "node_count": EXPECTED_NODE_COUNT,
             "fault_target": self.inventory.fault_target,
+            "partition_backlog_min_blocks": self.inventory.partition_backlog_min_blocks,
             "started_at": self.started_at,
             "completed_at": utc_now(),
             "decision": decision,
@@ -613,7 +669,28 @@ def verify_evidence(path: Path) -> None:
             "final-convergence",
             "post-fault-mining-progress",
         }
+        backlog_required = manifest.get("partition_backlog_min_blocks", 0)
+        require(
+            type(backlog_required) is int and 0 <= backlog_required <= 128,
+            "partition backlog evidence threshold must be an integer from 0 to 128",
+        )
+        if backlog_required > 0:
+            required.add("partition-backlog")
         require(required <= passed, f"GO evidence is missing phases: {sorted(required - passed)}")
+        if backlog_required > 0:
+            observed = next(
+                phase.get("details", {})
+                for phase in manifest["phases"]
+                if phase.get("name") == "partition-backlog" and phase.get("result") == "PASS"
+            )
+            require(
+                observed.get("required_backlog_blocks") == backlog_required
+                and type(observed.get("observed_backlog_blocks")) is int
+                and observed["observed_backlog_blocks"] >= backlog_required
+                and type(observed.get("connected_peer_progress_blocks")) is int
+                and observed["connected_peer_progress_blocks"] >= backlog_required,
+                "partition backlog evidence does not prove actual isolated height gap and mining progress",
+            )
         require(
             not any(
                 phase.get("result") == "FAIL"
