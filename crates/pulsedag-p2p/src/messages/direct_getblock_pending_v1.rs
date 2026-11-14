@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::direct_getblock_v1::{
-    validate_direct_getblock_request, validate_direct_getblock_response,
-    DirectGetBlockRequestV1, DirectGetBlockResponseV1, DirectGetBlockWireError,
+    validate_direct_getblock_request, validate_direct_getblock_response, DirectGetBlockRequestV1,
+    DirectGetBlockResponseV1, DirectGetBlockWireError,
 };
 
 pub const MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL: usize = 32;
@@ -19,6 +19,7 @@ pub enum DirectGetBlockPendingError {
     Wire(DirectGetBlockWireError),
     InvalidIdentity,
     Duplicate,
+    NonMonotonicRequestId,
     LimitExceeded,
     Unsolicited,
     Expired,
@@ -44,6 +45,10 @@ pub struct DirectGetBlockPendingBookV1 {
     chain_id: String,
     local_peer_id: String,
     pending: BTreeMap<String, Pending>,
+    // A lifetime-monotonic high-water mark prevents stale responses from a
+    // completed, timed-out or cancelled request claiming a new request slot.
+    // Unlike an unbounded used-ID set, this has constant memory.
+    last_issued_sequence: u64,
 }
 
 impl DirectGetBlockPendingBookV1 {
@@ -55,7 +60,9 @@ impl DirectGetBlockPendingBookV1 {
             || chain_id.len() > 96
             || authenticated_local_peer_id.is_empty()
             || authenticated_local_peer_id.len() > 128
-            || !authenticated_local_peer_id.bytes().all(|c| c.is_ascii_alphanumeric())
+            || !authenticated_local_peer_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric())
         {
             return Err(DirectGetBlockPendingError::InvalidIdentity);
         }
@@ -63,6 +70,7 @@ impl DirectGetBlockPendingBookV1 {
             chain_id: chain_id.to_owned(),
             local_peer_id: authenticated_local_peer_id.to_owned(),
             pending: BTreeMap::new(),
+            last_issued_sequence: 0,
         })
     }
 
@@ -86,6 +94,25 @@ impl DirectGetBlockPendingBookV1 {
             &self.local_peer_id,
             authenticated_target_peer_id,
         )?;
+        // Correlation IDs are minted by the originating authenticated handle
+        // with a checked monotonic :u64 suffix. For this book every new request
+        // must advance that suffix; old response IDs can never be reused.
+        // This book must outlive individual direct-peer sessions; never reset
+        // it on reconnect or reuse an ID from a previous transport instance.
+        let sequence_text = request
+            .request_id
+            .rsplit_once(':')
+            .map(|(_, suffix)| suffix)
+            .ok_or(DirectGetBlockPendingError::NonMonotonicRequestId)?;
+        let sequence: u64 = sequence_text
+            .parse()
+            .map_err(|_| DirectGetBlockPendingError::NonMonotonicRequestId)?;
+        if sequence == 0
+            || sequence.to_string() != sequence_text
+            || sequence <= self.last_issued_sequence
+        {
+            return Err(DirectGetBlockPendingError::NonMonotonicRequestId);
+        }
         self.expire(now);
         if self.pending.contains_key(&request.request_id) {
             return Err(DirectGetBlockPendingError::Duplicate);
@@ -111,6 +138,7 @@ impl DirectGetBlockPendingBookV1 {
                 deadline,
             },
         );
+        self.last_issued_sequence = sequence;
         Ok(())
     }
 
@@ -127,10 +155,10 @@ impl DirectGetBlockPendingBookV1 {
             .pending
             .get(&response.request_id)
             .ok_or(DirectGetBlockPendingError::Unsolicited)?;
-        if now >= pending.deadline {
-            self.pending.remove(&response.request_id);
-            return Err(DirectGetBlockPendingError::Expired);
-        }
+        // Authenticate the remote transport identity and exact response
+        // *before* mutating any pending slot, even if its TTL has elapsed.
+        // A peer that only guesses a pending ID may not expire another peer's
+        // request via complete(); timer housekeeping uses expire().
         if authenticated_remote_peer_id != pending.target_peer_id {
             return Err(DirectGetBlockPendingError::Wire(
                 DirectGetBlockWireError::Invalid("unexpected transport responder"),
@@ -141,6 +169,10 @@ impl DirectGetBlockPendingBookV1 {
             &pending.request,
             authenticated_remote_peer_id,
         )?;
+        if now >= pending.deadline {
+            self.pending.remove(&response.request_id);
+            return Err(DirectGetBlockPendingError::Expired);
+        }
         self.pending.remove(&response.request_id);
         Ok(response)
     }
@@ -163,8 +195,8 @@ impl DirectGetBlockPendingBookV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::direct_getblock_v1::DIRECT_GETBLOCK_PROTOCOL_V1;
+    use super::*;
 
     fn request(index: usize, peer: &str) -> DirectGetBlockRequestV1 {
         DirectGetBlockRequestV1 {
@@ -226,7 +258,7 @@ mod tests {
         assert!(book.begin(wrong_chain, "peerB", now).is_err());
         assert!(book.begin(request(0, "peerB"), "peerEvil", now).is_err());
         assert!(book.is_empty());
-        for i in 0..MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER {
+        for i in 1..=MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER {
             book.begin(request(i, "peerB"), "peerB", now).unwrap();
         }
         assert_eq!(
@@ -236,12 +268,8 @@ mod tests {
         for peer_idx in 0..7 {
             let name = format!("peer{peer_idx}");
             for i in 0..MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER {
-                book.begin(
-                    request(100 + peer_idx * 10 + i, &name),
-                    &name,
-                    now,
-                )
-                .unwrap();
+                book.begin(request(100 + peer_idx * 10 + i, &name), &name, now)
+                    .unwrap();
             }
         }
         assert_eq!(book.len(), MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL);
@@ -249,6 +277,74 @@ mod tests {
             book.begin(request(1000, "peerX"), "peerX", now),
             Err(DirectGetBlockPendingError::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn old_request_id_cannot_be_reused_after_completion_expiry_or_disconnect() {
+        let now = Instant::now();
+        let mut book = book();
+        let first = request(1, "peerB");
+        book.begin(first.clone(), "peerB", now).unwrap();
+        book.complete(response(&first), "peerB", now).unwrap();
+        assert!(matches!(
+            book.begin(first.clone(), "peerB", now),
+            Err(DirectGetBlockPendingError::NonMonotonicRequestId)
+        ));
+        let next = request(2, "peerB");
+        book.begin(next.clone(), "peerB", now).unwrap();
+        book.cancel_peer("peerB");
+        assert!(matches!(
+            book.begin(next, "peerB", now),
+            Err(DirectGetBlockPendingError::NonMonotonicRequestId)
+        ));
+        let expiring = request(3, "peerB");
+        book.begin(expiring.clone(), "peerB", now).unwrap();
+        book.expire(now + DIRECT_GETBLOCK_REQUEST_TTL);
+        assert!(matches!(
+            book.begin(expiring, "peerB", now + DIRECT_GETBLOCK_REQUEST_TTL),
+            Err(DirectGetBlockPendingError::NonMonotonicRequestId)
+        ));
+        let mut leading_zero = request(4, "peerB");
+        leading_zero.request_id = leading_zero.request_id.replace(":4", ":04");
+        assert!(matches!(
+            book.begin(leading_zero, "peerB", now),
+            Err(DirectGetBlockPendingError::NonMonotonicRequestId)
+        ));
+        let fresh = request(4, "peerB");
+        book.begin(fresh.clone(), "peerB", now).unwrap();
+        let stale_response = response(&first);
+        assert!(matches!(
+            book.complete(stale_response, "peerB", now),
+            Err(DirectGetBlockPendingError::Unsolicited)
+        ));
+        assert_eq!(book.len(), 1);
+        book.complete(response(&fresh), "peerB", now).unwrap();
+    }
+
+    #[test]
+    fn unauthenticated_expired_response_does_not_remove_another_peer_slot() {
+        let now = Instant::now();
+        let mut book = book();
+        let req = request(1, "peerB");
+        book.begin(req.clone(), "peerB", now).unwrap();
+        let deadline = now + DIRECT_GETBLOCK_REQUEST_TTL;
+        assert!(matches!(
+            book.complete(response(&req), "peerEvil", deadline),
+            Err(DirectGetBlockPendingError::Wire(_))
+        ));
+        assert_eq!(book.len(), 1);
+        let mut wrong_hash = response(&req);
+        wrong_hash.block_hash = "b".repeat(64);
+        assert!(matches!(
+            book.complete(wrong_hash, "peerB", deadline),
+            Err(DirectGetBlockPendingError::Wire(_))
+        ));
+        assert_eq!(book.len(), 1);
+        assert!(matches!(
+            book.complete(response(&req), "peerB", deadline),
+            Err(DirectGetBlockPendingError::Expired)
+        ));
+        assert!(book.is_empty());
     }
 
     #[test]
