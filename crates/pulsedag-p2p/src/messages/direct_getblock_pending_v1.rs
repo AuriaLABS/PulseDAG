@@ -94,6 +94,9 @@ impl DirectGetBlockPendingBookV1 {
             &self.local_peer_id,
             authenticated_target_peer_id,
         )?;
+        if self.pending.contains_key(&request.request_id) {
+            return Err(DirectGetBlockPendingError::Duplicate);
+        }
         // Correlation IDs are minted by the originating authenticated handle
         // with a checked monotonic :u64 suffix. For this book every new request
         // must advance that suffix; old response IDs can never be reused.
@@ -114,9 +117,6 @@ impl DirectGetBlockPendingBookV1 {
             return Err(DirectGetBlockPendingError::NonMonotonicRequestId);
         }
         self.expire(now);
-        if self.pending.contains_key(&request.request_id) {
-            return Err(DirectGetBlockPendingError::Duplicate);
-        }
         if self.pending.len() >= MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL
             || self
                 .pending
