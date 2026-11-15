@@ -27,7 +27,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          grep -Fq 'let mut direct_getblock_bindings = match DirectGetBlockSwarmBindingsV1::new(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'let mut direct_getblock_bindings =' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'match DirectGetBlockSwarmBindingsV1::new(&cfg.chain_id, *swarm.local_peer_id())' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'direct_getblock_bindings.last_connection_closed(&peer_id)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'direct_getblock_bindings.expire(std::time::Instant::now())' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'direct_getblock_bindings.accept_response(' crates/pulsedag-p2p/src/lib.rs
