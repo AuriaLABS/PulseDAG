@@ -9,6 +9,7 @@ pub mod direct_getblock_dispatch_v1;
 pub mod direct_getblock_inbound_v1;
 pub mod direct_getblock_outbound_v1;
 pub mod direct_getblock_pending_v1;
+pub mod direct_getblock_response_channel_v1;
 pub mod direct_getblock_v1;
 pub mod fast_sync_carrier_v1;
 #[path = "messages/fast_sync_carrier_v1/multi_source_v1.rs"]
