@@ -246,8 +246,7 @@ mod tests {
             |channel, bytes| {
                 assert_eq!(channel, 991);
                 let response =
-                    decode_direct_getblock_response(&bytes, &expected, &local.to_string())
-                        .unwrap();
+                    decode_direct_getblock_response(&bytes, &expected, &local.to_string()).unwrap();
                 assert_eq!(
                     response.block.as_ref().map(|block| block.hash.as_str()),
                     Some(chain.dag.genesis_hash.as_str())
@@ -285,13 +284,21 @@ mod tests {
         let ticket = book.accept(&raw, &remote, 7_u64, now).unwrap();
         assert!(matches!(
             book.respond_from_accepted_dag(
-                ticket.local_token, &attacker, &chain, now, |_channel, _bytes| true
+                ticket.local_token,
+                &attacker,
+                &chain,
+                now,
+                |_channel, _bytes| true
             ),
             Err(DirectGetBlockChannelErrorV1::WrongAuthenticatedPeer)
         ));
         assert!(matches!(
             book.respond_from_accepted_dag(
-                ticket.local_token, &remote, &foreign, now, |_channel, _bytes| true
+                ticket.local_token,
+                &remote,
+                &foreign,
+                now,
+                |_channel, _bytes| true
             ),
             Err(DirectGetBlockChannelErrorV1::Inbound(
                 DirectGetBlockInboundErrorV1::ChainDomainMismatch
@@ -365,7 +372,11 @@ mod tests {
         let ticket = book.accept(&raw, &remote, 23_u64, now).unwrap();
         assert!(matches!(
             book.respond_from_accepted_dag(
-                ticket.local_token, &remote, &chain, now, |channel, _bytes| {
+                ticket.local_token,
+                &remote,
+                &chain,
+                now,
+                |channel, _bytes| {
                     assert_eq!(channel, 23);
                     false
                 }
@@ -387,8 +398,7 @@ mod tests {
             let instant = now + Duration::from_secs(round * 8);
             for i in 0..4_u64 {
                 let raw = request(&local, &remote, &hash, round * 4 + i);
-                book.accept(&raw, &remote, round * 4 + i, instant)
-                    .unwrap();
+                book.accept(&raw, &remote, round * 4 + i, instant).unwrap();
             }
             assert_eq!(book.len(), 4);
         }
