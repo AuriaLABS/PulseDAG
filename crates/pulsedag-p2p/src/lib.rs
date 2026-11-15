@@ -13,8 +13,9 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use libp2p::futures::StreamExt;
 use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
 use libp2p::ping;
+use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::{identity, Multiaddr, PeerId, StreamProtocol, SwarmBuilder};
 use pulsedag_core::{
     compute_block_hash_v2,
     errors::PulseError,
@@ -43,6 +44,12 @@ use crate::messages::compact_relay_carrier_v1::{
     CompactRelayCapabilitiesV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
+use crate::messages::direct_getblock_codec_v1::{
+    DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1,
+};
+use crate::messages::direct_getblock_pending_v1::{
+    DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
+};
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
@@ -6247,10 +6254,29 @@ async fn run_libp2p_runtime(
     }
 }
 
+type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlockRawCodecV1>;
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
     ping: ping::Behaviour,
+    // First transport-stage only: outbound negotiation, with NO live send_request
+    // call sites and NO advertised inbound GetBlock service until the daemon
+    // storage responder and authenticated inflight correlation are integrated.
+    direct_getblock: DirectGetBlockSwarmBehaviourV1,
+}
+
+fn direct_getblock_outbound_only_behaviour_v1() -> DirectGetBlockSwarmBehaviourV1 {
+    request_response::Behaviour::with_codec(
+        DirectGetBlockRawCodecV1,
+        [(
+            StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
+            ProtocolSupport::Outbound,
+        )],
+        request_response::Config::default()
+            .with_request_timeout(DIRECT_GETBLOCK_REQUEST_TTL)
+            .with_max_concurrent_streams(MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL),
+    )
 }
 
 fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
@@ -6596,6 +6622,11 @@ async fn run_libp2p_real_runtime(
     };
 
     let ping = ping::Behaviour::new(ping::Config::new());
+    // Only attaches an outbound-capable protocol to the authenticated Noise
+    // Swarm. This slice deliberately issues no direct request and cannot serve
+    // an inbound request. Do not route GetBlockFrom until exact daemon response
+    // channel handling and request correlation land in a separate reviewed PR.
+    let direct_getblock = direct_getblock_outbound_only_behaviour_v1();
 
     let mut swarm = match SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
@@ -6607,6 +6638,7 @@ async fn run_libp2p_real_runtime(
         Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour {
             gossipsub: gossip,
             ping,
+            direct_getblock,
         }) {
             Ok(builder) => builder
                 .with_swarm_config(|cfg| {
