@@ -22,6 +22,7 @@ pub enum DirectGetBlockDispatchErrorV1 {
     Ticket(DirectGetBlockOutboundError),
     NoAuthenticatedConnection,
     UnknownOutboundRequestId,
+    DuplicateOutboundRequestId,
     UnexpectedTransportPeer,
     DeadlineOverflow,
 }
@@ -33,9 +34,10 @@ struct Dispatched {
     deadline: Instant,
 }
 
-/// The runtime owns one instance for its entire lifetime, not one per session.
-#[derive(Debug)]
+/// Owns exactly one libp2p Behaviour for its entire lifetime. Never swap
+/// behaviours: libp2p OutboundRequestIds are unique per behaviour, not globally.
 pub struct DirectGetBlockDispatchV1 {
+    behaviour: request_response::Behaviour<DirectGetBlockRawCodecV1>,
     outbound: DirectGetBlockOutboundV1,
     by_transport_id: HashMap<OutboundRequestId, Dispatched>,
 }
@@ -44,10 +46,12 @@ impl DirectGetBlockDispatchV1 {
     pub fn new(
         chain_id: &str,
         authenticated_local_peer: PeerId,
+        behaviour: request_response::Behaviour<DirectGetBlockRawCodecV1>,
     ) -> Result<Self, DirectGetBlockDispatchErrorV1> {
         let outbound = DirectGetBlockOutboundV1::new(chain_id, authenticated_local_peer)
             .map_err(DirectGetBlockDispatchErrorV1::Ticket)?;
         Ok(Self {
+            behaviour,
             outbound,
             by_transport_id: HashMap::new(),
         })
@@ -58,12 +62,14 @@ impl DirectGetBlockDispatchV1 {
     /// and does not change the current Gossipsub or daemon paths.
     pub fn issue(
         &mut self,
-        behaviour: &mut request_response::Behaviour<DirectGetBlockRawCodecV1>,
         authenticated_target: &PeerId,
         block_hash: &str,
         swarm_connected: bool,
         now: Instant,
     ) -> Result<OutboundRequestId, DirectGetBlockDispatchErrorV1> {
+        // Keep the transport-ID map and the pending book synchronized even
+        // if the periodic timeout tick has been delayed or never delivered.
+        self.expire(now);
         if !swarm_connected {
             return Err(DirectGetBlockDispatchErrorV1::NoAuthenticatedConnection);
         }
@@ -78,7 +84,13 @@ impl DirectGetBlockDispatchV1 {
         // libp2p generates this identifier; the remote cannot choose it.
         // send_request returns the locally assigned ID; a later
         // OutboundFailure MUST cancel this exact mapping.
-        let transport_id = behaviour.send_request(authenticated_target, prepared.wire);
+        let transport_id = self.behaviour.send_request(authenticated_target, prepared.wire);
+        if self.by_transport_id.contains_key(&transport_id) {
+            // Defensive invariant if libp2p ever violates uniqueness within
+            // the owned behaviour. Never replace an older pending binding.
+            self.outbound.cancel_request(&prepared.request.request_id, authenticated_target);
+            return Err(DirectGetBlockDispatchErrorV1::DuplicateOutboundRequestId);
+        }
         self.by_transport_id.insert(
             transport_id,
             Dispatched {
@@ -222,20 +234,19 @@ mod tests {
     fn actual_libp2p_ids_bind_retries_without_network_or_daemon_admission() {
         let local = peer();
         let remote = peer();
-        let mut behaviour = behaviour();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local).unwrap();
+        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "a".repeat(64);
         assert!(matches!(
-            dispatch.issue(&mut behaviour, &remote, &hash, false, now),
+            dispatch.issue(&remote, &hash, false, now),
             Err(DirectGetBlockDispatchErrorV1::NoAuthenticatedConnection)
         ));
         assert!(dispatch.is_empty());
         let first = dispatch
-            .issue(&mut behaviour, &remote, &hash, true, now)
+            .issue(&remote, &hash, true, now)
             .unwrap();
         let second = dispatch
-            .issue(&mut behaviour, &remote, &hash, true, now)
+            .issue(&remote, &hash, true, now)
             .unwrap();
         assert_ne!(first, second);
         assert_eq!(dispatch.len(), 2);
@@ -271,15 +282,14 @@ mod tests {
         let local = peer();
         let remote = peer();
         let attacker = peer();
-        let mut behaviour = behaviour();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local).unwrap();
+        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "b".repeat(64);
         let a = dispatch
-            .issue(&mut behaviour, &remote, &hash, true, now)
+            .issue(&remote, &hash, true, now)
             .unwrap();
         let b = dispatch
-            .issue(&mut behaviour, &remote, &hash, true, now)
+            .issue(&remote, &hash, true, now)
             .unwrap();
         let a_ticket = dispatch.by_transport_id.get(&a).unwrap().ticket_id.clone();
         let b_ticket = dispatch.by_transport_id.get(&b).unwrap().ticket_id.clone();
@@ -305,23 +315,47 @@ mod tests {
     }
 
     #[test]
+    fn expiry_is_enforced_by_issue_without_periodic_tick() {
+        let local = peer();
+        let remote = peer();
+        let now = Instant::now();
+        let hash = "d".repeat(64);
+        let mut dispatch =
+            DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
+        for round in 0..8 {
+            let instant = now + Duration::from_secs(8 * round);
+            for _ in 0..4 {
+                dispatch.issue(&remote, &hash, true, instant).unwrap();
+            }
+            assert_eq!(dispatch.len(), 4, "old transport IDs must expire before reissue");
+            assert!(matches!(
+                dispatch.issue(&remote, &hash, true, instant),
+                Err(DirectGetBlockDispatchErrorV1::Ticket(
+                    DirectGetBlockOutboundError::Pending(_)
+                ))
+            ));
+        }
+        assert_eq!(dispatch.expire(now + Duration::from_secs(64)), 4);
+        assert!(dispatch.is_empty());
+    }
+
+    #[test]
     fn failure_ttl_disconnect_and_quota_bound_transport_ids() {
         let local = peer();
         let remote = peer();
         let attacker = peer();
-        let mut behaviour = behaviour();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local).unwrap();
+        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "c".repeat(64);
         let ids: Vec<_> = (0..4)
             .map(|_| {
                 dispatch
-                    .issue(&mut behaviour, &remote, &hash, true, now)
+                    .issue(&remote, &hash, true, now)
                     .unwrap()
             })
             .collect();
         assert!(matches!(
-            dispatch.issue(&mut behaviour, &remote, &hash, true, now),
+            dispatch.issue(&remote, &hash, true, now),
             Err(DirectGetBlockDispatchErrorV1::Ticket(
                 DirectGetBlockOutboundError::Pending(_)
             ))
@@ -335,7 +369,7 @@ mod tests {
         assert_eq!(dispatch.len(), 3);
         assert_eq!(dispatch.peer_disconnected(&attacker), 0);
         let fresh = dispatch
-            .issue(&mut behaviour, &remote, &hash, true, now)
+            .issue(&remote, &hash, true, now)
             .unwrap();
         assert_ne!(ids[0], fresh);
         assert_eq!(dispatch.expire(now + Duration::from_secs(8)), 4);
