@@ -42,7 +42,10 @@ the audit trail only. The following candidate is not mainnet/testnet approved.
 
 - The public workspace now requests exactly **libp2p =0.57.1** with
   `default-features=false` and precisely `tokio,gossipsub,identify,kad,macros,
-  tcp,noise,yamux,ping`. Cargo-resolved **`hickory-proto@0.26.3`** and
+  tcp,noise,yamux,ping,request-response`. The additional feature is for
+  bounded direct GetBlock codec testing in stacked DRAFT #1470 only; no
+  request-response behaviour is installed in a live Swarm, no block admission
+  or monetary authority is enabled. Cargo-resolved **`hickory-proto@0.26.3`** and
   **`hickory-resolver@0.26.3`** replace vulnerable 0.25.2, whose advisory
   IDs `RUSTSEC-2026-0118/0119/0487/0489/0490/0491` may no longer occur in
   the public root. The DNS/mDNS features remain unselected and their crate

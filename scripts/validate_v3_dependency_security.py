@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_LIBP2P_FEATURES = {
     "tokio", "gossipsub", "identify", "kad", "macros", "tcp", "noise", "yamux", "ping",
+    # Audited inert direct GetBlock raw codec in stacked DRAFT #1470.
+    "request-response",
 }
 FORBIDDEN_FEATURES = {"dns", "mdns", "quic", "upnp"}
 

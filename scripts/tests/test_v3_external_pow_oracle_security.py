@@ -35,6 +35,17 @@ def compiled_patched() -> dict[str, set[tuple[str, str]]]:
 
 
 class PublicLockMigrationTests(unittest.TestCase):
+    def test_libp2p_request_response_allowlist_is_exact_and_fail_closed(self) -> None:
+        manifest = tomllib.loads(
+            (ROOT / "crates/pulsedag-p2p/Cargo.toml").read_text(encoding="utf-8")
+        )
+        libp2p = manifest["dependencies"]["libp2p"]
+        features = set(libp2p["features"])
+        self.assertIs(libp2p["default-features"], False)
+        self.assertIn("request-response", features)
+        self.assertEqual(features, gate.EXPECTED_LIBP2P_FEATURES)
+        self.assertFalse(features & gate.FORBIDDEN_FEATURES)
+
     def test_raw_zero_vulnerability_report_must_be_complete_and_consistent(self) -> None:
         valid = {"vulnerabilities": {"found": False, "count": 0, "list": []}}
         self.assertEqual(gate.require_complete_zero_vulnerability_audit(valid), [])
