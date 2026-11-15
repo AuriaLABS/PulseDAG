@@ -82,6 +82,26 @@ impl DirectGetBlockPendingBookV1 {
         self.pending.is_empty()
     }
 
+    /// Inspect the frozen expected envelope before decoding an untrusted raw
+    /// response. Correlation must originate from libp2p's OutboundRequestId,
+    /// not from a request_id supplied in the response payload.
+    pub fn expected_request(&self, request_id: &str) -> Option<&DirectGetBlockRequestV1> {
+        self.pending.get(request_id).map(|pending| &pending.request)
+    }
+
+    /// Cancel only the exact authenticated target's request, for example
+    /// after a failed send_request. Never reset the lifetime ID high-water mark.
+    pub fn cancel_request(&mut self, request_id: &str, authenticated_target_peer_id: &str) -> bool {
+        let authorized = self
+            .pending
+            .get(request_id)
+            .is_some_and(|request| request.target_peer_id == authenticated_target_peer_id);
+        if authorized {
+            self.pending.remove(request_id);
+        }
+        authorized
+    }
+
     pub fn begin(
         &mut self,
         request: DirectGetBlockRequestV1,
