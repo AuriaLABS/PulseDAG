@@ -334,3 +334,20 @@ The active development inventory gate now emits `ci-evidence/dependency-v3-secur
 The summary's `remaining_launch_blockers` now includes this inherited unmaintained debt alongside `atty`, and `reachable_unmaintained_compiler_debt_by_launch_root` names each compiled root and advisory. The CLI success message explicitly says **inventory pass only, not release security approval**. Five standalone negative Python tests protect the report. The raw RustSec DB and advisory counts remain authoritative; `.cargo/audit.toml` is untouched, and **no advisory ignore has been added**.
 
 This update **does NOT upgrade or fix pin-utils or async-std**, prove absence of a memory-safety bug, mitigate the `atty` or `faster-hex` advisory separately, or grant public-testnet/mainnet GO. A separately validated parent-stack migration away from the archived packages is still needed, with native v3 PoW/KHeavyHash/CPU-GPU/CI verification.
+
+## 2026-11-15 — combined direct GetBlock codec/security policy integration gate
+
+The pinned libp2p `request-response` codec and exact feature allowlist MUST be
+reviewed and tested **together** before either lands in `main`. Installing
+only the codec while retaining the former nine-feature allowlist fails the
+active RustSec/reachability validator, as observed in #1470 main-target CI.
+The combined #1471 candidate adds the sole audited feature, retains
+`default-features=false`, rejects DNS/mDNS/QUIC/UPnP and rejects lockfile
+drift with `cargo --locked` and `git diff --exit-code`. No advisory waiver
+or automatic trust of additional transitive dependencies is created.
+
+The merged source must still pass full exact-head RustSec, compiled-root
+inventory, Windows/Linux and P2P codec tests; parent-only green checks are
+insufficient. The dormant codec is **not** attached to live block service;
+public testnet and mainnet remain NO-GO, monetary mining OFF and contracts
+INACTIVE.
