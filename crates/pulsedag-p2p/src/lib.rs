@@ -6254,6 +6254,62 @@ async fn run_libp2p_runtime(
     }
 }
 
+/// No live GetBlock request or response is authorized in the current runtime.
+/// Record only authenticated metadata for unexpected request-response events:
+/// raw 8 MiB response bodies, block bytes and remote JSON must never be
+/// formatted through the generic SwarmEvent debug logging fallback.
+fn direct_getblock_event_payload_summary_v1(
+    kind: &'static str,
+    authenticated_peer: &PeerId,
+    raw: &[u8],
+) -> String {
+    format!("direct-getblock-rejected:{kind}:peer={authenticated_peer}:bytes={}", raw.len())
+}
+
+fn summarize_unapproved_direct_getblock_event_v1(
+    event: &request_response::Event<Vec<u8>, Vec<u8>>,
+) -> String {
+    match event {
+        request_response::Event::Message { peer, message, .. } => match message {
+            request_response::Message::Request { request, .. } => {
+                direct_getblock_event_payload_summary_v1("inbound-request", peer, request)
+            }
+            request_response::Message::Response { response, .. } => {
+                direct_getblock_event_payload_summary_v1("unsolicited-response", peer, response)
+            }
+        },
+        request_response::Event::OutboundFailure { peer, .. } => {
+            format!("direct-getblock-rejected:outbound-failure:peer={peer}")
+        }
+        request_response::Event::InboundFailure { peer, .. } => {
+            format!("direct-getblock-rejected:inbound-failure:peer={peer}")
+        }
+        request_response::Event::ResponseSent { peer, .. } => {
+            format!("direct-getblock-rejected:unexpected-response-sent:peer={peer}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_swarm_event_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_log_untrusted_large_raw_getblock_payloads() {
+        let peer = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let mut secret = vec![b'X'; 8 * 1024 * 1024];
+        secret[..16].copy_from_slice(b"SECRET-DO-NOTLOG");
+        for kind in ["inbound-request", "unsolicited-response"] {
+            let summary = direct_getblock_event_payload_summary_v1(kind, &peer, &secret);
+            assert!(summary.len() < 200, "event log must be bounded");
+            assert!(summary.contains(&format!("peer={peer}")));
+            assert!(summary.contains("bytes=8388608"));
+            assert!(!summary.contains("SECRET"));
+            assert!(!summary.contains("XXXX"));
+        }
+    }
+}
+
 type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlockRawCodecV1>;
 
 #[derive(NetworkBehaviour)]
@@ -7097,6 +7153,15 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
                         note_swarm_event(&inner, format!("ping:{event:?}"));
+                    }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetBlock(event)) => {
+                        // Outbound-only and no production send_request yet. Reject
+                        // every unapproved message without serializing raw block
+                        // bytes into the generic debug event logger.
+                        note_swarm_event(
+                            &inner,
+                            summarize_unapproved_direct_getblock_event_v1(&event),
+                        );
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
