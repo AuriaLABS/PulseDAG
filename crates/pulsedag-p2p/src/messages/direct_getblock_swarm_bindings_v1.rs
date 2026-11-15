@@ -391,6 +391,147 @@ mod tests {
         assert!(tracker.is_empty());
     }
 
+    fn local_request(peer: &PeerId, hash: &str) -> PeerAddressedBlockRequest {
+        PeerAddressedBlockRequest {
+            request_id: "getblock:locally-allocated:1".to_string(),
+            requested_peer_id: peer.to_string(),
+            block_hash: hash.to_string(),
+            sent_at: 0,
+        }
+    }
+
+    #[test]
+    fn authenticated_accepted_block_is_delivered_only_to_daemon_ingress() {
+        let local = peer();
+        let target = peer();
+        let chain = pulsedag_core::genesis::init_chain_state("swarm-bindings-test".to_string());
+        let hash = chain.dag.genesis_hash.clone();
+        let block = chain.dag.blocks.get(&hash).unwrap().clone();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let request: DirectGetBlockRequestV1 = serde_json::from_slice(&outgoing).unwrap();
+        let reply = DirectGetBlockResponseV1 {
+            version: DIRECT_GETBLOCK_PROTOCOL_V1,
+            chain_id: request.chain_id.clone(),
+            request_id: request.request_id.clone(),
+            responding_peer_id: target.to_string(),
+            block_hash: hash.clone(),
+            block: Some(block),
+        };
+        let raw = encode_direct_getblock_response(&reply, &request, &target.to_string()).unwrap();
+        let local_request = local_request(&target, &hash);
+        let event = tracker
+            .deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now)
+            .unwrap();
+        assert!(matches!(
+            event,
+            InboundEvent::Block { peer_id: Some(ref actual_peer), block }
+                if actual_peer == &target.to_string() && block.hash == hash
+        ));
+        assert!(tracker.is_empty());
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
+    }
+
+    #[test]
+    fn authenticated_missing_result_uses_local_request_identity_not_remote_claim() {
+        let local = peer();
+        let target = peer();
+        let impostor = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "e".repeat(64);
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let raw_reply = missing_reply(&outgoing, &target);
+        let mut wrong_request = local_request(&target, &hash);
+        wrong_request.block_hash = "f".repeat(64);
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &target,
+                &raw_reply,
+                &wrong_request,
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &impostor,
+                &raw_reply,
+                &local_request(&target, &hash),
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer)
+        ));
+        assert_eq!(tracker.len(), 1);
+        let request = local_request(&target, &hash);
+        let event = tracker
+            .deliver_verified_response_to_daemon(&id, &target, &raw_reply, &request, now)
+            .unwrap();
+        assert!(matches!(
+            event,
+            InboundEvent::BlockDataMissing {
+                hash: Some(ref actual_hash),
+                peer_id: Some(ref actual_peer),
+                request_id: Some(ref actual_request),
+            } if actual_hash == &hash
+                && actual_peer == &target.to_string()
+                && actual_request == &request.request_id
+        ));
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn malformed_authenticated_response_never_emits_daemon_event() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "a".repeat(64);
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&missing_reply(&outgoing, &target)).unwrap();
+        forged["chain_id"] = serde_json::json!("foreign-chain");
+        let request = local_request(&target, &hash);
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &target,
+                &serde_json::to_vec(&forged).unwrap(),
+                &request,
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::Ticket(_))
+        ));
+        assert!(tracker.is_empty());
+    }
+
     #[test]
     fn duplicate_transport_id_is_rejected_without_replacing_existing_binding() {
         let local = peer();
