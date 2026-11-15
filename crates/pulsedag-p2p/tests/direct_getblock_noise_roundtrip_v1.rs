@@ -22,8 +22,7 @@ use pulsedag_p2p::messages::direct_getblock_outbound_v1::DirectGetBlockOutboundV
 use pulsedag_p2p::messages::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
 };
-use pulsedag_p2p::messages::direct_getblock_response_channel_v1::
-    DirectGetBlockLibp2pResponseChannelsV1;
+use pulsedag_p2p::messages::direct_getblock_response_channel_v1::DirectGetBlockLibp2pResponseChannelsV1;
 
 const CHAIN: &str = "offline-noise-two-node-getblock-v3";
 
@@ -41,7 +40,10 @@ fn swarm(key: identity::Keypair, supported: ProtocolSupport) -> DirectSwarm {
         .with_behaviour(move |_| {
             request_response::Behaviour::with_codec(
                 DirectGetBlockRawCodecV1,
-                [(StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1), supported)],
+                [(
+                    StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
+                    supported,
+                )],
                 request_response::Config::default()
                     .with_request_timeout(DIRECT_GETBLOCK_REQUEST_TTL)
                     .with_max_concurrent_streams(MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL),
