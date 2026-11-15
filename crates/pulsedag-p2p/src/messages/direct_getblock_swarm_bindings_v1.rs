@@ -146,7 +146,8 @@ impl DirectGetBlockSwarmBindingsV1 {
         }
         let ticket_id = bound.ticket_id.clone();
         self.by_transport_id.remove(transport_id);
-        self.outbound.cancel_request(&ticket_id, authenticated_target);
+        self.outbound
+            .cancel_request(&ticket_id, authenticated_target);
         Ok(())
     }
 
@@ -178,15 +179,15 @@ impl DirectGetBlockSwarmBindingsV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use libp2p::{identity, request_response, StreamProtocol};
     use super::super::direct_getblock_codec_v1::{
         DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1,
     };
     use super::super::direct_getblock_v1::{
-        encode_direct_getblock_response, DirectGetBlockRequestV1,
-        DirectGetBlockResponseV1, DIRECT_GETBLOCK_PROTOCOL_V1,
+        encode_direct_getblock_response, DirectGetBlockRequestV1, DirectGetBlockResponseV1,
+        DIRECT_GETBLOCK_PROTOCOL_V1,
     };
+    use super::*;
+    use libp2p::{identity, request_response, StreamProtocol};
     use std::time::Duration;
 
     fn peer() -> PeerId {
@@ -204,10 +205,7 @@ mod tests {
         )
     }
 
-    fn missing_reply(
-        raw_request: &[u8],
-        target: &PeerId,
-    ) -> Vec<u8> {
+    fn missing_reply(raw_request: &[u8], target: &PeerId) -> Vec<u8> {
         let req: DirectGetBlockRequestV1 = serde_json::from_slice(raw_request).unwrap();
         let reply = DirectGetBlockResponseV1 {
             version: DIRECT_GETBLOCK_PROTOCOL_V1,
@@ -229,22 +227,34 @@ mod tests {
         let hash = "a".repeat(64);
         let now = Instant::now();
         let mut outgoing = Vec::<Vec<u8>>::new();
-        let one = tracker.issue_with(&target, &hash, true, now, |p, raw| {
-            outgoing.push(raw.clone());
-            live.send_request(p, raw)
-        }).unwrap();
-        let two = tracker.issue_with(&target, &hash, true, now, |p, raw| {
-            outgoing.push(raw.clone());
-            live.send_request(p, raw)
-        }).unwrap();
+        let one = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                outgoing.push(raw.clone());
+                live.send_request(p, raw)
+            })
+            .unwrap();
+        let two = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                outgoing.push(raw.clone());
+                live.send_request(p, raw)
+            })
+            .unwrap();
         assert_ne!(one, two);
         assert_ne!(
-            serde_json::from_slice::<DirectGetBlockRequestV1>(&outgoing[0]).unwrap().request_id,
-            serde_json::from_slice::<DirectGetBlockRequestV1>(&outgoing[1]).unwrap().request_id
+            serde_json::from_slice::<DirectGetBlockRequestV1>(&outgoing[0])
+                .unwrap()
+                .request_id,
+            serde_json::from_slice::<DirectGetBlockRequestV1>(&outgoing[1])
+                .unwrap()
+                .request_id
         );
         assert_eq!(tracker.len(), 2);
-        tracker.accept_response(&two, &target, &missing_reply(&outgoing[1], &target), now).unwrap();
-        tracker.accept_response(&one, &target, &missing_reply(&outgoing[0], &target), now).unwrap();
+        tracker
+            .accept_response(&two, &target, &missing_reply(&outgoing[1], &target), now)
+            .unwrap();
+        tracker
+            .accept_response(&one, &target, &missing_reply(&outgoing[0], &target), now)
+            .unwrap();
         assert!(tracker.is_empty());
         assert!(matches!(
             tracker.accept_response(&one, &target, &missing_reply(&outgoing[0], &target), now),
@@ -262,10 +272,12 @@ mod tests {
         let hash = "b".repeat(64);
         let now = Instant::now();
         let mut request = Vec::new();
-        let id = tracker.issue_with(&target, &hash, true, now, |p, raw| {
-            request = raw.clone();
-            live.send_request(p, raw)
-        }).unwrap();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                request = raw.clone();
+                live.send_request(p, raw)
+            })
+            .unwrap();
         let valid = missing_reply(&request, &target);
         assert!(matches!(
             tracker.accept_response(&id, &imposter, &valid, now),
@@ -294,19 +306,35 @@ mod tests {
         let hash = "c".repeat(64);
         let now = Instant::now();
         assert!(matches!(
-            tracker.issue_with(&target, &hash, false, now, |p, raw| live.send_request(p, raw)),
+            tracker.issue_with(&target, &hash, false, now, |p, raw| live
+                .send_request(p, raw)),
             Err(DirectGetBlockSwarmBindingErrorV1::NotConnected)
         ));
         assert!(tracker.is_empty());
-        let id = tracker.issue_with(&target, &hash, true, now, |p, raw| live.send_request(p, raw)).unwrap();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                live.send_request(p, raw)
+            })
+            .unwrap();
         assert_eq!(tracker.len(), 1);
         assert!(tracker.outbound_failure(&id, &target).is_ok());
         assert!(tracker.is_empty());
-        tracker.issue_with(&target, &hash, true, now, |p, raw| live.send_request(p, raw)).unwrap();
+        tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                live.send_request(p, raw)
+            })
+            .unwrap();
         assert_eq!(tracker.last_connection_closed(&target), 1);
         assert!(tracker.is_empty());
-        tracker.issue_with(&target, &hash, true, now, |p, raw| live.send_request(p, raw)).unwrap();
-        assert_eq!(tracker.expire(now + DIRECT_GETBLOCK_REQUEST_TTL + Duration::from_millis(1)), 1);
+        tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                live.send_request(p, raw)
+            })
+            .unwrap();
+        assert_eq!(
+            tracker.expire(now + DIRECT_GETBLOCK_REQUEST_TTL + Duration::from_millis(1)),
+            1
+        );
         assert!(tracker.is_empty());
     }
 
@@ -318,7 +346,11 @@ mod tests {
         let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
         let hash = "d".repeat(64);
         let now = Instant::now();
-        let first = tracker.issue_with(&target, &hash, true, now, |p, raw| live.send_request(p, raw)).unwrap();
+        let first = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                live.send_request(p, raw)
+            })
+            .unwrap();
         assert!(matches!(
             tracker.issue_with(&target, &hash, true, now, |_, _| first),
             Err(DirectGetBlockSwarmBindingErrorV1::DuplicateTransportId)
