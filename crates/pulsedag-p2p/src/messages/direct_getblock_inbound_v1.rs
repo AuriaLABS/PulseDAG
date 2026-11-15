@@ -313,7 +313,11 @@ mod tests {
             responder.reply_from_accepted_dag(canonical_ticket.local_token, &remote, &foreign, now),
             Err(DirectGetBlockInboundErrorV1::ChainDomainMismatch)
         ));
-        assert_eq!(responder.len(), 1, "foreign chain must not consume valid local ticket");
+        assert_eq!(
+            responder.len(),
+            1,
+            "foreign chain must not consume valid local ticket"
+        );
         let bytes = responder
             .reply_from_accepted_dag(canonical_ticket.local_token, &remote, &chain, now)
             .unwrap();
