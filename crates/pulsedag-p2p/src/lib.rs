@@ -6718,16 +6718,17 @@ async fn run_libp2p_real_runtime(
 
     // The pending book belongs to THIS Swarm's request-response ID namespace.
     // Creating it does not issue requests, advertise inbound service or admit blocks.
-    let mut direct_getblock_bindings = match DirectGetBlockSwarmBindingsV1::new(
-        &cfg.chain_id,
-        *swarm.local_peer_id(),
-    ) {
-        Ok(bindings) => bindings,
-        Err(error) => {
-            note_swarm_event(&inner, format!("swarm-init-failed:direct-getblock-book:{error:?}"));
-            return;
-        }
-    };
+    let mut direct_getblock_bindings =
+        match DirectGetBlockSwarmBindingsV1::new(&cfg.chain_id, *swarm.local_peer_id()) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                note_swarm_event(
+                    &inner,
+                    format!("swarm-init-failed:direct-getblock-book:{error:?}"),
+                );
+                return;
+            }
+        };
 
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
