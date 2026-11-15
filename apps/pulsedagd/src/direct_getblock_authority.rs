@@ -22,6 +22,7 @@ pub(super) enum DirectGetBlockAuthorityDecisionV1<'a> {
     RejectNoncanonicalHash,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn canonical_hash(hash: &str) -> bool {
     hash.len() == 64
         && hash
@@ -82,7 +83,12 @@ mod tests {
     #[test]
     fn staged_and_orphan_blocks_are_never_authority_for_direct_getblock() {
         let mut chain = init_chain_state(CHAIN_ID.to_string());
-        let mut unaccepted = chain.dag.blocks.get(&chain.dag.genesis_hash).unwrap().clone();
+        let mut unaccepted = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
         unaccepted.hash = "a".repeat(64);
         assert!(!chain.dag.blocks.contains_key(&unaccepted.hash));
         chain.orphan_blocks.insert(unaccepted.hash.clone(), unaccepted.clone());
@@ -111,14 +117,24 @@ mod tests {
     fn canonical_hash_and_map_key_must_match_accepted_block_identity() {
         let mut chain = init_chain_state(CHAIN_ID.to_string());
         let hash = "b".repeat(64);
-        let accepted_genesis = chain.dag.blocks.get(&chain.dag.genesis_hash).unwrap().clone();
+        let accepted_genesis = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
         chain.dag.blocks.insert(hash.clone(), accepted_genesis);
         assert!(matches!(
             lookup_accepted_direct_getblock_v1(&chain, CHAIN_ID, CHAIN_ID, &hash),
             DirectGetBlockAuthorityDecisionV1::Missing
         ));
         assert!(matches!(
-            lookup_accepted_direct_getblock_v1(&chain, CHAIN_ID, CHAIN_ID, "B".repeat(64).as_str()),
+            lookup_accepted_direct_getblock_v1(
+                &chain,
+                CHAIN_ID,
+                CHAIN_ID,
+                &"B".repeat(64),
+            ),
             DirectGetBlockAuthorityDecisionV1::RejectNoncanonicalHash
         ));
     }
