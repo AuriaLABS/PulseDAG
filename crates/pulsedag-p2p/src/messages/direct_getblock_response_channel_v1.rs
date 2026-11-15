@@ -22,6 +22,7 @@ use super::direct_getblock_pending_v1::DIRECT_GETBLOCK_REQUEST_TTL;
 pub enum DirectGetBlockChannelErrorV1 {
     Inbound(DirectGetBlockInboundErrorV1),
     DuplicateLocalToken,
+    DeadlineOverflow,
     UnknownLocalToken,
     WrongAuthenticatedPeer,
     SendFailed,
@@ -71,6 +72,9 @@ impl<C> DirectGetBlockResponseChannelsV1<C> {
         now: Instant,
     ) -> Result<DirectGetBlockInboundTicketV1, DirectGetBlockChannelErrorV1> {
         self.expire(now);
+        let deadline = now
+            .checked_add(DIRECT_GETBLOCK_REQUEST_TTL)
+            .ok_or(DirectGetBlockChannelErrorV1::DeadlineOverflow)?;
         let ticket = self
             .inbound
             .accept(raw, authenticated_remote, now)
@@ -78,7 +82,7 @@ impl<C> DirectGetBlockResponseChannelsV1<C> {
         let local_token = ticket.local_token;
         let channel = LocalResponseChannel {
             authenticated_remote: *authenticated_remote,
-            deadline: now + DIRECT_GETBLOCK_REQUEST_TTL,
+            deadline,
             channel: response_channel,
         };
         match self.channels.entry(local_token) {
