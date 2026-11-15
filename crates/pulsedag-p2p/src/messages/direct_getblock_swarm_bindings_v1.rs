@@ -36,6 +36,7 @@ struct BoundRequest {
     target: PeerId,
     ticket_id: String,
     requested_hash: String,
+    local_daemon_request_id: Option<String>,
     deadline: Instant,
 }
 
@@ -101,10 +102,36 @@ impl DirectGetBlockSwarmBindingsV1 {
                 target: *authenticated_target,
                 ticket_id: prepared.request.request_id,
                 requested_hash: prepared.request.block_hash,
+                local_daemon_request_id: None,
                 deadline,
             },
         );
         Ok(transport_id)
+    }
+
+    /// Bind the exact daemon-local request ID to the REAL outbound transport ID.
+    /// This must run synchronously after issue_with in the Swarm event loop,
+    /// before any response event can be handled. Same peer/hash concurrent
+    /// requests must never allow swapping one daemon's request ID for another.
+    pub fn bind_local_daemon_request(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        original: &PeerAddressedBlockRequest,
+    ) -> Result<(), DirectGetBlockSwarmBindingErrorV1> {
+        let bound = self
+            .by_transport_id
+            .get_mut(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?;
+        if bound.local_daemon_request_id.is_some()
+            || original.requested_peer_id != bound.target.to_string()
+            || original.block_hash != bound.requested_hash
+            || !original.request_id.starts_with("getblock:")
+            || original.request_id.len() > 256
+        {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        bound.local_daemon_request_id = Some(original.request_id.clone());
+        Ok(())
     }
 
     /// Only a real Swarm event's OutboundRequestId may select a slot.
@@ -163,8 +190,8 @@ impl DirectGetBlockSwarmBindingsV1 {
         }
         if original_local_request.requested_peer_id != authenticated_peer.to_string()
             || original_local_request.block_hash != bound.requested_hash
-            || !original_local_request.request_id.starts_with("getblock:")
-            || original_local_request.request_id.len() > 256
+            || bound.local_daemon_request_id.as_deref()
+                != Some(original_local_request.request_id.as_str())
         {
             return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
         }
