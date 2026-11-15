@@ -27,6 +27,7 @@ pub enum DirectGetBlockInboundErrorV1 {
     SelfRequest,
     UnknownLocalToken,
     WrongAuthenticatedPeer,
+    ChainDomainMismatch,
     DuplicateRequest,
     GlobalLimit,
     PeerLimit,
@@ -164,6 +165,14 @@ impl DirectGetBlockInboundV1 {
         if &pending.authenticated_remote != authenticated_remote {
             return Err(DirectGetBlockInboundErrorV1::WrongAuthenticatedPeer);
         }
+        // The accepted DAG is the only block authority. Its chain domain
+        // must agree with BOTH the configured listener and the exact inbound
+        // request, otherwise a foreign genesis could be laundered as local.
+        if accepted_chain.chain_id != self.chain_id
+            || accepted_chain.chain_id != pending.request.chain_id
+        {
+            return Err(DirectGetBlockInboundErrorV1::ChainDomainMismatch);
+        }
         let request = pending.request.clone();
         let response = DirectGetBlockResponseV1 {
             version: DIRECT_GETBLOCK_PROTOCOL_V1,
@@ -299,6 +308,12 @@ mod tests {
         let mut responder = DirectGetBlockInboundV1::new("inbound-test", local).unwrap();
         let canonical_wire = raw("inbound-test", &remote, &local, &canonical_hash, 1);
         let canonical_ticket = responder.accept(&canonical_wire, &remote, now).unwrap();
+        let foreign = init_chain_state("foreign-chain".into());
+        assert!(matches!(
+            responder.reply_from_accepted_dag(canonical_ticket.local_token, &remote, &foreign, now),
+            Err(DirectGetBlockInboundErrorV1::ChainDomainMismatch)
+        ));
+        assert_eq!(responder.len(), 1, "foreign chain must not consume valid local ticket");
         let bytes = responder
             .reply_from_accepted_dag(canonical_ticket.local_token, &remote, &chain, now)
             .unwrap();
