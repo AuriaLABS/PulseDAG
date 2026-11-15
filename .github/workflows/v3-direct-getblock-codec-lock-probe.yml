@@ -46,6 +46,7 @@ jobs:
           cargo check --locked -p pulsedag-p2p --all-targets
           cargo test --locked -p pulsedag-p2p --lib direct_getblock_codec_v1 -- --nocapture
           cargo test --locked -p pulsedag-p2p --lib direct_getblock_pending_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_v1 -- --nocapture
           cargo fmt --all -- --check
           git diff --exit-code -- Cargo.lock
       - name: Preserve exact generated Cargo.lock for independent review
