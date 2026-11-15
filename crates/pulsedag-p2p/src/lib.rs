@@ -50,6 +50,7 @@ use crate::messages::direct_getblock_codec_v1::{
 use crate::messages::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
 };
+use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
@@ -6715,6 +6716,19 @@ async fn run_libp2p_real_runtime(
         }
     };
 
+    // The pending book belongs to THIS Swarm's request-response ID namespace.
+    // Creating it does not issue requests, advertise inbound service or admit blocks.
+    let mut direct_getblock_bindings = match DirectGetBlockSwarmBindingsV1::new(
+        &cfg.chain_id,
+        *swarm.local_peer_id(),
+    ) {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            note_swarm_event(&inner, format!("swarm-init-failed:direct-getblock-book:{error:?}"));
+            return;
+        }
+    };
+
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
         Err(e) => {
@@ -7158,9 +7172,22 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetblock(event)) => {
-                        // Outbound-only and no production send_request yet. Reject
-                        // every unapproved message without serializing raw block
-                        // bytes into the generic debug event logger.
+                        // Bind cleanup to the real libp2p event IDs and authenticated
+                        // peer. An unexpected response is verified and then DROPPED:
+                        // daemon block admission is NOT connected or authorized yet.
+                        match &event {
+                            request_response::Event::Message { peer, message: request_response::Message::Response { request_id, response }, .. } => {
+                                let _ = direct_getblock_bindings.accept_response(
+                                    request_id, peer, response, std::time::Instant::now(),
+                                );
+                            }
+                            request_response::Event::OutboundFailure { peer, request_id, .. } => {
+                                let _ = direct_getblock_bindings.outbound_failure(request_id, peer);
+                            }
+                            _ => {}
+                        }
+                        // This remains a non-activating fail-closed event arm.
+                        // Never format raw GetBlock payloads with Debug.
                         note_swarm_event(
                             &inner,
                             summarize_unapproved_direct_getblock_event_v1(&event),
@@ -7203,6 +7230,9 @@ async fn run_libp2p_real_runtime(
                             direction,
                         );
                         if should_mark_disconnected {
+                            // Only the LAST authenticated connection may cancel
+                            // the peer's request-response slots.
+                            direct_getblock_bindings.last_connection_closed(&peer_id);
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -7257,6 +7287,9 @@ async fn run_libp2p_real_runtime(
                 }
             }
             _ = bootnode_redial_tick.tick() => {
+                // A stalled transport event loop cannot retain pending tickets
+                // beyond the eight-second direct GetBlock budget.
+                direct_getblock_bindings.expire(std::time::Instant::now());
                 if let Ok(mut guard) = inner.lock() {
                     refresh_connected_peers_from_health(&mut guard);
                     enforce_connectivity_aware_cooldown_floor(&mut guard, now_unix());
