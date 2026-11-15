@@ -18,6 +18,7 @@ use libp2p::PeerId;
 use super::direct_getblock_outbound_v1::{DirectGetBlockOutboundError, DirectGetBlockOutboundV1};
 use super::direct_getblock_pending_v1::DIRECT_GETBLOCK_REQUEST_TTL;
 use super::direct_getblock_v1::DirectGetBlockResponseV1;
+use crate::{InboundEvent, PeerAddressedBlockRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectGetBlockSwarmBindingErrorV1 {
@@ -27,12 +28,14 @@ pub enum DirectGetBlockSwarmBindingErrorV1 {
     DuplicateTransportId,
     UnknownTransportId,
     WrongTransportPeer,
+    WrongLocalRequest,
 }
 
 #[derive(Debug, Clone)]
 struct BoundRequest {
     target: PeerId,
     ticket_id: String,
+    requested_hash: String,
     deadline: Instant,
 }
 
@@ -97,6 +100,7 @@ impl DirectGetBlockSwarmBindingsV1 {
             BoundRequest {
                 target: *authenticated_target,
                 ticket_id: prepared.request.request_id,
+                requested_hash: prepared.request.block_hash,
                 deadline,
             },
         );
@@ -129,6 +133,55 @@ impl DirectGetBlockSwarmBindingsV1 {
         self.by_transport_id.remove(transport_id);
         self.outbound.cancel_request(&ticket_id, authenticated_peer);
         outcome.map_err(DirectGetBlockSwarmBindingErrorV1::Ticket)
+    }
+
+    /// Convert an authenticated, strictly correlated response to the EXISTING
+    /// daemon ingress event. This deliberately does not validate or insert
+    /// the block in consensus: InboundEvent::Block must traverse the daemon's
+    /// normal full PoW/ancestry/monetary admission pipeline.
+    ///
+    /// The original legacy request is local-only state paired with the real
+    /// OutboundRequestId by the runtime. It must NEVER be read from reply JSON.
+    /// Verify its exact destination/hash BEFORE consuming the outbound ticket.
+    /// Still dormant until the production Swarm sends requests and the daemon
+    /// response path is connected.
+    pub fn deliver_verified_response_to_daemon(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        authenticated_peer: &PeerId,
+        raw: &[u8],
+        original_local_request: &PeerAddressedBlockRequest,
+        now: Instant,
+    ) -> Result<InboundEvent, DirectGetBlockSwarmBindingErrorV1> {
+        self.expire(now);
+        let bound = self
+            .by_transport_id
+            .get(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?;
+        if &bound.target != authenticated_peer {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer);
+        }
+        if original_local_request.requested_peer_id != authenticated_peer.to_string()
+            || original_local_request.block_hash != bound.requested_hash
+            || !original_local_request.request_id.starts_with("getblock:")
+            || original_local_request.request_id.len() > 256
+        {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        // Checks response transport-ID/peer/chain domain/wire request-ID/hash
+        // against the ticket prepared locally, then removes the one-shot slot.
+        let response = self.accept_response(transport_id, authenticated_peer, raw, now)?;
+        Ok(match response.block {
+            Some(block) => InboundEvent::Block {
+                peer_id: Some(authenticated_peer.to_string()),
+                block,
+            },
+            None => InboundEvent::BlockDataMissing {
+                hash: Some(response.block_hash),
+                peer_id: Some(authenticated_peer.to_string()),
+                request_id: Some(original_local_request.request_id.clone()),
+            },
+        })
     }
 
     /// OutboundFailure must use the peer identified by the actual Swarm event.
