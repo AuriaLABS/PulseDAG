@@ -109,7 +109,10 @@ impl DirectGetBlockInboundV1 {
             .values()
             .filter(|ticket| &ticket.authenticated_remote == authenticated_remote)
             .collect::<Vec<_>>();
-        if same_peer.iter().any(|ticket| ticket.request.request_id == request.request_id) {
+        if same_peer
+            .iter()
+            .any(|ticket| ticket.request.request_id == request.request_id)
+        {
             return Err(DirectGetBlockInboundErrorV1::DuplicateRequest);
         }
         if same_peer.len() >= MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER {
@@ -210,13 +213,7 @@ mod tests {
         PeerId::from(identity::Keypair::generate_ed25519().public())
     }
 
-    fn raw(
-        chain: &str,
-        remote: &PeerId,
-        local: &PeerId,
-        hash: &str,
-        suffix: u64,
-    ) -> Vec<u8> {
+    fn raw(chain: &str, remote: &PeerId, local: &PeerId, hash: &str, suffix: u64) -> Vec<u8> {
         let request = DirectGetBlockRequestV1 {
             version: DIRECT_GETBLOCK_PROTOCOL_V1,
             chain_id: chain.to_owned(),
@@ -268,11 +265,18 @@ mod tests {
             .reply_from_accepted_dag(ticket.local_token, &remote, &accepted, now)
             .unwrap();
         let request = decode_direct_getblock_request(
-            &wire, "inbound-test", &remote.to_string(), &local.to_string()
-        ).unwrap();
+            &wire,
+            "inbound-test",
+            &remote.to_string(),
+            &local.to_string(),
+        )
+        .unwrap();
         let decoded = super::super::direct_getblock_v1::decode_direct_getblock_response(
-            &response, &request, &local.to_string()
-        ).unwrap();
+            &response,
+            &request,
+            &local.to_string(),
+        )
+        .unwrap();
         assert!(decoded.block.is_none());
         assert_eq!(responder.len(), 0);
         assert!(matches!(
@@ -295,12 +299,22 @@ mod tests {
             .reply_from_accepted_dag(canonical_ticket.local_token, &remote, &chain, now)
             .unwrap();
         let original = decode_direct_getblock_request(
-            &canonical_wire, "inbound-test", &remote.to_string(), &local.to_string()
-        ).unwrap();
+            &canonical_wire,
+            "inbound-test",
+            &remote.to_string(),
+            &local.to_string(),
+        )
+        .unwrap();
         let response = super::super::direct_getblock_v1::decode_direct_getblock_response(
-            &bytes, &original, &local.to_string()
-        ).unwrap();
-        assert_eq!(response.block.as_ref().map(|b| b.hash.as_str()), Some(canonical_hash.as_str()));
+            &bytes,
+            &original,
+            &local.to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            response.block.as_ref().map(|b| b.hash.as_str()),
+            Some(canonical_hash.as_str())
+        );
 
         let staged_hash = "b".repeat(64);
         let mut fake_staged = chain.dag.blocks.get(&canonical_hash).unwrap().clone();
@@ -312,12 +326,22 @@ mod tests {
             .reply_from_accepted_dag(staged.local_token, &remote, &chain, now)
             .unwrap();
         let request = decode_direct_getblock_request(
-            &staged_wire, "inbound-test", &remote.to_string(), &local.to_string()
-        ).unwrap();
+            &staged_wire,
+            "inbound-test",
+            &remote.to_string(),
+            &local.to_string(),
+        )
+        .unwrap();
         let response = super::super::direct_getblock_v1::decode_direct_getblock_response(
-            &bytes, &request, &local.to_string()
-        ).unwrap();
-        assert!(response.block.is_none(), "arbitrary staged data must never be served");
+            &bytes,
+            &request,
+            &local.to_string(),
+        )
+        .unwrap();
+        assert!(
+            response.block.is_none(),
+            "arbitrary staged data must never be served"
+        );
     }
 
     #[test]
@@ -334,7 +358,11 @@ mod tests {
         }
         assert_eq!(responder.len(), 4);
         assert!(matches!(
-            responder.accept(&raw("inbound-test", &remote, &local, &hash, 5), &remote, now),
+            responder.accept(
+                &raw("inbound-test", &remote, &local, &hash, 5),
+                &remote,
+                now
+            ),
             Err(DirectGetBlockInboundErrorV1::PeerLimit)
         ));
         let other_ticket = responder
@@ -348,7 +376,10 @@ mod tests {
         let chain = init_chain_state("inbound-test".into());
         assert!(matches!(
             responder.reply_from_accepted_dag(
-                other_ticket.local_token, &other, &chain, now + Duration::from_secs(8)
+                other_ticket.local_token,
+                &other,
+                &chain,
+                now + Duration::from_secs(8)
             ),
             Err(DirectGetBlockInboundErrorV1::UnknownLocalToken)
         ));
@@ -362,7 +393,11 @@ mod tests {
         let mut responder = DirectGetBlockInboundV1::new("inbound-test", local).unwrap();
         responder.next_token = u64::MAX;
         assert!(matches!(
-            responder.accept(&raw("inbound-test", &remote, &local, &"a".repeat(64), 1), &remote, now),
+            responder.accept(
+                &raw("inbound-test", &remote, &local, &"a".repeat(64), 1),
+                &remote,
+                now
+            ),
             Err(DirectGetBlockInboundErrorV1::TokenOverflow)
         ));
         assert_eq!(responder.len(), 0);
@@ -370,16 +405,27 @@ mod tests {
         let peers: Vec<_> = (0..8).map(|_| peer()).collect();
         for (i, remote) in peers.iter().enumerate() {
             for j in 0..4 {
-                responder.accept(
-                    &raw("inbound-test", remote, &local, &"a".repeat(64), (i * 4 + j) as u64),
-                    remote, now
-                ).unwrap();
+                responder
+                    .accept(
+                        &raw(
+                            "inbound-test",
+                            remote,
+                            &local,
+                            &"a".repeat(64),
+                            (i * 4 + j) as u64,
+                        ),
+                        remote,
+                        now,
+                    )
+                    .unwrap();
             }
         }
         assert_eq!(responder.len(), MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL);
         assert!(matches!(
             responder.accept(
-                &raw("inbound-test", &remote, &local, &"a".repeat(64), 1), &remote, now
+                &raw("inbound-test", &remote, &local, &"a".repeat(64), 1),
+                &remote,
+                now
             ),
             Err(DirectGetBlockInboundErrorV1::GlobalLimit)
         ));
