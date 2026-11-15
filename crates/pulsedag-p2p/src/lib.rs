@@ -7157,7 +7157,7 @@ async fn run_libp2p_real_runtime(
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
-                    SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetBlock(event)) => {
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetblock(event)) => {
                         // Outbound-only and no production send_request yet. Reject
                         // every unapproved message without serializing raw block
                         // bytes into the generic debug event logger.
