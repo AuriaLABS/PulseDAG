@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          grep -Fq 'PulseBehaviourEvent::DirectGetBlock(event)' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PulseBehaviourEvent::DirectGetblock(event)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'summarize_unapproved_direct_getblock_event_v1(&event)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
           if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
