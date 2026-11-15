@@ -91,7 +91,9 @@ mod tests {
             .clone();
         unaccepted.hash = "a".repeat(64);
         assert!(!chain.dag.blocks.contains_key(&unaccepted.hash));
-        chain.orphan_blocks.insert(unaccepted.hash.clone(), unaccepted.clone());
+        chain
+            .orphan_blocks
+            .insert(unaccepted.hash.clone(), unaccepted.clone());
         assert!(matches!(
             lookup_accepted_direct_getblock_v1(&chain, CHAIN_ID, CHAIN_ID, &unaccepted.hash),
             DirectGetBlockAuthorityDecisionV1::Missing
@@ -129,12 +131,7 @@ mod tests {
             DirectGetBlockAuthorityDecisionV1::Missing
         ));
         assert!(matches!(
-            lookup_accepted_direct_getblock_v1(
-                &chain,
-                CHAIN_ID,
-                CHAIN_ID,
-                &"B".repeat(64),
-            ),
+            lookup_accepted_direct_getblock_v1(&chain, CHAIN_ID, CHAIN_ID, &"B".repeat(64),),
             DirectGetBlockAuthorityDecisionV1::RejectNoncanonicalHash
         ));
     }
