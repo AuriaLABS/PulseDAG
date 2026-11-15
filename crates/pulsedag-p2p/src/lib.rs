@@ -6263,7 +6263,10 @@ fn direct_getblock_event_payload_summary_v1(
     authenticated_peer: &PeerId,
     raw: &[u8],
 ) -> String {
-    format!("direct-getblock-rejected:{kind}:peer={authenticated_peer}:bytes={}", raw.len())
+    format!(
+        "direct-getblock-rejected:{kind}:peer={authenticated_peer}:bytes={}",
+        raw.len()
+    )
 }
 
 fn summarize_unapproved_direct_getblock_event_v1(
