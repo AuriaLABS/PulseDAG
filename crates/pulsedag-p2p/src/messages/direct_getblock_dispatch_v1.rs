@@ -84,11 +84,14 @@ impl DirectGetBlockDispatchV1 {
         // libp2p generates this identifier; the remote cannot choose it.
         // send_request returns the locally assigned ID; a later
         // OutboundFailure MUST cancel this exact mapping.
-        let transport_id = self.behaviour.send_request(authenticated_target, prepared.wire);
+        let transport_id = self
+            .behaviour
+            .send_request(authenticated_target, prepared.wire);
         if self.by_transport_id.contains_key(&transport_id) {
             // Defensive invariant if libp2p ever violates uniqueness within
             // the owned behaviour. Never replace an older pending binding.
-            self.outbound.cancel_request(&prepared.request.request_id, authenticated_target);
+            self.outbound
+                .cancel_request(&prepared.request.request_id, authenticated_target);
             return Err(DirectGetBlockDispatchErrorV1::DuplicateOutboundRequestId);
         }
         self.by_transport_id.insert(
@@ -234,7 +237,8 @@ mod tests {
     fn actual_libp2p_ids_bind_retries_without_network_or_daemon_admission() {
         let local = peer();
         let remote = peer();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
+        let mut dispatch =
+            DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "a".repeat(64);
         assert!(matches!(
@@ -242,12 +246,8 @@ mod tests {
             Err(DirectGetBlockDispatchErrorV1::NoAuthenticatedConnection)
         ));
         assert!(dispatch.is_empty());
-        let first = dispatch
-            .issue(&remote, &hash, true, now)
-            .unwrap();
-        let second = dispatch
-            .issue(&remote, &hash, true, now)
-            .unwrap();
+        let first = dispatch.issue(&remote, &hash, true, now).unwrap();
+        let second = dispatch.issue(&remote, &hash, true, now).unwrap();
         assert_ne!(first, second);
         assert_eq!(dispatch.len(), 2);
 
@@ -282,15 +282,12 @@ mod tests {
         let local = peer();
         let remote = peer();
         let attacker = peer();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
+        let mut dispatch =
+            DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "b".repeat(64);
-        let a = dispatch
-            .issue(&remote, &hash, true, now)
-            .unwrap();
-        let b = dispatch
-            .issue(&remote, &hash, true, now)
-            .unwrap();
+        let a = dispatch.issue(&remote, &hash, true, now).unwrap();
+        let b = dispatch.issue(&remote, &hash, true, now).unwrap();
         let a_ticket = dispatch.by_transport_id.get(&a).unwrap().ticket_id.clone();
         let b_ticket = dispatch.by_transport_id.get(&b).unwrap().ticket_id.clone();
         let a_wire = missing_response("ticket-testnet", &a_ticket, &hash, &remote, &local);
@@ -327,7 +324,11 @@ mod tests {
             for _ in 0..4 {
                 dispatch.issue(&remote, &hash, true, instant).unwrap();
             }
-            assert_eq!(dispatch.len(), 4, "old transport IDs must expire before reissue");
+            assert_eq!(
+                dispatch.len(),
+                4,
+                "old transport IDs must expire before reissue"
+            );
             assert!(matches!(
                 dispatch.issue(&remote, &hash, true, instant),
                 Err(DirectGetBlockDispatchErrorV1::Ticket(
@@ -344,15 +345,12 @@ mod tests {
         let local = peer();
         let remote = peer();
         let attacker = peer();
-        let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
+        let mut dispatch =
+            DirectGetBlockDispatchV1::new("ticket-testnet", local, behaviour()).unwrap();
         let now = Instant::now();
         let hash = "c".repeat(64);
         let ids: Vec<_> = (0..4)
-            .map(|_| {
-                dispatch
-                    .issue(&remote, &hash, true, now)
-                    .unwrap()
-            })
+            .map(|_| dispatch.issue(&remote, &hash, true, now).unwrap())
             .collect();
         assert!(matches!(
             dispatch.issue(&remote, &hash, true, now),
@@ -368,9 +366,7 @@ mod tests {
         dispatch.outbound_failure(&ids[0], &remote).unwrap();
         assert_eq!(dispatch.len(), 3);
         assert_eq!(dispatch.peer_disconnected(&attacker), 0);
-        let fresh = dispatch
-            .issue(&remote, &hash, true, now)
-            .unwrap();
+        let fresh = dispatch.issue(&remote, &hash, true, now).unwrap();
         assert_ne!(ids[0], fresh);
         assert_eq!(dispatch.expire(now + Duration::from_secs(8)), 4);
         assert!(dispatch.is_empty());
