@@ -13,9 +13,7 @@ use libp2p::request_response::{self, OutboundRequestId};
 use libp2p::PeerId;
 
 use super::direct_getblock_codec_v1::DirectGetBlockRawCodecV1;
-use super::direct_getblock_outbound_v1::{
-    DirectGetBlockOutboundError, DirectGetBlockOutboundV1,
-};
+use super::direct_getblock_outbound_v1::{DirectGetBlockOutboundError, DirectGetBlockOutboundV1};
 use super::direct_getblock_pending_v1::DIRECT_GETBLOCK_REQUEST_TTL;
 use super::direct_getblock_v1::DirectGetBlockResponseV1;
 
@@ -43,7 +41,10 @@ pub struct DirectGetBlockDispatchV1 {
 }
 
 impl DirectGetBlockDispatchV1 {
-    pub fn new(chain_id: &str, authenticated_local_peer: PeerId) -> Result<Self, DirectGetBlockDispatchErrorV1> {
+    pub fn new(
+        chain_id: &str,
+        authenticated_local_peer: PeerId,
+    ) -> Result<Self, DirectGetBlockDispatchErrorV1> {
         let outbound = DirectGetBlockOutboundV1::new(chain_id, authenticated_local_peer)
             .map_err(DirectGetBlockDispatchErrorV1::Ticket)?;
         Ok(Self {
@@ -113,7 +114,8 @@ impl DirectGetBlockDispatchV1 {
         // On either a good or a bad response, release this peer's slot. A
         // forged response FROM A DIFFERENT PEER never mutates any slot.
         self.by_transport_id.remove(transport_id);
-        self.outbound.cancel_request(&ticket_id, authenticated_remote);
+        self.outbound
+            .cancel_request(&ticket_id, authenticated_remote);
         result.map_err(DirectGetBlockDispatchErrorV1::Ticket)
     }
 
@@ -133,7 +135,8 @@ impl DirectGetBlockDispatchV1 {
         }
         let ticket_id = dispatched.ticket_id.clone();
         self.by_transport_id.remove(transport_id);
-        self.outbound.cancel_request(&ticket_id, authenticated_target);
+        self.outbound
+            .cancel_request(&ticket_id, authenticated_target);
         Ok(())
     }
 
@@ -166,13 +169,12 @@ impl DirectGetBlockDispatchV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use libp2p::{identity, StreamProtocol};
     use super::super::direct_getblock_codec_v1::DIRECT_GETBLOCK_STREAM_PROTOCOL_V1;
     use super::super::direct_getblock_v1::{
-        encode_direct_getblock_response, DirectGetBlockResponseV1,
-        DIRECT_GETBLOCK_PROTOCOL_V1,
+        encode_direct_getblock_response, DirectGetBlockResponseV1, DIRECT_GETBLOCK_PROTOCOL_V1,
     };
+    use super::*;
+    use libp2p::{identity, StreamProtocol};
     use std::time::Duration;
 
     fn peer() -> PeerId {
@@ -182,8 +184,10 @@ mod tests {
     fn behaviour() -> request_response::Behaviour<DirectGetBlockRawCodecV1> {
         request_response::Behaviour::with_codec(
             DirectGetBlockRawCodecV1,
-            [(StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
-              request_response::ProtocolSupport::Outbound)],
+            [(
+                StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
+                request_response::ProtocolSupport::Outbound,
+            )],
             request_response::Config::default(),
         )
     }
@@ -227,19 +231,38 @@ mod tests {
             Err(DirectGetBlockDispatchErrorV1::NoAuthenticatedConnection)
         ));
         assert!(dispatch.is_empty());
-        let first = dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap();
-        let second = dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap();
+        let first = dispatch
+            .issue(&mut behaviour, &remote, &hash, true, now)
+            .unwrap();
+        let second = dispatch
+            .issue(&mut behaviour, &remote, &hash, true, now)
+            .unwrap();
         assert_ne!(first, second);
         assert_eq!(dispatch.len(), 2);
 
         // The remote cannot supply a transport ID, and a request ID inside
         // its body is not used as a lookup key.
-        let second_ticket = dispatch.by_transport_id.get(&second).unwrap().ticket_id.clone();
-        let first_ticket = dispatch.by_transport_id.get(&first).unwrap().ticket_id.clone();
-        let second_wire = missing_response("ticket-testnet", &second_ticket, &hash, &remote, &local);
+        let second_ticket = dispatch
+            .by_transport_id
+            .get(&second)
+            .unwrap()
+            .ticket_id
+            .clone();
+        let first_ticket = dispatch
+            .by_transport_id
+            .get(&first)
+            .unwrap()
+            .ticket_id
+            .clone();
+        let second_wire =
+            missing_response("ticket-testnet", &second_ticket, &hash, &remote, &local);
         let first_wire = missing_response("ticket-testnet", &first_ticket, &hash, &remote, &local);
-        dispatch.accept_response(&second, &remote, &second_wire, now).unwrap();
-        dispatch.accept_response(&first, &remote, &first_wire, now).unwrap();
+        dispatch
+            .accept_response(&second, &remote, &second_wire, now)
+            .unwrap();
+        dispatch
+            .accept_response(&first, &remote, &first_wire, now)
+            .unwrap();
         assert!(dispatch.is_empty());
     }
 
@@ -252,8 +275,12 @@ mod tests {
         let mut dispatch = DirectGetBlockDispatchV1::new("ticket-testnet", local).unwrap();
         let now = Instant::now();
         let hash = "b".repeat(64);
-        let a = dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap();
-        let b = dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap();
+        let a = dispatch
+            .issue(&mut behaviour, &remote, &hash, true, now)
+            .unwrap();
+        let b = dispatch
+            .issue(&mut behaviour, &remote, &hash, true, now)
+            .unwrap();
         let a_ticket = dispatch.by_transport_id.get(&a).unwrap().ticket_id.clone();
         let b_ticket = dispatch.by_transport_id.get(&b).unwrap().ticket_id.clone();
         let a_wire = missing_response("ticket-testnet", &a_ticket, &hash, &remote, &local);
@@ -287,7 +314,11 @@ mod tests {
         let now = Instant::now();
         let hash = "c".repeat(64);
         let ids: Vec<_> = (0..4)
-            .map(|_| dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap())
+            .map(|_| {
+                dispatch
+                    .issue(&mut behaviour, &remote, &hash, true, now)
+                    .unwrap()
+            })
             .collect();
         assert!(matches!(
             dispatch.issue(&mut behaviour, &remote, &hash, true, now),
@@ -303,7 +334,9 @@ mod tests {
         dispatch.outbound_failure(&ids[0], &remote).unwrap();
         assert_eq!(dispatch.len(), 3);
         assert_eq!(dispatch.peer_disconnected(&attacker), 0);
-        let fresh = dispatch.issue(&mut behaviour, &remote, &hash, true, now).unwrap();
+        let fresh = dispatch
+            .issue(&mut behaviour, &remote, &hash, true, now)
+            .unwrap();
         assert_ne!(ids[0], fresh);
         assert_eq!(dispatch.expire(now + Duration::from_secs(8)), 4);
         assert!(dispatch.is_empty());
