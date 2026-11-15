@@ -1,0 +1,58 @@
+name: v3 direct GetBlock codec lock+compile probe (no GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/Cargo.toml
+      - crates/pulsedag-p2p/src/messages/direct_getblock_codec_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_pending_v1.rs
+      - crates/pulsedag-p2p/src/messages.rs
+      - Cargo.lock
+      - .github/workflows/v3-direct-getblock-codec-lock-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-scope-lock-and-codec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Exact source and preview guard
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq '"request-response"' crates/pulsedag-p2p/Cargo.toml
+          grep -Fq 'pub mod direct_getblock_codec_v1;' crates/pulsedag-p2p/src/messages.rs
+          grep -Fq 'pub mod direct_getblock_pending_v1;' crates/pulsedag-p2p/src/messages.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'PULSEDAG_P2P_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Resolve pinned libp2p request-response feature without publishing
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_codec_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_pending_v1 -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock
+      - name: Preserve exact generated Cargo.lock for independent review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-direct-getblock-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
