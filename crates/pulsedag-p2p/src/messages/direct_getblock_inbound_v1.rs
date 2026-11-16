@@ -12,6 +12,7 @@ use std::time::Instant;
 use libp2p::PeerId;
 use pulsedag_core::state::ChainState;
 
+use super::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
 use super::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
     MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER,
@@ -28,6 +29,7 @@ pub enum DirectGetBlockInboundErrorV1 {
     UnknownLocalToken,
     WrongAuthenticatedPeer,
     ChainDomainMismatch,
+    SnapshotHashMismatch,
     DuplicateRequest,
     GlobalLimit,
     PeerLimit,
@@ -189,6 +191,54 @@ impl DirectGetBlockInboundV1 {
         )
         .map_err(DirectGetBlockInboundErrorV1::Wire);
         // The local response channel is one shot even on encoding error.
+        self.pending.remove(&local_token);
+        result
+    }
+
+    /// Reply using a compact immutable, accepted-DAG snapshot prepared by
+    /// the daemon, not an arbitrary caller-supplied Block. The snapshot was
+    /// created by from_accepted_chain, which enforces exact chain/hash and
+    /// excludes staging/orphans/unverified disk records. This method is
+    /// dormant until the daemon-to-Swarm one-shot route is connected.
+    pub fn reply_from_accepted_snapshot(
+        &mut self,
+        local_token: u64,
+        authenticated_remote: &PeerId,
+        snapshot: &DirectGetBlockAcceptedSnapshotV1,
+        now: Instant,
+    ) -> Result<Vec<u8>, DirectGetBlockInboundErrorV1> {
+        self.expire(now);
+        let pending = self
+            .pending
+            .get(&local_token)
+            .ok_or(DirectGetBlockInboundErrorV1::UnknownLocalToken)?;
+        if &pending.authenticated_remote != authenticated_remote {
+            return Err(DirectGetBlockInboundErrorV1::WrongAuthenticatedPeer);
+        }
+        if snapshot.chain_id() != self.chain_id
+            || snapshot.chain_id() != pending.request.chain_id
+        {
+            return Err(DirectGetBlockInboundErrorV1::ChainDomainMismatch);
+        }
+        if snapshot.requested_hash() != pending.request.block_hash {
+            return Err(DirectGetBlockInboundErrorV1::SnapshotHashMismatch);
+        }
+        let request = pending.request.clone();
+        let response = DirectGetBlockResponseV1 {
+            version: DIRECT_GETBLOCK_PROTOCOL_V1,
+            chain_id: request.chain_id.clone(),
+            request_id: request.request_id.clone(),
+            responding_peer_id: self.authenticated_local.to_string(),
+            block_hash: request.block_hash.clone(),
+            block: snapshot.block().cloned(),
+        };
+        let result = encode_direct_getblock_response(
+            &response,
+            &request,
+            &self.authenticated_local.to_string(),
+        )
+        .map_err(DirectGetBlockInboundErrorV1::Wire);
+        // A matched channel is one-shot even if encoding exceeds 8 MiB.
         self.pending.remove(&local_token);
         result
     }
