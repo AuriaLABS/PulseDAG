@@ -13803,3 +13803,33 @@ mod task27_live_capability_io_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod peer_addressed_getblock_local_id_regressions {
+    use super::*;
+
+    #[test]
+    fn same_peer_hash_and_timestamp_must_have_distinct_local_request_ids() {
+        let peer = "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi";
+        let hash: PulseHash = "a".repeat(64);
+        let first = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 10);
+        let second = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 11);
+        assert_ne!(first, second, "second-resolution timestamps must not alias tickets");
+        assert!(first.starts_with("getblock:"));
+        assert!(first.len() <= 256);
+        assert!(first.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')));
+    }
+
+    #[test]
+    fn local_correlations_remain_distinct_across_target_and_hash_changes() {
+        let hash: PulseHash = "b".repeat(64);
+        let different_hash: PulseHash = "c".repeat(64);
+        let first = peer_addressed_getblock_local_request_id("peerA", &hash, 100, 1);
+        let different_peer = peer_addressed_getblock_local_request_id("peerB", &hash, 100, 1);
+        let second_hash = peer_addressed_getblock_local_request_id("peerA", &different_hash, 100, 1);
+        let different_time = peer_addressed_getblock_local_request_id("peerA", &hash, 101, 1);
+        assert_ne!(first, different_peer);
+        assert_ne!(first, second_hash);
+        assert_ne!(first, different_time);
+    }
+}
