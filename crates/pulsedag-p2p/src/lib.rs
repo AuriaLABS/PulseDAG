@@ -44,16 +44,16 @@ use crate::messages::compact_relay_carrier_v1::{
     CompactRelayCapabilitiesV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
+use crate::messages::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
 use crate::messages::direct_getblock_codec_v1::{
     DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1,
 };
+use crate::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
 use crate::messages::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
 };
-use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
-use crate::messages::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
-use crate::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
 use crate::messages::direct_getblock_response_channel_v1::DirectGetBlockLibp2pResponseChannelsV1;
+use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
@@ -6767,10 +6767,7 @@ async fn run_libp2p_real_runtime(
     // Keep inbound protocol disabled until the whole request/response path and
     // independently verified 5N>=32 rejoin evidence exist.
     let mut direct_getblock_response_channels =
-        match DirectGetBlockLibp2pResponseChannelsV1::new(
-            &cfg.chain_id,
-            *swarm.local_peer_id(),
-        ) {
+        match DirectGetBlockLibp2pResponseChannelsV1::new(&cfg.chain_id, *swarm.local_peer_id()) {
             Ok(channels) => channels,
             Err(error) => {
                 note_swarm_event(
