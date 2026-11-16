@@ -13847,6 +13847,61 @@ mod peer_addressed_getblock_local_id_regressions {
     }
 
     #[test]
+    fn failed_enqueues_cannot_roll_back_identity_allocator_past_other_inflight_requests() {
+        let peer = "same-authenticated-peer";
+        let hash: PulseHash = "a".repeat(64);
+        let sent_at = 1794812444;
+        let mut inner = InnerState::default();
+
+        // A registers ID #1 and releases the mutex for queue submission.
+        let a = reserve_peer_addressed_getblock_local_request_id(
+            &mut inner, peer, &hash, sent_at,
+        ).unwrap();
+        inner.getblock_requests_sent_total = 1;
+        inner.outstanding_getblock_requests.insert(
+            a.clone(),
+            OutstandingGetBlockRequest {
+                request_id: a.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // B registers #2 and queues successfully before A learns that its
+        // earlier enqueue failed under backpressure.
+        let b = reserve_peer_addressed_getblock_local_request_id(
+            &mut inner, peer, &hash, sent_at,
+        ).unwrap();
+        inner.getblock_requests_sent_total = 2;
+        inner.outstanding_getblock_requests.insert(
+            b.clone(),
+            OutstandingGetBlockRequest {
+                request_id: b.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // A's enqueue cleanup must only undo its sent metric/ticket. It
+        // cannot undo identity sequence #2 already allocated to B.
+        inner.outstanding_getblock_requests.remove(&a);
+        inner.getblock_requests_sent_total -= 1;
+        assert_eq!(inner.getblock_requests_sent_total, 1);
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 2);
+
+        let c = reserve_peer_addressed_getblock_local_request_id(
+            &mut inner, peer, &hash, sent_at,
+        ).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        assert!(inner.outstanding_getblock_requests.contains_key(&b));
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 3);
+    }
+
+    #[test]
     fn local_correlations_remain_distinct_across_target_and_hash_changes() {
         let hash: PulseHash = "b".repeat(64);
         let different_hash: PulseHash = "c".repeat(64);
