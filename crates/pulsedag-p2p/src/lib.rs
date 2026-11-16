@@ -13917,3 +13917,65 @@ mod task27_live_capability_io_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod real_swarm_daemon_response_lane_regressions {
+    use super::*;
+    use pulsedag_core::genesis::init_chain_state;
+
+    fn approved_snapshot() -> DirectGetBlockAcceptedSnapshotV1 {
+        let chain = init_chain_state("real-noise-daemon-lane-test".to_string());
+        DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &chain,
+            "real-noise-daemon-lane-test",
+            &chain.dag.genesis_hash,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn daemon_snapshot_is_queued_only_on_block_lane_with_opaque_noise_ticket() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let mut queue = OutboundPriorityQueue::default();
+        let snapshot = approved_snapshot();
+        let peer = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let ticket = DirectGetBlockInboundTicketV1 {
+            local_token: 17,
+            block_hash: snapshot.requested_hash().to_string(),
+            authenticated_remote: peer,
+        };
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ticket.clone(),
+                snapshot,
+            },
+        );
+        let selected = pop_outbound_message(&inner, &mut queue);
+        assert!(matches!(
+            selected,
+            Some(OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ref found_ticket,
+                snapshot: ref found_snapshot,
+            }) if found_ticket == &ticket
+                && found_snapshot.requested_hash() == ticket.block_hash
+                && found_snapshot.block().is_some()
+        ));
+    }
+
+    #[test]
+    fn simulated_p2p_handle_rejects_real_noise_snapshot_without_channel() {
+        let (memory, _inbound_rx) =
+            MemoryP2pHandle::new("real-noise-daemon-lane-test".to_string(), Vec::new());
+        let snapshot = approved_snapshot();
+        let ticket = DirectGetBlockInboundTicketV1 {
+            local_token: 1,
+            block_hash: snapshot.requested_hash().to_string(),
+            authenticated_remote: PeerId::from(identity::Keypair::generate_ed25519().public()),
+        };
+        assert!(memory
+            .respond_authenticated_direct_getblock_snapshot(&ticket, snapshot)
+            .is_err());
+    }
+}
