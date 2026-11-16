@@ -215,9 +215,7 @@ impl DirectGetBlockInboundV1 {
         if &pending.authenticated_remote != authenticated_remote {
             return Err(DirectGetBlockInboundErrorV1::WrongAuthenticatedPeer);
         }
-        if snapshot.chain_id() != self.chain_id
-            || snapshot.chain_id() != pending.request.chain_id
-        {
+        if snapshot.chain_id() != self.chain_id || snapshot.chain_id() != pending.request.chain_id {
             return Err(DirectGetBlockInboundErrorV1::ChainDomainMismatch);
         }
         if snapshot.requested_hash() != pending.request.block_hash {
