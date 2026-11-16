@@ -13,6 +13,7 @@ use libp2p::request_response;
 use libp2p::PeerId;
 use pulsedag_core::state::ChainState;
 
+use super::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
 use super::direct_getblock_inbound_v1::{
     DirectGetBlockInboundErrorV1, DirectGetBlockInboundTicketV1, DirectGetBlockInboundV1,
 };
@@ -142,6 +143,60 @@ impl<C> DirectGetBlockResponseChannelsV1<C> {
                 ) {
                     // An expired/invalid/oversize ticket must not retain its
                     // channel until the next periodic maintenance tick.
+                    self.channels.remove(&local_token);
+                }
+                return Err(DirectGetBlockChannelErrorV1::Inbound(error));
+            }
+        };
+        let response = self
+            .channels
+            .remove(&local_token)
+            .ok_or(DirectGetBlockChannelErrorV1::UnknownLocalToken)?;
+        if !send(response.channel, wire) {
+            return Err(DirectGetBlockChannelErrorV1::SendFailed);
+        }
+        Ok(())
+    }
+
+    /// Send a daemon-created compact accepted-DAG snapshot over the unique
+    /// one-shot channel minted by the actual authenticated Noise Swarm.
+    /// A wrong chain/hash/peer preserves the channel for the correct reply.
+    /// The API is intentionally dormant until the daemon response bridge is
+    /// wired and production ingress is separately authorized.
+    pub fn respond_from_accepted_snapshot<F>(
+        &mut self,
+        local_token: u64,
+        authenticated_remote: &PeerId,
+        snapshot: &DirectGetBlockAcceptedSnapshotV1,
+        now: Instant,
+        send: F,
+    ) -> Result<(), DirectGetBlockChannelErrorV1>
+    where
+        F: FnOnce(C, Vec<u8>) -> bool,
+    {
+        self.expire(now);
+        let selected = self
+            .channels
+            .get(&local_token)
+            .ok_or(DirectGetBlockChannelErrorV1::UnknownLocalToken)?;
+        if &selected.authenticated_remote != authenticated_remote {
+            return Err(DirectGetBlockChannelErrorV1::WrongAuthenticatedPeer);
+        }
+
+        let wire = match self.inbound.reply_from_accepted_snapshot(
+            local_token,
+            authenticated_remote,
+            snapshot,
+            now,
+        ) {
+            Ok(wire) => wire,
+            Err(error) => {
+                if !matches!(
+                    error,
+                    DirectGetBlockInboundErrorV1::WrongAuthenticatedPeer
+                        | DirectGetBlockInboundErrorV1::ChainDomainMismatch
+                        | DirectGetBlockInboundErrorV1::SnapshotHashMismatch
+                ) {
                     self.channels.remove(&local_token);
                 }
                 return Err(DirectGetBlockChannelErrorV1::Inbound(error));
