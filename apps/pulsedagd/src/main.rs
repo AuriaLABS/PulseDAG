@@ -8306,9 +8306,11 @@ async fn main() -> Result<()> {
                         };
                         match (approved, p2p.as_ref()) {
                             (Ok(snapshot), Some(handle)) => {
-                                if let Err(error) = handle.respond_authenticated_direct_getblock_snapshot(
-                                    &ticket, snapshot,
-                                ) {
+                                if let Err(error) = handle
+                                    .respond_authenticated_direct_getblock_snapshot(
+                                        &ticket, snapshot,
+                                    )
+                                {
                                     warn!(
                                         peer = %ticket.authenticated_remote,
                                         block_hash = %ticket.block_hash,
