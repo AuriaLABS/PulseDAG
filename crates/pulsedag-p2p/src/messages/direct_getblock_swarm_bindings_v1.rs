@@ -455,6 +455,7 @@ mod tests {
         };
         let raw = encode_direct_getblock_response(&reply, &request, &target.to_string()).unwrap();
         let local_request = local_request(&target, &hash);
+        tracker.bind_local_daemon_request(&id, &local_request).unwrap();
         let event = tracker
             .deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now)
             .unwrap();
@@ -487,7 +488,9 @@ mod tests {
             })
             .unwrap();
         let raw_reply = missing_reply(&outgoing, &target);
-        let mut wrong_request = local_request(&target, &hash);
+        let request = local_request(&target, &hash);
+        tracker.bind_local_daemon_request(&id, &request).unwrap();
+        let mut wrong_request = request.clone();
         wrong_request.block_hash = "f".repeat(64);
         assert!(matches!(
             tracker.deliver_verified_response_to_daemon(
@@ -510,7 +513,6 @@ mod tests {
             Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer)
         ));
         assert_eq!(tracker.len(), 1);
-        let request = local_request(&target, &hash);
         let event = tracker
             .deliver_verified_response_to_daemon(&id, &target, &raw_reply, &request, now)
             .unwrap();
@@ -546,6 +548,7 @@ mod tests {
             serde_json::from_slice(&missing_reply(&outgoing, &target)).unwrap();
         forged["chain_id"] = serde_json::json!("foreign-chain");
         let request = local_request(&target, &hash);
+        tracker.bind_local_daemon_request(&id, &request).unwrap();
         assert!(matches!(
             tracker.deliver_verified_response_to_daemon(
                 &id,
