@@ -7866,16 +7866,20 @@ impl P2pHandle for Libp2pHandle {
             // The same peer/hash can be requested multiple times within one
             // second. Allocate a unique local ID WHILE holding the request
             // book mutex; never overwrite an older in-flight correlation slot.
-            let sequence = inner.getblock_requests_sent_total.checked_add(1)
-                .ok_or_else(|| PulseError::Internal(
-                    "GetBlock local request ID sequence exhausted".into()
-                ))?;
-            request_id = peer_addressed_getblock_local_request_id(
-                peer_id, hash, sent_at, sequence
-            );
-            if inner.outstanding_getblock_requests.contains_key(&request_id) {
+            let sequence = inner
+                .getblock_requests_sent_total
+                .checked_add(1)
+                .ok_or_else(|| {
+                    PulseError::Internal("GetBlock local request ID sequence exhausted".into())
+                })?;
+            request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
+            if inner
+                .outstanding_getblock_requests
+                .contains_key(&request_id)
+            {
                 return Err(PulseError::Internal(
-                    "duplicate GetBlock local request ID; refusing to overwrite inflight request".into()
+                    "duplicate GetBlock local request ID; refusing to overwrite inflight request"
+                        .into(),
                 ));
             }
             inner.getblock_requests_sent_total = sequence;
@@ -13814,10 +13818,15 @@ mod peer_addressed_getblock_local_id_regressions {
         let hash: PulseHash = "a".repeat(64);
         let first = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 10);
         let second = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 11);
-        assert_ne!(first, second, "second-resolution timestamps must not alias tickets");
+        assert_ne!(
+            first, second,
+            "second-resolution timestamps must not alias tickets"
+        );
         assert!(first.starts_with("getblock:"));
         assert!(first.len() <= 256);
-        assert!(first.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')));
+        assert!(first
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')));
     }
 
     #[test]
@@ -13826,7 +13835,8 @@ mod peer_addressed_getblock_local_id_regressions {
         let different_hash: PulseHash = "c".repeat(64);
         let first = peer_addressed_getblock_local_request_id("peerA", &hash, 100, 1);
         let different_peer = peer_addressed_getblock_local_request_id("peerB", &hash, 100, 1);
-        let second_hash = peer_addressed_getblock_local_request_id("peerA", &different_hash, 100, 1);
+        let second_hash =
+            peer_addressed_getblock_local_request_id("peerA", &different_hash, 100, 1);
         let different_time = peer_addressed_getblock_local_request_id("peerA", &hash, 101, 1);
         assert_ne!(first, different_peer);
         assert_ne!(first, second_hash);
