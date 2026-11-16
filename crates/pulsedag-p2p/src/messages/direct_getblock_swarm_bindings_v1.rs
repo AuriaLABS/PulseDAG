@@ -460,7 +460,9 @@ mod tests {
         };
         let raw = encode_direct_getblock_response(&reply, &request, &target.to_string()).unwrap();
         let local_request = local_request(&target, &hash);
-        tracker.bind_local_daemon_request(&id, &local_request).unwrap();
+        tracker
+            .bind_local_daemon_request(&id, &local_request)
+            .unwrap();
         let event = tracker
             .deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now)
             .unwrap();
@@ -592,12 +594,16 @@ mod tests {
         let first_local = local_request(&target, &hash);
         let mut second_local = local_request(&target, &hash);
         second_local.request_id = "getblock:locally-allocated:2".to_string();
-        tracker.bind_local_daemon_request(&first, &first_local).unwrap();
+        tracker
+            .bind_local_daemon_request(&first, &first_local)
+            .unwrap();
         assert!(matches!(
             tracker.bind_local_daemon_request(&second, &first_local),
             Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
         ));
-        tracker.bind_local_daemon_request(&second, &second_local).unwrap();
+        tracker
+            .bind_local_daemon_request(&second, &second_local)
+            .unwrap();
         assert!(matches!(
             tracker.bind_local_daemon_request(&first, &second_local),
             Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
