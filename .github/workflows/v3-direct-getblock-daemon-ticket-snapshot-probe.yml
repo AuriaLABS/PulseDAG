@@ -1,0 +1,53 @@
+name: v3 direct GetBlock authenticated daemon ticket snapshot (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - apps/pulsedagd/src/direct_getblock_authority.rs
+      - .github/workflows/v3-direct-getblock-daemon-ticket-snapshot-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  daemon-ticket-accepted-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require accepted-only authority and no live P2P/contract activation
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'prepare_authenticated_direct_getblock_snapshot_v1(' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'lookup_accepted_direct_getblock_v1(' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'InvalidLocalTicket' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed live inbound GetBlock activation"
+            exit 1
+          fi
+          if grep -Fq '.direct_getblock.send_request(' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed live outbound GetBlock activation"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Compile daemon and verify accepted-only typed ticket snapshots
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedagd --all-targets
+          cargo test --locked -p pulsedagd --bin pulsedagd direct_getblock_authority -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock

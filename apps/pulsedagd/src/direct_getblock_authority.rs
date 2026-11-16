@@ -11,6 +11,20 @@
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::types::Block;
+use pulsedag_p2p::messages::direct_getblock_accepted_snapshot_v1::{
+    DirectGetBlockAcceptedSnapshotErrorV1, DirectGetBlockAcceptedSnapshotV1,
+};
+use pulsedag_p2p::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DirectGetBlockDaemonSnapshotErrorV1 {
+    InvalidLocalTicket,
+    RejectChainDomain,
+    RejectNoncanonicalHash,
+    AuthorityMismatch,
+    Snapshot(DirectGetBlockAcceptedSnapshotErrorV1),
+}
 
 /// A wrong chain is a rejection, NOT an authenticated "Missing" result.
 /// Otherwise a caller could confuse a foreign-chain lookup with an absent hash.
@@ -63,12 +77,157 @@ pub(super) fn lookup_accepted_direct_getblock_v1<'a>(
     }
 }
 
+/// Handoff into the future daemon→Noise-Swarm response channel.
+///
+/// The ticket MUST originate from `DirectGetBlockLibp2pResponseChannelsV1::accept`
+/// on the real authenticated Noise Swarm, not remote JSON or a caller-made ID.
+/// Its local token is therefore the only reply-channel selector. The decoder
+/// has already verified the requesting peer and same-chain request envelope.
+///
+/// No staging, pending, orphan, historical unverified storage or arbitrary
+/// Block may be passed to this function: the only owned response source is
+/// the immutable accepted-DAG snapshot factory.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn prepare_authenticated_direct_getblock_snapshot_v1(
+    accepted_chain: &ChainState,
+    configured_chain_id: &str,
+    request_chain_id: &str,
+    authenticated_ticket: &DirectGetBlockInboundTicketV1,
+) -> Result<DirectGetBlockAcceptedSnapshotV1, DirectGetBlockDaemonSnapshotErrorV1> {
+    if authenticated_ticket.local_token == 0 {
+        return Err(DirectGetBlockDaemonSnapshotErrorV1::InvalidLocalTicket);
+    }
+    let accepted = match lookup_accepted_direct_getblock_v1(
+        accepted_chain,
+        configured_chain_id,
+        request_chain_id,
+        &authenticated_ticket.block_hash,
+    ) {
+        DirectGetBlockAuthorityDecisionV1::Accepted(_) => true,
+        DirectGetBlockAuthorityDecisionV1::Missing => false,
+        DirectGetBlockAuthorityDecisionV1::RejectChainDomain => {
+            return Err(DirectGetBlockDaemonSnapshotErrorV1::RejectChainDomain);
+        }
+        DirectGetBlockAuthorityDecisionV1::RejectNoncanonicalHash => {
+            return Err(DirectGetBlockDaemonSnapshotErrorV1::RejectNoncanonicalHash);
+        }
+    };
+    let snapshot = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+        accepted_chain,
+        configured_chain_id,
+        &authenticated_ticket.block_hash,
+    )
+    .map_err(DirectGetBlockDaemonSnapshotErrorV1::Snapshot)?;
+    // Fail closed if the independent daemon authority and immutable transport
+    // factory ever diverge. Never launder an accepted block into a false miss.
+    if snapshot.block().is_some() != accepted {
+        return Err(DirectGetBlockDaemonSnapshotErrorV1::AuthorityMismatch);
+    }
+    Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pulsedag_core::genesis::init_chain_state;
 
     const CHAIN_ID: &str = "direct-getblock-authority-test";
+
+    fn authenticated_ticket(hash: &str) -> DirectGetBlockInboundTicketV1 {
+        DirectGetBlockInboundTicketV1 {
+            local_token: 1,
+            block_hash: hash.to_owned(),
+            // Known-valid ephemeral Ed25519 libp2p PeerId; ticket fields in
+            // production originate exclusively from Noise-backed accept().
+            authenticated_remote: "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi"
+                .parse()
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn authenticated_ticket_prepares_only_accepted_genesis_snapshot() {
+        let chain = init_chain_state(CHAIN_ID.to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        let ticket = authenticated_ticket(&genesis);
+        let snapshot =
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket)
+                .unwrap();
+        assert_eq!(snapshot.chain_id(), CHAIN_ID);
+        assert_eq!(snapshot.requested_hash(), genesis);
+        assert_eq!(
+            snapshot.block().map(|block| block.hash.as_str()),
+            Some(genesis.as_str())
+        );
+    }
+
+    #[test]
+    fn authenticated_ticket_missing_orphan_never_reads_pending_storage() {
+        let mut chain = init_chain_state(CHAIN_ID.to_string());
+        let mut unaccepted = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
+        unaccepted.hash = "b".repeat(64);
+        chain
+            .orphan_blocks
+            .insert(unaccepted.hash.clone(), unaccepted.clone());
+        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
+            &chain,
+            CHAIN_ID,
+            CHAIN_ID,
+            &authenticated_ticket(&unaccepted.hash),
+        )
+        .unwrap();
+        assert!(snapshot.block().is_none());
+    }
+
+    #[test]
+    fn invalid_ticket_cross_chain_and_noncanonical_hash_fail_closed() {
+        let chain = init_chain_state(CHAIN_ID.to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        let mut ticket = authenticated_ticket(&genesis);
+        ticket.local_token = 0;
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket,),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::InvalidLocalTicket)
+        ));
+
+        let ticket = authenticated_ticket(&genesis);
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, "foreign", &ticket,),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::RejectChainDomain)
+        ));
+
+        let ticket = authenticated_ticket(&"A".repeat(64));
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket,),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::RejectNoncanonicalHash)
+        ));
+    }
+
+    #[test]
+    fn forged_accepted_map_key_is_not_snapshot_authority() {
+        let mut chain = init_chain_state(CHAIN_ID.to_string());
+        let key = "c".repeat(64);
+        let mismatching_block = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
+        chain.dag.blocks.insert(key.clone(), mismatching_block);
+        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
+            &chain,
+            CHAIN_ID,
+            CHAIN_ID,
+            &authenticated_ticket(&key),
+        )
+        .unwrap();
+        assert!(snapshot.block().is_none());
+    }
 
     #[test]
     fn accepted_genesis_is_available_by_exact_hash() {
