@@ -37,6 +37,9 @@ struct BoundRequest {
     ticket_id: String,
     requested_hash: String,
     local_daemon_request_id: Option<String>,
+    // Retain the complete daemon-local correlation in the SAME bounded book.
+    // Never reconstruct the original from untrusted wire reply fields.
+    local_daemon_request: Option<PeerAddressedBlockRequest>,
     deadline: Instant,
 }
 
@@ -103,6 +106,7 @@ impl DirectGetBlockSwarmBindingsV1 {
                 ticket_id: prepared.request.request_id,
                 requested_hash: prepared.request.block_hash,
                 local_daemon_request_id: None,
+                local_daemon_request: None,
                 deadline,
             },
         );
@@ -136,6 +140,7 @@ impl DirectGetBlockSwarmBindingsV1 {
             return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
         }
         bound.local_daemon_request_id = Some(original.request_id.clone());
+        bound.local_daemon_request = Some(original.clone());
         Ok(())
     }
 
@@ -214,6 +219,41 @@ impl DirectGetBlockSwarmBindingsV1 {
                 request_id: Some(original_local_request.request_id.clone()),
             },
         })
+    }
+
+    /// Deliver from the SAME Swarm-owned request book, without a second runtime
+    /// HashMap from OutboundRequestId to daemon-local request. The authenticated
+    /// peer, wire ticket, exact hash and locally minted request ID are verified
+    /// by deliver_verified_response_to_daemon before any daemon event escapes.
+    /// The response is still subject to normal daemon consensus admission.
+    /// A wrong peer or unbound ticket never consumes another request's slot.
+    pub fn deliver_bound_response_to_daemon(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        authenticated_peer: &PeerId,
+        raw: &[u8],
+        now: Instant,
+    ) -> Result<InboundEvent, DirectGetBlockSwarmBindingErrorV1> {
+        self.expire(now);
+        let bound = self
+            .by_transport_id
+            .get(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?;
+        let original = bound
+            .local_daemon_request
+            .as_ref()
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)?;
+        if bound.local_daemon_request_id.as_deref() != Some(original.request_id.as_str()) {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        let original = original.clone();
+        self.deliver_verified_response_to_daemon(
+            transport_id,
+            authenticated_peer,
+            raw,
+            &original,
+            now,
+        )
     }
 
     /// OutboundFailure must use the peer identified by the actual Swarm event.
@@ -674,5 +714,110 @@ mod tests {
         assert_eq!(tracker.len(), 1);
         tracker.outbound_failure(&first, &target).unwrap();
         assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn bound_delivery_rejects_unregistered_peer_and_replay_without_second_map() {
+        let local = peer();
+        let target = peer();
+        let wrong_peer = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "e".repeat(64);
+        let now = Instant::now();
+        let mut first_wire = Vec::new();
+        let first = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                first_wire = raw.clone();
+                live.send_request(p, raw)
+            })
+            .unwrap();
+        let mut second_wire = Vec::new();
+        let second = tracker
+            .issue_with(&target, &hash, true, now, |p, raw| {
+                second_wire = raw.clone();
+                live.send_request(p, raw)
+            })
+            .unwrap();
+        let first_local = local_request(&target, &hash);
+        let mut second_local = local_request(&target, &hash);
+        second_local.request_id = "getblock:locally-allocated:2".to_string();
+        let first_reply = missing_reply(&first_wire, &target);
+        let second_reply = missing_reply(&second_wire, &target);
+        assert!(matches!(
+            tracker.deliver_bound_response_to_daemon(&first, &target, &first_reply, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        tracker
+            .bind_local_daemon_request(&first, &first_local)
+            .unwrap();
+        tracker
+            .bind_local_daemon_request(&second, &second_local)
+            .unwrap();
+        assert!(matches!(
+            tracker.deliver_bound_response_to_daemon(&second, &wrong_peer, &second_reply, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer)
+        ));
+        assert_eq!(tracker.len(), 2);
+        let second_event = tracker
+            .deliver_bound_response_to_daemon(&second, &target, &second_reply, now)
+            .unwrap();
+        assert!(matches!(
+            second_event,
+            InboundEvent::BlockDataMissing { request_id: Some(ref id), .. }
+                if id == &second_local.request_id
+        ));
+        let first_event = tracker
+            .deliver_bound_response_to_daemon(&first, &target, &first_reply, now)
+            .unwrap();
+        assert!(matches!(
+            first_event,
+            InboundEvent::BlockDataMissing { request_id: Some(ref id), .. }
+                if id == &first_local.request_id
+        ));
+        assert!(tracker.is_empty());
+        assert!(matches!(
+            tracker.deliver_bound_response_to_daemon(&first, &target, &first_reply, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
+    }
+
+    #[test]
+    fn bound_delivery_slots_expire_and_disconnect_fail_closed() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "f".repeat(64);
+        let now = Instant::now();
+        let mut raw = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |p, request| {
+                raw = request.clone();
+                live.send_request(p, request)
+            })
+            .unwrap();
+        tracker
+            .bind_local_daemon_request(&id, &local_request(&target, &hash))
+            .unwrap();
+        let reply = missing_reply(&raw, &target);
+        assert_eq!(tracker.last_connection_closed(&target), 1);
+        assert!(matches!(
+            tracker.deliver_bound_response_to_daemon(&id, &target, &reply, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
+        let new_id = tracker
+            .issue_with(&target, &hash, true, now, |p, request| {
+                live.send_request(p, request)
+            })
+            .unwrap();
+        tracker
+            .bind_local_daemon_request(&new_id, &local_request(&target, &hash))
+            .unwrap();
+        assert_eq!(tracker.expire(now + DIRECT_GETBLOCK_REQUEST_TTL), 1);
+        assert!(matches!(
+            tracker.deliver_bound_response_to_daemon(&new_id, &target, &reply, now + DIRECT_GETBLOCK_REQUEST_TTL),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
     }
 }
