@@ -29,7 +29,8 @@ jobs:
           grep -Fq '.getblock_requests_sent_total' crates/pulsedag-p2p/src/lib.rs
           grep -Fq '.checked_add(1)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'peer_addressed_getblock_local_request_id(' crates/pulsedag-p2p/src/lib.rs
-          grep -Fq 'inner.outstanding_getblock_requests.contains_key(&request_id)' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '.outstanding_getblock_requests' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '.contains_key(&request_id)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'pub mod direct_getblock_swarm_bindings_v1;' crates/pulsedag-p2p/src/messages.rs
           grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
           if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
