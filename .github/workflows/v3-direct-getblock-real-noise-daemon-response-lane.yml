@@ -1,0 +1,59 @@
+name: v3 real Noise Swarm daemon GetBlock response lane (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - apps/pulsedagd/src/main.rs
+      - .github/workflows/v3-direct-getblock-real-noise-daemon-response-lane.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-noise-daemon-accepted-response-lane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout immutable candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify real Swarm one-shot accepted-DAG authority and OFF boundaries
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'AuthenticatedDirectGetBlockRequest' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'DirectGetBlockLibp2pResponseChannelsV1::new' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '.respond_from_accepted_snapshot(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '.send_response(channel, bytes)' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'direct_getblock_response_channels.peer_disconnected(&peer_id)' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'direct_getblock_response_channels.expire(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'prepare_authenticated_direct_getblock_snapshot_v1(' apps/pulsedagd/src/main.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed live inbound GetBlock enablement"
+            exit 1
+          fi
+          if grep -Fq '.direct_getblock.send_request(' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed live outbound GetBlock enablement"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Compile real Swarm and daemon, exercise Noise and ticket regressions
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p -p pulsedagd --all-targets
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_response_channel_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --test direct_getblock_noise_roundtrip_v1 -- --nocapture
+          cargo test --locked -p pulsedagd --bin pulsedagd direct_getblock_authority -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock
