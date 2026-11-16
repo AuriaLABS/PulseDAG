@@ -563,6 +563,83 @@ mod tests {
     }
 
     #[test]
+    fn simultaneous_same_peer_and_hash_cannot_swap_local_daemon_request_ids() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "c".repeat(64);
+        let now = Instant::now();
+        let mut first_wire = Vec::new();
+        let first = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                first_wire = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let mut second_wire = Vec::new();
+        let second = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                second_wire = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let first_local = local_request(&target, &hash);
+        let mut second_local = local_request(&target, &hash);
+        second_local.request_id = "getblock:locally-allocated:2".to_string();
+        tracker.bind_local_daemon_request(&first, &first_local).unwrap();
+        tracker.bind_local_daemon_request(&second, &second_local).unwrap();
+        assert!(matches!(
+            tracker.bind_local_daemon_request(&first, &second_local),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &second,
+                &target,
+                &missing_reply(&second_wire, &target),
+                &first_local,
+                now,
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert_eq!(tracker.len(), 2);
+        let second_event = tracker
+            .deliver_verified_response_to_daemon(
+                &second,
+                &target,
+                &missing_reply(&second_wire, &target),
+                &second_local,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            second_event,
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &second_local.request_id
+        ));
+        let first_event = tracker
+            .deliver_verified_response_to_daemon(
+                &first,
+                &target,
+                &missing_reply(&first_wire, &target),
+                &first_local,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            first_event,
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &first_local.request_id
+        ));
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
     fn duplicate_transport_id_is_rejected_without_replacing_existing_binding() {
         let local = peer();
         let target = peer();
