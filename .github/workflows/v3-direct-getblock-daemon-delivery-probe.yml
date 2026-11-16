@@ -27,6 +27,8 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           grep -Fq 'pub fn deliver_verified_response_to_daemon(' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'pub fn bind_local_daemon_request(' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'local_daemon_request_id.as_deref()' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
           grep -Fq 'self.accept_response(transport_id, authenticated_peer, raw, now)' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
           grep -Fq 'InboundEvent::BlockDataMissing' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
           grep -Fq 'InboundEvent::Block {' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
