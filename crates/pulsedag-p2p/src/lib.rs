@@ -6105,6 +6105,11 @@ async fn run_libp2p_runtime(
                     OutboundMessage::CompactRelayBlockBatch { .. } => {
                         unreachable!("automatic compact block batches are consumed before publish")
                     }
+                    OutboundMessage::DirectGetBlockAcceptedSnapshot { .. } => {
+                        // A dedicated authenticated response is never a gossip message.
+                        // Real Swarm consumes it before this serialization boundary.
+                        continue;
+                    }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:inv-block:{}", hashes.join(","));
@@ -7022,6 +7027,11 @@ async fn run_libp2p_real_runtime(
                     }
                     OutboundMessage::CompactRelayBlockBatch { .. } => {
                         unreachable!("automatic compact block batches are consumed before publish")
+                    }
+                    OutboundMessage::DirectGetBlockAcceptedSnapshot { .. } => {
+                        // A dedicated authenticated response is never a gossip message.
+                        // Real Swarm consumes it before this serialization boundary.
+                        continue;
                     }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -8040,6 +8050,25 @@ impl P2pHandle for Libp2pHandle {
         block: Option<&Block>,
     ) -> Result<(), PulseError> {
         self.send_block_data_with_request_id(None, request_hash, block)
+    }
+
+    fn respond_authenticated_direct_getblock_snapshot(
+        &self,
+        ticket: &DirectGetBlockInboundTicketV1,
+        snapshot: DirectGetBlockAcceptedSnapshotV1,
+    ) -> Result<(), PulseError> {
+        if ticket.local_token == 0 || ticket.block_hash != snapshot.requested_hash() {
+            return Err(PulseError::Internal(
+                "invalid authenticated direct GetBlock daemon handoff".into(),
+            ));
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ticket.clone(),
+                snapshot,
+            },
+            "direct-getblock-accepted-snapshot",
+        )
     }
 
     fn send_block_data_with_request_id(
