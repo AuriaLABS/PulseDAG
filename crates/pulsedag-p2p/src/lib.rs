@@ -7252,26 +7252,65 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetblock(event)) => {
-                        // Bind cleanup to the real libp2p event IDs and authenticated
-                        // peer. An unexpected response is verified and then DROPPED:
-                        // daemon block admission is NOT connected or authorized yet.
-                        match &event {
-                            request_response::Event::Message { peer, message: request_response::Message::Response { request_id, response }, .. } => {
+                        // Summarize BEFORE consuming the move-only ResponseChannel.
+                        // No raw untrusted 8MiB payload is written to logs.
+                        let sanitized = summarize_unapproved_direct_getblock_event_v1(&event);
+                        match event {
+                            request_response::Event::Message {
+                                peer,
+                                message: request_response::Message::Request {
+                                    request, channel, ..
+                                },
+                                ..
+                            } => {
+                                // Dormant with ProtocolSupport::Outbound. A future
+                                // reviewed inbound switch will only create tickets
+                                // with the actual authenticated Noise peer identity.
+                                match direct_getblock_response_channels.accept(
+                                    &request,
+                                    &peer,
+                                    channel,
+                                    std::time::Instant::now(),
+                                ) {
+                                    Ok(ticket) => {
+                                        if inbound_tx.send(
+                                            InboundEvent::AuthenticatedDirectGetBlockRequest {
+                                                ticket,
+                                            },
+                                        ).is_err() {
+                                            direct_getblock_response_channels
+                                                .peer_disconnected(&peer);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        note_swarm_event(
+                                            &inner,
+                                            format!("direct-getblock-inbound-rejected:{error:?}"),
+                                        );
+                                    }
+                                }
+                            }
+                            request_response::Event::Message {
+                                peer,
+                                message: request_response::Message::Response {
+                                    request_id, response,
+                                },
+                                ..
+                            } => {
+                                // Production direct outbound is still dormant.
+                                // No remote block enters daemon admission here.
                                 let _ = direct_getblock_bindings.accept_response(
-                                    request_id, peer, response, std::time::Instant::now(),
+                                    &request_id, &peer, &response, std::time::Instant::now(),
                                 );
                             }
                             request_response::Event::OutboundFailure { peer, request_id, .. } => {
-                                let _ = direct_getblock_bindings.outbound_failure(request_id, peer);
+                                let _ = direct_getblock_bindings.outbound_failure(
+                                    &request_id, &peer,
+                                );
                             }
                             _ => {}
                         }
-                        // This remains a non-activating fail-closed event arm.
-                        // Never format raw GetBlock payloads with Debug.
-                        note_swarm_event(
-                            &inner,
-                            summarize_unapproved_direct_getblock_event_v1(&event),
-                        );
+                        note_swarm_event(&inner, sanitized);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
