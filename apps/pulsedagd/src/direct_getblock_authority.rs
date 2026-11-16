@@ -139,10 +139,9 @@ mod tests {
             block_hash: hash.to_owned(),
             // Known-valid ephemeral Ed25519 libp2p PeerId; ticket fields in
             // production originate exclusively from Noise-backed accept().
-            authenticated_remote:
-                "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi"
-                    .parse()
-                    .unwrap(),
+            authenticated_remote: "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi"
+                .parse()
+                .unwrap(),
         }
     }
 
@@ -151,10 +150,9 @@ mod tests {
         let chain = init_chain_state(CHAIN_ID.to_string());
         let genesis = chain.dag.genesis_hash.clone();
         let ticket = authenticated_ticket(&genesis);
-        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
-            &chain, CHAIN_ID, CHAIN_ID, &ticket,
-        )
-        .unwrap();
+        let snapshot =
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket)
+                .unwrap();
         assert_eq!(snapshot.chain_id(), CHAIN_ID);
         assert_eq!(snapshot.requested_hash(), genesis);
         assert_eq!(
@@ -193,25 +191,19 @@ mod tests {
         let mut ticket = authenticated_ticket(&genesis);
         ticket.local_token = 0;
         assert!(matches!(
-            prepare_authenticated_direct_getblock_snapshot_v1(
-                &chain, CHAIN_ID, CHAIN_ID, &ticket,
-            ),
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket,),
             Err(DirectGetBlockDaemonSnapshotErrorV1::InvalidLocalTicket)
         ));
 
         let ticket = authenticated_ticket(&genesis);
         assert!(matches!(
-            prepare_authenticated_direct_getblock_snapshot_v1(
-                &chain, CHAIN_ID, "foreign", &ticket,
-            ),
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, "foreign", &ticket,),
             Err(DirectGetBlockDaemonSnapshotErrorV1::RejectChainDomain)
         ));
 
         let ticket = authenticated_ticket(&"A".repeat(64));
         assert!(matches!(
-            prepare_authenticated_direct_getblock_snapshot_v1(
-                &chain, CHAIN_ID, CHAIN_ID, &ticket,
-            ),
+            prepare_authenticated_direct_getblock_snapshot_v1(&chain, CHAIN_ID, CHAIN_ID, &ticket,),
             Err(DirectGetBlockDaemonSnapshotErrorV1::RejectNoncanonicalHash)
         ));
     }
