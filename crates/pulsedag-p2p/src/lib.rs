@@ -6851,6 +6851,29 @@ async fn run_libp2p_real_runtime(
                 drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
                     let msg = match msg {
+                        OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot } => {
+                            // Consume only the exact real Noise response channel.
+                            // Rejected/expired channels NEVER fall back to Gossipsub.
+                            if let Err(error) = direct_getblock_response_channels
+                                .respond_from_accepted_snapshot(
+                                    ticket.local_token,
+                                    &ticket.authenticated_remote,
+                                    &snapshot,
+                                    std::time::Instant::now(),
+                                    |channel, bytes| {
+                                        swarm.behaviour_mut().direct_getblock
+                                            .send_response(channel, bytes)
+                                            .is_ok()
+                                    },
+                                )
+                            {
+                                note_swarm_event(
+                                    &inner,
+                                    format!("direct-getblock-response-rejected:{error:?}"),
+                                );
+                            }
+                            continue;
+                        }
                         OutboundMessage::CompactRelayReconstructedBlock { peer_id, block } => {
                             if let Err(error) = dispatch_reconstructed_compact_block_v1(
                                 &cfg.chain_id,
