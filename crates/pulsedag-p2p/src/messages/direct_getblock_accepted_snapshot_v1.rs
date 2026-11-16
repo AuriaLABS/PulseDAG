@@ -85,15 +85,25 @@ mod tests {
             DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(&chain, CHAIN, &genesis).unwrap();
         assert_eq!(approved.chain_id(), CHAIN);
         assert_eq!(approved.requested_hash(), genesis);
-        assert_eq!(approved.block().map(|block| block.hash.as_str()), Some(genesis.as_str()));
+        assert_eq!(
+            approved.block().map(|block| block.hash.as_str()),
+            Some(genesis.as_str())
+        );
     }
 
     #[test]
     fn orphan_and_inconsistent_dag_map_are_never_reply_authority() {
         let mut chain = init_chain_state(CHAIN.to_string());
-        let mut orphan = chain.dag.blocks.get(&chain.dag.genesis_hash).unwrap().clone();
+        let mut orphan = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
         orphan.hash = "b".repeat(64);
-        chain.orphan_blocks.insert(orphan.hash.clone(), orphan.clone());
+        chain
+            .orphan_blocks
+            .insert(orphan.hash.clone(), orphan.clone());
         let missing =
             DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(&chain, CHAIN, &orphan.hash)
                 .unwrap();
@@ -120,7 +130,11 @@ mod tests {
             Err(DirectGetBlockAcceptedSnapshotErrorV1::ChainDomainMismatch)
         ));
         assert!(matches!(
-            DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(&chain, "foreign", &"B".repeat(64)),
+            DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+                &chain,
+                "foreign",
+                &"B".repeat(64)
+            ),
             Err(DirectGetBlockAcceptedSnapshotErrorV1::InvalidCanonicalHash)
         ));
     }
