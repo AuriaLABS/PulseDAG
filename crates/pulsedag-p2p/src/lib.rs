@@ -761,6 +761,15 @@ struct OutstandingGetBlockRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+fn peer_addressed_getblock_local_request_id(
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+    sequence: u64,
+) -> String {
+    format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}")
+}
+
 pub struct PeerAddressedBlockRequest {
     pub request_id: String,
     pub requested_peer_id: String,
@@ -7840,7 +7849,7 @@ impl P2pHandle for Libp2pHandle {
         hash: &PulseHash,
     ) -> Result<PeerAddressedBlockRequest, PulseError> {
         let sent_at = now_unix();
-        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
+        let request_id;
         {
             let mut inner = self
                 .inner
@@ -7854,8 +7863,22 @@ impl P2pHandle for Libp2pHandle {
                     "peer {peer_id} is not a direct request-capable session"
                 )));
             }
-            inner.getblock_requests_sent_total =
-                inner.getblock_requests_sent_total.saturating_add(1);
+            // The same peer/hash can be requested multiple times within one
+            // second. Allocate a unique local ID WHILE holding the request
+            // book mutex; never overwrite an older in-flight correlation slot.
+            let sequence = inner.getblock_requests_sent_total.checked_add(1)
+                .ok_or_else(|| PulseError::Internal(
+                    "GetBlock local request ID sequence exhausted".into()
+                ))?;
+            request_id = peer_addressed_getblock_local_request_id(
+                peer_id, hash, sent_at, sequence
+            );
+            if inner.outstanding_getblock_requests.contains_key(&request_id) {
+                return Err(PulseError::Internal(
+                    "duplicate GetBlock local request ID; refusing to overwrite inflight request".into()
+                ));
+            }
+            inner.getblock_requests_sent_total = sequence;
             inner.peer_addressed_getblock_sent_total =
                 inner.peer_addressed_getblock_sent_total.saturating_add(1);
             inner.outstanding_getblock_requests.insert(
