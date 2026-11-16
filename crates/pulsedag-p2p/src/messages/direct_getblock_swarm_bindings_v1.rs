@@ -593,6 +593,10 @@ mod tests {
         let mut second_local = local_request(&target, &hash);
         second_local.request_id = "getblock:locally-allocated:2".to_string();
         tracker.bind_local_daemon_request(&first, &first_local).unwrap();
+        assert!(matches!(
+            tracker.bind_local_daemon_request(&second, &first_local),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
         tracker.bind_local_daemon_request(&second, &second_local).unwrap();
         assert!(matches!(
             tracker.bind_local_daemon_request(&first, &second_local),
