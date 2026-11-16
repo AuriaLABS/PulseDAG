@@ -13925,8 +13925,7 @@ mod memory_getblock_local_id_regressions {
 
     #[test]
     fn memory_mode_same_peer_hash_retries_retain_all_inflight_slots() {
-        let (handle, _rx) =
-            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
         let hash: PulseHash = "a".repeat(64);
         let mut ids = std::collections::HashSet::new();
         for _ in 0..32 {
@@ -13945,8 +13944,7 @@ mod memory_getblock_local_id_regressions {
 
     #[test]
     fn memory_mode_exhausted_id_sequence_never_updates_counters_or_overwrites_request() {
-        let (handle, _rx) =
-            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
         let hash: PulseHash = "b".repeat(64);
         {
             let mut guard = handle.inner.lock().unwrap();
@@ -13963,8 +13961,7 @@ mod memory_getblock_local_id_regressions {
 
     #[test]
     fn memory_mode_disconnected_request_does_not_consume_identity_sequence() {
-        let (handle, _rx) =
-            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
         let hash: PulseHash = "c".repeat(64);
         assert!(handle.request_block_from("not-connected", &hash).is_err());
         let guard = handle.inner.lock().unwrap();
