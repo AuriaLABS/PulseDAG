@@ -133,6 +133,110 @@ mod tests {
 
     const CHAIN_ID: &str = "direct-getblock-authority-test";
 
+    fn authenticated_ticket(hash: &str) -> DirectGetBlockInboundTicketV1 {
+        DirectGetBlockInboundTicketV1 {
+            local_token: 1,
+            block_hash: hash.to_owned(),
+            // Known-valid ephemeral Ed25519 libp2p PeerId; ticket fields in
+            // production originate exclusively from Noise-backed accept().
+            authenticated_remote:
+                "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi"
+                    .parse()
+                    .unwrap(),
+        }
+    }
+
+    #[test]
+    fn authenticated_ticket_prepares_only_accepted_genesis_snapshot() {
+        let chain = init_chain_state(CHAIN_ID.to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        let ticket = authenticated_ticket(&genesis);
+        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
+            &chain, CHAIN_ID, CHAIN_ID, &ticket,
+        )
+        .unwrap();
+        assert_eq!(snapshot.chain_id(), CHAIN_ID);
+        assert_eq!(snapshot.requested_hash(), genesis);
+        assert_eq!(
+            snapshot.block().map(|block| block.hash.as_str()),
+            Some(genesis.as_str())
+        );
+    }
+
+    #[test]
+    fn authenticated_ticket_missing_orphan_never_reads_pending_storage() {
+        let mut chain = init_chain_state(CHAIN_ID.to_string());
+        let mut unaccepted = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
+        unaccepted.hash = "b".repeat(64);
+        chain
+            .orphan_blocks
+            .insert(unaccepted.hash.clone(), unaccepted.clone());
+        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
+            &chain,
+            CHAIN_ID,
+            CHAIN_ID,
+            &authenticated_ticket(&unaccepted.hash),
+        )
+        .unwrap();
+        assert!(snapshot.block().is_none());
+    }
+
+    #[test]
+    fn invalid_ticket_cross_chain_and_noncanonical_hash_fail_closed() {
+        let chain = init_chain_state(CHAIN_ID.to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        let mut ticket = authenticated_ticket(&genesis);
+        ticket.local_token = 0;
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(
+                &chain, CHAIN_ID, CHAIN_ID, &ticket,
+            ),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::InvalidLocalTicket)
+        ));
+
+        let ticket = authenticated_ticket(&genesis);
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(
+                &chain, CHAIN_ID, "foreign", &ticket,
+            ),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::RejectChainDomain)
+        ));
+
+        let ticket = authenticated_ticket(&"A".repeat(64));
+        assert!(matches!(
+            prepare_authenticated_direct_getblock_snapshot_v1(
+                &chain, CHAIN_ID, CHAIN_ID, &ticket,
+            ),
+            Err(DirectGetBlockDaemonSnapshotErrorV1::RejectNoncanonicalHash)
+        ));
+    }
+
+    #[test]
+    fn forged_accepted_map_key_is_not_snapshot_authority() {
+        let mut chain = init_chain_state(CHAIN_ID.to_string());
+        let key = "c".repeat(64);
+        let mismatching_block = chain
+            .dag
+            .blocks
+            .get(&chain.dag.genesis_hash)
+            .unwrap()
+            .clone();
+        chain.dag.blocks.insert(key.clone(), mismatching_block);
+        let snapshot = prepare_authenticated_direct_getblock_snapshot_v1(
+            &chain,
+            CHAIN_ID,
+            CHAIN_ID,
+            &authenticated_ticket(&key),
+        )
+        .unwrap();
+        assert!(snapshot.block().is_none());
+    }
+
     #[test]
     fn accepted_genesis_is_available_by_exact_hash() {
         let chain = init_chain_state(CHAIN_ID.to_string());
