@@ -26,7 +26,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          grep -Fq '.getblock_requests_sent_total' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'peer_addressed_getblock_local_sequence' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'reserve_peer_addressed_getblock_local_request_id(' crates/pulsedag-p2p/src/lib.rs
           grep -Fq '.checked_add(1)' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'peer_addressed_getblock_local_request_id(' crates/pulsedag-p2p/src/lib.rs
           grep -Fq '.outstanding_getblock_requests' crates/pulsedag-p2p/src/lib.rs
