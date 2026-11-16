@@ -18,6 +18,7 @@ use libp2p::PeerId;
 use super::direct_getblock_outbound_v1::{DirectGetBlockOutboundError, DirectGetBlockOutboundV1};
 use super::direct_getblock_pending_v1::DIRECT_GETBLOCK_REQUEST_TTL;
 use super::direct_getblock_v1::DirectGetBlockResponseV1;
+use crate::{InboundEvent, PeerAddressedBlockRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectGetBlockSwarmBindingErrorV1 {
@@ -27,12 +28,15 @@ pub enum DirectGetBlockSwarmBindingErrorV1 {
     DuplicateTransportId,
     UnknownTransportId,
     WrongTransportPeer,
+    WrongLocalRequest,
 }
 
 #[derive(Debug, Clone)]
 struct BoundRequest {
     target: PeerId,
     ticket_id: String,
+    requested_hash: String,
+    local_daemon_request_id: Option<String>,
     deadline: Instant,
 }
 
@@ -97,10 +101,42 @@ impl DirectGetBlockSwarmBindingsV1 {
             BoundRequest {
                 target: *authenticated_target,
                 ticket_id: prepared.request.request_id,
+                requested_hash: prepared.request.block_hash,
+                local_daemon_request_id: None,
                 deadline,
             },
         );
         Ok(transport_id)
+    }
+
+    /// Bind the exact daemon-local request ID to the REAL outbound transport ID.
+    /// This must run synchronously after issue_with in the Swarm event loop,
+    /// before any response event can be handled. Same peer/hash concurrent
+    /// requests must never allow swapping one daemon's request ID for another.
+    pub fn bind_local_daemon_request(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        original: &PeerAddressedBlockRequest,
+    ) -> Result<(), DirectGetBlockSwarmBindingErrorV1> {
+        if self.by_transport_id.values().any(|bound| {
+            bound.local_daemon_request_id.as_deref() == Some(original.request_id.as_str())
+        }) {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        let bound = self
+            .by_transport_id
+            .get_mut(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?;
+        if bound.local_daemon_request_id.is_some()
+            || original.requested_peer_id != bound.target.to_string()
+            || original.block_hash != bound.requested_hash
+            || !original.request_id.starts_with("getblock:")
+            || original.request_id.len() > 256
+        {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        bound.local_daemon_request_id = Some(original.request_id.clone());
+        Ok(())
     }
 
     /// Only a real Swarm event's OutboundRequestId may select a slot.
@@ -129,6 +165,55 @@ impl DirectGetBlockSwarmBindingsV1 {
         self.by_transport_id.remove(transport_id);
         self.outbound.cancel_request(&ticket_id, authenticated_peer);
         outcome.map_err(DirectGetBlockSwarmBindingErrorV1::Ticket)
+    }
+
+    /// Convert an authenticated, strictly correlated response to the EXISTING
+    /// daemon ingress event. This deliberately does not validate or insert
+    /// the block in consensus: InboundEvent::Block must traverse the daemon's
+    /// normal full PoW/ancestry/monetary admission pipeline.
+    ///
+    /// The original legacy request is local-only state paired with the real
+    /// OutboundRequestId by the runtime. It must NEVER be read from reply JSON.
+    /// Verify its exact destination/hash BEFORE consuming the outbound ticket.
+    /// Still dormant until the production Swarm sends requests and the daemon
+    /// response path is connected.
+    pub fn deliver_verified_response_to_daemon(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        authenticated_peer: &PeerId,
+        raw: &[u8],
+        original_local_request: &PeerAddressedBlockRequest,
+        now: Instant,
+    ) -> Result<InboundEvent, DirectGetBlockSwarmBindingErrorV1> {
+        self.expire(now);
+        let bound = self
+            .by_transport_id
+            .get(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?;
+        if &bound.target != authenticated_peer {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer);
+        }
+        if original_local_request.requested_peer_id != authenticated_peer.to_string()
+            || original_local_request.block_hash != bound.requested_hash
+            || bound.local_daemon_request_id.as_deref()
+                != Some(original_local_request.request_id.as_str())
+        {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
+        // Checks response transport-ID/peer/chain domain/wire request-ID/hash
+        // against the ticket prepared locally, then removes the one-shot slot.
+        let response = self.accept_response(transport_id, authenticated_peer, raw, now)?;
+        Ok(match response.block {
+            Some(block) => InboundEvent::Block {
+                peer_id: Some(authenticated_peer.to_string()),
+                block,
+            },
+            None => InboundEvent::BlockDataMissing {
+                hash: Some(response.block_hash),
+                peer_id: Some(authenticated_peer.to_string()),
+                request_id: Some(original_local_request.request_id.clone()),
+            },
+        })
     }
 
     /// OutboundFailure must use the peer identified by the actual Swarm event.
@@ -335,6 +420,237 @@ mod tests {
             tracker.expire(now + DIRECT_GETBLOCK_REQUEST_TTL + Duration::from_millis(1)),
             1
         );
+        assert!(tracker.is_empty());
+    }
+
+    fn local_request(peer: &PeerId, hash: &str) -> PeerAddressedBlockRequest {
+        PeerAddressedBlockRequest {
+            request_id: "getblock:locally-allocated:1".to_string(),
+            requested_peer_id: peer.to_string(),
+            block_hash: hash.to_string(),
+            sent_at: 0,
+        }
+    }
+
+    #[test]
+    fn authenticated_accepted_block_is_delivered_only_to_daemon_ingress() {
+        let local = peer();
+        let target = peer();
+        let chain = pulsedag_core::genesis::init_chain_state("swarm-bindings-test".to_string());
+        let hash = chain.dag.genesis_hash.clone();
+        let block = chain.dag.blocks.get(&hash).unwrap().clone();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let request: DirectGetBlockRequestV1 = serde_json::from_slice(&outgoing).unwrap();
+        let reply = DirectGetBlockResponseV1 {
+            version: DIRECT_GETBLOCK_PROTOCOL_V1,
+            chain_id: request.chain_id.clone(),
+            request_id: request.request_id.clone(),
+            responding_peer_id: target.to_string(),
+            block_hash: hash.clone(),
+            block: Some(block),
+        };
+        let raw = encode_direct_getblock_response(&reply, &request, &target.to_string()).unwrap();
+        let local_request = local_request(&target, &hash);
+        tracker
+            .bind_local_daemon_request(&id, &local_request)
+            .unwrap();
+        let event = tracker
+            .deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now)
+            .unwrap();
+        assert!(matches!(
+            event,
+            InboundEvent::Block { peer_id: Some(ref actual_peer), block }
+                if actual_peer == &target.to_string() && block.hash == hash
+        ));
+        assert!(tracker.is_empty());
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(&id, &target, &raw, &local_request, now),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
+    }
+
+    #[test]
+    fn authenticated_missing_result_uses_local_request_identity_not_remote_claim() {
+        let local = peer();
+        let target = peer();
+        let impostor = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "e".repeat(64);
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let raw_reply = missing_reply(&outgoing, &target);
+        let request = local_request(&target, &hash);
+        tracker.bind_local_daemon_request(&id, &request).unwrap();
+        let mut wrong_request = request.clone();
+        wrong_request.block_hash = "f".repeat(64);
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &target,
+                &raw_reply,
+                &wrong_request,
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &impostor,
+                &raw_reply,
+                &local_request(&target, &hash),
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer)
+        ));
+        assert_eq!(tracker.len(), 1);
+        let event = tracker
+            .deliver_verified_response_to_daemon(&id, &target, &raw_reply, &request, now)
+            .unwrap();
+        assert!(matches!(
+            event,
+            InboundEvent::BlockDataMissing {
+                hash: Some(ref actual_hash),
+                peer_id: Some(ref actual_peer),
+                request_id: Some(ref actual_request),
+            } if actual_hash == &hash
+                && actual_peer == &target.to_string()
+                && actual_request == &request.request_id
+        ));
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn malformed_authenticated_response_never_emits_daemon_event() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "a".repeat(64);
+        let now = Instant::now();
+        let mut outgoing = Vec::new();
+        let id = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                outgoing = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&missing_reply(&outgoing, &target)).unwrap();
+        forged["chain_id"] = serde_json::json!("foreign-chain");
+        let request = local_request(&target, &hash);
+        tracker.bind_local_daemon_request(&id, &request).unwrap();
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &id,
+                &target,
+                &serde_json::to_vec(&forged).unwrap(),
+                &request,
+                now
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::Ticket(_))
+        ));
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn simultaneous_same_peer_and_hash_cannot_swap_local_daemon_request_ids() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let hash = "c".repeat(64);
+        let now = Instant::now();
+        let mut first_wire = Vec::new();
+        let first = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                first_wire = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let mut second_wire = Vec::new();
+        let second = tracker
+            .issue_with(&target, &hash, true, now, |peer, raw| {
+                second_wire = raw.clone();
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let first_local = local_request(&target, &hash);
+        let mut second_local = local_request(&target, &hash);
+        second_local.request_id = "getblock:locally-allocated:2".to_string();
+        tracker
+            .bind_local_daemon_request(&first, &first_local)
+            .unwrap();
+        assert!(matches!(
+            tracker.bind_local_daemon_request(&second, &first_local),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        tracker
+            .bind_local_daemon_request(&second, &second_local)
+            .unwrap();
+        assert!(matches!(
+            tracker.bind_local_daemon_request(&first, &second_local),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert!(matches!(
+            tracker.deliver_verified_response_to_daemon(
+                &second,
+                &target,
+                &missing_reply(&second_wire, &target),
+                &first_local,
+                now,
+            ),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
+        ));
+        assert_eq!(tracker.len(), 2);
+        let second_event = tracker
+            .deliver_verified_response_to_daemon(
+                &second,
+                &target,
+                &missing_reply(&second_wire, &target),
+                &second_local,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            second_event,
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &second_local.request_id
+        ));
+        let first_event = tracker
+            .deliver_verified_response_to_daemon(
+                &first,
+                &target,
+                &missing_reply(&first_wire, &target),
+                &first_local,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            first_event,
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &first_local.request_id
+        ));
         assert!(tracker.is_empty());
     }
 
