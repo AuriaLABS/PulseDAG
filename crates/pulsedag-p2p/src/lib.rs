@@ -7352,6 +7352,7 @@ async fn run_libp2p_real_runtime(
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
+                            direct_getblock_response_channels.peer_disconnected(&peer_id);
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -7409,6 +7410,7 @@ async fn run_libp2p_real_runtime(
                 // A stalled transport event loop cannot retain pending tickets
                 // beyond the eight-second direct GetBlock budget.
                 direct_getblock_bindings.expire(std::time::Instant::now());
+                direct_getblock_response_channels.expire(std::time::Instant::now());
                 if let Ok(mut guard) = inner.lock() {
                     refresh_connected_peers_from_health(&mut guard);
                     enforce_connectivity_aware_cooldown_floor(&mut guard, now_unix());
