@@ -51,6 +51,9 @@ use crate::messages::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
 };
 use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
+use crate::messages::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
+use crate::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
+use crate::messages::direct_getblock_response_channel_v1::DirectGetBlockLibp2pResponseChannelsV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
@@ -928,6 +931,17 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
+    /// Future authenticated request-response return path. Never turns a
+    /// daemon snapshot into a Gossipsub BlockData publication.
+    fn respond_authenticated_direct_getblock_snapshot(
+        &self,
+        _ticket: &DirectGetBlockInboundTicketV1,
+        _snapshot: DirectGetBlockAcceptedSnapshotV1,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "authenticated direct GetBlock response unsupported".into(),
+        ))
+    }
     fn status(&self) -> Result<P2pStatus, PulseError>;
 }
 
@@ -998,6 +1012,11 @@ pub enum InboundEvent {
         hash: PulseHash,
         request_id: Option<String>,
     },
+    /// Only a locally allocated token from the real Noise Swarm's one-shot
+    /// inbound response channel may be delivered here (never wire JSON).
+    AuthenticatedDirectGetBlockRequest {
+        ticket: DirectGetBlockInboundTicketV1,
+    },
     BlockDataMissing {
         hash: Option<PulseHash>,
         peer_id: Option<String>,
@@ -1061,6 +1080,10 @@ enum OutboundMessage {
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
+    DirectGetBlockAcceptedSnapshot {
+        ticket: DirectGetBlockInboundTicketV1,
+        snapshot: DirectGetBlockAcceptedSnapshotV1,
+    },
     GetBlockFrom {
         peer_id: String,
         hash: PulseHash,
@@ -3462,6 +3485,11 @@ fn enqueue_outbound_message(
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
+        OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot } => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot });
+        }
         OutboundMessage::GetBlockFrom {
             peer_id,
             hash,
@@ -3579,6 +3607,7 @@ fn pop_outbound_message(
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
             | OutboundMessage::GetBlockFrom { .. }
+            | OutboundMessage::DirectGetBlockAcceptedSnapshot { .. }
             | OutboundMessage::BlockData { .. } => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
                 guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
@@ -7441,6 +7470,7 @@ impl Libp2pHandle {
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
                 | OutboundMessage::GetBlockFrom { .. }
+                | OutboundMessage::DirectGetBlockAcceptedSnapshot { .. }
                 | OutboundMessage::BlockData { .. }
         );
         {
