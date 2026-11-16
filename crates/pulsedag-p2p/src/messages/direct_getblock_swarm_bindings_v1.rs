@@ -118,6 +118,11 @@ impl DirectGetBlockSwarmBindingsV1 {
         transport_id: &OutboundRequestId,
         original: &PeerAddressedBlockRequest,
     ) -> Result<(), DirectGetBlockSwarmBindingErrorV1> {
+        if self.by_transport_id.values().any(|bound| {
+            bound.local_daemon_request_id.as_deref() == Some(original.request_id.as_str())
+        }) {
+            return Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest);
+        }
         let bound = self
             .by_transport_id
             .get_mut(transport_id)
