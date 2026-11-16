@@ -769,6 +769,30 @@ fn peer_addressed_getblock_local_request_id(
     format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}")
 }
 
+// Must be called with the same mutex held as outstanding_getblock_requests.
+// Keep this counter separate from getblock_requests_sent_total: failed
+// queue submissions roll back that statistic, but must NEVER roll back an ID
+// already observed by another concurrent caller.
+fn reserve_peer_addressed_getblock_local_request_id(
+    inner: &mut InnerState,
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+) -> Result<String, PulseError> {
+    let sequence = inner
+        .peer_addressed_getblock_local_sequence
+        .checked_add(1)
+        .ok_or_else(|| PulseError::Internal("GetBlock local request ID sequence exhausted".into()))?;
+    let request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
+    if inner.outstanding_getblock_requests.contains_key(&request_id) {
+        return Err(PulseError::Internal(
+            "duplicate GetBlock local request ID; refusing to overwrite inflight request".into(),
+        ));
+    }
+    inner.peer_addressed_getblock_local_sequence = sequence;
+    Ok(request_id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddressedBlockRequest {
     pub request_id: String,
@@ -1267,6 +1291,8 @@ struct InnerState {
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
     getblock_requests_sent_total: u64,
+    // Identity allocator: never decrease on outbound queue rejection.
+    peer_addressed_getblock_local_sequence: u64,
     getblock_responses_correlated_total: u64,
     generic_getblock_response_total: u64,
     wrong_peer_response_total: u64,
@@ -7866,23 +7892,14 @@ impl P2pHandle for Libp2pHandle {
             // The same peer/hash can be requested multiple times within one
             // second. Allocate a unique local ID WHILE holding the request
             // book mutex; never overwrite an older in-flight correlation slot.
-            let sequence = inner
-                .getblock_requests_sent_total
-                .checked_add(1)
-                .ok_or_else(|| {
-                    PulseError::Internal("GetBlock local request ID sequence exhausted".into())
-                })?;
-            request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
-            if inner
-                .outstanding_getblock_requests
-                .contains_key(&request_id)
-            {
-                return Err(PulseError::Internal(
-                    "duplicate GetBlock local request ID; refusing to overwrite inflight request"
-                        .into(),
-                ));
-            }
-            inner.getblock_requests_sent_total = sequence;
+            request_id = reserve_peer_addressed_getblock_local_request_id(
+                &mut inner,
+                peer_id,
+                hash,
+                sent_at,
+            )?;
+            inner.getblock_requests_sent_total =
+                inner.getblock_requests_sent_total.saturating_add(1);
             inner.peer_addressed_getblock_sent_total =
                 inner.peer_addressed_getblock_sent_total.saturating_add(1);
             inner.outstanding_getblock_requests.insert(
