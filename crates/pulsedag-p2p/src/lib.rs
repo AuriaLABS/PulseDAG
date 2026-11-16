@@ -782,9 +782,14 @@ fn reserve_peer_addressed_getblock_local_request_id(
     let sequence = inner
         .peer_addressed_getblock_local_sequence
         .checked_add(1)
-        .ok_or_else(|| PulseError::Internal("GetBlock local request ID sequence exhausted".into()))?;
+        .ok_or_else(|| {
+            PulseError::Internal("GetBlock local request ID sequence exhausted".into())
+        })?;
     let request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
-    if inner.outstanding_getblock_requests.contains_key(&request_id) {
+    if inner
+        .outstanding_getblock_requests
+        .contains_key(&request_id)
+    {
         return Err(PulseError::Internal(
             "duplicate GetBlock local request ID; refusing to overwrite inflight request".into(),
         ));
@@ -7893,10 +7898,7 @@ impl P2pHandle for Libp2pHandle {
             // second. Allocate a unique local ID WHILE holding the request
             // book mutex; never overwrite an older in-flight correlation slot.
             request_id = reserve_peer_addressed_getblock_local_request_id(
-                &mut inner,
-                peer_id,
-                hash,
-                sent_at,
+                &mut inner, peer_id, hash, sent_at,
             )?;
             inner.getblock_requests_sent_total =
                 inner.getblock_requests_sent_total.saturating_add(1);
@@ -13854,9 +13856,8 @@ mod peer_addressed_getblock_local_id_regressions {
         let mut inner = InnerState::default();
 
         // A registers ID #1 and releases the mutex for queue submission.
-        let a = reserve_peer_addressed_getblock_local_request_id(
-            &mut inner, peer, &hash, sent_at,
-        ).unwrap();
+        let a = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
         inner.getblock_requests_sent_total = 1;
         inner.outstanding_getblock_requests.insert(
             a.clone(),
@@ -13870,9 +13871,8 @@ mod peer_addressed_getblock_local_id_regressions {
 
         // B registers #2 and queues successfully before A learns that its
         // earlier enqueue failed under backpressure.
-        let b = reserve_peer_addressed_getblock_local_request_id(
-            &mut inner, peer, &hash, sent_at,
-        ).unwrap();
+        let b = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
         inner.getblock_requests_sent_total = 2;
         inner.outstanding_getblock_requests.insert(
             b.clone(),
@@ -13891,9 +13891,8 @@ mod peer_addressed_getblock_local_id_regressions {
         assert_eq!(inner.getblock_requests_sent_total, 1);
         assert_eq!(inner.peer_addressed_getblock_local_sequence, 2);
 
-        let c = reserve_peer_addressed_getblock_local_request_id(
-            &mut inner, peer, &hash, sent_at,
-        ).unwrap();
+        let c = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
