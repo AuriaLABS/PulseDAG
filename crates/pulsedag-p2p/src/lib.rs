@@ -6763,6 +6763,23 @@ async fn run_libp2p_real_runtime(
                 return;
             }
         };
+    // Move-only response channels belong to THIS actual authenticated Swarm.
+    // Keep inbound protocol disabled until the whole request/response path and
+    // independently verified 5N>=32 rejoin evidence exist.
+    let mut direct_getblock_response_channels =
+        match DirectGetBlockLibp2pResponseChannelsV1::new(
+            &cfg.chain_id,
+            *swarm.local_peer_id(),
+        ) {
+            Ok(channels) => channels,
+            Err(error) => {
+                note_swarm_event(
+                    &inner,
+                    format!("swarm-init-failed:direct-getblock-channels:{error:?}"),
+                );
+                return;
+            }
+        };
 
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
