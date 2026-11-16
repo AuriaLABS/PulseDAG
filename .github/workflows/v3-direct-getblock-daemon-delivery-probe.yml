@@ -1,0 +1,55 @@
+name: v3 direct GetBlock authenticated daemon delivery bridge (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+      - .github/workflows/v3-direct-getblock-daemon-delivery-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-daemon-delivery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Fail-closed no-activation and exact local-binding assertions
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'pub fn deliver_verified_response_to_daemon(' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'pub fn bind_local_daemon_request(' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'local_daemon_request_id.as_deref()' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'self.accept_response(transport_id, authenticated_peer, raw, now)' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'InboundEvent::BlockDataMissing' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'InboundEvent::Block {' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unapproved direct GetBlock inbound protocol"
+            exit 1
+          fi
+          if grep -Fq '.direct_getblock.send_request(' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unapproved direct GetBlock live sender"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Build and exercise accepted, missing, malformed and replay boundaries
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_swarm_bindings_v1 -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock

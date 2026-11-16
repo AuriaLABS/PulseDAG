@@ -4,6 +4,7 @@ mod block_protocol;
 mod block_request;
 mod compact_relay;
 mod config;
+mod direct_getblock_authority;
 mod fast_sync_bootstrap;
 mod startup_protocol;
 

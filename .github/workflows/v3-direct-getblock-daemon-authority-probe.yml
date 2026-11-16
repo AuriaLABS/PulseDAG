@@ -1,0 +1,54 @@
+name: v3 direct GetBlock daemon accepted-only authority (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - apps/pulsedagd/src/main.rs
+      - apps/pulsedagd/src/direct_getblock_authority.rs
+      - .github/workflows/v3-direct-getblock-daemon-authority-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  accepted-only-daemon-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce dormant accepted-only authority
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'mod direct_getblock_authority;' apps/pulsedagd/src/main.rs
+          grep -Fq 'accepted_chain.dag.blocks.get(requested_hash)' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'DirectGetBlockAuthorityDecisionV1::RejectChainDomain' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'DirectGetBlockAuthorityDecisionV1::RejectNoncanonicalHash' apps/pulsedagd/src/direct_getblock_authority.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed direct GetBlock inbound activation"
+            exit 1
+          fi
+          if grep -Fq '.direct_getblock.send_request(' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed production direct GetBlock send activation"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Build daemon and validate accepted-only authority regressions
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedagd --all-targets
+          cargo test --locked -p pulsedagd --bin pulsedagd direct_getblock_authority -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock

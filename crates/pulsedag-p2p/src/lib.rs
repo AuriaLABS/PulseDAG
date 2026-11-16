@@ -13,8 +13,9 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use libp2p::futures::StreamExt;
 use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
 use libp2p::ping;
+use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
+use libp2p::{identity, Multiaddr, PeerId, StreamProtocol, SwarmBuilder};
 use pulsedag_core::{
     compute_block_hash_v2,
     errors::PulseError,
@@ -43,6 +44,13 @@ use crate::messages::compact_relay_carrier_v1::{
     CompactRelayCapabilitiesV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
+use crate::messages::direct_getblock_codec_v1::{
+    DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1,
+};
+use crate::messages::direct_getblock_pending_v1::{
+    DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
+};
+use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     build_compact_block_announcement_for_chain_v1, message_id_for_block, message_id_for_tx,
@@ -752,6 +760,44 @@ struct OutstandingGetBlockRequest {
     completed: bool,
 }
 
+fn peer_addressed_getblock_local_request_id(
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+    sequence: u64,
+) -> String {
+    format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}")
+}
+
+// Must be called with the same mutex held as outstanding_getblock_requests.
+// Keep this counter separate from getblock_requests_sent_total: failed
+// queue submissions roll back that statistic, but must NEVER roll back an ID
+// already observed by another concurrent caller.
+fn reserve_peer_addressed_getblock_local_request_id(
+    inner: &mut InnerState,
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+) -> Result<String, PulseError> {
+    let sequence = inner
+        .peer_addressed_getblock_local_sequence
+        .checked_add(1)
+        .ok_or_else(|| {
+            PulseError::Internal("GetBlock local request ID sequence exhausted".into())
+        })?;
+    let request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
+    if inner
+        .outstanding_getblock_requests
+        .contains_key(&request_id)
+    {
+        return Err(PulseError::Internal(
+            "duplicate GetBlock local request ID; refusing to overwrite inflight request".into(),
+        ));
+    }
+    inner.peer_addressed_getblock_local_sequence = sequence;
+    Ok(request_id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddressedBlockRequest {
     pub request_id: String,
@@ -1250,9 +1296,8 @@ struct InnerState {
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
     getblock_requests_sent_total: u64,
-    // An exact-peer/hash request may be retried more than once per second.
-    // Use a monotonic sequence to prevent request-id and gossip dedup collisions.
-    getblock_request_sequence: u64,
+    // Identity allocator: never decrease on outbound queue rejection.
+    peer_addressed_getblock_local_sequence: u64,
     getblock_responses_correlated_total: u64,
     generic_getblock_response_total: u64,
     wrong_peer_response_total: u64,
@@ -1279,23 +1324,6 @@ struct InnerState {
     remote_tip_inventory_rejected_total: HashMap<String, u64>,
     remote_tip_inventory_replaced_total: u64,
     remote_tip_inventory_pruned_total: HashMap<String, u64>,
-}
-
-/// Allocate an unambiguous correlation id even for same-second GetBlock retries.
-/// Serialize allocation under InnerState's mutex, never overwrite a pending
-/// correlation or emit an apparently successful request on sequence overflow.
-fn next_peer_getblock_request_id(
-    inner: &mut InnerState,
-    peer_id: &str,
-    hash: &PulseHash,
-    sent_at: u64,
-) -> Result<String, PulseError> {
-    let sequence = inner
-        .getblock_request_sequence
-        .checked_add(1)
-        .ok_or_else(|| PulseError::Internal("GetBlock request id sequence exhausted".into()))?;
-    inner.getblock_request_sequence = sequence;
-    Ok(format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}"))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1680,7 +1708,11 @@ impl P2pHandle for MemoryP2pHandle {
                 "peer {peer_id} is not a direct request-capable session"
             )));
         }
-        let request_id = next_peer_getblock_request_id(&mut inner, peer_id, hash, sent_at)?;
+        // Share the same never-reused monotonic ID allocator used by the real
+        // Swarm, under the mutex that protects outstanding daemon requests.
+        // A retry within the same second must not replace an earlier ticket.
+        let request_id =
+            reserve_peer_addressed_getblock_local_request_id(&mut inner, peer_id, hash, sent_at)?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.blocks_requested = inner.blocks_requested.saturating_add(1);
@@ -6267,10 +6299,88 @@ async fn run_libp2p_runtime(
     }
 }
 
+/// No live GetBlock request or response is authorized in the current runtime.
+/// Record only authenticated metadata for unexpected request-response events:
+/// raw 8 MiB response bodies, block bytes and remote JSON must never be
+/// formatted through the generic SwarmEvent debug logging fallback.
+fn direct_getblock_event_payload_summary_v1(
+    kind: &'static str,
+    authenticated_peer: &PeerId,
+    raw: &[u8],
+) -> String {
+    format!(
+        "direct-getblock-rejected:{kind}:peer={authenticated_peer}:bytes={}",
+        raw.len()
+    )
+}
+
+fn summarize_unapproved_direct_getblock_event_v1(
+    event: &request_response::Event<Vec<u8>, Vec<u8>>,
+) -> String {
+    match event {
+        request_response::Event::Message { peer, message, .. } => match message {
+            request_response::Message::Request { request, .. } => {
+                direct_getblock_event_payload_summary_v1("inbound-request", peer, request)
+            }
+            request_response::Message::Response { response, .. } => {
+                direct_getblock_event_payload_summary_v1("unsolicited-response", peer, response)
+            }
+        },
+        request_response::Event::OutboundFailure { peer, .. } => {
+            format!("direct-getblock-rejected:outbound-failure:peer={peer}")
+        }
+        request_response::Event::InboundFailure { peer, .. } => {
+            format!("direct-getblock-rejected:inbound-failure:peer={peer}")
+        }
+        request_response::Event::ResponseSent { peer, .. } => {
+            format!("direct-getblock-rejected:unexpected-response-sent:peer={peer}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_swarm_event_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_log_untrusted_large_raw_getblock_payloads() {
+        let peer = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let mut secret = vec![b'X'; 8 * 1024 * 1024];
+        secret[..16].copy_from_slice(b"SECRET-DO-NOTLOG");
+        for kind in ["inbound-request", "unsolicited-response"] {
+            let summary = direct_getblock_event_payload_summary_v1(kind, &peer, &secret);
+            assert!(summary.len() < 200, "event log must be bounded");
+            assert!(summary.contains(&format!("peer={peer}")));
+            assert!(summary.contains("bytes=8388608"));
+            assert!(!summary.contains("SECRET"));
+            assert!(!summary.contains("XXXX"));
+        }
+    }
+}
+
+type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlockRawCodecV1>;
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
     ping: ping::Behaviour,
+    // First transport-stage only: outbound negotiation, with NO live send_request
+    // call sites and NO advertised inbound GetBlock service until the daemon
+    // storage responder and authenticated inflight correlation are integrated.
+    direct_getblock: DirectGetBlockSwarmBehaviourV1,
+}
+
+fn direct_getblock_outbound_only_behaviour_v1() -> DirectGetBlockSwarmBehaviourV1 {
+    request_response::Behaviour::with_codec(
+        DirectGetBlockRawCodecV1,
+        [(
+            StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
+            ProtocolSupport::Outbound,
+        )],
+        request_response::Config::default()
+            .with_request_timeout(DIRECT_GETBLOCK_REQUEST_TTL)
+            .with_max_concurrent_streams(MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL),
+    )
 }
 
 fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
@@ -6616,6 +6726,11 @@ async fn run_libp2p_real_runtime(
     };
 
     let ping = ping::Behaviour::new(ping::Config::new());
+    // Only attaches an outbound-capable protocol to the authenticated Noise
+    // Swarm. This slice deliberately issues no direct request and cannot serve
+    // an inbound request. Do not route GetBlockFrom until exact daemon response
+    // channel handling and request correlation land in a separate reviewed PR.
+    let direct_getblock = direct_getblock_outbound_only_behaviour_v1();
 
     let mut swarm = match SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
@@ -6627,6 +6742,7 @@ async fn run_libp2p_real_runtime(
         Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour {
             gossipsub: gossip,
             ping,
+            direct_getblock,
         }) {
             Ok(builder) => builder
                 .with_swarm_config(|cfg| {
@@ -6643,6 +6759,20 @@ async fn run_libp2p_real_runtime(
             return;
         }
     };
+
+    // The pending book belongs to THIS Swarm's request-response ID namespace.
+    // Creating it does not issue requests, advertise inbound service or admit blocks.
+    let mut direct_getblock_bindings =
+        match DirectGetBlockSwarmBindingsV1::new(&cfg.chain_id, *swarm.local_peer_id()) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                note_swarm_event(
+                    &inner,
+                    format!("swarm-init-failed:direct-getblock-book:{error:?}"),
+                );
+                return;
+            }
+        };
 
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
@@ -7086,6 +7216,28 @@ async fn run_libp2p_real_runtime(
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetblock(event)) => {
+                        // Bind cleanup to the real libp2p event IDs and authenticated
+                        // peer. An unexpected response is verified and then DROPPED:
+                        // daemon block admission is NOT connected or authorized yet.
+                        match &event {
+                            request_response::Event::Message { peer, message: request_response::Message::Response { request_id, response }, .. } => {
+                                let _ = direct_getblock_bindings.accept_response(
+                                    request_id, peer, response, std::time::Instant::now(),
+                                );
+                            }
+                            request_response::Event::OutboundFailure { peer, request_id, .. } => {
+                                let _ = direct_getblock_bindings.outbound_failure(request_id, peer);
+                            }
+                            _ => {}
+                        }
+                        // This remains a non-activating fail-closed event arm.
+                        // Never format raw GetBlock payloads with Debug.
+                        note_swarm_event(
+                            &inner,
+                            summarize_unapproved_direct_getblock_event_v1(&event),
+                        );
+                    }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
@@ -7123,6 +7275,9 @@ async fn run_libp2p_real_runtime(
                             direction,
                         );
                         if should_mark_disconnected {
+                            // Only the LAST authenticated connection may cancel
+                            // the peer's request-response slots.
+                            direct_getblock_bindings.last_connection_closed(&peer_id);
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -7177,6 +7332,9 @@ async fn run_libp2p_real_runtime(
                 }
             }
             _ = bootnode_redial_tick.tick() => {
+                // A stalled transport event loop cannot retain pending tickets
+                // beyond the eight-second direct GetBlock budget.
+                direct_getblock_bindings.expire(std::time::Instant::now());
                 if let Ok(mut guard) = inner.lock() {
                     refresh_connected_peers_from_health(&mut guard);
                     enforce_connectivity_aware_cooldown_floor(&mut guard, now_unix());
@@ -7740,7 +7898,12 @@ impl P2pHandle for Libp2pHandle {
                     "peer {peer_id} is not a direct request-capable session"
                 )));
             }
-            request_id = next_peer_getblock_request_id(&mut inner, peer_id, hash, sent_at)?;
+            // The same peer/hash can be requested multiple times within one
+            // second. Allocate a unique local ID WHILE holding the request
+            // book mutex; never overwrite an older in-flight correlation slot.
+            request_id = reserve_peer_addressed_getblock_local_request_id(
+                &mut inner, peer_id, hash, sent_at,
+            )?;
             inner.getblock_requests_sent_total =
                 inner.getblock_requests_sent_total.saturating_add(1);
             inner.peer_addressed_getblock_sent_total =
@@ -8235,69 +8398,6 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
-
-    #[test]
-    fn same_second_getblock_retries_do_not_overwrite_peer_hash_correlation() {
-        let mut state = InnerState::default();
-        let hash = "same-hash".to_string();
-        let first = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
-        let retry = next_peer_getblock_request_id(&mut state, "peer-a", &hash, 42).unwrap();
-        let other_peer = next_peer_getblock_request_id(&mut state, "peer-b", &hash, 42).unwrap();
-        assert_ne!(
-            first, retry,
-            "same-second retries must have distinct gossip IDs"
-        );
-        assert_ne!(retry, other_peer);
-        assert!(first.starts_with("getblock:peer-a:same-hash:42:"));
-        for (id, peer) in [
-            (first.clone(), "peer-a"),
-            (retry.clone(), "peer-a"),
-            (other_peer.clone(), "peer-b"),
-        ] {
-            state.outstanding_getblock_requests.insert(
-                id.clone(),
-                OutstandingGetBlockRequest {
-                    request_id: id,
-                    target_peer_id: peer.to_string(),
-                    block_hash: hash.clone(),
-                    completed: false,
-                },
-            );
-        }
-        assert_eq!(state.outstanding_getblock_requests.len(), 3);
-        assert_eq!(state.getblock_request_sequence, 3);
-    }
-
-    #[test]
-    fn getblock_correlation_sequence_overflow_fails_closed() {
-        let mut state = InnerState {
-            getblock_request_sequence: u64::MAX,
-            ..InnerState::default()
-        };
-        let result = next_peer_getblock_request_id(&mut state, "peer-a", &"h".into(), 42);
-        assert!(result.is_err());
-        assert_eq!(state.getblock_request_sequence, u64::MAX);
-        assert!(state.outstanding_getblock_requests.is_empty());
-    }
-
-    #[test]
-    fn memory_getblock_retries_are_distinct_even_without_clock_advance() {
-        let (handle, _inbound_rx) = MemoryP2pHandle::new(
-            "getblock-correlation-regression".into(),
-            vec!["peer-a".into()],
-        );
-        let first = handle
-            .request_block_from("peer-a", &"same-hash".into())
-            .unwrap();
-        let second = handle
-            .request_block_from("peer-a", &"same-hash".into())
-            .unwrap();
-        assert_ne!(first.request_id, second.request_id);
-        assert_eq!(first.block_hash, second.block_hash);
-        let state = handle.inner.lock().unwrap();
-        assert_eq!(state.outstanding_getblock_requests.len(), 2);
-        assert_eq!(state.peer_addressed_getblock_sent_total, 2);
-    }
 
     fn peers_for_bucket(bucket: usize, count: usize) -> Vec<String> {
         let mut peers = Vec::new();
@@ -13728,5 +13828,148 @@ mod task27_live_capability_io_tests {
                 .action,
             ProtocolPeerRouteActionV1::HoldForCapabilities
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_addressed_getblock_local_id_regressions {
+    use super::*;
+
+    #[test]
+    fn same_peer_hash_and_timestamp_must_have_distinct_local_request_ids() {
+        let peer = "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi";
+        let hash: PulseHash = "a".repeat(64);
+        let first = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 10);
+        let second = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 11);
+        assert_ne!(
+            first, second,
+            "second-resolution timestamps must not alias tickets"
+        );
+        assert!(first.starts_with("getblock:"));
+        assert!(first.len() <= 256);
+        assert!(first
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')));
+    }
+
+    #[test]
+    fn failed_enqueues_cannot_roll_back_identity_allocator_past_other_inflight_requests() {
+        let peer = "same-authenticated-peer";
+        let hash: PulseHash = "a".repeat(64);
+        let sent_at = 1794812444;
+        let mut inner = InnerState::default();
+
+        // A registers ID #1 and releases the mutex for queue submission.
+        let a = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        inner.getblock_requests_sent_total = 1;
+        inner.outstanding_getblock_requests.insert(
+            a.clone(),
+            OutstandingGetBlockRequest {
+                request_id: a.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // B registers #2 and queues successfully before A learns that its
+        // earlier enqueue failed under backpressure.
+        let b = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        inner.getblock_requests_sent_total = 2;
+        inner.outstanding_getblock_requests.insert(
+            b.clone(),
+            OutstandingGetBlockRequest {
+                request_id: b.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // A's enqueue cleanup must only undo its sent metric/ticket. It
+        // cannot undo identity sequence #2 already allocated to B.
+        inner.outstanding_getblock_requests.remove(&a);
+        inner.getblock_requests_sent_total -= 1;
+        assert_eq!(inner.getblock_requests_sent_total, 1);
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 2);
+
+        let c = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        assert!(inner.outstanding_getblock_requests.contains_key(&b));
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 3);
+    }
+
+    #[test]
+    fn local_correlations_remain_distinct_across_target_and_hash_changes() {
+        let hash: PulseHash = "b".repeat(64);
+        let different_hash: PulseHash = "c".repeat(64);
+        let first = peer_addressed_getblock_local_request_id("peerA", &hash, 100, 1);
+        let different_peer = peer_addressed_getblock_local_request_id("peerB", &hash, 100, 1);
+        let second_hash =
+            peer_addressed_getblock_local_request_id("peerA", &different_hash, 100, 1);
+        let different_time = peer_addressed_getblock_local_request_id("peerA", &hash, 101, 1);
+        assert_ne!(first, different_peer);
+        assert_ne!(first, second_hash);
+        assert_ne!(first, different_time);
+    }
+}
+
+#[cfg(test)]
+mod memory_getblock_local_id_regressions {
+    use super::*;
+
+    #[test]
+    fn memory_mode_same_peer_hash_retries_retain_all_inflight_slots() {
+        let (handle, _rx) =
+            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "a".repeat(64);
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..32 {
+            let requested = handle.request_block_from("peer-a", &hash).unwrap();
+            assert!(ids.insert(requested.request_id));
+            assert_eq!(requested.requested_peer_id, "peer-a");
+            assert_eq!(requested.block_hash, hash);
+        }
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 32);
+        assert_eq!(guard.outstanding_getblock_requests.len(), 32);
+        assert!(ids
+            .iter()
+            .all(|request_id| guard.outstanding_getblock_requests.contains_key(request_id)));
+    }
+
+    #[test]
+    fn memory_mode_exhausted_id_sequence_never_updates_counters_or_overwrites_request() {
+        let (handle, _rx) =
+            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "b".repeat(64);
+        {
+            let mut guard = handle.inner.lock().unwrap();
+            guard.peer_addressed_getblock_local_sequence = u64::MAX;
+        }
+        assert!(handle.request_block_from("peer-a", &hash).is_err());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, u64::MAX);
+        assert_eq!(guard.getblock_requests_sent_total, 0);
+        assert_eq!(guard.peer_addressed_getblock_sent_total, 0);
+        assert_eq!(guard.publish_attempts, 0);
+        assert!(guard.outstanding_getblock_requests.is_empty());
+    }
+
+    #[test]
+    fn memory_mode_disconnected_request_does_not_consume_identity_sequence() {
+        let (handle, _rx) =
+            MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "c".repeat(64);
+        assert!(handle.request_block_from("not-connected", &hash).is_err());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 0);
+        assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
+        assert!(guard.outstanding_getblock_requests.is_empty());
     }
 }
