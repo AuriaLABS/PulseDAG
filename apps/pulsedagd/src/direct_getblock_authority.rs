@@ -11,6 +11,20 @@
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::types::Block;
+use pulsedag_p2p::messages::direct_getblock_accepted_snapshot_v1::{
+    DirectGetBlockAcceptedSnapshotErrorV1, DirectGetBlockAcceptedSnapshotV1,
+};
+use pulsedag_p2p::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DirectGetBlockDaemonSnapshotErrorV1 {
+    InvalidLocalTicket,
+    RejectChainDomain,
+    RejectNoncanonicalHash,
+    AuthorityMismatch,
+    Snapshot(DirectGetBlockAcceptedSnapshotErrorV1),
+}
 
 /// A wrong chain is a rejection, NOT an authenticated "Missing" result.
 /// Otherwise a caller could confuse a foreign-chain lookup with an absent hash.
@@ -61,6 +75,55 @@ pub(super) fn lookup_accepted_direct_getblock_v1<'a>(
         }
         _ => DirectGetBlockAuthorityDecisionV1::Missing,
     }
+}
+
+/// Handoff into the future daemon→Noise-Swarm response channel.
+///
+/// The ticket MUST originate from `DirectGetBlockLibp2pResponseChannelsV1::accept`
+/// on the real authenticated Noise Swarm, not remote JSON or a caller-made ID.
+/// Its local token is therefore the only reply-channel selector. The decoder
+/// has already verified the requesting peer and same-chain request envelope.
+///
+/// No staging, pending, orphan, historical unverified storage or arbitrary
+/// Block may be passed to this function: the only owned response source is
+/// the immutable accepted-DAG snapshot factory.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn prepare_authenticated_direct_getblock_snapshot_v1(
+    accepted_chain: &ChainState,
+    configured_chain_id: &str,
+    request_chain_id: &str,
+    authenticated_ticket: &DirectGetBlockInboundTicketV1,
+) -> Result<DirectGetBlockAcceptedSnapshotV1, DirectGetBlockDaemonSnapshotErrorV1> {
+    if authenticated_ticket.local_token == 0 {
+        return Err(DirectGetBlockDaemonSnapshotErrorV1::InvalidLocalTicket);
+    }
+    let accepted = match lookup_accepted_direct_getblock_v1(
+        accepted_chain,
+        configured_chain_id,
+        request_chain_id,
+        &authenticated_ticket.block_hash,
+    ) {
+        DirectGetBlockAuthorityDecisionV1::Accepted(_) => true,
+        DirectGetBlockAuthorityDecisionV1::Missing => false,
+        DirectGetBlockAuthorityDecisionV1::RejectChainDomain => {
+            return Err(DirectGetBlockDaemonSnapshotErrorV1::RejectChainDomain);
+        }
+        DirectGetBlockAuthorityDecisionV1::RejectNoncanonicalHash => {
+            return Err(DirectGetBlockDaemonSnapshotErrorV1::RejectNoncanonicalHash);
+        }
+    };
+    let snapshot = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+        accepted_chain,
+        configured_chain_id,
+        &authenticated_ticket.block_hash,
+    )
+    .map_err(DirectGetBlockDaemonSnapshotErrorV1::Snapshot)?;
+    // Fail closed if the independent daemon authority and immutable transport
+    // factory ever diverge. Never launder an accepted block into a false miss.
+    if snapshot.block().is_some() != accepted {
+        return Err(DirectGetBlockDaemonSnapshotErrorV1::AuthorityMismatch);
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]
