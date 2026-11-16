@@ -139,10 +139,9 @@ impl DirectGetBlockSwarmBindingsV1 {
         if original.request_id.len() < 10
             || original.request_id.len() > 256
             || !original.request_id.starts_with("getblock:")
-            || !original
-                .request_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'-' | b'_' | b'/'))
+            || !original.request_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'-' | b'_' | b'/')
+            })
             || self.by_transport_id.values().any(|bound| {
                 bound.local_daemon_request_id.as_deref() == Some(original.request_id.as_str())
             })
@@ -907,7 +906,10 @@ mod tests {
             }),
             Err(DirectGetBlockSwarmBindingErrorV1::WrongLocalRequest)
         ));
-        assert_eq!(sent, 1, "duplicate local ID must never send a second request");
+        assert_eq!(
+            sent, 1,
+            "duplicate local ID must never send a second request"
+        );
         let mut malformed = original.clone();
         malformed.request_id = "getblock:bad id".to_string();
         assert!(matches!(
@@ -1000,5 +1002,4 @@ mod tests {
         assert_eq!(sent, 0);
         assert!(tracker.is_empty());
     }
-
 }
