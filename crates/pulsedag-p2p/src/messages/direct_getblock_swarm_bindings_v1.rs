@@ -764,16 +764,20 @@ mod tests {
             .unwrap();
         assert!(matches!(
             second_event,
-            InboundEvent::BlockDataMissing { request_id: Some(ref id), .. }
-                if id == &second_local.request_id
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &second_local.request_id
         ));
         let first_event = tracker
             .deliver_bound_response_to_daemon(&first, &target, &first_reply, now)
             .unwrap();
         assert!(matches!(
             first_event,
-            InboundEvent::BlockDataMissing { request_id: Some(ref id), .. }
-                if id == &first_local.request_id
+            InboundEvent::BlockDataMissing {
+                request_id: Some(ref id),
+                ..
+            } if id == &first_local.request_id
         ));
         assert!(tracker.is_empty());
         assert!(matches!(
@@ -816,7 +820,12 @@ mod tests {
             .unwrap();
         assert_eq!(tracker.expire(now + DIRECT_GETBLOCK_REQUEST_TTL), 1);
         assert!(matches!(
-            tracker.deliver_bound_response_to_daemon(&new_id, &target, &reply, now + DIRECT_GETBLOCK_REQUEST_TTL),
+            tracker.deliver_bound_response_to_daemon(
+                &new_id,
+                &target,
+                &reply,
+                now + DIRECT_GETBLOCK_REQUEST_TTL
+            ),
             Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
         ));
     }
