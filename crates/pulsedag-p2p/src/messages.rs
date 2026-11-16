@@ -4,6 +4,7 @@ pub mod compact_relay_controller_v1;
 pub mod compact_relay_runtime_v1;
 pub mod compact_relay_v1;
 pub mod dag_sync_v2;
+pub mod direct_getblock_accepted_snapshot_v1;
 pub mod direct_getblock_codec_v1;
 pub mod direct_getblock_dispatch_v1;
 pub mod direct_getblock_inbound_v1;

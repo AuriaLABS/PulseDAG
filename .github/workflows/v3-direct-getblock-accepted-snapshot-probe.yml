@@ -1,0 +1,59 @@
+name: v3 direct GetBlock accepted snapshot one-shot daemon handoff (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/messages/direct_getblock_accepted_snapshot_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_inbound_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_response_channel_v1.rs
+      - crates/pulsedag-p2p/src/messages.rs
+      - .github/workflows/v3-direct-getblock-accepted-snapshot-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  accepted-snapshot-one-shot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact head without write credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce same-chain accepted-only and default network off
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(' crates/pulsedag-p2p/src/messages/direct_getblock_response_channel_v1.rs || grep -Fq 'pub fn respond_from_accepted_snapshot' crates/pulsedag-p2p/src/messages/direct_getblock_response_channel_v1.rs
+          grep -Fq '.dag' crates/pulsedag-p2p/src/messages/direct_getblock_accepted_snapshot_v1.rs
+          grep -Fq '.filter(|block| block.hash == requested_hash)' crates/pulsedag-p2p/src/messages/direct_getblock_accepted_snapshot_v1.rs
+          grep -Fq 'DirectGetBlockInboundErrorV1::SnapshotHashMismatch' crates/pulsedag-p2p/src/messages/direct_getblock_response_channel_v1.rs
+          grep -Fq 'pub mod direct_getblock_accepted_snapshot_v1;' crates/pulsedag-p2p/src/messages.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::no unaudited inbound GetBlock activation"
+            exit 1
+          fi
+          if grep -Fq '.direct_getblock.send_request(' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::no unaudited production GetBlock send"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - name: Run accepted snapshot, authenticated channel and transport regressions
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_accepted_snapshot_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_response_channel_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --test direct_getblock_noise_roundtrip_v1 -- --nocapture
+          cargo fmt --all -- --check
+          git diff --exit-code -- Cargo.lock

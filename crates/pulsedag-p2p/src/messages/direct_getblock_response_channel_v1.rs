@@ -13,6 +13,7 @@ use libp2p::request_response;
 use libp2p::PeerId;
 use pulsedag_core::state::ChainState;
 
+use super::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
 use super::direct_getblock_inbound_v1::{
     DirectGetBlockInboundErrorV1, DirectGetBlockInboundTicketV1, DirectGetBlockInboundV1,
 };
@@ -142,6 +143,60 @@ impl<C> DirectGetBlockResponseChannelsV1<C> {
                 ) {
                     // An expired/invalid/oversize ticket must not retain its
                     // channel until the next periodic maintenance tick.
+                    self.channels.remove(&local_token);
+                }
+                return Err(DirectGetBlockChannelErrorV1::Inbound(error));
+            }
+        };
+        let response = self
+            .channels
+            .remove(&local_token)
+            .ok_or(DirectGetBlockChannelErrorV1::UnknownLocalToken)?;
+        if !send(response.channel, wire) {
+            return Err(DirectGetBlockChannelErrorV1::SendFailed);
+        }
+        Ok(())
+    }
+
+    /// Send a daemon-created compact accepted-DAG snapshot over the unique
+    /// one-shot channel minted by the actual authenticated Noise Swarm.
+    /// A wrong chain/hash/peer preserves the channel for the correct reply.
+    /// The API is intentionally dormant until the daemon response bridge is
+    /// wired and production ingress is separately authorized.
+    pub fn respond_from_accepted_snapshot<F>(
+        &mut self,
+        local_token: u64,
+        authenticated_remote: &PeerId,
+        snapshot: &DirectGetBlockAcceptedSnapshotV1,
+        now: Instant,
+        send: F,
+    ) -> Result<(), DirectGetBlockChannelErrorV1>
+    where
+        F: FnOnce(C, Vec<u8>) -> bool,
+    {
+        self.expire(now);
+        let selected = self
+            .channels
+            .get(&local_token)
+            .ok_or(DirectGetBlockChannelErrorV1::UnknownLocalToken)?;
+        if &selected.authenticated_remote != authenticated_remote {
+            return Err(DirectGetBlockChannelErrorV1::WrongAuthenticatedPeer);
+        }
+
+        let wire = match self.inbound.reply_from_accepted_snapshot(
+            local_token,
+            authenticated_remote,
+            snapshot,
+            now,
+        ) {
+            Ok(wire) => wire,
+            Err(error) => {
+                if !matches!(
+                    error,
+                    DirectGetBlockInboundErrorV1::WrongAuthenticatedPeer
+                        | DirectGetBlockInboundErrorV1::ChainDomainMismatch
+                        | DirectGetBlockInboundErrorV1::SnapshotHashMismatch
+                ) {
                     self.channels.remove(&local_token);
                 }
                 return Err(DirectGetBlockChannelErrorV1::Inbound(error));
@@ -384,6 +439,164 @@ mod tests {
             Err(DirectGetBlockChannelErrorV1::SendFailed)
         ));
         assert!(book.is_empty());
+    }
+
+    #[test]
+    fn compact_accepted_snapshot_matches_exact_peer_hash_and_one_shot_channel() {
+        let local = peer();
+        let remote = peer();
+        let attacker = peer();
+        let chain = init_chain_state("response-channel-test".into());
+        let genesis = chain.dag.genesis_hash.clone();
+        let accepted = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &chain,
+            "response-channel-test",
+            &genesis,
+        )
+        .unwrap();
+        let missing = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &chain,
+            "response-channel-test",
+            &"a".repeat(64),
+        )
+        .unwrap();
+        let now = Instant::now();
+        let raw = request(&local, &remote, &genesis, 100);
+        let expected = decode_direct_getblock_request(
+            &raw,
+            "response-channel-test",
+            &remote.to_string(),
+            &local.to_string(),
+        )
+        .unwrap();
+        let mut channels =
+            DirectGetBlockResponseChannelsV1::new("response-channel-test", local).unwrap();
+        let ticket = channels.accept(&raw, &remote, 100_u64, now).unwrap();
+        assert!(matches!(
+            channels.respond_from_accepted_snapshot(
+                ticket.local_token,
+                &attacker,
+                &accepted,
+                now,
+                |_, _| true,
+            ),
+            Err(DirectGetBlockChannelErrorV1::WrongAuthenticatedPeer)
+        ));
+        assert!(matches!(
+            channels.respond_from_accepted_snapshot(
+                ticket.local_token,
+                &remote,
+                &missing,
+                now,
+                |_, _| true,
+            ),
+            Err(DirectGetBlockChannelErrorV1::Inbound(
+                DirectGetBlockInboundErrorV1::SnapshotHashMismatch
+            ))
+        ));
+        assert_eq!(channels.len(), 1);
+        let mut delivered = 0_usize;
+        channels
+            .respond_from_accepted_snapshot(
+                ticket.local_token,
+                &remote,
+                &accepted,
+                now,
+                |channel, wire| {
+                    assert_eq!(channel, 100);
+                    let response =
+                        decode_direct_getblock_response(&wire, &expected, &local.to_string())
+                            .unwrap();
+                    assert_eq!(
+                        response.block.as_ref().map(|block| block.hash.as_str()),
+                        Some(genesis.as_str())
+                    );
+                    delivered += 1;
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(delivered, 1);
+        assert!(channels.is_empty());
+        assert!(matches!(
+            channels.respond_from_accepted_snapshot(
+                ticket.local_token,
+                &remote,
+                &accepted,
+                now,
+                |_, _| true,
+            ),
+            Err(DirectGetBlockChannelErrorV1::UnknownLocalToken)
+        ));
+    }
+
+    #[test]
+    fn foreign_snapshot_rejected_and_accepted_missing_is_authenticated() {
+        let local = peer();
+        let remote = peer();
+        let chain = init_chain_state("response-channel-test".into());
+        let foreign = init_chain_state("foreign-testnet".into());
+        let hash = "b".repeat(64);
+        let approved_missing = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &chain,
+            "response-channel-test",
+            &hash,
+        )
+        .unwrap();
+        let foreign_snapshot = DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &foreign,
+            "foreign-testnet",
+            &hash,
+        )
+        .unwrap();
+        let now = Instant::now();
+        let raw = request(&local, &remote, &hash, 101);
+        let expected = decode_direct_getblock_request(
+            &raw,
+            "response-channel-test",
+            &remote.to_string(),
+            &local.to_string(),
+        )
+        .unwrap();
+        let mut channels =
+            DirectGetBlockResponseChannelsV1::new("response-channel-test", local).unwrap();
+        let ticket = channels.accept(&raw, &remote, 101_u64, now).unwrap();
+        assert!(matches!(
+            channels.respond_from_accepted_snapshot(
+                ticket.local_token,
+                &remote,
+                &foreign_snapshot,
+                now,
+                |_, _| true,
+            ),
+            Err(DirectGetBlockChannelErrorV1::Inbound(
+                DirectGetBlockInboundErrorV1::ChainDomainMismatch
+            ))
+        ));
+        assert_eq!(channels.len(), 1);
+        channels
+            .respond_from_accepted_snapshot(
+                ticket.local_token,
+                &remote,
+                &approved_missing,
+                now,
+                |channel, wire| {
+                    assert_eq!(channel, 101);
+                    let response =
+                        decode_direct_getblock_response(&wire, &expected, &local.to_string())
+                            .unwrap();
+                    assert!(response.block.is_none());
+                    true
+                },
+            )
+            .unwrap();
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn accepted_snapshot_is_sendable_without_cloning_full_chainstate() {
+        fn assert_send<T: Send>() {}
+        assert_send::<DirectGetBlockAcceptedSnapshotV1>();
     }
 
     #[test]
