@@ -760,7 +760,6 @@ struct OutstandingGetBlockRequest {
     completed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 fn peer_addressed_getblock_local_request_id(
     peer_id: &str,
     hash: &PulseHash,
@@ -770,6 +769,7 @@ fn peer_addressed_getblock_local_request_id(
     format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddressedBlockRequest {
     pub request_id: String,
     pub requested_peer_id: String,
