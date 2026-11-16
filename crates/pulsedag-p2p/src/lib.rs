@@ -14086,6 +14086,7 @@ mod direct_getblock_live_request_gate_regressions {
 
     #[test]
     fn live_direct_sender_is_inactive_until_full_duplex_and_5n_rejoin_review() {
-        assert!(!DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED);
+        // Prevent Clippy treating a compile-time constant assertion as a no-op.
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
     }
 }
