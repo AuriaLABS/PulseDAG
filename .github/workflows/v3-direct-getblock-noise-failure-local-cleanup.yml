@@ -1,0 +1,55 @@
+name: v3 Noise GetBlock exact failure cleanup (HARD OFF / NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+      - .github/workflows/v3-direct-getblock-noise-failure-local-cleanup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-noise-failure-local-cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact candidate SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require fail-closed disabled production and exact-local-ticket regression
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::unreviewed production GetBlock inbound activation"
+            exit 1
+          fi
+          grep -Fq 'outbound_failure_with_local_request(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'clear_failed_noise_getblock_local_request(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'exact_noise_outbound_failure_returns_only_original_daemon_local_request' crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+          grep -Fq 'failed_noise_request_cleans_only_exact_local_ticket_and_records_transport_error_once' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91 with fmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt, clippy
+      - name: Verify workspace formatting and exact failure cleanup regressions
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib exact_noise_outbound_failure_returns_only_original_daemon_local_request -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib unbound_noise_outbound_failure_does_not_invent_a_daemon_request -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib failed_noise_request_cleans_only_exact_local_ticket_and_records_transport_error_once -- --nocapture
+          cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+          git diff --exit-code -- Cargo.lock

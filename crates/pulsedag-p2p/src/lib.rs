@@ -809,6 +809,36 @@ pub struct PeerAddressedBlockRequest {
     pub sent_at: u64,
 }
 
+/// On a real Noise outbound failure, evict ONLY the locally minted matching
+/// outstanding request. Do not treat a transport failure as a Missing response,
+/// and do not consume another peer/hash ticket or rewind the monotonic ID.
+fn clear_failed_noise_getblock_local_request(
+    inner: &Arc<Mutex<InnerState>>,
+    original: &PeerAddressedBlockRequest,
+) -> bool {
+    let Ok(mut guard) = inner.lock() else {
+        return false;
+    };
+    let is_exact = guard
+        .outstanding_getblock_requests
+        .get(&original.request_id)
+        .is_some_and(|pending| {
+            !pending.completed
+                && pending.request_id == original.request_id
+                && pending.target_peer_id == original.requested_peer_id
+                && pending.block_hash == original.block_hash
+        });
+    if is_exact {
+        guard
+            .outstanding_getblock_requests
+            .remove(&original.request_id);
+        guard.peer_addressed_getblock_transport_error_total = guard
+            .peer_addressed_getblock_transport_error_total
+            .saturating_add(1);
+    }
+    is_exact
+}
+
 pub trait P2pHandle: Send + Sync {
     fn configure_protocol_capabilities_v1(
         &self,
@@ -7441,9 +7471,39 @@ async fn run_libp2p_real_runtime(
                                 }
                             }
                             request_response::Event::OutboundFailure { peer, request_id, .. } => {
-                                let _ = direct_getblock_bindings.outbound_failure(
-                                    &request_id, &peer,
-                                );
+                                if DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED {
+                                    match direct_getblock_bindings
+                                        .outbound_failure_with_local_request(&request_id, &peer)
+                                    {
+                                        Ok(Some(original)) => {
+                                            if !clear_failed_noise_getblock_local_request(
+                                                &inner, &original,
+                                            ) {
+                                                note_swarm_event(
+                                                    &inner,
+                                                    "direct-getblock-failure:local-ticket-already-gone",
+                                                );
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            note_swarm_event(
+                                                &inner,
+                                                "direct-getblock-failure:no-daemon-local-ticket",
+                                            );
+                                        }
+                                        Err(error) => {
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("direct-getblock-failure-rejected:{error:?}"),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Hard OFF: preserve the previous dormant cleanup path.
+                                    let _ = direct_getblock_bindings.outbound_failure(
+                                        &request_id, &peer,
+                                    );
+                                }
                             }
                             _ => {}
                         }
@@ -14222,5 +14282,54 @@ mod peer_addressed_getblock_local_id_regressions {
         assert_ne!(first, different_peer);
         assert_ne!(first, second_hash);
         assert_ne!(first, different_time);
+    }
+
+    #[test]
+    fn failed_noise_request_cleans_only_exact_local_ticket_and_records_transport_error_once() {
+        let first = PeerAddressedBlockRequest {
+            request_id: "getblock:local:failure:1".to_string(),
+            requested_peer_id: "auth-peer-a".to_string(),
+            block_hash: "a".repeat(64),
+            sent_at: 1234,
+        };
+        let second = PeerAddressedBlockRequest {
+            request_id: "getblock:local:healthy:2".to_string(),
+            requested_peer_id: "auth-peer-a".to_string(),
+            block_hash: "b".repeat(64),
+            sent_at: 1234,
+        };
+        let mut state = InnerState::default();
+        for request in [&first, &second] {
+            state.outstanding_getblock_requests.insert(
+                request.request_id.clone(),
+                OutstandingGetBlockRequest {
+                    request_id: request.request_id.clone(),
+                    target_peer_id: request.requested_peer_id.clone(),
+                    block_hash: request.block_hash.clone(),
+                    completed: false,
+                },
+            );
+        }
+        state.getblock_requests_sent_total = 2;
+        let inner = Arc::new(Mutex::new(state));
+        let mut forged = first.clone();
+        forged.requested_peer_id = "wrong-peer".to_string();
+        assert!(!clear_failed_noise_getblock_local_request(&inner, &forged));
+        forged = first.clone();
+        forged.block_hash = "c".repeat(64);
+        assert!(!clear_failed_noise_getblock_local_request(&inner, &forged));
+        assert!(clear_failed_noise_getblock_local_request(&inner, &first));
+        assert!(!clear_failed_noise_getblock_local_request(&inner, &first));
+        let guard = inner.lock().unwrap();
+        assert!(!guard
+            .outstanding_getblock_requests
+            .contains_key(&first.request_id));
+        assert!(guard
+            .outstanding_getblock_requests
+            .contains_key(&second.request_id));
+        assert_eq!(guard.outstanding_getblock_requests.len(), 1);
+        assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
+        assert_eq!(guard.getblock_requests_sent_total, 2);
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 0);
     }
 }
