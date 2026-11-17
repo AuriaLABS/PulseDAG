@@ -14405,16 +14405,28 @@ mod peer_addressed_getblock_local_id_regressions {
         state.getblock_requests_sent_total = 2;
         let inner = Arc::new(Mutex::new(state));
         assert!(!clear_failed_gossipsub_getblock_publish(
-            &inner, "forged-peer", &hash, &first_id,
+            &inner,
+            "forged-peer",
+            &hash,
+            &first_id,
         ));
         assert!(!clear_failed_gossipsub_getblock_publish(
-            &inner, "authenticated-peer-a", &other_hash, &first_id,
+            &inner,
+            "authenticated-peer-a",
+            &other_hash,
+            &first_id,
         ));
         assert!(clear_failed_gossipsub_getblock_publish(
-            &inner, "authenticated-peer-a", &hash, &first_id,
+            &inner,
+            "authenticated-peer-a",
+            &hash,
+            &first_id,
         ));
         assert!(!clear_failed_gossipsub_getblock_publish(
-            &inner, "authenticated-peer-a", &hash, &first_id,
+            &inner,
+            "authenticated-peer-a",
+            &hash,
+            &first_id,
         ));
         let guard = inner.lock().unwrap();
         assert!(!guard.outstanding_getblock_requests.contains_key(&first_id));
