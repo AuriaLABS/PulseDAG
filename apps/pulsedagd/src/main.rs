@@ -8291,6 +8291,47 @@ async fn main() -> Result<()> {
                             );
                         }
                     }
+                    InboundEvent::AuthenticatedDirectGetBlockRequest { ticket } => {
+                        // This ticket was minted by the REAL authenticated Noise
+                        // Swarm's one-shot ResponseChannel book. Never reuse the
+                        // legacy gossip GetBlock responder (staging/unverified disk).
+                        let approved = {
+                            let guard = chain.read().await;
+                            direct_getblock_authority::prepare_authenticated_direct_getblock_snapshot_v1(
+                                &guard,
+                                &guard.chain_id,
+                                &guard.chain_id,
+                                &ticket,
+                            )
+                        };
+                        match (approved, p2p.as_ref()) {
+                            (Ok(snapshot), Some(handle)) => {
+                                if let Err(error) = handle
+                                    .respond_authenticated_direct_getblock_snapshot(
+                                        &ticket, snapshot,
+                                    )
+                                {
+                                    warn!(
+                                        peer = %ticket.authenticated_remote,
+                                        block_hash = %ticket.block_hash,
+                                        error = %error,
+                                        "authenticated direct GetBlock reply queue rejected",
+                                    );
+                                }
+                            }
+                            (Err(error), _) => {
+                                warn!(
+                                    peer = %ticket.authenticated_remote,
+                                    block_hash = %ticket.block_hash,
+                                    error = ?error,
+                                    "authenticated direct GetBlock daemon authority rejected",
+                                );
+                            }
+                            (Ok(_), None) => {
+                                warn!("authenticated direct GetBlock reply unavailable: no P2P handle");
+                            }
+                        }
+                    }
                     InboundEvent::GetBlock { hash, request_id } => {
                         let block = {
                             let guard = chain.read().await;

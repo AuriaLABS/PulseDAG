@@ -44,12 +44,15 @@ use crate::messages::compact_relay_carrier_v1::{
     CompactRelayCapabilitiesV1, CompactRelayWireV1, COMPACT_RELAY_TRANSPORT_MAX_BYTES_V1,
 };
 use crate::messages::compact_relay_runtime_v1::CompactRelayRuntimeSessionBookV1;
+use crate::messages::direct_getblock_accepted_snapshot_v1::DirectGetBlockAcceptedSnapshotV1;
 use crate::messages::direct_getblock_codec_v1::{
     DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1,
 };
+use crate::messages::direct_getblock_inbound_v1::DirectGetBlockInboundTicketV1;
 use crate::messages::direct_getblock_pending_v1::{
     DIRECT_GETBLOCK_REQUEST_TTL, MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL,
 };
+use crate::messages::direct_getblock_response_channel_v1::DirectGetBlockLibp2pResponseChannelsV1;
 use crate::messages::direct_getblock_swarm_bindings_v1::DirectGetBlockSwarmBindingsV1;
 use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
@@ -966,6 +969,17 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
+    /// Future authenticated request-response return path. Never turns a
+    /// daemon snapshot into a Gossipsub BlockData publication.
+    fn respond_authenticated_direct_getblock_snapshot(
+        &self,
+        _ticket: &DirectGetBlockInboundTicketV1,
+        _snapshot: DirectGetBlockAcceptedSnapshotV1,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "authenticated direct GetBlock response unsupported".into(),
+        ))
+    }
     fn status(&self) -> Result<P2pStatus, PulseError>;
 }
 
@@ -1036,6 +1050,11 @@ pub enum InboundEvent {
         hash: PulseHash,
         request_id: Option<String>,
     },
+    /// Only a locally allocated token from the real Noise Swarm's one-shot
+    /// inbound response channel may be delivered here (never wire JSON).
+    AuthenticatedDirectGetBlockRequest {
+        ticket: DirectGetBlockInboundTicketV1,
+    },
     BlockDataMissing {
         hash: Option<PulseHash>,
         peer_id: Option<String>,
@@ -1099,6 +1118,10 @@ enum OutboundMessage {
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
+    DirectGetBlockAcceptedSnapshot {
+        ticket: DirectGetBlockInboundTicketV1,
+        snapshot: DirectGetBlockAcceptedSnapshotV1,
+    },
     GetBlockFrom {
         peer_id: String,
         hash: PulseHash,
@@ -3502,6 +3525,11 @@ fn enqueue_outbound_message(
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
+        OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot } => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot });
+        }
         OutboundMessage::GetBlockFrom {
             peer_id,
             hash,
@@ -3619,6 +3647,7 @@ fn pop_outbound_message(
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
             | OutboundMessage::GetBlockFrom { .. }
+            | OutboundMessage::DirectGetBlockAcceptedSnapshot { .. }
             | OutboundMessage::BlockData { .. } => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
                 guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
@@ -6116,6 +6145,11 @@ async fn run_libp2p_runtime(
                     OutboundMessage::CompactRelayBlockBatch { .. } => {
                         unreachable!("automatic compact block batches are consumed before publish")
                     }
+                    OutboundMessage::DirectGetBlockAcceptedSnapshot { .. } => {
+                        // A dedicated authenticated response is never a gossip message.
+                        // Real Swarm consumes it before this serialization boundary.
+                        continue;
+                    }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:inv-block:{}", hashes.join(","));
@@ -6769,6 +6803,20 @@ async fn run_libp2p_real_runtime(
                 return;
             }
         };
+    // Move-only response channels belong to THIS actual authenticated Swarm.
+    // Keep inbound protocol disabled until the whole request/response path and
+    // independently verified 5N>=32 rejoin evidence exist.
+    let mut direct_getblock_response_channels =
+        match DirectGetBlockLibp2pResponseChannelsV1::new(&cfg.chain_id, *swarm.local_peer_id()) {
+            Ok(channels) => channels,
+            Err(error) => {
+                note_swarm_event(
+                    &inner,
+                    format!("swarm-init-failed:direct-getblock-channels:{error:?}"),
+                );
+                return;
+            }
+        };
 
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
@@ -6840,6 +6888,29 @@ async fn run_libp2p_real_runtime(
                 drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
                     let msg = match msg {
+                        OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot } => {
+                            // Consume only the exact real Noise response channel.
+                            // Rejected/expired channels NEVER fall back to Gossipsub.
+                            if let Err(error) = direct_getblock_response_channels
+                                .respond_from_accepted_snapshot(
+                                    ticket.local_token,
+                                    &ticket.authenticated_remote,
+                                    &snapshot,
+                                    std::time::Instant::now(),
+                                    |channel, bytes| {
+                                        swarm.behaviour_mut().direct_getblock
+                                            .send_response(channel, bytes)
+                                            .is_ok()
+                                    },
+                                )
+                            {
+                                note_swarm_event(
+                                    &inner,
+                                    format!("direct-getblock-response-rejected:{error:?}"),
+                                );
+                            }
+                            continue;
+                        }
                         OutboundMessage::CompactRelayReconstructedBlock { peer_id, block } => {
                             if let Err(error) = dispatch_reconstructed_compact_block_v1(
                                 &cfg.chain_id,
@@ -7034,6 +7105,11 @@ async fn run_libp2p_real_runtime(
                     OutboundMessage::CompactRelayBlockBatch { .. } => {
                         unreachable!("automatic compact block batches are consumed before publish")
                     }
+                    OutboundMessage::DirectGetBlockAcceptedSnapshot { .. } => {
+                        // A dedicated authenticated response is never a gossip message.
+                        // Real Swarm consumes it before this serialization boundary.
+                        continue;
+                    }
                     OutboundMessage::InvBlock(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:inv-block:{}", hashes.join(","));
@@ -7213,26 +7289,65 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::DirectGetblock(event)) => {
-                        // Bind cleanup to the real libp2p event IDs and authenticated
-                        // peer. An unexpected response is verified and then DROPPED:
-                        // daemon block admission is NOT connected or authorized yet.
-                        match &event {
-                            request_response::Event::Message { peer, message: request_response::Message::Response { request_id, response }, .. } => {
+                        // Summarize BEFORE consuming the move-only ResponseChannel.
+                        // No raw untrusted 8MiB payload is written to logs.
+                        let sanitized = summarize_unapproved_direct_getblock_event_v1(&event);
+                        match event {
+                            request_response::Event::Message {
+                                peer,
+                                message: request_response::Message::Request {
+                                    request, channel, ..
+                                },
+                                ..
+                            } => {
+                                // Dormant with ProtocolSupport::Outbound. A future
+                                // reviewed inbound switch will only create tickets
+                                // with the actual authenticated Noise peer identity.
+                                match direct_getblock_response_channels.accept(
+                                    &request,
+                                    &peer,
+                                    channel,
+                                    std::time::Instant::now(),
+                                ) {
+                                    Ok(ticket) => {
+                                        if inbound_tx.send(
+                                            InboundEvent::AuthenticatedDirectGetBlockRequest {
+                                                ticket,
+                                            },
+                                        ).is_err() {
+                                            direct_getblock_response_channels
+                                                .peer_disconnected(&peer);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        note_swarm_event(
+                                            &inner,
+                                            format!("direct-getblock-inbound-rejected:{error:?}"),
+                                        );
+                                    }
+                                }
+                            }
+                            request_response::Event::Message {
+                                peer,
+                                message: request_response::Message::Response {
+                                    request_id, response,
+                                },
+                                ..
+                            } => {
+                                // Production direct outbound is still dormant.
+                                // No remote block enters daemon admission here.
                                 let _ = direct_getblock_bindings.accept_response(
-                                    request_id, peer, response, std::time::Instant::now(),
+                                    &request_id, &peer, &response, std::time::Instant::now(),
                                 );
                             }
                             request_response::Event::OutboundFailure { peer, request_id, .. } => {
-                                let _ = direct_getblock_bindings.outbound_failure(request_id, peer);
+                                let _ = direct_getblock_bindings.outbound_failure(
+                                    &request_id, &peer,
+                                );
                             }
                             _ => {}
                         }
-                        // This remains a non-activating fail-closed event arm.
-                        // Never format raw GetBlock payloads with Debug.
-                        note_swarm_event(
-                            &inner,
-                            summarize_unapproved_direct_getblock_event_v1(&event),
-                        );
+                        note_swarm_event(&inner, sanitized);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
@@ -7274,6 +7389,7 @@ async fn run_libp2p_real_runtime(
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
+                            direct_getblock_response_channels.peer_disconnected(&peer_id);
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -7331,6 +7447,7 @@ async fn run_libp2p_real_runtime(
                 // A stalled transport event loop cannot retain pending tickets
                 // beyond the eight-second direct GetBlock budget.
                 direct_getblock_bindings.expire(std::time::Instant::now());
+                direct_getblock_response_channels.expire(std::time::Instant::now());
                 if let Ok(mut guard) = inner.lock() {
                     refresh_connected_peers_from_health(&mut guard);
                     enforce_connectivity_aware_cooldown_floor(&mut guard, now_unix());
@@ -7481,6 +7598,7 @@ impl Libp2pHandle {
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
                 | OutboundMessage::GetBlockFrom { .. }
+                | OutboundMessage::DirectGetBlockAcceptedSnapshot { .. }
                 | OutboundMessage::BlockData { .. }
         );
         {
@@ -8056,6 +8174,25 @@ impl P2pHandle for Libp2pHandle {
         block: Option<&Block>,
     ) -> Result<(), PulseError> {
         self.send_block_data_with_request_id(None, request_hash, block)
+    }
+
+    fn respond_authenticated_direct_getblock_snapshot(
+        &self,
+        ticket: &DirectGetBlockInboundTicketV1,
+        snapshot: DirectGetBlockAcceptedSnapshotV1,
+    ) -> Result<(), PulseError> {
+        if ticket.local_token == 0 || ticket.block_hash != snapshot.requested_hash() {
+            return Err(PulseError::Internal(
+                "invalid authenticated direct GetBlock daemon handoff".into(),
+            ));
+        }
+        self.queue_sync_message_required(
+            OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ticket.clone(),
+                snapshot,
+            },
+            "direct-getblock-accepted-snapshot",
+        )
     }
 
     fn send_block_data_with_request_id(
@@ -13824,6 +13961,68 @@ mod task27_live_capability_io_tests {
                 .action,
             ProtocolPeerRouteActionV1::HoldForCapabilities
         );
+    }
+}
+
+#[cfg(test)]
+mod real_swarm_daemon_response_lane_regressions {
+    use super::*;
+    use pulsedag_core::genesis::init_chain_state;
+
+    fn approved_snapshot() -> DirectGetBlockAcceptedSnapshotV1 {
+        let chain = init_chain_state("real-noise-daemon-lane-test".to_string());
+        DirectGetBlockAcceptedSnapshotV1::from_accepted_chain(
+            &chain,
+            "real-noise-daemon-lane-test",
+            &chain.dag.genesis_hash,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn daemon_snapshot_is_queued_only_on_block_lane_with_opaque_noise_ticket() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let mut queue = OutboundPriorityQueue::default();
+        let snapshot = approved_snapshot();
+        let peer = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let ticket = DirectGetBlockInboundTicketV1 {
+            local_token: 17,
+            block_hash: snapshot.requested_hash().to_string(),
+            authenticated_remote: peer,
+        };
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ticket.clone(),
+                snapshot,
+            },
+        );
+        let selected = pop_outbound_message(&inner, &mut queue);
+        assert!(matches!(
+            selected,
+            Some(OutboundMessage::DirectGetBlockAcceptedSnapshot {
+                ticket: ref found_ticket,
+                snapshot: ref found_snapshot,
+            }) if found_ticket == &ticket
+                && found_snapshot.requested_hash() == ticket.block_hash
+                && found_snapshot.block().is_some()
+        ));
+    }
+
+    #[test]
+    fn simulated_p2p_handle_rejects_real_noise_snapshot_without_channel() {
+        let (memory, _inbound_rx) =
+            MemoryP2pHandle::new("real-noise-daemon-lane-test".to_string(), Vec::new());
+        let snapshot = approved_snapshot();
+        let ticket = DirectGetBlockInboundTicketV1 {
+            local_token: 1,
+            block_hash: snapshot.requested_hash().to_string(),
+            authenticated_remote: PeerId::from(identity::Keypair::generate_ed25519().public()),
+        };
+        assert!(memory
+            .respond_authenticated_direct_getblock_snapshot(&ticket, snapshot)
+            .is_err());
     }
 }
 
