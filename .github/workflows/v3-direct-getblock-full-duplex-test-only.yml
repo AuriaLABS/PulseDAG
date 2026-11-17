@@ -1,0 +1,52 @@
+name: v3 authenticated Noise full-duplex mutual GetBlock test only (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+      - .github/workflows/v3-direct-getblock-full-duplex-test-only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-full-duplex-loopback-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact immutable candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce test-only Full support, production Outbound and contracts OFF
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::production full-duplex GetBlock remains unapproved"
+            exit 1
+          fi
+          grep -Fq 'DIRECT_GETBLOCK_STREAM_PROTOCOL_V1' crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+          grep -Fq 'issue_daemon_request_with(' crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+          grep -Fq 'deliver_bound_response_to_daemon(' crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+          grep -Fq '/ip4/127.0.0.1/tcp/0' crates/pulsedag-p2p/tests/direct_getblock_full_duplex_test_only_v1.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Install Rust 1.91.0 and rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt
+      - name: Compile and run two-way accepted DAG Noise test on loopback
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-p2p --test direct_getblock_full_duplex_test_only_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --test direct_getblock_noise_roundtrip_v1 -- --nocapture
+          git diff --exit-code -- Cargo.lock
