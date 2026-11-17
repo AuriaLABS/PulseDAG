@@ -62,8 +62,10 @@ async fn both_authenticated_noise_peers_request_and_serve_accepted_dag_without_b
         let genesis = accepted.dag.genesis_hash.clone();
         let mut a = full_duplex_test_swarm(a_key);
         let mut b = full_duplex_test_swarm(b_key);
-        let mut a_inbound = DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, a_id).unwrap();
-        let mut b_inbound = DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, b_id).unwrap();
+        let mut a_inbound =
+            DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, a_id).unwrap();
+        let mut b_inbound =
+            DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, b_id).unwrap();
         let mut a_outbound = DirectGetBlockSwarmBindingsV1::new(CHAIN, a_id).unwrap();
         let mut b_outbound = DirectGetBlockSwarmBindingsV1::new(CHAIN, b_id).unwrap();
 
@@ -143,9 +145,11 @@ async fn both_authenticated_noise_peers_request_and_serve_accepted_dag_without_b
                             _ => panic!("A must receive a real accepted-DAG block"),
                         }
                     }
-                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. })
-                    | SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
-                        panic!("A real full-duplex Noise stream failed: {error:?}");
+                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                        panic!("A real full-duplex Noise outbound stream failed: {error:?}");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
+                        panic!("A real full-duplex Noise inbound stream failed: {error:?}");
                     }
                     _ => {}
                 },
@@ -209,9 +213,11 @@ async fn both_authenticated_noise_peers_request_and_serve_accepted_dag_without_b
                             _ => panic!("B must receive a real accepted-DAG block"),
                         }
                     }
-                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. })
-                    | SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
-                        panic!("B real full-duplex Noise stream failed: {error:?}");
+                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                        panic!("B real full-duplex Noise outbound stream failed: {error:?}");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
+                        panic!("B real full-duplex Noise inbound stream failed: {error:?}");
                     }
                     _ => {}
                 },
