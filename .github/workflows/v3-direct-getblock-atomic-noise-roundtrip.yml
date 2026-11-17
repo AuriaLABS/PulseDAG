@@ -1,0 +1,49 @@
+name: v3 atomic daemon-bound real Noise GetBlock roundtrip (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/tests/direct_getblock_noise_roundtrip_v1.rs
+      - crates/pulsedag-p2p/src/messages/direct_getblock_swarm_bindings_v1.rs
+      - .github/workflows/v3-direct-getblock-atomic-noise-roundtrip.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  atomic-daemon-bound-noise-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout exact unmerged candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check exact SHA and unchanged no-activation boundaries
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'issue_daemon_request_with(' crates/pulsedag-p2p/tests/direct_getblock_noise_roundtrip_v1.rs
+          grep -Fq 'deliver_bound_response_to_daemon(' crates/pulsedag-p2p/tests/direct_getblock_noise_roundtrip_v1.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::live inbound GetBlock was enabled without approval"
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt
+      - name: Build and exercise exact two-Swarm authenticated Noise transport
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-p2p --test direct_getblock_noise_roundtrip_v1 -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib direct_getblock_swarm_bindings_v1 -- --nocapture
+          git diff --exit-code -- Cargo.lock
