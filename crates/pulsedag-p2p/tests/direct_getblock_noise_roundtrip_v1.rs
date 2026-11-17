@@ -199,7 +199,10 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
         let mut inbound =
             DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, server_id).unwrap();
         let mut bindings = DirectGetBlockSwarmBindingsV1::new(CHAIN, client_id).unwrap();
-        let mut local_requests = HashMap::<OutboundRequestId, PeerAddressedBlockRequest>::new();
+        // Only count real libp2p transport IDs for replay detection. The
+        // complete daemon request is bound by DirectGetBlockSwarmBindingsV1
+        // itself, never reconstructed from a second runtime HashMap.
+        let mut observed_transport_ids = std::collections::HashSet::<OutboundRequestId>::new();
         let mut started = false;
         let mut heard_accepted = false;
         let mut heard_missing = false;
@@ -254,23 +257,19 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
                                 sent_at: 0,
                             };
                             let transport_id = bindings
-                                .issue_with(
-                                    &peer_id,
-                                    hash,
+                                .issue_daemon_request_with(
+                                    &original,
                                     client.is_connected(&peer_id),
                                     now,
                                     |peer, wire| client.behaviour_mut().send_request(peer, wire),
                                 )
-                                .expect("request must have real libp2p transport ID");
-                            bindings
-                                .bind_local_daemon_request(&transport_id, &original)
-                                .expect("exact local daemon correlation must be immutable");
+                                .expect("atomic daemon ticket must use real Noise transport ID");
                             assert!(
-                                local_requests.insert(transport_id, original).is_none(),
+                                observed_transport_ids.insert(transport_id),
                                 "transport IDs must be unique"
                             );
                         }
-                        assert_eq!(local_requests.len(), 2);
+                        assert_eq!(observed_transport_ids.len(), 2);
                     }
                     SwarmEvent::Behaviour(request_response::Event::Message {
                         peer,
@@ -278,18 +277,18 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
                         ..
                     }) => {
                         assert_eq!(peer, server_id, "Noise transport must authenticate responder");
-                        let original = local_requests
-                            .remove(&request_id)
-                            .expect("unexpected or replayed real transport ID");
+                        assert!(
+                            observed_transport_ids.remove(&request_id),
+                            "unexpected or replayed real transport ID"
+                        );
                         let event = bindings
-                            .deliver_verified_response_to_daemon(
+                            .deliver_bound_response_to_daemon(
                                 &request_id,
                                 &peer,
                                 &response,
-                                &original,
                                 Instant::now(),
                             )
-                            .expect("strict response and local request correlation");
+                            .expect("strict single-book Noise response and daemon correlation");
                         match event {
                             InboundEvent::Block {
                                 peer_id: Some(actual_peer),
@@ -298,7 +297,6 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
                                 assert!(!heard_accepted);
                                 assert_eq!(actual_peer, server_id.to_string());
                                 assert_eq!(block.hash, genesis_hash);
-                                assert_eq!(original.block_hash, genesis_hash);
                                 heard_accepted = true;
                             }
                             InboundEvent::BlockDataMissing {
@@ -309,7 +307,7 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
                                 assert!(!heard_missing);
                                 assert_eq!(actual_peer, server_id.to_string());
                                 assert_eq!(actual_hash, missing_hash);
-                                assert_eq!(actual_request_id, original.request_id);
+                                assert_eq!(actual_request_id, "getblock:daemon-local:1");
                                 heard_missing = true;
                             }
                             _ => panic!("validated response must only yield standard daemon ingress"),
@@ -323,7 +321,7 @@ async fn real_noise_swarms_bind_transport_ids_to_exact_daemon_ingress_requests()
             }
         }
         assert_eq!(inbound_count, 2);
-        assert!(local_requests.is_empty());
+        assert!(observed_transport_ids.is_empty());
         assert!(inbound.is_empty());
         assert!(bindings.is_empty());
     })
