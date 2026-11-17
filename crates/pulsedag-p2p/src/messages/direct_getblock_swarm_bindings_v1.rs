@@ -1077,9 +1077,13 @@ mod tests {
         let mut live = behaviour();
         let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
         let id = tracker
-            .issue_with(&target, &"e".repeat(64), true, Instant::now(), |peer, raw| {
-                live.send_request(peer, raw)
-            })
+            .issue_with(
+                &target,
+                &"e".repeat(64),
+                true,
+                Instant::now(),
+                |peer, raw| live.send_request(peer, raw),
+            )
             .unwrap();
         assert_eq!(
             tracker
