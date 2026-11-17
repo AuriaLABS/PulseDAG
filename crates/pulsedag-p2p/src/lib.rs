@@ -829,7 +829,9 @@ fn clear_failed_noise_getblock_local_request(
                 && pending.block_hash == original.block_hash
         });
     if is_exact {
-        guard.outstanding_getblock_requests.remove(&original.request_id);
+        guard
+            .outstanding_getblock_requests
+            .remove(&original.request_id);
         guard.peer_addressed_getblock_transport_error_total = guard
             .peer_addressed_getblock_transport_error_total
             .saturating_add(1);
@@ -14319,8 +14321,12 @@ mod peer_addressed_getblock_local_id_regressions {
         assert!(clear_failed_noise_getblock_local_request(&inner, &first));
         assert!(!clear_failed_noise_getblock_local_request(&inner, &first));
         let guard = inner.lock().unwrap();
-        assert!(!guard.outstanding_getblock_requests.contains_key(&first.request_id));
-        assert!(guard.outstanding_getblock_requests.contains_key(&second.request_id));
+        assert!(!guard
+            .outstanding_getblock_requests
+            .contains_key(&first.request_id));
+        assert!(guard
+            .outstanding_getblock_requests
+            .contains_key(&second.request_id));
         assert_eq!(guard.outstanding_getblock_requests.len(), 1);
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
         assert_eq!(guard.getblock_requests_sent_total, 2);
