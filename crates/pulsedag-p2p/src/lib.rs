@@ -763,6 +763,44 @@ struct OutstandingGetBlockRequest {
     completed: bool,
 }
 
+fn peer_addressed_getblock_local_request_id(
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+    sequence: u64,
+) -> String {
+    format!("getblock:{peer_id}:{hash}:{sent_at}:{sequence}")
+}
+
+// Must be called with the same mutex held as outstanding_getblock_requests.
+// Keep this counter separate from getblock_requests_sent_total: failed
+// queue submissions roll back that statistic, but must NEVER roll back an ID
+// already observed by another concurrent caller.
+fn reserve_peer_addressed_getblock_local_request_id(
+    inner: &mut InnerState,
+    peer_id: &str,
+    hash: &PulseHash,
+    sent_at: u64,
+) -> Result<String, PulseError> {
+    let sequence = inner
+        .peer_addressed_getblock_local_sequence
+        .checked_add(1)
+        .ok_or_else(|| {
+            PulseError::Internal("GetBlock local request ID sequence exhausted".into())
+        })?;
+    let request_id = peer_addressed_getblock_local_request_id(peer_id, hash, sent_at, sequence);
+    if inner
+        .outstanding_getblock_requests
+        .contains_key(&request_id)
+    {
+        return Err(PulseError::Internal(
+            "duplicate GetBlock local request ID; refusing to overwrite inflight request".into(),
+        ));
+    }
+    inner.peer_addressed_getblock_local_sequence = sequence;
+    Ok(request_id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerAddressedBlockRequest {
     pub request_id: String,
@@ -1281,6 +1319,8 @@ struct InnerState {
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
     getblock_requests_sent_total: u64,
+    // Identity allocator: never decrease on outbound queue rejection.
+    peer_addressed_getblock_local_sequence: u64,
     getblock_responses_correlated_total: u64,
     generic_getblock_response_total: u64,
     wrong_peer_response_total: u64,
@@ -8058,7 +8098,7 @@ impl P2pHandle for Libp2pHandle {
         hash: &PulseHash,
     ) -> Result<PeerAddressedBlockRequest, PulseError> {
         let sent_at = now_unix();
-        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
+        let request_id;
         {
             let mut inner = self
                 .inner
@@ -8072,6 +8112,12 @@ impl P2pHandle for Libp2pHandle {
                     "peer {peer_id} is not a direct request-capable session"
                 )));
             }
+            // The same peer/hash can be requested multiple times within one
+            // second. Allocate a unique local ID WHILE holding the request
+            // book mutex; never overwrite an older in-flight correlation slot.
+            request_id = reserve_peer_addressed_getblock_local_request_id(
+                &mut inner, peer_id, hash, sent_at,
+            )?;
             inner.getblock_requests_sent_total =
                 inner.getblock_requests_sent_total.saturating_add(1);
             inner.peer_addressed_getblock_sent_total =
@@ -14088,5 +14134,93 @@ mod direct_getblock_live_request_gate_regressions {
     fn live_direct_sender_is_inactive_until_full_duplex_and_5n_rejoin_review() {
         // Prevent Clippy treating a compile-time constant assertion as a no-op.
         assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+    }
+}
+
+#[cfg(test)]
+mod peer_addressed_getblock_local_id_regressions {
+    use super::*;
+
+    #[test]
+    fn same_peer_hash_and_timestamp_must_have_distinct_local_request_ids() {
+        let peer = "12D3KooWMuqx3a5cGJ9yj1T6svozkH79ekQArKR38D6XXSuy3Rqi";
+        let hash: PulseHash = "a".repeat(64);
+        let first = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 10);
+        let second = peer_addressed_getblock_local_request_id(peer, &hash, 1794812444, 11);
+        assert_ne!(
+            first, second,
+            "second-resolution timestamps must not alias tickets"
+        );
+        assert!(first.starts_with("getblock:"));
+        assert!(first.len() <= 256);
+        assert!(first
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_' | b'/')));
+    }
+
+    #[test]
+    fn failed_enqueues_cannot_roll_back_identity_allocator_past_other_inflight_requests() {
+        let peer = "same-authenticated-peer";
+        let hash: PulseHash = "a".repeat(64);
+        let sent_at = 1794812444;
+        let mut inner = InnerState::default();
+
+        // A registers ID #1 and releases the mutex for queue submission.
+        let a = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        inner.getblock_requests_sent_total = 1;
+        inner.outstanding_getblock_requests.insert(
+            a.clone(),
+            OutstandingGetBlockRequest {
+                request_id: a.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // B registers #2 and queues successfully before A learns that its
+        // earlier enqueue failed under backpressure.
+        let b = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        inner.getblock_requests_sent_total = 2;
+        inner.outstanding_getblock_requests.insert(
+            b.clone(),
+            OutstandingGetBlockRequest {
+                request_id: b.clone(),
+                target_peer_id: peer.to_owned(),
+                block_hash: hash.clone(),
+                completed: false,
+            },
+        );
+
+        // A's enqueue cleanup must only undo its sent metric/ticket. It
+        // cannot undo identity sequence #2 already allocated to B.
+        inner.outstanding_getblock_requests.remove(&a);
+        inner.getblock_requests_sent_total -= 1;
+        assert_eq!(inner.getblock_requests_sent_total, 1);
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 2);
+
+        let c = reserve_peer_addressed_getblock_local_request_id(&mut inner, peer, &hash, sent_at)
+            .unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+        assert!(inner.outstanding_getblock_requests.contains_key(&b));
+        assert_eq!(inner.peer_addressed_getblock_local_sequence, 3);
+    }
+
+    #[test]
+    fn local_correlations_remain_distinct_across_target_and_hash_changes() {
+        let hash: PulseHash = "b".repeat(64);
+        let different_hash: PulseHash = "c".repeat(64);
+        let first = peer_addressed_getblock_local_request_id("peerA", &hash, 100, 1);
+        let different_peer = peer_addressed_getblock_local_request_id("peerB", &hash, 100, 1);
+        let second_hash =
+            peer_addressed_getblock_local_request_id("peerA", &different_hash, 100, 1);
+        let different_time = peer_addressed_getblock_local_request_id("peerA", &hash, 101, 1);
+        assert_ne!(first, different_peer);
+        assert_ne!(first, second_hash);
+        assert_ne!(first, different_time);
     }
 }
