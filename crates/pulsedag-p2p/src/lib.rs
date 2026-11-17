@@ -6390,6 +6390,12 @@ mod direct_getblock_swarm_event_sanitization_tests {
 
 type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlockRawCodecV1>;
 
+// REVIEW GATE: this transport switch is intentionally OFF in all deployed
+// binaries. A separate reviewed PR must approve inbound Full support,
+// remove the legacy GetBlockFrom broadcaster, and pass real 5N>=32 recovery
+// before changing this value. It is not a public testnet launch flag.
+const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -6888,6 +6894,76 @@ async fn run_libp2p_real_runtime(
                 drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
                     let msg = match msg {
+                        OutboundMessage::GetBlockFrom { peer_id, hash, request_id }
+                            if DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED =>
+                        {
+                            // Direct mode has NO Gossipsub fallback, including
+                            // when peer authorization, queue or quotas reject.
+                            // This is the exact daemon-local request minted by
+                            // request_block_from, not an ID copied from the wire.
+                            let original = inner.lock().ok().and_then(|guard| {
+                                guard
+                                    .outstanding_getblock_requests
+                                    .get(&request_id)
+                                    .filter(|pending| {
+                                        !pending.completed
+                                            && pending.target_peer_id == peer_id
+                                            && pending.block_hash == hash
+                                    })
+                                    .map(|_| PeerAddressedBlockRequest {
+                                        request_id: request_id.clone(),
+                                        requested_peer_id: peer_id.clone(),
+                                        block_hash: hash.clone(),
+                                        sent_at: now_unix(),
+                                    })
+                            });
+                            let Some(original) = original else {
+                                note_swarm_event(
+                                    &inner,
+                                    "direct-getblock-rejected:no-matching-local-ticket",
+                                );
+                                continue;
+                            };
+                            let connected = original
+                                .requested_peer_id
+                                .parse::<PeerId>()
+                                .map(|target| swarm.is_connected(&target))
+                                .unwrap_or(false);
+                            let issued = direct_getblock_bindings.issue_daemon_request_with(
+                                &original,
+                                connected,
+                                std::time::Instant::now(),
+                                |target, wire| {
+                                    let live_direct_behaviour =
+                                        &mut swarm.behaviour_mut().direct_getblock;
+                                    live_direct_behaviour.send_request(target, wire)
+                                },
+                            );
+                            match issued {
+                                Ok(_transport_id) => {
+                                    note_swarm_event(
+                                        &inner,
+                                        "direct-getblock-issued:authenticated-noise",
+                                    );
+                                }
+                                Err(error) => {
+                                    if let Ok(mut guard) = inner.lock() {
+                                        guard.outstanding_getblock_requests.remove(&request_id);
+                                        guard.peer_addressed_getblock_transport_error_total =
+                                            guard.peer_addressed_getblock_transport_error_total
+                                                .saturating_add(1);
+                                    }
+                                    note_swarm_event(
+                                        &inner,
+                                        format!("direct-getblock-issue-rejected:{error:?}"),
+                                    );
+                                }
+                            }
+                            // A direct rejection is a transport failure, NEVER
+                            // an authenticated Missing block response. The
+                            // daemon must retry within its own bounded policy.
+                            continue;
+                        }
                         OutboundMessage::DirectGetBlockAcceptedSnapshot { ticket, snapshot } => {
                             // Consume only the exact real Noise response channel.
                             // Rejected/expired channels NEVER fall back to Gossipsub.
@@ -7334,11 +7410,35 @@ async fn run_libp2p_real_runtime(
                                 },
                                 ..
                             } => {
-                                // Production direct outbound is still dormant.
-                                // No remote block enters daemon admission here.
-                                let _ = direct_getblock_bindings.accept_response(
-                                    &request_id, &peer, &response, std::time::Instant::now(),
-                                );
+                                if DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED {
+                                    match direct_getblock_bindings.deliver_bound_response_to_daemon(
+                                        &request_id,
+                                        &peer,
+                                        &response,
+                                        std::time::Instant::now(),
+                                    ) {
+                                        Ok(event) => {
+                                            if inbound_tx.send(event).is_err() {
+                                                note_swarm_event(
+                                                    &inner,
+                                                    "direct-getblock-daemon-channel-closed",
+                                                );
+                                            }
+                                        }
+                                        Err(error) => {
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("direct-getblock-response-rejected:{error:?}"),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Default OFF: do not admit received blocks
+                                    // from an unapproved production request path.
+                                    let _ = direct_getblock_bindings.accept_response(
+                                        &request_id, &peer, &response, std::time::Instant::now(),
+                                    );
+                                }
                             }
                             request_response::Event::OutboundFailure { peer, request_id, .. } => {
                                 let _ = direct_getblock_bindings.outbound_failure(
@@ -14023,6 +14123,17 @@ mod real_swarm_daemon_response_lane_regressions {
         assert!(memory
             .respond_authenticated_direct_getblock_snapshot(&ticket, snapshot)
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_live_request_gate_regressions {
+    use super::*;
+
+    #[test]
+    fn live_direct_sender_is_inactive_until_full_duplex_and_5n_rejoin_review() {
+        // Prevent Clippy treating a compile-time constant assertion as a no-op.
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
     }
 }
 
