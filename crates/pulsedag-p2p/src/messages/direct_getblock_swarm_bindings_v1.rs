@@ -328,6 +328,25 @@ impl DirectGetBlockSwarmBindingsV1 {
         Ok(())
     }
 
+    /// Return the exact locally minted daemon request associated with a
+    /// failed authenticated Noise substream, so the calling runtime can evict
+    /// ONLY that outstanding local ticket. Unbound test-only requests yield
+    /// None. A wrong authenticated peer must leave every slot untouched.
+    pub fn outbound_failure_with_local_request(
+        &mut self,
+        transport_id: &OutboundRequestId,
+        authenticated_target: &PeerId,
+    ) -> Result<Option<PeerAddressedBlockRequest>, DirectGetBlockSwarmBindingErrorV1> {
+        let original = self
+            .by_transport_id
+            .get(transport_id)
+            .ok_or(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)?
+            .local_daemon_request
+            .clone();
+        self.outbound_failure(transport_id, authenticated_target)?;
+        Ok(original)
+    }
+
     /// Call only when the Swarm reports the LAST authenticated connection to
     /// the peer closed (never after merely losing one parallel connection).
     pub fn last_connection_closed(&mut self, authenticated_peer: &PeerId) -> usize {
@@ -1000,6 +1019,74 @@ mod tests {
             Err(DirectGetBlockSwarmBindingErrorV1::NotConnected)
         ));
         assert_eq!(sent, 0);
+        assert!(tracker.is_empty());
+    }
+    #[test]
+    fn exact_noise_outbound_failure_returns_only_original_daemon_local_request() {
+        let local = peer();
+        let target = peer();
+        let wrong_peer = peer();
+        assert_ne!(target, wrong_peer);
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let now = Instant::now();
+        let mut first_local = local_request(&target, &"d".repeat(64));
+        first_local.request_id = "getblock:local:failed:1".to_string();
+        let mut second_local = local_request(&target, &"d".repeat(64));
+        second_local.request_id = "getblock:local:healthy:2".to_string();
+        let first = tracker
+            .issue_daemon_request_with(&first_local, true, now, |peer, raw| {
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        let second = tracker
+            .issue_daemon_request_with(&second_local, true, now, |peer, raw| {
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        assert_eq!(tracker.len(), 2);
+        assert!(matches!(
+            tracker.outbound_failure_with_local_request(&first, &wrong_peer),
+            Err(DirectGetBlockSwarmBindingErrorV1::WrongTransportPeer)
+        ));
+        assert_eq!(tracker.len(), 2, "wrong Noise peer cannot clear any ticket");
+        assert_eq!(
+            tracker
+                .outbound_failure_with_local_request(&first, &target)
+                .unwrap(),
+            Some(first_local)
+        );
+        assert_eq!(tracker.len(), 1, "a failure must leave other requests live");
+        assert!(matches!(
+            tracker.outbound_failure_with_local_request(&first, &target),
+            Err(DirectGetBlockSwarmBindingErrorV1::UnknownTransportId)
+        ));
+        assert_eq!(
+            tracker
+                .outbound_failure_with_local_request(&second, &target)
+                .unwrap(),
+            Some(second_local)
+        );
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn unbound_noise_outbound_failure_does_not_invent_a_daemon_request() {
+        let local = peer();
+        let target = peer();
+        let mut live = behaviour();
+        let mut tracker = DirectGetBlockSwarmBindingsV1::new("swarm-bindings-test", local).unwrap();
+        let id = tracker
+            .issue_with(&target, &"e".repeat(64), true, Instant::now(), |peer, raw| {
+                live.send_request(peer, raw)
+            })
+            .unwrap();
+        assert_eq!(
+            tracker
+                .outbound_failure_with_local_request(&id, &target)
+                .unwrap(),
+            None
+        );
         assert!(tracker.is_empty());
     }
 }
