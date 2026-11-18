@@ -558,6 +558,18 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(status.subscriptions_active),
             );
             payload.insert(
+                "remote_sync_subscribed_peer_ids".into(),
+                serde_json::json!(status.remote_sync_subscribed_peer_ids),
+            );
+            payload.insert(
+                "remote_sync_subscription_events_total".into(),
+                serde_json::json!(status.remote_sync_subscription_events_total),
+            );
+            payload.insert(
+                "remote_sync_unsubscription_events_total".into(),
+                serde_json::json!(status.remote_sync_unsubscription_events_total),
+            );
+            payload.insert(
                 "last_message_kind".into(),
                 serde_json::json!(status.last_message_kind),
             );
@@ -1974,7 +1986,14 @@ mod tests {
                 runtime_started: true,
                 runtime_mode_detail: "detail".into(),
                 swarm_events_seen: 0,
-                subscriptions_active: 0,
+                subscriptions_active: 3,
+                remote_sync_subscribed_peer_ids: if expect_real {
+                    vec!["peer-a".into()]
+                } else {
+                    vec![]
+                },
+                remote_sync_subscription_events_total: if expect_real { 2 } else { 0 },
+                remote_sync_unsubscription_events_total: if expect_real { 1 } else { 0 },
                 last_message_kind: None,
                 last_swarm_event: None,
                 per_topic_publishes: HashMap::new(),
@@ -2128,6 +2147,25 @@ mod tests {
             assert_eq!(data["runtime_mode_detail"], status.runtime_mode_detail);
             assert_eq!(data["connected_peers_are_real_network"], expect_real);
             assert_eq!(data["connected_peers_semantics"], expect_semantics);
+            // Local topic registration is independent from authenticated remote
+            // sync subscribers; the RPC must expose all three evidence fields.
+            assert_eq!(data["subscriptions_active"], 3);
+            assert_eq!(
+                data["remote_sync_subscribed_peer_ids"],
+                if expect_real {
+                    serde_json::json!(["peer-a"])
+                } else {
+                    serde_json::json!([])
+                }
+            );
+            assert_eq!(
+                data["remote_sync_subscription_events_total"],
+                if expect_real { 2 } else { 0 }
+            );
+            assert_eq!(
+                data["remote_sync_unsubscription_events_total"],
+                if expect_real { 1 } else { 0 }
+            );
         }
     }
 }

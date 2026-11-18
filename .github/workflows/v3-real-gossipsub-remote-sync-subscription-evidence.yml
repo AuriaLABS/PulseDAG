@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - crates/pulsedag-p2p/src/lib.rs
+      - crates/pulsedag-rpc/src/handlers/p2p.rs
       - .github/workflows/v3-real-gossipsub-remote-sync-subscription-evidence.yml
   workflow_dispatch:
 
@@ -35,6 +36,7 @@ jobs:
           grep -Fq 'gossipsub::Event::Subscribed { peer_id, topic }' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'gossipsub::Event::Unsubscribed { peer_id, topic }' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'remote_sync_subscribed_peer_ids' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '"remote_sync_subscribed_peer_ids".into()' crates/pulsedag-rpc/src/handlers/p2p.rs
           grep -Fq 'actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'simulated_connections_never_claim_real_remote_gossipsub_subscribers' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
@@ -50,5 +52,7 @@ jobs:
           cargo check --locked -p pulsedag-p2p --all-targets
           cargo test --locked -p pulsedag-p2p --lib actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count -- --nocapture
           cargo test --locked -p pulsedag-p2p --lib simulated_connections_never_claim_real_remote_gossipsub_subscribers -- --nocapture
+          cargo test --locked -p pulsedag-rpc --lib p2p_status_mode_semantics_guardrails_cover_simulated_dev_and_real_modes -- --nocapture
           cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+          cargo clippy --locked -p pulsedag-rpc --all-targets -- -D warnings
           git diff --exit-code -- Cargo.lock
