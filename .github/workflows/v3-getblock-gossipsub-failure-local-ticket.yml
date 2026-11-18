@@ -1,0 +1,53 @@
+name: v3 fail-closed legacy GetBlock Gossipsub publication (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - .github/workflows/v3-getblock-gossipsub-failure-local-ticket.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  getblock-local-ticket-publish-failure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce hard-OFF Noise sender, outbound-only and exact publish failure cleanup
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::production inbound GetBlock not approved"
+            exit 1
+          fi
+          grep -Fq 'legacy-getblock-publish-failed:local-ticket-released' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'clear_failed_gossipsub_getblock_publish(' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'failed_gossipsub_getblock_publish_releases_only_exact_local_ticket' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'completed_getblock_ticket_cannot_be_erased_by_late_publish_failure' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Install pinned Rust 1.91
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt, clippy
+      - name: Format check, locked compile, local ticket regressions and strict Clippy
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib failed_gossipsub_getblock_publish_releases_only_exact_local_ticket -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib completed_getblock_ticket_cannot_be_erased_by_late_publish_failure -- --nocapture
+          cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+          git diff --exit-code -- Cargo.lock

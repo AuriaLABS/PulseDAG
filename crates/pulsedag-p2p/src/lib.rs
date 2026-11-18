@@ -839,6 +839,24 @@ fn clear_failed_noise_getblock_local_request(
     is_exact
 }
 
+/// A failed Gossipsub publication is a transport failure, not a Missing
+/// response. Release only the exact daemon-local pending request; the daemon
+/// retains ownership of retry policy. The direct Noise sender remains hard OFF.
+fn clear_failed_gossipsub_getblock_publish(
+    inner: &Arc<Mutex<InnerState>>,
+    peer_id: &str,
+    hash: &PulseHash,
+    request_id: &str,
+) -> bool {
+    let original = PeerAddressedBlockRequest {
+        request_id: request_id.to_string(),
+        requested_peer_id: peer_id.to_string(),
+        block_hash: hash.clone(),
+        sent_at: 0,
+    };
+    clear_failed_noise_getblock_local_request(inner, &original)
+}
+
 pub trait P2pHandle: Send + Sync {
     fn configure_protocol_capabilities_v1(
         &self,
@@ -7186,6 +7204,15 @@ async fn run_libp2p_real_runtime(
                         }
                         other => other,
                     };
+                    // Only the legacy GetBlock Gossipsub path uses this
+                    // failure correlation. Direct Noise sends are separately
+                    // hard OFF and must not fall back to a broadcast.
+                    let legacy_getblock_publish = match &msg {
+                        OutboundMessage::GetBlockFrom { peer_id, hash, request_id } => {
+                            Some((peer_id.clone(), hash.clone(), request_id.clone()))
+                        }
+                        _ => None,
+                    };
                     let (wire, topic_name, message_kind, message_id) = match msg {
                     OutboundMessage::Transaction(tx) => {
                         let topic_name = format!("{}-txs", cfg.chain_id);
@@ -7370,6 +7397,26 @@ async fn run_libp2p_real_runtime(
                         let topic = gossipsub::IdentTopic::new(topic_name);
                         if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
                             note_swarm_event(&inner, format!("publish-failed:{e}"));
+                            if let Some((peer_id, hash, request_id)) = &legacy_getblock_publish {
+                                if clear_failed_gossipsub_getblock_publish(
+                                    &inner, peer_id, hash, request_id,
+                                ) {
+                                    note_swarm_event(
+                                        &inner,
+                                        "legacy-getblock-publish-failed:local-ticket-released",
+                                    );
+                                }
+                            }
+                        }
+                    } else if let Some((peer_id, hash, request_id)) = &legacy_getblock_publish {
+                        // No bytes were sent. Do not fabricate BlockDataMissing.
+                        if clear_failed_gossipsub_getblock_publish(
+                            &inner, peer_id, hash, request_id,
+                        ) {
+                            note_swarm_event(
+                                &inner,
+                                "legacy-getblock-encode-failed:local-ticket-released",
+                            );
                         }
                     }
                 }
@@ -14331,5 +14378,85 @@ mod peer_addressed_getblock_local_id_regressions {
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
         assert_eq!(guard.getblock_requests_sent_total, 2);
         assert_eq!(guard.peer_addressed_getblock_local_sequence, 0);
+    }
+
+    #[test]
+    fn failed_gossipsub_getblock_publish_releases_only_exact_local_ticket() {
+        let hash: PulseHash = "a".repeat(64);
+        let other_hash: PulseHash = "b".repeat(64);
+        let first_id = "getblock:failure-local:1".to_string();
+        let other_id = "getblock:still-pending:2".to_string();
+        let mut state = InnerState::default();
+        for (id, block_hash) in [
+            (first_id.clone(), hash.clone()),
+            (other_id.clone(), other_hash.clone()),
+        ] {
+            state.outstanding_getblock_requests.insert(
+                id.clone(),
+                OutstandingGetBlockRequest {
+                    request_id: id,
+                    target_peer_id: "authenticated-peer-a".to_string(),
+                    block_hash,
+                    completed: false,
+                },
+            );
+        }
+        state.peer_addressed_getblock_local_sequence = 2;
+        state.getblock_requests_sent_total = 2;
+        let inner = Arc::new(Mutex::new(state));
+        assert!(!clear_failed_gossipsub_getblock_publish(
+            &inner,
+            "forged-peer",
+            &hash,
+            &first_id,
+        ));
+        assert!(!clear_failed_gossipsub_getblock_publish(
+            &inner,
+            "authenticated-peer-a",
+            &other_hash,
+            &first_id,
+        ));
+        assert!(clear_failed_gossipsub_getblock_publish(
+            &inner,
+            "authenticated-peer-a",
+            &hash,
+            &first_id,
+        ));
+        assert!(!clear_failed_gossipsub_getblock_publish(
+            &inner,
+            "authenticated-peer-a",
+            &hash,
+            &first_id,
+        ));
+        let guard = inner.lock().unwrap();
+        assert!(!guard.outstanding_getblock_requests.contains_key(&first_id));
+        assert!(guard.outstanding_getblock_requests.contains_key(&other_id));
+        assert_eq!(guard.outstanding_getblock_requests.len(), 1);
+        assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 2);
+        assert_eq!(guard.getblock_requests_sent_total, 2);
+    }
+
+    #[test]
+    fn completed_getblock_ticket_cannot_be_erased_by_late_publish_failure() {
+        let id = "getblock:already-completed".to_string();
+        let hash: PulseHash = "c".repeat(64);
+        let mut state = InnerState::default();
+        state.outstanding_getblock_requests.insert(
+            id.clone(),
+            OutstandingGetBlockRequest {
+                request_id: id.clone(),
+                target_peer_id: "peer-a".to_string(),
+                block_hash: hash.clone(),
+                completed: true,
+            },
+        );
+        let inner = Arc::new(Mutex::new(state));
+        assert!(!clear_failed_gossipsub_getblock_publish(
+            &inner, "peer-a", &hash, &id,
+        ));
+        let guard = inner.lock().unwrap();
+        assert!(guard.outstanding_getblock_requests.contains_key(&id));
+        assert_eq!(guard.peer_addressed_getblock_transport_error_total, 0);
     }
 }
