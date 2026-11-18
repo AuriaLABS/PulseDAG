@@ -1,0 +1,54 @@
+name: v3 real authenticated Gossipsub remote sync subscription evidence (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - .github/workflows/v3-real-gossipsub-remote-sync-subscription-evidence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticated-remote-sync-subscriptions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout immutable exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Refuse unreviewed direct GetBlock activation and simulated subscriptions
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::production inbound direct GetBlock remains unapproved"
+            exit 1
+          fi
+          grep -Fq 'gossipsub::Event::Subscribed { peer_id, topic }' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'gossipsub::Event::Unsubscribed { peer_id, topic }' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'remote_sync_subscribed_peer_ids' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'simulated_connections_never_claim_real_remote_gossipsub_subscribers' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Pin Rust 1.91 rustfmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt, clippy
+      - name: Verify exact-head formatting, actual remote sync subscription bookkeeping and strict lint
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p --lib actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib simulated_connections_never_claim_real_remote_gossipsub_subscribers -- --nocapture
+          cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+          git diff --exit-code -- Cargo.lock
