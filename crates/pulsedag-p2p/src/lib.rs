@@ -6818,13 +6818,19 @@ fn record_remote_sync_subscription(
         return false;
     }
     if subscribed {
-        if state.remote_sync_subscribed_peers.insert(peer_id.to_string()) {
+        if state
+            .remote_sync_subscribed_peers
+            .insert(peer_id.to_string())
+        {
             state.remote_sync_subscription_events_total = state
                 .remote_sync_subscription_events_total
                 .saturating_add(1);
             return true;
         }
-    } else if state.remote_sync_subscribed_peers.remove(&peer_id.to_string()) {
+    } else if state
+        .remote_sync_subscribed_peers
+        .remove(&peer_id.to_string())
+    {
         state.remote_sync_unsubscription_events_total = state
             .remote_sync_unsubscription_events_total
             .saturating_add(1);
@@ -6837,7 +6843,9 @@ fn forget_remote_sync_subscription_on_final_disconnect(
     state: &mut InnerState,
     peer_id: &PeerId,
 ) -> bool {
-    state.remote_sync_subscribed_peers.remove(&peer_id.to_string())
+    state
+        .remote_sync_subscribed_peers
+        .remove(&peer_id.to_string())
 }
 
 fn remote_sync_subscribed_peers_snapshot(state: &InnerState) -> Vec<String> {
@@ -14575,32 +14583,50 @@ mod peer_addressed_getblock_local_id_regressions {
         assert_eq!(state.subscriptions_active, 3);
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
         assert!(!record_remote_sync_subscription(
-            &mut state, &alice, &other_topic, true,
+            &mut state,
+            &alice,
+            &other_topic,
+            true,
         ));
         assert!(!record_remote_sync_subscription(
-            &mut state, &alice, "different-chain-sync", true,
+            &mut state,
+            &alice,
+            "different-chain-sync",
+            true,
         ));
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
         assert!(record_remote_sync_subscription(
-            &mut state, &alice, &sync_topic, true,
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
         ));
         assert!(!record_remote_sync_subscription(
-            &mut state, &alice, &sync_topic, true,
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
         ));
         assert!(record_remote_sync_subscription(
-            &mut state, &bob, &sync_topic, true,
+            &mut state,
+            &bob,
+            &sync_topic,
+            true,
         ));
-        assert_eq!(
-            remote_sync_subscribed_peers_snapshot(&state).len(),
-            2,
-        );
+        assert_eq!(remote_sync_subscribed_peers_snapshot(&state).len(), 2,);
         assert_eq!(state.remote_sync_subscription_events_total, 2);
         assert_eq!(state.remote_sync_unsubscription_events_total, 0);
         assert!(record_remote_sync_subscription(
-            &mut state, &alice, &sync_topic, false,
+            &mut state,
+            &alice,
+            &sync_topic,
+            false,
         ));
         assert!(!record_remote_sync_subscription(
-            &mut state, &alice, &sync_topic, false,
+            &mut state,
+            &alice,
+            &sync_topic,
+            false,
         ));
         assert_eq!(
             remote_sync_subscribed_peers_snapshot(&state),
@@ -14627,7 +14653,10 @@ mod peer_addressed_getblock_local_id_regressions {
         };
         let remote = PeerId::from(identity::Keypair::generate_ed25519().public());
         assert!(!record_remote_sync_subscription(
-            &mut state, &remote, "simulation-domain-sync", true,
+            &mut state,
+            &remote,
+            "simulation-domain-sync",
+            true,
         ));
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
         assert_eq!(state.remote_sync_subscription_events_total, 0);
