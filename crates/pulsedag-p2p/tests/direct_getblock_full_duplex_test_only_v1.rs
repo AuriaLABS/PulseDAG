@@ -235,7 +235,6 @@ async fn both_authenticated_noise_peers_request_and_serve_accepted_dag_without_b
     .expect("two-way authenticated Noise exchange must finish under timeout");
 }
 
-
 #[tokio::test(flavor = "current_thread")]
 async fn authenticated_noise_reconnect_uses_fresh_daemon_bound_getblock_without_gossip() {
     // An isolated live TCP/Noise/Yamux reconnection regression, NOT the
