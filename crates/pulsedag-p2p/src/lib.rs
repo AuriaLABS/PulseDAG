@@ -571,6 +571,11 @@ pub struct P2pStatus {
     pub runtime_mode_detail: String,
     pub swarm_events_seen: usize,
     pub subscriptions_active: usize,
+    /// Remote authenticated peers observed subscribing to THIS chain's sync
+    /// topic in the actual libp2p Gossipsub Swarm, not our local subscriptions.
+    pub remote_sync_subscribed_peer_ids: Vec<String>,
+    pub remote_sync_subscription_events_total: u64,
+    pub remote_sync_unsubscription_events_total: u64,
     pub last_message_kind: Option<String>,
     pub last_swarm_event: Option<String>,
     pub per_topic_publishes: HashMap<String, usize>,
@@ -1232,6 +1237,12 @@ struct InnerState {
     runtime_mode_detail: String,
     swarm_events_seen: usize,
     subscriptions_active: usize,
+    /// Remote sync-topic subscriptions delivered by the real Swarm.
+    /// This set is separate from the three locally subscribed topics and
+    /// from generic TCP/Noise connection accounting.
+    remote_sync_subscribed_peers: HashSet<String>,
+    remote_sync_subscription_events_total: u64,
+    remote_sync_unsubscription_events_total: u64,
     last_message_kind: Option<String>,
     last_swarm_event: Option<String>,
     per_topic_publishes: HashMap<String, usize>,
@@ -1983,6 +1994,9 @@ impl P2pHandle for MemoryP2pHandle {
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
             subscriptions_active: inner.subscriptions_active,
+            remote_sync_subscribed_peer_ids: remote_sync_subscribed_peers_snapshot(&inner),
+            remote_sync_subscription_events_total: inner.remote_sync_subscription_events_total,
+            remote_sync_unsubscription_events_total: inner.remote_sync_unsubscription_events_total,
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
@@ -6788,6 +6802,54 @@ fn handle_outgoing_connection_error(
         == 0
 }
 
+/// Count only actual authenticated remote subscription events for this chain's
+/// Gossipsub sync topic. A local subscription (subscriptions_active == 3)
+/// does NOT prove there is an eligible remote subscriber or a healthy mesh.
+/// Never use these observations to override the separate direct Noise hard gate.
+fn record_remote_sync_subscription(
+    state: &mut InnerState,
+    peer_id: &PeerId,
+    topic: &str,
+    subscribed: bool,
+) -> bool {
+    if !mode_connected_peers_are_real_network(&state.mode)
+        || topic != format!("{}-sync", state.chain_id)
+    {
+        return false;
+    }
+    if subscribed {
+        if state.remote_sync_subscribed_peers.insert(peer_id.to_string()) {
+            state.remote_sync_subscription_events_total = state
+                .remote_sync_subscription_events_total
+                .saturating_add(1);
+            return true;
+        }
+    } else if state.remote_sync_subscribed_peers.remove(&peer_id.to_string()) {
+        state.remote_sync_unsubscription_events_total = state
+            .remote_sync_unsubscription_events_total
+            .saturating_add(1);
+        return true;
+    }
+    false
+}
+
+fn forget_remote_sync_subscription_on_final_disconnect(
+    state: &mut InnerState,
+    peer_id: &PeerId,
+) -> bool {
+    state.remote_sync_subscribed_peers.remove(&peer_id.to_string())
+}
+
+fn remote_sync_subscribed_peers_snapshot(state: &InnerState) -> Vec<String> {
+    let mut peers = state
+        .remote_sync_subscribed_peers
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    peers.sort_unstable();
+    peers
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -7423,6 +7485,32 @@ async fn run_libp2p_real_runtime(
             }
             event = swarm.select_next_some() => {
                 match event {
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                        let changed = inner.lock().ok().is_some_and(|mut state| {
+                            record_remote_sync_subscription(
+                                &mut state, &peer_id, topic.as_str(), true,
+                            )
+                        });
+                        if changed {
+                            note_swarm_event(
+                                &inner,
+                                format!("gossipsub-sync-remote-subscribed:{peer_id}"),
+                            );
+                        }
+                    }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
+                        let changed = inner.lock().ok().is_some_and(|mut state| {
+                            record_remote_sync_subscription(
+                                &mut state, &peer_id, topic.as_str(), false,
+                            )
+                        });
+                        if changed {
+                            note_swarm_event(
+                                &inner,
+                                format!("gossipsub-sync-remote-unsubscribed:{peer_id}"),
+                            );
+                        }
+                    }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message, .. })) => {
                         // Keep two identities distinct: message.source is the original author used
                         // for anti-spam/reputation accounting, while propagation_source is the
@@ -7597,6 +7685,14 @@ async fn run_libp2p_real_runtime(
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
                             direct_getblock_response_channels.peer_disconnected(&peer_id);
+                            // A TCP/Noise connection can remain alive with zero
+                            // Gossipsub subscribers; conversely, stale subscriber
+                            // identity must not outlive the last connection.
+                            if let Ok(mut state) = inner.lock() {
+                                forget_remote_sync_subscription_on_final_disconnect(
+                                    &mut state, &peer_id,
+                                );
+                            }
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -8494,6 +8590,9 @@ impl P2pHandle for Libp2pHandle {
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
             subscriptions_active: inner.subscriptions_active,
+            remote_sync_subscribed_peer_ids: remote_sync_subscribed_peers_snapshot(&inner),
+            remote_sync_subscription_events_total: inner.remote_sync_subscription_events_total,
+            remote_sync_unsubscription_events_total: inner.remote_sync_unsubscription_events_total,
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
@@ -14458,5 +14557,79 @@ mod peer_addressed_getblock_local_id_regressions {
         let guard = inner.lock().unwrap();
         assert!(guard.outstanding_getblock_requests.contains_key(&id));
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 0);
+    }
+
+    #[test]
+    fn actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count() {
+        let chain = "sync-subscription-observations";
+        let sync_topic = format!("{chain}-sync");
+        let other_topic = format!("{chain}-blocks");
+        let alice = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let bob = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let mut state = InnerState {
+            chain_id: chain.to_string(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            subscriptions_active: 3,
+            ..InnerState::default()
+        };
+        assert_eq!(state.subscriptions_active, 3);
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert!(!record_remote_sync_subscription(
+            &mut state, &alice, &other_topic, true,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state, &alice, "different-chain-sync", true,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert!(record_remote_sync_subscription(
+            &mut state, &alice, &sync_topic, true,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state, &alice, &sync_topic, true,
+        ));
+        assert!(record_remote_sync_subscription(
+            &mut state, &bob, &sync_topic, true,
+        ));
+        assert_eq!(
+            remote_sync_subscribed_peers_snapshot(&state).len(),
+            2,
+        );
+        assert_eq!(state.remote_sync_subscription_events_total, 2);
+        assert_eq!(state.remote_sync_unsubscription_events_total, 0);
+        assert!(record_remote_sync_subscription(
+            &mut state, &alice, &sync_topic, false,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state, &alice, &sync_topic, false,
+        ));
+        assert_eq!(
+            remote_sync_subscribed_peers_snapshot(&state),
+            vec![bob.to_string()],
+        );
+        assert_eq!(state.remote_sync_unsubscription_events_total, 1);
+        assert!(forget_remote_sync_subscription_on_final_disconnect(
+            &mut state, &bob,
+        ));
+        assert!(!forget_remote_sync_subscription_on_final_disconnect(
+            &mut state, &bob,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert_eq!(state.subscriptions_active, 3);
+    }
+
+    #[test]
+    fn simulated_connections_never_claim_real_remote_gossipsub_subscribers() {
+        let mut state = InnerState {
+            chain_id: "simulation-domain".to_string(),
+            mode: P2P_MODE_MEMORY_SIMULATED.to_string(),
+            subscriptions_active: 3,
+            ..InnerState::default()
+        };
+        let remote = PeerId::from(identity::Keypair::generate_ed25519().public());
+        assert!(!record_remote_sync_subscription(
+            &mut state, &remote, "simulation-domain-sync", true,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert_eq!(state.remote_sync_subscription_events_total, 0);
     }
 }
