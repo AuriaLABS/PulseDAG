@@ -1,0 +1,46 @@
+name: v3 real remote Gossipsub -sync rejoin test only (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs
+      - .github/workflows/v3-gossipsub-sync-rejoin-test-only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-noise-remote-sync-rejoin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Exact-head read-only checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Enforce test-only and fail-closed production boundaries
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          ! grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq '/ip4/127.0.0.1/tcp/0' crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs
+          ! grep -Fq '.add_explicit_peer(' crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Install pinned Rust with rustfmt/clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt, clippy
+      - name: Prove actual Noise remote subscription reappearance and delivery
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-p2p --test gossipsub_remote_sync_rejoin_test_only_v1 -- --nocapture
+          cargo clippy --locked -p pulsedag-p2p --test gossipsub_remote_sync_rejoin_test_only_v1 -- -D warnings
+          git diff --exit-code -- Cargo.lock
