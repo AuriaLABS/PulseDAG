@@ -6788,6 +6788,20 @@ fn handle_outgoing_connection_error(
         == 0
 }
 
+/// A Noise connection alone is not evidence that its remote Gossipsub peer has
+/// subscribed to our chain's sync topic. A one-shot GetTips retry is allowed
+/// only for the matching authenticated remote subscription in this connection.
+fn should_retry_get_tips_on_remote_sync_subscription_v1(
+    chain_id: &str,
+    remote_topic: &str,
+    authenticated_connected: bool,
+    already_sent_for_connection: bool,
+) -> bool {
+    authenticated_connected
+        && !already_sent_for_connection
+        && remote_topic == format!("{chain_id}-sync")
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -6897,6 +6911,10 @@ async fn run_libp2p_real_runtime(
     note_swarm_event(&inner, "swarm-real-started");
     note_swarm_event(&inner, format!("listen-attempt:{listen_addr}"));
     let mut pending_bootnode_dials: HashSet<PeerId> = HashSet::new();
+    // Only an actual Gossipsub remote topic subscription may close this
+    // bootstrap race; do not treat TCP/Noise connection as topic membership.
+    // Mark only after a successful publish, and clear on final disconnect.
+    let mut tips_refreshed_after_remote_sync_subscription: HashSet<PeerId> = HashSet::new();
     let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
     for (peer_id, addr) in &bootstrap_peers {
         if let Ok(mut guard) = inner.lock() {
@@ -7423,6 +7441,62 @@ async fn run_libp2p_real_runtime(
             }
             event = swarm.select_next_some() => {
                 match event {
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                        // GetTips sent immediately on ConnectionEstablished can be
+                        // rejected before remote Gossipsub has advertised the
+                        // chain's -sync topic. Retry ONCE per authenticated
+                        // connection after its actual remote subscription.
+                        if should_retry_get_tips_on_remote_sync_subscription_v1(
+                            &cfg.chain_id,
+                            topic.as_str(),
+                            swarm.is_connected(&peer_id),
+                            tips_refreshed_after_remote_sync_subscription.contains(&peer_id),
+                        ) {
+                            let inventory = inner.lock().ok().and_then(|mut guard| {
+                                current_tip_inventory_for_send(
+                                    &mut guard,
+                                    &cfg.chain_id,
+                                    "GetTips",
+                                )
+                            });
+                            let wire = encode_network_message_for_transport(
+                                &inner,
+                                &NetworkMessage::GetTips {
+                                    chain_id: cfg.chain_id.clone(),
+                                    inventory,
+                                },
+                            );
+                            match wire {
+                                Ok(bytes) => {
+                                    let topic = gossipsub::IdentTopic::new(
+                                        format!("{}-sync", cfg.chain_id),
+                                    );
+                                    match swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                        Ok(_) => {
+                                            tips_refreshed_after_remote_sync_subscription
+                                                .insert(peer_id);
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("remote-sync-subscription-gettips-published:{peer_id}"),
+                                            );
+                                        }
+                                        Err(error) => {
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("remote-sync-subscription-gettips-publish-failed:{peer_id}:{error}"),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    note_swarm_event(
+                                        &inner,
+                                        format!("remote-sync-subscription-gettips-encode-failed:{peer_id}:{error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message, .. })) => {
                         // Keep two identities distinct: message.source is the original author used
                         // for anti-spam/reputation accounting, while propagation_source is the
@@ -7575,7 +7649,12 @@ async fn run_libp2p_real_runtime(
                                 }),
                         }) {
                             note_swarm_event(&inner, format!("startup-tip-exchange:{peer_id}"));
-                            let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
+                            if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                note_swarm_event(
+                                    &inner,
+                                    format!("startup-tip-exchange-publish-failed:{peer_id}:{error}"),
+                                );
+                            }
                         }
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
@@ -7593,6 +7672,7 @@ async fn run_libp2p_real_runtime(
                             direction,
                         );
                         if should_mark_disconnected {
+                            tips_refreshed_after_remote_sync_subscription.remove(&peer_id);
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
@@ -14458,5 +14538,49 @@ mod peer_addressed_getblock_local_id_regressions {
         let guard = inner.lock().unwrap();
         assert!(guard.outstanding_getblock_requests.contains_key(&id));
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 0);
+    }
+}
+
+#[cfg(test)]
+mod authenticated_remote_subscription_get_tips_retry_regressions {
+    use super::should_retry_get_tips_on_remote_sync_subscription_v1;
+
+    #[test]
+    fn authenticated_remote_sync_subscription_retries_once_not_on_early_tcp_connect() {
+        assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            false,
+            false,
+        ));
+        assert!(should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            true,
+            false,
+        ));
+        assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn unrelated_topics_and_other_chains_cannot_trigger_sync_replay() {
+        for unrelated_topic in [
+            "pulse-rejoin-blocks",
+            "other-chain-sync",
+            "pulse-rejoin-sync-extra",
+            "",
+        ] {
+            assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+                "pulse-rejoin",
+                unrelated_topic,
+                true,
+                false,
+            ));
+        }
     }
 }
