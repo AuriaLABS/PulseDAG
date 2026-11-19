@@ -391,3 +391,167 @@ async fn authenticated_noise_reconnect_uses_fresh_daemon_bound_getblock_without_
     .await
     .expect("real authenticated Noise rejoin regression timed out");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn authenticated_noise_rejoin_delivers_32_fresh_getblock_requests_without_gossip() {
+    // Transport-only stress: 32 distinct daemon-local requests after one real
+    // reconnect, all for the same accepted genesis. This does NOT establish
+    // native-v3 consensus convergence or 32 independently accepted blocks.
+    const POST_REJOIN_REQUESTS: usize = 32;
+    const TOTAL: usize = POST_REJOIN_REQUESTS + 1;
+
+    tokio::time::timeout(Duration::from_secs(55), async {
+        let server_key = identity::Keypair::generate_ed25519();
+        let client_key = identity::Keypair::generate_ed25519();
+        let server_id = PeerId::from(server_key.public());
+        let client_id = PeerId::from(client_key.public());
+        let accepted = init_chain_state(CHAIN.to_string());
+        let genesis = accepted.dag.genesis_hash.clone();
+        let mut server = full_duplex_test_swarm(server_key);
+        let mut client = full_duplex_test_swarm(client_key);
+        let mut inbound = DirectGetBlockLibp2pResponseChannelsV1::new(CHAIN, server_id).unwrap();
+        let mut outbound = DirectGetBlockSwarmBindingsV1::new(CHAIN, client_id).unwrap();
+
+        let mut listen: Option<Multiaddr> = None;
+        let mut issued = 0usize;
+        let mut served = 0usize;
+        let mut received = 0usize;
+        let mut reconnect_dialled = false;
+        let mut reconnected = false;
+
+        server
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .expect("ephemeral loopback TCP listener only");
+
+        while received < TOTAL {
+            tokio::select! {
+                event = server.select_next_some() => match event {
+                    SwarmEvent::NewListenAddr { address, .. } if listen.is_none() => {
+                        listen = Some(address.clone());
+                        client.dial(address.with(Protocol::P2p(server_id)))
+                            .expect("dial exact authenticated Noise server");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Request { request, channel, .. },
+                        ..
+                    }) => {
+                        assert_eq!(peer, client_id, "Noise request peer must be authenticated");
+                        assert!(served < TOTAL, "no unexpected extra GetBlock requests");
+                        let ticket = inbound.accept(&request, &peer, channel, Instant::now())
+                            .expect("accept bounded unique daemon request");
+                        inbound.respond_from_accepted_dag(
+                            ticket.local_token,
+                            &peer,
+                            &accepted,
+                            Instant::now(),
+                            |channel, bytes| {
+                                server.behaviour_mut().send_response(channel, bytes).is_ok()
+                            },
+                        ).expect("serve only accepted-DAG block over one-shot Noise channel");
+                        served += 1;
+                        assert!(inbound.is_empty(), "no retained inbound channel after response");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
+                        panic!("server inbound Noise failure: {error:?}");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                        panic!("server unexpected outbound Noise failure: {error:?}");
+                    }
+                    _ => {}
+                },
+                event = client.select_next_some() => match event {
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        assert_eq!(peer_id, server_id);
+                        if issued == 0 || (reconnect_dialled && !reconnected) {
+                            if reconnect_dialled {
+                                reconnected = true;
+                                assert_eq!(received, 1, "rejoin must follow initial response");
+                            }
+                            issued += 1;
+                            let original = PeerAddressedBlockRequest {
+                                request_id: format!("getblock:rejoin-stress:{issued}"),
+                                requested_peer_id: server_id.to_string(),
+                                block_hash: genesis.clone(),
+                                sent_at: 0,
+                            };
+                            outbound.issue_daemon_request_with(
+                                &original,
+                                client.is_connected(&server_id),
+                                Instant::now(),
+                                |peer, bytes| client.behaviour_mut().send_request(peer, bytes),
+                            ).expect("send bounded daemon-local request on authenticated Noise");
+                        }
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } if received == 1 && !reconnect_dialled => {
+                        assert_eq!(peer_id, server_id);
+                        assert!(outbound.is_empty(), "no first-connection request may survive");
+                        outbound.last_connection_closed(&peer_id);
+                        let address = listen.as_ref().expect("server listener advertised")
+                            .clone().with(Protocol::P2p(server_id));
+                        client.dial(address).expect("redial same Noise peer without Gossipsub");
+                        reconnect_dialled = true;
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Response { request_id, response },
+                        ..
+                    }) => {
+                        assert_eq!(peer, server_id);
+                        assert!(received < issued, "no unsolicited or duplicate responses");
+                        let delivered = outbound.deliver_bound_response_to_daemon(
+                            &request_id,
+                            &peer,
+                            &response,
+                            Instant::now(),
+                        ).expect("correlate exact real Noise transport ID and daemon request");
+                        match delivered {
+                            InboundEvent::Block { peer_id: Some(authenticated), block } => {
+                                assert_eq!(authenticated, server_id.to_string());
+                                assert_eq!(block.hash, genesis);
+                            }
+                            _ => panic!("reject missing, forged or unbound GetBlock response"),
+                        }
+                        received += 1;
+                        assert!(outbound.is_empty(), "each completed request consumes its ticket");
+                        if received == 1 {
+                            client.disconnect_peer_id(server_id)
+                                .expect("disconnect real initial Noise connection");
+                        } else if received < TOTAL {
+                            assert!(reconnected, "stress requests run only after Noise rejoin");
+                            issued += 1;
+                            let original = PeerAddressedBlockRequest {
+                                request_id: format!("getblock:rejoin-stress:{issued}"),
+                                requested_peer_id: server_id.to_string(),
+                                block_hash: genesis.clone(),
+                                sent_at: 0,
+                            };
+                            outbound.issue_daemon_request_with(
+                                &original,
+                                client.is_connected(&server_id),
+                                Instant::now(),
+                                |target, bytes| client.behaviour_mut().send_request(target, bytes),
+                            ).expect("send next fresh daemon request through same real Noise link");
+                        }
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                        panic!("client authenticated Noise request failed: {error:?}");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
+                        panic!("client unexpected Noise inbound failure: {error:?}");
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        assert!(reconnected, "the second real Noise connection must have been established");
+        assert_eq!(issued, TOTAL);
+        assert_eq!(received, TOTAL);
+        assert_eq!(served, TOTAL, "all GetBlock requests physically reached the peer");
+        assert!(outbound.is_empty(), "no orphaned request correlation after 32 replies");
+        assert!(inbound.is_empty(), "no server response channels retained");
+    })
+    .await
+    .expect("32 real post-reconnect GetBlock Noise exchanges timed out");
+}
