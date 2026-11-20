@@ -28,9 +28,15 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
           grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
-          ! grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::Inbound direct GetBlock support must remain disabled" >&2
+            exit 1
+          fi
           grep -Fq '/ip4/127.0.0.1/tcp/0' crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs
-          ! grep -Fq '.add_explicit_peer(' crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs
+          if grep -Fq '.add_explicit_peer(' crates/pulsedag-p2p/tests/gossipsub_remote_sync_rejoin_test_only_v1.rs; then
+            echo "::error::Explicit Gossipsub mesh peer bypass is forbidden" >&2
+            exit 1
+          fi
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
       - name: Install pinned Rust with rustfmt/clippy
         uses: dtolnay/rust-toolchain@stable
