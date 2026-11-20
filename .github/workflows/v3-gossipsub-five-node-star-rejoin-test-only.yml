@@ -1,0 +1,52 @@
+name: v3 five real Noise peers signed -sync rejoin test only (NO GO)
+
+on:
+  pull_request:
+    paths:
+      - crates/pulsedag-p2p/tests/gossipsub_five_node_star_rejoin_test_only_v1.rs
+      - .github/workflows/v3-gossipsub-five-node-star-rejoin-test-only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-5n-noise-star-sync-rejoin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact immutable candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Preserve production OFF and deny explicit mesh peers
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          if grep -Fq 'ProtocolSupport::Full' crates/pulsedag-p2p/src/lib.rs; then
+            echo "::error::Inbound direct GetBlock support must remain disabled" >&2
+            exit 1
+          fi
+          grep -Fq '/ip4/127.0.0.1/tcp/0' crates/pulsedag-p2p/tests/gossipsub_five_node_star_rejoin_test_only_v1.rs
+          if grep -Fq '.add_explicit_peer(' crates/pulsedag-p2p/tests/gossipsub_five_node_star_rejoin_test_only_v1.rs; then
+            echo "::error::Explicit Gossipsub mesh peer bypass is forbidden" >&2
+            exit 1
+          fi
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Rust 1.91 fmt and Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+          components: rustfmt, clippy
+      - name: Exact-head real five-Swarm Noise signed sync restoration proof
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-p2p --test gossipsub_five_node_star_rejoin_test_only_v1 -- --nocapture
+          cargo clippy --locked -p pulsedag-p2p --test gossipsub_five_node_star_rejoin_test_only_v1 -- -D warnings
+          git diff --exit-code -- Cargo.lock
