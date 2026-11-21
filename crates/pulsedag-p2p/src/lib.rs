@@ -14702,6 +14702,6 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
         assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
             true, &unrelated
         ));
-        assert!(!DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED);
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
     }
 }
