@@ -31,7 +31,9 @@ fn native_real_pow_gd08_k0_k1_order_and_digest_match_independent_python() {
     assert_eq!(field(&golden, "status"), "DORMANT_TEST_ONLY_UNAPPROVED");
     assert_eq!(field(&original, "chain_id"), field(&golden, "chain_id"));
     let chain = field(&original, "chain_id");
-    let ns = original["genesis_ns"].as_u64().expect("full u64 nanoseconds");
+    let ns = original["genesis_ns"]
+        .as_u64()
+        .expect("full u64 nanoseconds");
     assert_eq!(Some(ns), golden["genesis_ns"].as_u64());
     let genesis = dormant_native_genesis_envelope_v3_ns(chain, ns)
         .expect("authenticate frozen-genesis identity");
@@ -57,9 +59,7 @@ fn native_real_pow_gd08_k0_k1_order_and_digest_match_independent_python() {
                     .expect("reject if any non-genesis header has invalid actual PoW");
             }
             assert!(
-                headers
-                    .insert(expected_hash.to_string(), header)
-                    .is_none(),
+                headers.insert(expected_hash.to_string(), header).is_none(),
                 "no duplicate headers in independently generated corpus"
             );
         }
@@ -101,7 +101,8 @@ fn native_real_pow_gd08_k0_k1_order_and_digest_match_independent_python() {
 
         // A different insertion order and unrelated OTHER candidate tip cannot
         // change the full authenticated ancestry, selected spine or GD-08 digest.
-        let mut shuffled = headers.clone().into_iter().rev().collect();
+        let mut shuffled: BTreeMap<BlockId, BlockHeaderV3> =
+            headers.clone().into_iter().rev().collect();
         let unused_tip = if name == "K0" { "X1" } else { "X0" };
         let unrelated = &original["blocks"][unused_tip];
         let unrelated_header: BlockHeaderV3 =
