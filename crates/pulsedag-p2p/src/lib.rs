@@ -6444,6 +6444,18 @@ type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlock
 // before changing this value. It is not a public testnet launch flag.
 const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;
 
+// Testable independent transition policy. Production direct GetBlock remains OFF.
+// If explicitly enabled in the future, no legacy GetBlock gossip fallback.
+fn enforce_getblock_legacy_broadcast_policy(direct_requests_live: bool) -> Result<(), PulseError> {
+    if direct_requests_live {
+        return Err(PulseError::Internal(
+            "unauthorized legacy GetBlock gossip fallback while direct Noise recovery is enabled"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -6959,6 +6971,17 @@ async fn run_libp2p_real_runtime(
                 enqueue_outbound_message(&inner, &mut outbound_queue, msg);
                 drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
+                    // Second fail-closed boundary: prohibit even direct queue
+                    // injection from reaching a Gossipsub serialization arm.
+                    if matches!(&msg, OutboundMessage::GetBlock(_))
+                        && enforce_getblock_legacy_broadcast_policy(
+                            DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED,
+                        )
+                        .is_err()
+                    {
+                        note_swarm_event(&inner, "direct-getblock-legacy-broadcast-rejected");
+                        continue;
+                    }
                     let msg = match msg {
                         OutboundMessage::GetBlockFrom { peer_id, hash, request_id }
                             if DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED =>
@@ -8267,6 +8290,9 @@ impl P2pHandle for Libp2pHandle {
     }
 
     fn request_block_broadcast(&self, hash: &PulseHash) -> Result<(), PulseError> {
+        // A direct Noise request must never silently degrade to gossip.
+        // Reject before queuing or incrementing request metrics.
+        enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED)?;
         self.queue_sync_message_required(
             OutboundMessage::GetBlock(hash.clone()),
             "get-block-broadcast",
@@ -14582,5 +14608,27 @@ mod authenticated_remote_subscription_get_tips_retry_regressions {
                 false,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_no_legacy_broadcast_regressions {
+    use super::*;
+
+    #[test]
+    fn direct_mode_rejects_legacy_broadcast_before_queuing() {
+        assert!(enforce_getblock_legacy_broadcast_policy(false).is_ok());
+        assert!(matches!(
+            enforce_getblock_legacy_broadcast_policy(true),
+            Err(PulseError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn deployed_getblock_mode_remains_off() {
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+        assert!(
+            enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED).is_ok()
+        );
     }
 }
