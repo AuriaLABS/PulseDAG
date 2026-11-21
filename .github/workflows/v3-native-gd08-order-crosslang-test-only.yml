@@ -1,0 +1,45 @@
+name: "GD-08 native-v3 dormant Python-vs-Rust order/digest cross-language oracle"
+
+on:
+  pull_request:
+    paths:
+      - "scripts/native_v3_gd08_order_crosslang_oracle.py"
+      - "docs/fixtures/native_v3_gd08_order_crosslang.json"
+      - "docs/fixtures/native_v3_ghostdag_fork_crosslang.json"
+      - "crates/pulsedag-core/tests/native_v3_gd08_crosslang_order_digest.rs"
+      - "crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs"
+      - ".github/workflows/v3-native-gd08-order-crosslang-test-only.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-rust-gd08-order-oracle-test-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify dormant-only production gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Independent Python stdlib GD-08 24 permutations for each K trial
+        run: python3 scripts/native_v3_gd08_order_crosslang_oracle.py --verify
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact-head workspace Rustfmt
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Native Rust real PoW and GHOSTDAG trial against independent GD-08 digest
+        run: cargo +1.91.0 test --locked -p pulsedag-core --test native_v3_gd08_crosslang_order_digest -- --nocapture
+      - name: Strict Rust Clippy all core targets
+        run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock
