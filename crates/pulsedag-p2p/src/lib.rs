@@ -14687,11 +14687,21 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
             hashes: vec![],
         };
 
-        assert!(reject_legacy_getblock_gossip_when_direct_enabled(true, &request));
-        assert!(reject_legacy_getblock_gossip_when_direct_enabled(true, &response));
-        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(false, &request));
-        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(false, &response));
-        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(true, &unrelated));
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &request
+        ));
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &request
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &unrelated
+        ));
         assert!(!DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED);
     }
 }
