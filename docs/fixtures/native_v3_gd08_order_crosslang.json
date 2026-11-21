@@ -1,0 +1,33 @@
+{
+  "schema": "pulsedag.dormant-v3-gd08-crosslang-order-digest-v1",
+  "status": "DORMANT_TEST_ONLY_UNAPPROVED",
+  "source_fixture": "native_v3_ghostdag_fork_crosslang.json",
+  "chain_id": "pulsedag-dormant-ghostdag-rust-policy-probe",
+  "genesis_ns": 1800000000500000000,
+  "cases": {
+    "K0": {
+      "tip": "5f042e5bee3e4dec0f88bea7f7549c8336cd4956e0d6d251925979375776c8df",
+      "ordered": [
+        "8897ac04d1ace55caf6c8660f7b0fcff19179b2ea046fb80c9cd3b543c1d65ae",
+        "14e7257b2c2bfffd16fb07b83f0a9529f3e7a7b91a4a86999c9ddd05a32742b5",
+        "4328bab36d1fd9c3c48c5ae90b452d03dc045497bd78ea9965338baee57f6f06",
+        "5f042e5bee3e4dec0f88bea7f7549c8336cd4956e0d6d251925979375776c8df"
+      ],
+      "digest": "95229dd36cd85f88a38ed2bec3be727ef749832f46c115f15952bf79847d1cc0",
+      "blue_count": 0,
+      "red_count": 1
+    },
+    "K1": {
+      "tip": "bded596111a43c47f4a936178ffbbf76086a083d7b857d4824082cc5283dd4ef",
+      "ordered": [
+        "8897ac04d1ace55caf6c8660f7b0fcff19179b2ea046fb80c9cd3b543c1d65ae",
+        "14e7257b2c2bfffd16fb07b83f0a9529f3e7a7b91a4a86999c9ddd05a32742b5",
+        "4328bab36d1fd9c3c48c5ae90b452d03dc045497bd78ea9965338baee57f6f06",
+        "bded596111a43c47f4a936178ffbbf76086a083d7b857d4824082cc5283dd4ef"
+      ],
+      "digest": "77cc23f6b413166e03a9c964b8b5c73fd42712b69963d9ac9b749e40d8a330c0",
+      "blue_count": 1,
+      "red_count": 0
+    }
+  }
+}
