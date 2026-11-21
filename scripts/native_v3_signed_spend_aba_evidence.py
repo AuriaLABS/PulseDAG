@@ -70,6 +70,7 @@ def parse_observation(raw_log, candidate_sha):
     root = observations[0].group(7)
     if min(a, direct, b, validation) <= 0 or spends != 128 or funded != 512:
         raise ValueError("invalid timing or signed-spend fixture dimensions")
+
     return {
         "schema": "pulsedag-test-only-accepted-apply-aba-v1",
         "scope": "isolated_legacy_carrier_utxo_apply_not_full_native_v3_replay",
