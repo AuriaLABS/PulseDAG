@@ -1765,7 +1765,6 @@ impl P2pHandle for MemoryP2pHandle {
         hash: &PulseHash,
     ) -> Result<PeerAddressedBlockRequest, PulseError> {
         let sent_at = now_unix();
-        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
         let mut inner = self
             .inner
             .lock()
@@ -1780,6 +1779,11 @@ impl P2pHandle for MemoryP2pHandle {
                 "peer {peer_id} is not a direct request-capable session"
             )));
         }
+        // Share the same never-reused monotonic ID allocator used by the real
+        // Swarm, under the mutex that protects outstanding daemon requests.
+        // A retry within the same second must not replace an earlier ticket.
+        let request_id =
+            reserve_peer_addressed_getblock_local_request_id(&mut inner, peer_id, hash, sent_at)?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.blocks_requested = inner.blocks_requested.saturating_add(1);
@@ -14630,5 +14634,57 @@ mod direct_getblock_no_legacy_broadcast_regressions {
         assert!(
             enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED).is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod memory_getblock_local_id_regressions {
+    use super::*;
+
+    #[test]
+    fn memory_mode_same_peer_hash_retries_retain_all_inflight_slots() {
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "a".repeat(64);
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..32 {
+            let requested = handle.request_block_from("peer-a", &hash).unwrap();
+            assert!(ids.insert(requested.request_id));
+            assert_eq!(requested.requested_peer_id, "peer-a");
+            assert_eq!(requested.block_hash, hash);
+        }
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 32);
+        assert_eq!(guard.outstanding_getblock_requests.len(), 32);
+        assert!(ids
+            .iter()
+            .all(|request_id| guard.outstanding_getblock_requests.contains_key(request_id)));
+    }
+
+    #[test]
+    fn memory_mode_exhausted_id_sequence_never_updates_counters_or_overwrites_request() {
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "b".repeat(64);
+        {
+            let mut guard = handle.inner.lock().unwrap();
+            guard.peer_addressed_getblock_local_sequence = u64::MAX;
+        }
+        assert!(handle.request_block_from("peer-a", &hash).is_err());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, u64::MAX);
+        assert_eq!(guard.getblock_requests_sent_total, 0);
+        assert_eq!(guard.peer_addressed_getblock_sent_total, 0);
+        assert_eq!(guard.publish_attempts, 0);
+        assert!(guard.outstanding_getblock_requests.is_empty());
+    }
+
+    #[test]
+    fn memory_mode_disconnected_request_does_not_consume_identity_sequence() {
+        let (handle, _rx) = MemoryP2pHandle::new("memory-test".into(), vec!["peer-a".into()]);
+        let hash: PulseHash = "c".repeat(64);
+        assert!(handle.request_block_from("not-connected", &hash).is_err());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(guard.peer_addressed_getblock_local_sequence, 0);
+        assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
+        assert!(guard.outstanding_getblock_requests.is_empty());
     }
 }
