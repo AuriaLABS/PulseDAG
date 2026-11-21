@@ -5071,6 +5071,19 @@ fn dispatch_network_message_with_transport_peer(
         }
     }
 
+    // Never dispatch unauthenticated legacy GetBlock/BlockData gossip as
+    // authoritative recovery traffic in a future direct-Noise-enabled mode.
+    // Keep inbound rate limiting above this guard for prefilter accounting.
+    if reject_legacy_getblock_gossip_when_direct_enabled(
+        DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED,
+        &msg,
+    ) {
+        if let Ok(mut guard) = inner.lock() {
+            guard.last_drop_reason = Some("direct_getblock_legacy_gossip_ingress_rejected".into());
+        }
+        return;
+    }
+
     match msg {
         NetworkMessage::NewTransaction {
             chain_id,
@@ -6456,6 +6469,20 @@ fn enforce_getblock_legacy_broadcast_policy(direct_requests_live: bool) -> Resul
     Ok(())
 }
 
+// The direct Noise responder does not enter dispatch_network_message_with_transport_peer.
+// Once direct GetBlock is explicitly enabled, legacy Gossipsub GetBlock
+// requests AND BlockData responses cannot grant recovery authority.
+fn reject_legacy_getblock_gossip_when_direct_enabled(
+    direct_requests_live: bool,
+    message: &NetworkMessage,
+) -> bool {
+    direct_requests_live
+        && matches!(
+            message,
+            NetworkMessage::GetBlock { .. } | NetworkMessage::BlockData { .. }
+        )
+}
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -6973,8 +7000,10 @@ async fn run_libp2p_real_runtime(
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
                     // Second fail-closed boundary: prohibit even direct queue
                     // injection from reaching a Gossipsub serialization arm.
-                    if matches!(&msg, OutboundMessage::GetBlock(_))
-                        && enforce_getblock_legacy_broadcast_policy(
+                    if matches!(
+                        &msg,
+                        OutboundMessage::GetBlock(_) | OutboundMessage::BlockData { .. }
+                    ) && enforce_getblock_legacy_broadcast_policy(
                             DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED,
                         )
                         .is_err()
@@ -14630,5 +14659,49 @@ mod direct_getblock_no_legacy_broadcast_regressions {
         assert!(
             enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED).is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_no_legacy_gossip_ingress_regressions {
+    use super::*;
+
+    #[test]
+    fn future_direct_mode_rejects_both_legacy_request_and_response() {
+        let request = NetworkMessage::GetBlock {
+            chain_id: "testnet".into(),
+            hash: "block-hash".into(),
+            request_id: None,
+            requesting_peer_id: None,
+            requested_peer_id: None,
+            request_kind: Some("generic".into()),
+        };
+        let response = NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: None,
+            request_id: None,
+            request_hash: Some("block-hash".into()),
+        };
+        let unrelated = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec![],
+        };
+
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &request
+        ));
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &request
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &unrelated
+        ));
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
     }
 }
