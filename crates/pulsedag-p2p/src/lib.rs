@@ -6493,12 +6493,23 @@ struct PulseBehaviour {
     direct_getblock: DirectGetBlockSwarmBehaviourV1,
 }
 
+// Keep the live protocol OUTBOUND-ONLY until the existing reviewed compile-time
+// switch is explicitly authorized. The full-duplex branch is dormant and MUST
+// NOT be used as standalone public-testnet launch authorization.
+fn direct_getblock_protocol_support_v1(live_direct_requests: bool) -> ProtocolSupport {
+    if live_direct_requests {
+        ProtocolSupport::Full
+    } else {
+        ProtocolSupport::Outbound
+    }
+}
+
 fn direct_getblock_outbound_only_behaviour_v1() -> DirectGetBlockSwarmBehaviourV1 {
     request_response::Behaviour::with_codec(
         DirectGetBlockRawCodecV1,
         [(
             StreamProtocol::new(DIRECT_GETBLOCK_STREAM_PROTOCOL_V1),
-            ProtocolSupport::Outbound,
+            direct_getblock_protocol_support_v1(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED),
         )],
         request_response::Config::default()
             .with_request_timeout(DIRECT_GETBLOCK_REQUEST_TTL)
@@ -14703,5 +14714,31 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
             true, &unrelated
         ));
         assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_review_gated_protocol_support_regressions {
+    use super::*;
+
+    #[test]
+    fn production_still_advertises_outbound_only_not_inbound_recovery() {
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+        assert!(matches!(
+            direct_getblock_protocol_support_v1(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED),
+            ProtocolSupport::Outbound
+        ));
+    }
+
+    #[test]
+    fn full_duplex_is_prepared_only_for_explicitly_reviewed_future_activation() {
+        assert!(matches!(
+            direct_getblock_protocol_support_v1(false),
+            ProtocolSupport::Outbound
+        ));
+        assert!(matches!(
+            direct_getblock_protocol_support_v1(true),
+            ProtocolSupport::Full
+        ));
     }
 }
