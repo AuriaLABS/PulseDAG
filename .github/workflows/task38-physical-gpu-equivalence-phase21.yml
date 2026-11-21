@@ -95,8 +95,14 @@ jobs:
           grep -q 'u64::MAX' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
           grep -q 'reverify_accelerator_hash' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
           grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_NVIDIA_PASS=NOT_CLAIMED.*GPU_MINING_AMD_PASS=NOT_CLAIMED' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
-          ! grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
-          ! grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs
+          if grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
+          if grep -q 'physical_gpu_equivalence_probe=PASS.*GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/bin/pulsedag_gpu_equivalence_probe.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           echo "physical_probe_software_contract=PASS"
           echo "physical_gpu_execution=NOT_RUN_IN_CI"
           echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"

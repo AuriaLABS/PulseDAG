@@ -69,8 +69,14 @@ jobs:
           grep -q 'recover_unavailable_workers' apps/pulsedag-miner/src/opencl_backend.rs
           grep -q 'mark_unavailable' apps/pulsedag-miner/src/opencl_backend.rs
           grep -q 'failed_worker_is_isolated_replays_batch_and_recovers_next_job' apps/pulsedag-miner/src/opencl_backend.rs
-          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs
-          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs
+          if grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
+          if grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/opencl_backend.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           echo 'opencl_worker_isolation_software=PASS'
           echo 'opencl_worker_recovery_software=PASS'
           echo 'physical_device_recovery=NOT_CLAIMED'

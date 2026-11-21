@@ -267,7 +267,10 @@ jobs:
           grep -q 'PULSEDAG_CUDA_DRIVER_LIBRARY' scripts/task38_collect_physical_gpu_evidence.py
           grep -q 'PULSEDAG_OPENCL_LIBRARY' scripts/task38_collect_physical_gpu_evidence.py
           grep -q 'CUDA_MODULE_METADATA_NAME' scripts/task38_collect_physical_gpu_evidence.py
-          ! grep -q 'parser.add_argument("--cuda-module"' scripts/task38_collect_physical_gpu_evidence.py
+          if grep -q 'parser.add_argument("--cuda-module"' scripts/task38_collect_physical_gpu_evidence.py; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           echo "candidate_bound_cuda_module=PASS"
           echo "physical_evidence_package_ready=PASS"
           echo "physical_gpu_execution=NOT_CLAIMED"
