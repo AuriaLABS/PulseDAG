@@ -1957,10 +1957,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn p2p_readiness_uses_canonical_active_sync_not_stale_error() {
-        // Reproduce the five-node rejoin failure: a completed orphan
-        // recovery leaves a historical pipeline error in runtime even
-        // after the canonical /sync/status view is clean and synchronized.
+    async fn p2p_readiness_retains_unresolved_errors_despite_empty_local_queues() {
+        // The real Task30 rejoin left node-4 at height 2 and peers at 62.
+        // A locally quiescent canonical view is NOT enough to declare GO.
         let state = mk_state(P2pStatus {
             chain_id: "testnet-dev".into(),
             mode: P2P_MODE_LIBP2P_REAL.to_string(),
@@ -1973,57 +1972,35 @@ mod tests {
             let mut runtime = state.runtime.write().await;
             runtime.sync_state = "catching_up".to_string();
             runtime.sync_pipeline.last_error =
-                Some("old orphan recovery: missing parent".to_string());
+                Some("orphan recovery: missing parent".to_string());
         }
-        let Json(recovered) = get_p2p_status(State(state.clone())).await;
-        assert!(recovered.ok);
-        let recovered = recovered.data.expect("recovered status");
-        assert_eq!(recovered["sync_state"], "catching_up");
-        // No fresh authenticated peer tip yet: do NOT turn a historical
-        // error into a false green when the remote chain may be far ahead.
-        assert_eq!(recovered["p2p_ready_for_private_rehearsal"], false);
-        assert!(recovered["readiness_reasons"]
+        let Json(unresolved) = get_p2p_status(State(state.clone())).await;
+        assert!(unresolved.ok);
+        let unresolved = unresolved.data.expect("unresolved status");
+        assert_eq!(unresolved["sync_state"], "catching_up");
+        assert_eq!(unresolved["p2p_ready_for_private_rehearsal"], false);
+        assert!(unresolved["readiness_reasons"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|reason| reason == "rejoin lacks fresh authenticated remote selected tip"));
+            .any(|reason| reason == "sync pipeline reports degraded state"));
 
-        // The same historical error MUST still block while its missing
-        // block request is genuinely active; a green readiness cannot be
-        // obtained just because an error happened previously.
         {
             let mut runtime = state.runtime.write().await;
             runtime.pending_block_requests = 1;
-            runtime.sync_state = "catching_up".to_string();
         }
         let Json(blocked) = get_p2p_status(State(state.clone())).await;
         assert!(blocked.ok);
         let blocked = blocked.data.expect("blocked status");
         assert_eq!(blocked["p2p_ready_for_private_rehearsal"], false);
-        let reasons = blocked["readiness_reasons"]
+        assert!(blocked["readiness_reasons"]
             .as_array()
-            .expect("strict readiness blockers");
-        assert!(reasons
+            .unwrap()
             .iter()
             .any(|reason| reason == "1 pending block request(s)"));
-        assert!(reasons
-            .iter()
-            .any(|reason| reason == "sync pipeline reports degraded state"));
 
-        // Local cleanup is NOT enough: the actual failing node was at
-        // height 2 while four peers had advanced to height 62, with only
-        // stale remote inventory. Keep the gate closed until a NEW peer
-        // tip is authenticated.
-        {
-            let mut runtime = state.runtime.write().await;
-            runtime.pending_block_requests = 0;
-        }
-        let Json(unconfirmed) = get_p2p_status(State(state.clone())).await;
-        assert!(unconfirmed.ok);
-        let unconfirmed = unconfirmed.data.expect("unconfirmed status");
-        assert_eq!(unconfirmed["sync_state"], "catching_up");
-        assert_eq!(unconfirmed["p2p_ready_for_private_rehearsal"], false);
-
+        // A future-dated peer tip cannot clear an invalid monetary sidecar.
+        // In particular no request-backlog heuristic may override this error.
         let genesis_hash = state.chain.read().await.dag.genesis_hash.clone();
         let fresh_state = mk_state(P2pStatus {
             chain_id: "testnet-dev".into(),
@@ -2036,7 +2013,7 @@ mod tests {
                 chain_id: "testnet-dev".into(),
                 selected_tip: Some(genesis_hash),
                 selected_height: 0,
-                observed_at_unix: super::unix_now_secs(),
+                observed_at_unix: super::unix_now_secs().saturating_add(86_400),
                 direct_request_capable: true,
                 connected: true,
                 ..pulsedag_p2p::RemoteSelectedTipStatus::default()
@@ -2045,16 +2022,33 @@ mod tests {
         });
         {
             let mut runtime = fresh_state.runtime.write().await;
-            runtime.sync_state = "catching_up".to_string();
+            runtime.sync_state = "degraded".to_string();
             runtime.sync_pipeline.last_error =
-                Some("historical orphan already resolved".to_string());
+                Some("invalid monetary sidecar".to_string());
         }
-        let Json(confirmed) = get_p2p_status(State(fresh_state)).await;
-        assert!(confirmed.ok);
-        let confirmed = confirmed.data.expect("fresh authenticated remote status");
-        assert_eq!(confirmed["sync_state"], "synced");
-        assert_eq!(confirmed["p2p_ready_for_private_rehearsal"], true);
-        assert_eq!(confirmed["readiness_reasons"], serde_json::json!([]));
+        let Json(forged) = get_p2p_status(State(fresh_state.clone())).await;
+        assert!(forged.ok);
+        let forged = forged.data.expect("untrusted future tip");
+        assert_eq!(forged["sync_state"], "degraded");
+        assert_eq!(forged["p2p_ready_for_private_rehearsal"], false);
+        assert!(forged["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "sync pipeline reports degraded state"));
+
+        // ONLY the responsible runtime explicitly clearing its prior error
+        // and declaring synced can permit readiness, never the remote date.
+        {
+            let mut runtime = fresh_state.runtime.write().await;
+            runtime.sync_pipeline.last_error = None;
+            runtime.sync_state = "synced".to_string();
+        }
+        let Json(clean) = get_p2p_status(State(fresh_state)).await;
+        assert!(clean.ok);
+        let clean = clean.data.expect("resolved runtime");
+        assert_eq!(clean["sync_state"], "synced");
+        assert_eq!(clean["p2p_ready_for_private_rehearsal"], true);
     }
 
     #[tokio::test]
