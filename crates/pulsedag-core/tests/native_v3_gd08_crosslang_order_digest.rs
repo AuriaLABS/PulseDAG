@@ -119,6 +119,46 @@ fn native_real_pow_gd08_k0_k1_order_and_digest_match_independent_python() {
         .expect("only tip's authenticated ancestor closure contributes");
         assert_eq!(derived, same);
 
+        // Keep the asserted map key (claimed block ID) while mutating the
+        // REAL PoW-authenticated side header. Neither nonce nor merkle-root
+        // forgery may enter the dormant GD-08 ordering kernel as authority.
+        // This is a negative, test-only admission check, not monetary replay.
+        let side_id = field(&original, "other_parent").to_string();
+        let mut forged_nonce = headers.clone();
+        forged_nonce
+            .get_mut(&side_id)
+            .expect("frozen merge-side header")
+            .nonce ^= 1;
+        assert!(
+            derive_dormant_native_gd08_order_from_ghostdag_trial(
+                chain,
+                ns,
+                &genesis.hash,
+                &tip,
+                &forged_nonce,
+                k,
+            )
+            .is_err(),
+            "tampering with a side PoW nonce under its former hash must fail closed"
+        );
+        let mut forged_merkle_root = headers.clone();
+        forged_merkle_root
+            .get_mut(&side_id)
+            .expect("frozen merge-side header")
+            .merkle_root = "ff".repeat(32);
+        assert!(
+            derive_dormant_native_gd08_order_from_ghostdag_trial(
+                chain,
+                ns,
+                &genesis.hash,
+                &tip,
+                &forged_merkle_root,
+                k,
+            )
+            .is_err(),
+            "tampering with side committed transactions under its former hash must fail closed"
+        );
+
         // Maliciously removing an actual side ancestor cannot lead to a digest.
         let mut omitted = headers.clone();
         omitted.remove(field(&original, "other_parent"));
