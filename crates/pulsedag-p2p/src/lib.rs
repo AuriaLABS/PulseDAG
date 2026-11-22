@@ -14710,7 +14710,7 @@ mod bounded_authenticated_tip_refresh_regressions {
             &observed,
             |_| true
         ));
-        observed.insert(peer);
+        observed.insert(peer.clone());
         assert!(
             authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
             "observed real subscription allows periodic retry despite failed initial publish"
