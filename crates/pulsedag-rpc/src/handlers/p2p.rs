@@ -2043,7 +2043,7 @@ mod tests {
                 chain_id: "testnet-dev".into(),
                 selected_tip: Some(genesis_hash),
                 selected_height: 0,
-                observed_at_unix: unix_now_secs(),
+                observed_at_unix: super::unix_now_secs(),
                 direct_request_capable: true,
                 connected: true,
                 ..pulsedag_p2p::RemoteSelectedTipStatus::default()
