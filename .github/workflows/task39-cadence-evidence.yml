@@ -84,6 +84,7 @@ jobs:
           cargo test --locked -p pulsedagd startup_protocol::tests::
           cargo test --locked -p pulsedag-core canonical_state_apply_latency_summary_has_stable_percentiles
           cargo test --locked -p pulsedag-rpc handlers::status::tests::
+          cargo test --locked -p pulsedag-miner task39_cooperative_stop_requires_explicit_existing_marker
 
       - name: Build release node and standalone miner
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
