@@ -6859,6 +6859,16 @@ fn should_retry_get_tips_on_remote_sync_subscription_v1(
         && remote_topic == format!("{chain_id}-sync")
 }
 
+// Unlike the one-shot delivery tracker, this authorization follows the
+// authenticated subscription event, NOT successful publication. Otherwise
+// transient Gossipsub congestion permanently disables periodic repair.
+fn authenticated_periodic_tip_refresh_allowed<F: Fn(&PeerId) -> bool>(
+    observed_subscriptions: &HashSet<PeerId>,
+    connected: F,
+) -> bool {
+    observed_subscriptions.iter().any(connected)
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -7526,7 +7536,7 @@ async fn run_libp2p_real_runtime(
                         if swarm.is_connected(&peer_id)
                             && topic.as_str() == format!("{}-sync", cfg.chain_id)
                         {
-                            authenticated_remote_sync_subscriptions.insert(peer_id);
+                            authenticated_remote_sync_subscriptions.insert(peer_id.clone());
                         }
                         // GetTips sent immediately on ConnectionEstablished can be
                         // rejected before remote Gossipsub has advertised the
@@ -7828,9 +7838,10 @@ async fn run_libp2p_real_runtime(
                 // An authenticated Noise connection alone is insufficient.
                 // Publish ONLY while at least one connected remote peer has
                 // advertised its actual Gossipsub -sync topic subscription.
-                if authenticated_remote_sync_subscriptions
-                    .iter()
-                    .any(|peer| swarm.is_connected(peer))
+                if authenticated_periodic_tip_refresh_allowed(
+                    &authenticated_remote_sync_subscriptions,
+                    |peer| swarm.is_connected(peer),
+                )
                 {
                     let inventory = inner.lock().ok().and_then(|mut guard| {
                         periodic_authenticated_get_tips_inventory(
@@ -14689,6 +14700,29 @@ mod peer_addressed_getblock_local_id_regressions {
 #[cfg(test)]
 mod bounded_authenticated_tip_refresh_regressions {
     use super::*;
+
+    #[test]
+    fn observed_auth_subscription_still_retries_after_initial_publish_failure() {
+        let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
+        let mut observed = HashSet::new();
+        let delivered_one_shot = HashSet::<PeerId>::new();
+        assert!(!authenticated_periodic_tip_refresh_allowed(&observed, |_| true));
+        observed.insert(peer);
+        assert!(
+            authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
+            "observed real subscription allows periodic retry despite failed initial publish"
+        );
+        assert!(!delivered_one_shot.contains(&peer));
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| false),
+            "transport disconnect must prevent periodic publish"
+        );
+        observed.remove(&peer);
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| true),
+            "Gossipsub unsubscribe must revoke periodic authorization"
+        );
+    }
 
     #[test]
     fn periodic_tip_request_reobserves_same_canonical_tip_without_rewriting_authority() {
