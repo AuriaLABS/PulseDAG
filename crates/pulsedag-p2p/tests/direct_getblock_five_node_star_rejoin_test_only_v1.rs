@@ -84,56 +84,15 @@ fn issue(
 
 #[tokio::test(flavor = "current_thread")]
 async fn five_authenticated_noise_peers_rejoin_and_recover_32_distinct_accepted_pow_blocks() {
-    // Mine actual PoW and require the serving Core to accept each block.
-    // This is a legacy Core acceptance fixture; no native-v3 monetary claim.
+    // The fifth peer must be physically isolated BEFORE any post-genesis blocks are mined.
+    // This remains a legacy Core fixture, not native-v3 production daemon proof.
     let mut accepted = init_chain_state(CHAIN.to_string());
-    let mut hashes = Vec::with_capacity(BLOCKS);
-    for height in 1..=BLOCKS {
-        let parent = hashes
-            .last()
-            .cloned()
-            .unwrap_or_else(|| accepted.dag.genesis_hash.clone());
-        let parent_time = accepted
-            .dag
-            .blocks
-            .get(&parent)
-            .expect("parent already accepted")
-            .header
-            .timestamp;
-        let mut block = build_candidate_block(
-            vec![parent],
-            height as u64,
-            expected_difficulty(&accepted),
-            vec![build_coinbase_transaction(
-                "five-noise-rejoin-miner",
-                50,
-                height as u64,
-            )],
-        );
-        block.header.timestamp = parent_time.saturating_add(60).max(1);
-        refresh_block_consensus_ids_with_state(&mut block, &accepted)
-            .expect("exact expected state root before PoW");
-        let (mined_header, found, _, _) = dev_mine_header(block.header.clone(), 200_000);
-        assert!(found, "must mine the distinct actual PoW block");
-        block.header = mined_header;
-        refresh_block_consensus_ids(&mut block);
-        accept_block(block.clone(), &mut accepted, AcceptSource::LocalMining)
-            .expect("source Core must really admit each block");
-        hashes.push(block.hash);
-    }
-    assert_eq!(accepted.dag.best_height, BLOCKS as u64);
-    assert_eq!(
-        hashes
-            .iter()
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        BLOCKS,
-        "all requested hashes must be distinct, not one repeated genesis"
-    );
+    let mut hashes: Vec<String> = Vec::with_capacity(BLOCKS);
     assert!(
         !accepted.contracts.config.enabled,
         "contracts must stay inactive"
     );
+    assert_eq!(accepted.dag.best_height, 0, "only genesis before isolation");
 
     tokio::time::timeout(Duration::from_secs(145), async {
         let keys = (0..5)
@@ -345,6 +304,60 @@ async fn five_authenticated_noise_peers_rejoin_and_recover_32_distinct_accepted_
             }
             if state == 2 && physically_closed_seed && physically_closed_leaf {
                 assert!(!seed_up[ISOLATED] && !leaf_up[ISOLATED]);
+                assert!(
+                    hashes.is_empty(),
+                    "no blocks can be pre-mined before physical isolation"
+                );
+                for leaf in 1..ISOLATED {
+                    assert!(swarms[0].is_connected(&peers[leaf]));
+                    assert!(swarms[leaf].is_connected(&peers[0]));
+                }
+                // Mine 32 genuine legacy Core-accepted PoW blocks only while
+                // peer 5 is disconnected on BOTH authenticated Noise ends.
+                for height in 1..=BLOCKS {
+                    let parent = hashes
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| accepted.dag.genesis_hash.clone());
+                    let parent_time = accepted
+                        .dag
+                        .blocks
+                        .get(&parent)
+                        .expect("parent already accepted")
+                        .header
+                        .timestamp;
+                    let mut block = build_candidate_block(
+                        vec![parent],
+                        height as u64,
+                        expected_difficulty(&accepted),
+                        vec![build_coinbase_transaction(
+                            "five-noise-rejoin-miner",
+                            50,
+                            height as u64,
+                        )],
+                    );
+                    block.header.timestamp = parent_time.saturating_add(60).max(1);
+                    refresh_block_consensus_ids_with_state(&mut block, &accepted)
+                        .expect("exact expected state root before PoW");
+                    let (mined_header, found, _, _) =
+                        dev_mine_header(block.header.clone(), 200_000);
+                    assert!(found, "must mine the distinct actual PoW block");
+                    block.header = mined_header;
+                    refresh_block_consensus_ids(&mut block);
+                    accept_block(block.clone(), &mut accepted, AcceptSource::LocalMining)
+                        .expect("source Core must really admit each block");
+                    hashes.push(block.hash);
+                }
+                assert_eq!(accepted.dag.best_height, BLOCKS as u64);
+                assert_eq!(
+                    hashes
+                        .iter()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len(),
+                    BLOCKS,
+                    "all requested hashes must be distinct, not one repeated genesis"
+                );
+
                 swarms[ISOLATED]
                     .dial(
                         listener
