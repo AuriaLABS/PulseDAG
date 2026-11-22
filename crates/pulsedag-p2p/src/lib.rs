@@ -487,6 +487,9 @@ pub struct RemoteSelectedTipStatus {
     pub ordered_dag_tip: Option<PulseHash>,
     pub state_root_digest: Option<String>,
     pub observed_at_unix: u64,
+    // Locally measured authenticated-message receipt, NEVER supplied by
+    // the remote inventory. Only this timestamp can authorize freshness.
+    pub received_at_unix: u64,
     pub inventory_generation: u64,
     pub age_secs: u64,
     pub direct_request_capable: bool,
@@ -2478,6 +2481,7 @@ fn note_remote_tip_inventory(
                     ordered_dag_tip: inventory.ordered_dag_tip,
                     state_root_digest: inventory.state_root_digest,
                     observed_at_unix: inventory.observed_at_unix,
+                    received_at_unix: now,
                     inventory_generation: inventory.inventory_generation,
                     age_secs: now.saturating_sub(inventory.observed_at_unix),
                     direct_request_capable: connection_generation > 0,
@@ -2505,6 +2509,7 @@ fn remote_tip_inventory_snapshot(state: &mut InnerState) -> Vec<RemoteSelectedTi
         .map(|entry| {
             let mut status = entry.status.clone();
             status.age_secs = now_unix().saturating_sub(status.observed_at_unix);
+            status.received_at_unix = entry.last_seen_unix;
             status
         })
         .collect()
