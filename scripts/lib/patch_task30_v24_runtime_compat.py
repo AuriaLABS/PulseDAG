@@ -279,6 +279,19 @@ jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"'''
         "relay conflict tx-topic after publication evidence",
     )
 
+    text = replace_once(
+        text,
+        'before_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/before_stale/n${i}-p2p-status.json")"',
+        'before_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/before_stale/n${i}-p2p-status.json")"',
+        "relay stale confirmed tx-topic prior publication evidence",
+    )
+    text = replace_once(
+        text,
+        'after_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/after_stale/n${i}-p2p-status.json")"',
+        'after_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/after_stale/n${i}-p2p-status.json")"',
+        "relay stale confirmed tx-topic after publication evidence",
+    )
+
     old_dup = r'''DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }'''
     text = replace_once(text, old_dup, 'DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-body.json")"', "relay duplicate body source")
     old_conflict = r'''post_json "$(rpc_url 3)/wallet/new" '{}' "$OUT_DIR/tx/conflict-recipient-wallet.json"
