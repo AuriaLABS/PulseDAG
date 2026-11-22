@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 
 use super::canonical_sync::{
     build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
-    CanonicalSyncState,
+    CanonicalSyncState, REMOTE_SELECTED_TIP_MAX_AGE_SECS,
 };
 use pulsedag_p2p::{
     connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
@@ -861,7 +861,31 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && pending_missing_parents > 0
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
-            let remote_evidence = remote_sync_evidence_from_p2p_status(Some(&status), now_unix);
+            // Remote-supplied observed_at_unix may be arbitrarily future-dated.
+            // Only the P2P transport's LOCAL receipt time (authenticated
+            // sender, known connection) is trusted for staleness filtering.
+            let remote_evidence = remote_sync_evidence_from_p2p_status(Some(&status), now_unix)
+                .into_iter()
+                .filter_map(|mut evidence| {
+                    let received_at = status
+                        .remote_selected_tip_inventory
+                        .iter()
+                        .find(|tip| {
+                            tip.peer_id == evidence.peer_id
+                                && tip.chain_id == evidence.chain_id
+                                && tip.selected_height == evidence.selected_height
+                        })?
+                        .received_at_unix;
+                    if received_at == 0
+                        || received_at > now_unix
+                        || now_unix - received_at > REMOTE_SELECTED_TIP_MAX_AGE_SECS
+                    {
+                        return None;
+                    }
+                    evidence.observed_at_unix = received_at;
+                    Some(evidence)
+                })
+                .collect::<Vec<_>>();
             let canonical_sync = build_canonical_sync_state_with_remote_evidence(
                 &chain,
                 &runtime,
@@ -2014,6 +2038,9 @@ mod tests {
                 selected_tip: Some(genesis_hash),
                 selected_height: 0,
                 observed_at_unix: super::unix_now_secs().saturating_add(86_400),
+                // A future remote timestamp cannot replace the local
+                // authenticated transport receipt, which the P2P layer owns.
+                received_at_unix: super::unix_now_secs(),
                 direct_request_capable: true,
                 connected: true,
                 ..pulsedag_p2p::RemoteSelectedTipStatus::default()
