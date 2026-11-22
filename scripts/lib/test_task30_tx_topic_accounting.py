@@ -69,12 +69,14 @@ class Task30TxTopicEvidenceTests(unittest.TestCase):
         self.assertIn('"replacement semantics are not authorized"', self.patched)
         self.assertIn('[[ "$tx_count" == 1 && "$original_count" == 1 ]]', self.patched)
 
-    def test_duplicate_and_conflict_use_scoped_counter_not_global_counter(self) -> None:
+    def test_duplicate_conflict_and_stale_use_scoped_counter_not_global_counter(self) -> None:
+        # Includes post-confirmation stale resubmission; its replay must not
+        # be silently allowed through by periodic sync-topic publications.
         self.assertEqual(
-            self.patched.count('before_publish="$(task30_tx_topic_publishes '), 2
+            self.patched.count('before_publish="$(task30_tx_topic_publishes '), 3
         )
         self.assertEqual(
-            self.patched.count('after_publish="$(task30_tx_topic_publishes '), 2
+            self.patched.count('after_publish="$(task30_tx_topic_publishes '), 3
         )
         self.assertNotIn(
             'before_publish="$(jq -r \'.data.publish_attempts // 0\'',
