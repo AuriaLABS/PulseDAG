@@ -1,6 +1,9 @@
 use axum::{extract::State, Json};
 
-use super::canonical_sync::{build_canonical_sync_state, CanonicalSyncState};
+use super::canonical_sync::{
+    build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
+    select_remote_sync_evidence, CanonicalSyncState,
+};
 use pulsedag_p2p::{
     connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
     P2pStatus, PeerRecoveryStatus,
@@ -76,6 +79,7 @@ fn p2p_readiness_reasons(
     orphan_count: usize,
     best_height: u64,
     canonical_sync: Option<&CanonicalSyncState>,
+    fresh_authenticated_remote_tip: bool,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if !enabled {
@@ -133,6 +137,15 @@ fn p2p_readiness_reasons(
     }) {
         reasons.push("sync pipeline reports degraded state".to_string());
     }
+    // A canonical "synced" view without RECENT authenticated tip evidence
+    // cannot clear a prior orphan/rejoin failure. Otherwise an isolated
+    // node with stale peer inventory may be dozens of blocks behind even
+    // when its local request queues are empty (Task30 5N evidence #1465).
+    if !fresh_authenticated_remote_tip
+        && (runtime.sync_pipeline.last_error.is_some() || runtime.sync_state != "synced")
+    {
+        reasons.push("rejoin lacks fresh authenticated remote selected tip".to_string());
+    }
     reasons
 }
 
@@ -149,6 +162,7 @@ fn disabled_p2p_payload(
         orphan_count,
         0,
         None,
+        false,
     );
     let mut payload = serde_json::json!({
         "p2p_enabled": false,
@@ -853,12 +867,21 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && pending_missing_parents > 0
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
-            let canonical_sync = build_canonical_sync_state(
+            let remote_evidence =
+                remote_sync_evidence_from_p2p_status(Some(&status), now_unix);
+            let fresh_authenticated_remote_tip = select_remote_sync_evidence(
+                &chain.chain_id,
+                now_unix,
+                &remote_evidence,
+            )
+            .is_some_and(|evidence| evidence.selected_tip.is_some());
+            let canonical_sync = build_canonical_sync_state_with_remote_evidence(
                 &chain,
                 &runtime,
                 persisted_block_count,
                 now_unix,
                 status.selected_sync_peer.clone(),
+                &remote_evidence,
             );
             let readiness_reasons = p2p_readiness_reasons(
                 true,
@@ -868,6 +891,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 orphan_count,
                 chain.dag.best_height,
                 Some(&canonical_sync),
+                fresh_authenticated_remote_tip,
             );
             let isolated_genesis_node_total =
                 isolated_genesis_node_total(true, Some(&status), chain.dag.best_height);
