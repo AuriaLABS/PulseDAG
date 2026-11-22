@@ -2385,6 +2385,24 @@ fn current_tip_inventory_for_send(
     inventory
 }
 
+// A bounded periodic GetTips request must not reuse byte-identical gossip
+// payloads for minutes after a real peer reconnects. Only re-observe the
+// *existing* local selected tip with a fresh timestamp; never fabricate a
+// different tip/height/work or rewrite the persisted inventory generation.
+// This helper is diagnostic P2P discovery, NOT native-v3 block admission.
+fn periodic_authenticated_get_tips_inventory(
+    state: &mut InnerState,
+    chain_id: &str,
+    now: u64,
+) -> Option<TipInventoryStatus> {
+    let mut inventory = current_tip_inventory_for_send(state, chain_id, "GetTips")?;
+    if now <= inventory.observed_at_unix {
+        return None;
+    }
+    inventory.observed_at_unix = now;
+    Some(inventory)
+}
+
 fn valid_tip_inventory_shape(inventory: &TipInventoryStatus) -> bool {
     match (&inventory.selected_tip, inventory.selected_height) {
         (Some(tip), Some(_)) if !tip.is_empty() => true,
@@ -6991,6 +7009,13 @@ async fn run_libp2p_real_runtime(
     let mut bootnode_redial_backoff_secs: HashMap<PeerId, u64> = HashMap::new();
     let mut bootnode_redial_tick = tokio::time::interval(Duration::from_secs(3));
     bootnode_redial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Do not rely only on one-shot connection/subscription GetTips. After a
+    // real partition a connected peer may remain at height 2 while the rest
+    // reach 62: refreshing a *signed* tip request every 15 s re-discovers the
+    // actual selected tip, without enabling any direct GetBlock path.
+    let mut authenticated_tip_refresh_tick = tokio::time::interval(Duration::from_secs(15));
+    authenticated_tip_refresh_tick
+        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -7779,6 +7804,54 @@ async fn run_libp2p_real_runtime(
                             }
                         }
                         note_swarm_event(&inner, format!("swarm:{other:?}"));
+                    }
+                }
+            }
+            _ = authenticated_tip_refresh_tick.tick() => {
+                // An authenticated Noise connection alone is insufficient.
+                // Publish ONLY while at least one connected remote peer has
+                // advertised its actual Gossipsub -sync topic subscription.
+                if tips_refreshed_after_remote_sync_subscription
+                    .iter()
+                    .any(|peer| swarm.is_connected(peer))
+                {
+                    let inventory = inner.lock().ok().and_then(|mut guard| {
+                        periodic_authenticated_get_tips_inventory(
+                            &mut guard,
+                            &cfg.chain_id,
+                            now_unix(),
+                        )
+                    });
+                    if let Some(inventory) = inventory {
+                        match encode_network_message_for_transport(
+                            &inner,
+                            &NetworkMessage::GetTips {
+                                chain_id: cfg.chain_id.clone(),
+                                inventory: Some(inventory),
+                            },
+                        ) {
+                            Ok(bytes) => {
+                                let topic = gossipsub::IdentTopic::new(
+                                    format!("{}-sync", cfg.chain_id),
+                                );
+                                match swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                    Ok(_) => note_swarm_event(
+                                        &inner,
+                                        "authenticated-periodic-gettips-published",
+                                    ),
+                                    Err(error) => note_swarm_event(
+                                        &inner,
+                                        format!("authenticated-periodic-gettips-publish-failed:{error}"),
+                                    ),
+                                }
+                            }
+                            Err(error) => note_swarm_event(
+                                &inner,
+                                format!("authenticated-periodic-gettips-encode-failed:{error}"),
+                            ),
+                        }
+                    } else {
+                        note_swarm_event(&inner, "authenticated-periodic-gettips-no-fresh-inventory");
                     }
                 }
             }
@@ -14593,6 +14666,62 @@ mod peer_addressed_getblock_local_id_regressions {
         let guard = inner.lock().unwrap();
         assert!(guard.outstanding_getblock_requests.contains_key(&id));
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 0);
+    }
+}
+
+#[cfg(test)]
+mod bounded_authenticated_tip_refresh_regressions {
+    use super::*;
+
+    #[test]
+    fn periodic_tip_request_reobserves_same_canonical_tip_without_rewriting_authority() {
+        let mut state = InnerState::default();
+        state.chain_id = "first-native-v3-network".into();
+        let original = TipInventoryStatus {
+            chain_id: state.chain_id.clone(),
+            selected_tip: Some("44".repeat(32)),
+            selected_height: Some(32),
+            selected_blue_score: Some(33),
+            ordered_dag_tip: Some("44".repeat(32)),
+            state_root_digest: Some("55".repeat(32)),
+            observed_at_unix: 1_800_000_000,
+            inventory_generation: 0,
+        };
+        next_local_tip_inventory(&mut state, original);
+        let frozen = state.local_tip_inventory.clone().expect("local selected tip");
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut state,
+                "first-native-v3-network",
+                frozen.observed_at_unix,
+            )
+            .is_none(),
+            "same-second replays are not fresh requests"
+        );
+        let published = periodic_authenticated_get_tips_inventory(
+            &mut state,
+            "first-native-v3-network",
+            frozen.observed_at_unix + 15,
+        )
+        .expect("bounded fresh tip request");
+        assert_eq!(published.selected_tip, frozen.selected_tip);
+        assert_eq!(published.selected_height, frozen.selected_height);
+        assert_eq!(published.inventory_generation, frozen.inventory_generation);
+        assert_eq!(published.observed_at_unix, frozen.observed_at_unix + 15);
+        assert_eq!(
+            state.local_tip_inventory.as_ref().expect("unchanged authority"),
+            &frozen,
+            "transport freshness must not change canonical tip generation"
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut InnerState::default(),
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "missing local tip must not produce fabricated network evidence"
+        );
     }
 }
 
