@@ -144,6 +144,27 @@ def build(source):
         assert first["ordered"] == [genesis, selected, other, tip]
         assert first["blue_count"] == (1 if case == "K1" else 0)
         assert first["red_count"] == (0 if case == "K1" else 1)
+        # The same authenticated headers and tip MUST produce a different
+        # cryptographic digest if the unapproved blue/red role changes. This
+        # proves the digest commits to role metadata; it does not approve K.
+        flipped_roles = dict(roles)
+        flipped_roles[other] = (
+            2,
+            "MergeRed" if assigned == "MergeBlue" else "MergeBlue",
+        )
+        flipped = preview(chain, spine, original_headers, flipped_roles)
+        assert flipped["ordered"] == first["ordered"]
+        assert flipped["digest"] != first["digest"]
+        assert flipped["blue_count"] != first["blue_count"]
+        assert flipped["red_count"] != first["red_count"]
+        # A merge-side block must not masquerade as selected spine authority.
+        fake_selected_roles = dict(roles)
+        fake_selected_roles[other] = (2, "Selected")
+        try:
+            preview(chain, spine, original_headers, fake_selected_roles)
+            raise AssertionError("side header falsely assigned Selected was accepted")
+        except ValueError:
+            pass
         # All 24 map insertion permutations must be byte-identical.
         for keys in itertools.permutations(original_headers):
             permuted = {key: original_headers[key] for key in keys}
