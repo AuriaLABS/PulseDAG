@@ -14794,10 +14794,11 @@ mod bounded_authenticated_tip_refresh_regressions {
         );
         let mut empty = InnerState::default();
         empty.chain_id = "first-native-v3-network".into();
+        let chain_id = empty.chain_id.clone();
         next_local_tip_inventory(
             &mut empty,
             TipInventoryStatus {
-                chain_id: empty.chain_id.clone(),
+                chain_id,
                 observed_at_unix: frozen.observed_at_unix,
                 ..TipInventoryStatus::default()
             },
