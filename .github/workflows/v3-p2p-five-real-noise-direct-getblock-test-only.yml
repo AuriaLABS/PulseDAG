@@ -1,0 +1,50 @@
+name: "P2P five real Noise direct GetBlock 32 accepted PoW (TEST ONLY)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-p2p/tests/direct_getblock_five_node_star_rejoin_test_only_v1.rs"
+      - ".github/workflows/v3-p2p-five-real-noise-direct-getblock-test-only.yml"
+      - "crates/pulsedag-p2p/src/**"
+      - "crates/pulsedag-core/src/**"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  five-node-real-noise-direct-getblock-test-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install pinned Rust with Clippy and Rustfmt
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Enforce test-only scope and hard-OFF production transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Inbound' crates/pulsedag-p2p/tests/direct_getblock_five_node_star_rejoin_test_only_v1.rs
+          grep -Fq 'let mut restored = init_chain_state(CHAIN.to_string());' crates/pulsedag-p2p/tests/direct_getblock_five_node_star_rejoin_test_only_v1.rs
+      - name: Exact-head workspace format
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Five actual Noise Swarms, 32 distinct accepted PoW blocks, rejoin and UTXO equivalence
+        run: |
+          cargo +1.91.0 test --locked -p pulsedag-p2p --test direct_getblock_five_node_star_rejoin_test_only_v1 -- --nocapture
+      - name: Strict P2P all-targets Clippy
+        run: |
+          cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+      - name: Cargo lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock
