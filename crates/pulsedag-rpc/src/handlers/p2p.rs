@@ -1935,6 +1935,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn p2p_readiness_uses_canonical_active_sync_not_stale_error() {
+        // Reproduce the five-node rejoin failure: a completed orphan
+        // recovery leaves a historical pipeline error in runtime even
+        // after the canonical /sync/status view is clean and synchronized.
+        let state = mk_state(P2pStatus {
+            chain_id: "testnet-dev".into(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/30333".into()],
+            connected_peers: vec!["peer-a".into()],
+            ..P2pStatus::default()
+        });
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.sync_state = "catching_up".to_string();
+            runtime.sync_pipeline.last_error =
+                Some("old orphan recovery: missing parent".to_string());
+        }
+        let Json(recovered) = get_p2p_status(State(state.clone())).await;
+        assert!(recovered.ok);
+        let recovered = recovered.data.expect("recovered status");
+        assert_eq!(recovered["sync_state"], "synced");
+        assert_eq!(recovered["p2p_ready_for_private_rehearsal"], true);
+        assert_eq!(recovered["readiness_reasons"], serde_json::json!([]));
+
+        // The same historical error MUST still block while its missing
+        // block request is genuinely active; a green readiness cannot be
+        // obtained just because an error happened previously.
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.pending_block_requests = 1;
+            runtime.sync_state = "catching_up".to_string();
+        }
+        let Json(blocked) = get_p2p_status(State(state.clone())).await;
+        assert!(blocked.ok);
+        let blocked = blocked.data.expect("blocked status");
+        assert_eq!(blocked["p2p_ready_for_private_rehearsal"], false);
+        let reasons = blocked["readiness_reasons"]
+            .as_array()
+            .expect("strict readiness blockers");
+        assert!(reasons.iter().any(|reason| reason == "1 pending block request(s)"));
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "sync pipeline reports degraded state"));
+
+        // Clearing the active blocker restores readiness without erasing
+        // forensic history from the live runtime.
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.pending_block_requests = 0;
+        }
+        let Json(recovered_again) = get_p2p_status(State(state)).await;
+        assert!(recovered_again.ok);
+        let recovered_again = recovered_again.data.expect("recovered status");
+        assert_eq!(recovered_again["sync_state"], "synced");
+        assert_eq!(recovered_again["p2p_ready_for_private_rehearsal"], true);
+    }
+
+    #[tokio::test]
     async fn p2p_disabled_mode_reports_structured_diagnostics() {
         let Json(resp) = get_p2p_status(State(mk_state_without_p2p())).await;
         assert!(resp.ok);
