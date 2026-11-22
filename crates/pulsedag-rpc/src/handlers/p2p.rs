@@ -1049,7 +1049,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(if rejoin_unconfirmed {
                     "catching_up"
                 } else {
-                    &canonical_sync.sync_state
+                    canonical_sync.sync_state.as_str()
                 }),
             );
             payload.insert(
