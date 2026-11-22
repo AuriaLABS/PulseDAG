@@ -1995,8 +1995,7 @@ mod tests {
         {
             let mut runtime = state.runtime.write().await;
             runtime.sync_state = "catching_up".to_string();
-            runtime.sync_pipeline.last_error =
-                Some("orphan recovery: missing parent".to_string());
+            runtime.sync_pipeline.last_error = Some("orphan recovery: missing parent".to_string());
         }
         let Json(unresolved) = get_p2p_status(State(state.clone())).await;
         assert!(unresolved.ok);
@@ -2050,8 +2049,7 @@ mod tests {
         {
             let mut runtime = fresh_state.runtime.write().await;
             runtime.sync_state = "degraded".to_string();
-            runtime.sync_pipeline.last_error =
-                Some("invalid monetary sidecar".to_string());
+            runtime.sync_pipeline.last_error = Some("invalid monetary sidecar".to_string());
         }
         let Json(forged) = get_p2p_status(State(fresh_state.clone())).await;
         assert!(forged.ok);
