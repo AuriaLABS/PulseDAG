@@ -867,14 +867,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && pending_missing_parents > 0
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
-            let remote_evidence =
-                remote_sync_evidence_from_p2p_status(Some(&status), now_unix);
-            let fresh_authenticated_remote_tip = select_remote_sync_evidence(
-                &chain.chain_id,
-                now_unix,
-                &remote_evidence,
-            )
-            .is_some_and(|evidence| evidence.selected_tip.is_some());
+            let remote_evidence = remote_sync_evidence_from_p2p_status(Some(&status), now_unix);
+            let fresh_authenticated_remote_tip =
+                select_remote_sync_evidence(&chain.chain_id, now_unix, &remote_evidence)
+                    .is_some_and(|evidence| evidence.selected_tip.is_some());
             let canonical_sync = build_canonical_sync_state_with_remote_evidence(
                 &chain,
                 &runtime,
@@ -1042,8 +1038,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             // tip is an UNCONFIRMED rejoin even when the local canonical
             // snapshot has zero work. Never report a false "synced" state.
             let rejoin_unconfirmed = !fresh_authenticated_remote_tip
-                && (runtime.sync_pipeline.last_error.is_some()
-                    || runtime.sync_state != "synced");
+                && (runtime.sync_pipeline.last_error.is_some() || runtime.sync_state != "synced");
             payload.insert(
                 "sync_state".into(),
                 serde_json::json!(if rejoin_unconfirmed {
@@ -2015,7 +2010,9 @@ mod tests {
         let reasons = blocked["readiness_reasons"]
             .as_array()
             .expect("strict readiness blockers");
-        assert!(reasons.iter().any(|reason| reason == "1 pending block request(s)"));
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "1 pending block request(s)"));
         assert!(reasons
             .iter()
             .any(|reason| reason == "sync pipeline reports degraded state"));
