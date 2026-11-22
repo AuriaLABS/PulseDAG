@@ -7546,7 +7546,7 @@ async fn run_libp2p_real_runtime(
                         if swarm.is_connected(&peer_id)
                             && topic.as_str() == format!("{}-sync", cfg.chain_id)
                         {
-                            authenticated_remote_sync_subscriptions.insert(peer_id.clone());
+                            authenticated_remote_sync_subscriptions.insert(peer_id);
                         }
                         // GetTips sent immediately on ConnectionEstablished can be
                         // rejected before remote Gossipsub has advertised the
@@ -14720,7 +14720,7 @@ mod bounded_authenticated_tip_refresh_regressions {
             &observed,
             |_| true
         ));
-        observed.insert(peer.clone());
+        observed.insert(peer);
         assert!(
             authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
             "observed real subscription allows periodic retry despite failed initial publish"
@@ -14739,8 +14739,10 @@ mod bounded_authenticated_tip_refresh_regressions {
 
     #[test]
     fn periodic_tip_request_reobserves_same_canonical_tip_without_rewriting_authority() {
-        let mut state = InnerState::default();
-        state.chain_id = "first-native-v3-network".into();
+        let mut state = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
         let original = TipInventoryStatus {
             chain_id: state.chain_id.clone(),
             selected_tip: Some("44".repeat(32)),
@@ -14792,8 +14794,10 @@ mod bounded_authenticated_tip_refresh_regressions {
             .is_none(),
             "missing local tip must not produce fabricated network evidence"
         );
-        let mut empty = InnerState::default();
-        empty.chain_id = "first-native-v3-network".into();
+        let mut empty = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
         let chain_id = empty.chain_id.clone();
         next_local_tip_inventory(
             &mut empty,
@@ -14812,10 +14816,7 @@ mod bounded_authenticated_tip_refresh_regressions {
             .is_none(),
             "existing inventory without a selected tip and height must fail closed"
         );
-        assert!(empty
-            .local_tip_inventory_sent_total
-            .get("GetTips")
-            .is_none());
+        assert!(!empty.local_tip_inventory_sent_total.contains_key("GetTips"));
     }
 }
 
