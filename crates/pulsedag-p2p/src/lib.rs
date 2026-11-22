@@ -14812,7 +14812,10 @@ mod bounded_authenticated_tip_refresh_regressions {
             .is_none(),
             "existing inventory without a selected tip and height must fail closed"
         );
-        assert!(empty.local_tip_inventory_sent_total.get("GetTips").is_none());
+        assert!(empty
+            .local_tip_inventory_sent_total
+            .get("GetTips")
+            .is_none());
     }
 }
 
