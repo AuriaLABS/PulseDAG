@@ -1,0 +1,47 @@
+name: "First-network native-v3 32 real PoW headers / five local replicas (test only)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/tests/native_v3_32_pow_five_local_replicas.rs"
+      - "crates/pulsedag-core/src/header_v3.rs"
+      - "crates/pulsedag-core/src/pow_v3.rs"
+      - "crates/pulsedag-core/src/native_parent_dag_context_v3.rs"
+      - "crates/pulsedag-core/src/native_topological_evaluation_v3.rs"
+      - ".github/workflows/v3-native-first-network-32pow-replica-test-only.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-v3-32-pow-five-local-replicas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head and inactive production gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact-head workspace Rustfmt
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Verify 32 real native-v3 PoW headers and five local replicas
+        run: cargo +1.91.0 test --locked -p pulsedag-core --test native_v3_32_pow_five_local_replicas -- --nocapture
+      - name: Strict Rust core Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock
