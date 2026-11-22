@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 
 use super::canonical_sync::{
     build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
-    select_remote_sync_evidence, CanonicalSyncState,
+    CanonicalSyncState,
 };
 use pulsedag_p2p::{
     connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
@@ -79,7 +79,6 @@ fn p2p_readiness_reasons(
     orphan_count: usize,
     best_height: u64,
     canonical_sync: Option<&CanonicalSyncState>,
-    fresh_authenticated_remote_tip: bool,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if !enabled {
@@ -124,27 +123,23 @@ fn p2p_readiness_reasons(
     if orphan_count > 0 {
         reasons.push(format!("{} orphan block(s) queued", orphan_count));
     }
-    // The raw last_error is historical after all missing-parent/request
-    // blockers recover. The canonical view shares live sync semantics with
-    // /sync/status, while active errors and incomplete replay remain blocked.
-    if canonical_sync.is_none_or(|sync| {
-        sync.live_sync_error_active > 0
-            || sync.sync_state != "synced"
-            || sync.catchup_stage != "steady"
-            || sync.storage_memory_mismatch
-            || sync.network_selected_tip_mismatch
-            || sync.network_selected_height_gap > 0
-    }) {
-        reasons.push("sync pipeline reports degraded state".to_string());
-    }
-    // A canonical "synced" view without RECENT authenticated tip evidence
-    // cannot clear a prior orphan/rejoin failure. Otherwise an isolated
-    // node with stale peer inventory may be dozens of blocks behind even
-    // when its local request queues are empty (Task30 5N evidence #1465).
-    if !fresh_authenticated_remote_tip
-        && (runtime.sync_pipeline.last_error.is_some() || runtime.sync_state != "synced")
+    // NEVER clear raw pipeline errors or non-synced runtime state merely
+    // because the canonical view has an empty local request queue. A failing
+    // monetary sidecar can stay invalid after all requests drain (#1465).
+    // The canonical view adds stricter gap/storage checks; it does NOT
+    // override the original fail-closed invariant.
+    if runtime.sync_pipeline.last_error.is_some()
+        || runtime.sync_state != "synced"
+        || canonical_sync.is_none_or(|sync| {
+            sync.live_sync_error_active > 0
+                || sync.sync_state != "synced"
+                || sync.catchup_stage != "steady"
+                || sync.storage_memory_mismatch
+                || sync.network_selected_tip_mismatch
+                || sync.network_selected_height_gap > 0
+        })
     {
-        reasons.push("rejoin lacks fresh authenticated remote selected tip".to_string());
+        reasons.push("sync pipeline reports degraded state".to_string());
     }
     reasons
 }
@@ -162,7 +157,6 @@ fn disabled_p2p_payload(
         orphan_count,
         0,
         None,
-        false,
     );
     let mut payload = serde_json::json!({
         "p2p_enabled": false,
@@ -868,9 +862,6 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
             let remote_evidence = remote_sync_evidence_from_p2p_status(Some(&status), now_unix);
-            let fresh_authenticated_remote_tip =
-                select_remote_sync_evidence(&chain.chain_id, now_unix, &remote_evidence)
-                    .is_some_and(|evidence| evidence.selected_tip.is_some());
             let canonical_sync = build_canonical_sync_state_with_remote_evidence(
                 &chain,
                 &runtime,
@@ -879,7 +870,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 status.selected_sync_peer.clone(),
                 &remote_evidence,
             );
-            let readiness_reasons = p2p_readiness_reasons(
+            let mut readiness_reasons = p2p_readiness_reasons(
                 true,
                 Some(&status),
                 &runtime,
@@ -887,8 +878,12 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 orphan_count,
                 chain.dag.best_height,
                 Some(&canonical_sync),
-                fresh_authenticated_remote_tip,
             );
+            // Cached or degraded P2P observations cannot prove a peer is
+            // still connected, even when a signed tip was observed earlier.
+            if p2p_status_stale || p2p_status_degraded_reason.is_some() {
+                readiness_reasons.push("fresh P2P status unavailable".to_string());
+            }
             let isolated_genesis_node_total =
                 isolated_genesis_node_total(true, Some(&status), chain.dag.best_height);
             let bootnode_last_disconnect_reason = bootnode_last_disconnect_reason(&status);
@@ -1034,18 +1029,16 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(missing_parent_index_mismatch),
             );
             payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
-            // A stale historical error plus no fresh authenticated remote
-            // tip is an UNCONFIRMED rejoin even when the local canonical
-            // snapshot has zero work. Never report a false "synced" state.
-            let rejoin_unconfirmed = !fresh_authenticated_remote_tip
-                && (runtime.sync_pipeline.last_error.is_some() || runtime.sync_state != "synced");
+            // Surface both views. Never label an unresolved runtime error
+            // "synced" just because local canonical queues look empty.
+            payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
             payload.insert(
-                "sync_state".into(),
-                serde_json::json!(if rejoin_unconfirmed {
-                    "catching_up"
-                } else {
-                    canonical_sync.sync_state.as_str()
-                }),
+                "canonical_sync_state".into(),
+                serde_json::json!(&canonical_sync.sync_state),
+            );
+            payload.insert(
+                "canonical_network_selected_height_gap".into(),
+                serde_json::json!(canonical_sync.network_selected_height_gap),
             );
             payload.insert(
                 "last_accepted_peer_block".into(),
