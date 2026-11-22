@@ -12,9 +12,7 @@
 //! selected parents and retarget remain separate mandatory fail-closed gates.
 
 use pulsedag_core::{
-    block_envelope_v3::{
-        validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3,
-    },
+    block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
     pow_v3::verify_v3_header_pow,
 };
 use serde::{Deserialize, Serialize};
@@ -60,26 +58,35 @@ pub fn validate_native_v3_getblock_candidate_response(
     if request.version != DIRECT_GETBLOCK_PROTOCOL_V1
         || response.version != NATIVE_V3_GETBLOCK_CANDIDATE_VERSION
     {
-        return Err(DirectGetBlockWireError::Invalid("unsupported native-v3 response version"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "unsupported native-v3 response version",
+        ));
     }
     if response.chain_id != expected_chain_id
         || response.request_id != request.request_id
         || response.responding_peer_id != authenticated_responder
         || response.block_hash != request.block_hash
     {
-        return Err(DirectGetBlockWireError::Invalid("native-v3 response peer/chain/request/hash mismatch"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "native-v3 response peer/chain/request/hash mismatch",
+        ));
     }
     if let Some(block) = &response.block {
         if block.hash != request.block_hash || block.chain_id != expected_chain_id {
-            return Err(DirectGetBlockWireError::Invalid("native-v3 candidate is not the requested block"));
+            return Err(DirectGetBlockWireError::Invalid(
+                "native-v3 candidate is not the requested block",
+            ));
         }
         // The genesis is pinned through a separate trusted bootstrap path,
         // never accepted as a generic unmined GetBlock response candidate.
         if block.header.height == 0 || block.header.state_root == "00".repeat(32) {
-            return Err(DirectGetBlockWireError::Invalid("genesis or unsealed state root is not a GetBlock candidate"));
+            return Err(DirectGetBlockWireError::Invalid(
+                "genesis or unsealed state root is not a GetBlock candidate",
+            ));
         }
-        validate_dormant_native_v3_monetary_body_preflight(block, expected_chain_id)
-            .map_err(|_| DirectGetBlockWireError::Invalid("native-v3 reward/body/header commitment invalid"))?;
+        validate_dormant_native_v3_monetary_body_preflight(block, expected_chain_id).map_err(
+            |_| DirectGetBlockWireError::Invalid("native-v3 reward/body/header commitment invalid"),
+        )?;
         verify_v3_header_pow(&block.header, expected_chain_id)
             .map_err(|_| DirectGetBlockWireError::Invalid("native-v3 KHeavyHash PoW invalid"))?;
     }
@@ -105,7 +112,9 @@ pub fn decode_native_v3_getblock_candidate_response(
     let canonical =
         serde_json::to_value(&decoded).map_err(|_| DirectGetBlockWireError::InvalidJson)?;
     if supplied != canonical {
-        return Err(DirectGetBlockWireError::Invalid("unknown or noncanonical nested native-v3 fields"));
+        return Err(DirectGetBlockWireError::Invalid(
+            "unknown or noncanonical nested native-v3 fields",
+        ));
     }
     validate_native_v3_getblock_candidate_response(
         &decoded,
@@ -143,21 +152,17 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
 
     const CHAIN: &str = "first-public-native-v3-testnet-candidate";
     const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
     fn fixture() -> (DirectGetBlockRequestV1, NativeV3GetBlockCandidateResponse) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
-        let transactions = vec![
-            build_reward_claim_transaction_v3("pulse1native-miner", 1, CHAIN).unwrap()
-        ];
+        let transactions =
+            vec![build_reward_claim_transaction_v3("pulse1native-miner", 1, CHAIN).unwrap()];
         let mut header = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
             parents: vec![genesis.hash],
@@ -201,19 +206,25 @@ mod tests {
     #[test]
     fn exact_native_v3_pow_envelope_candidate_is_authenticated_not_admitted() {
         let (req, response) = fixture();
-        let raw = encode_native_v3_getblock_candidate_response(
-            &response, &req, CHAIN, "peerA", "peerB"
-        ).unwrap();
-        let decoded = decode_native_v3_getblock_candidate_response(
-            &raw, &req, CHAIN, "peerA", "peerB"
-        ).unwrap();
+        let raw =
+            encode_native_v3_getblock_candidate_response(&response, &req, CHAIN, "peerA", "peerB")
+                .unwrap();
+        let decoded =
+            decode_native_v3_getblock_candidate_response(&raw, &req, CHAIN, "peerA", "peerB")
+                .unwrap();
         assert_eq!(decoded.block.unwrap().hash, req.block_hash);
+        assert!(
+            decode_native_v3_getblock_candidate_response(&raw, &req, CHAIN, "peerA", "peerC")
+                .is_err()
+        );
         assert!(decode_native_v3_getblock_candidate_response(
-            &raw, &req, CHAIN, "peerA", "peerC"
-        ).is_err());
-        assert!(decode_native_v3_getblock_candidate_response(
-            &raw, &req, "foreign-chain", "peerA", "peerB"
-        ).is_err());
+            &raw,
+            &req,
+            "foreign-chain",
+            "peerA",
+            "peerB"
+        )
+        .is_err());
     }
 
     #[test]
@@ -223,22 +234,26 @@ mod tests {
         changed.request_id.push_str("-replayed");
         assert!(validate_native_v3_getblock_candidate_response(
             &changed, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+        )
+        .is_err());
         let mut changed = response.clone();
         changed.block.as_mut().unwrap().header.nonce += 1;
         assert!(validate_native_v3_getblock_candidate_response(
             &changed, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+        )
+        .is_err());
         let mut changed = response.clone();
         changed.block.as_mut().unwrap().header.state_root = "00".repeat(32);
         assert!(validate_native_v3_getblock_candidate_response(
             &changed, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+        )
+        .is_err());
         let mut changed = response.clone();
         changed.block.as_mut().unwrap().chain_id = "foreign-chain".into();
         assert!(validate_native_v3_getblock_candidate_response(
             &changed, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+        )
+        .is_err());
     }
 
     #[test]
@@ -247,32 +262,42 @@ mod tests {
         let mut json = serde_json::to_value(&response).unwrap();
         json["block"]["transactions"][0]["unrecognized"] = serde_json::json!(1);
         let raw = serde_json::to_vec(&json).unwrap();
-        assert!(decode_native_v3_getblock_candidate_response(
-            &raw, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+        assert!(
+            decode_native_v3_getblock_candidate_response(&raw, &req, CHAIN, "peerA", "peerB")
+                .is_err()
+        );
         // A zero-allocation, unmined v3 genesis uses a different frozen path.
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let mut response_genesis = response;
         response_genesis.block = Some(genesis);
         assert!(validate_native_v3_getblock_candidate_response(
-            &response_genesis, &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+            &response_genesis,
+            &req,
+            CHAIN,
+            "peerA",
+            "peerB"
+        )
+        .is_err());
     }
 
     #[test]
     fn authenticated_missing_reply_is_not_block_admission_or_negative_consensus() {
         let (req, mut reply) = fixture();
         reply.block = None;
-        let bytes = encode_native_v3_getblock_candidate_response(
-            &reply, &req, CHAIN, "peerA", "peerB"
-        ).unwrap();
-        let decoded = decode_native_v3_getblock_candidate_response(
-            &bytes, &req, CHAIN, "peerA", "peerB"
-        ).unwrap();
+        let bytes =
+            encode_native_v3_getblock_candidate_response(&reply, &req, CHAIN, "peerA", "peerB")
+                .unwrap();
+        let decoded =
+            decode_native_v3_getblock_candidate_response(&bytes, &req, CHAIN, "peerA", "peerB")
+                .unwrap();
         assert!(decoded.block.is_none());
         assert!(decode_native_v3_getblock_candidate_response(
             &vec![0_u8; NATIVE_V3_GETBLOCK_CANDIDATE_MAX_BYTES + 1],
-            &req, CHAIN, "peerA", "peerB"
-        ).is_err());
+            &req,
+            CHAIN,
+            "peerA",
+            "peerB"
+        )
+        .is_err());
     }
 }
