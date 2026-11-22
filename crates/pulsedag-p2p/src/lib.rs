@@ -2395,11 +2395,21 @@ fn periodic_authenticated_get_tips_inventory(
     chain_id: &str,
     now: u64,
 ) -> Option<TipInventoryStatus> {
-    let mut inventory = current_tip_inventory_for_send(state, chain_id, "GetTips")?;
-    if now <= inventory.observed_at_unix {
+    let mut inventory = current_tip_inventory(state, chain_id)?;
+    // Do not publish an empty/malformed inventory as fresh recovery evidence.
+    // No canonical selected tip/height exists in an uninitialized node.
+    if inventory.selected_tip.as_deref().is_none_or(str::is_empty)
+        || inventory.selected_height.is_none()
+        || !valid_tip_inventory_shape(&inventory)
+        || now <= inventory.observed_at_unix
+    {
         return None;
     }
     inventory.observed_at_unix = now;
+    *state
+        .local_tip_inventory_sent_total
+        .entry("GetTips".to_string())
+        .or_insert(0) += 1;
     Some(inventory)
 }
 
@@ -14782,6 +14792,26 @@ mod bounded_authenticated_tip_refresh_regressions {
             .is_none(),
             "missing local tip must not produce fabricated network evidence"
         );
+        let mut empty = InnerState::default();
+        empty.chain_id = "first-native-v3-network".into();
+        next_local_tip_inventory(
+            &mut empty,
+            TipInventoryStatus {
+                chain_id: empty.chain_id.clone(),
+                observed_at_unix: frozen.observed_at_unix,
+                ..TipInventoryStatus::default()
+            },
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut empty,
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "existing inventory without a selected tip and height must fail closed"
+        );
+        assert!(empty.local_tip_inventory_sent_total.get("GetTips").is_none());
     }
 }
 
