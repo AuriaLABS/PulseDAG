@@ -479,21 +479,40 @@ class RehearsalRunner:
         raise RehearsalError(f"{phase}: convergence timeout: {last_error}")
 
     def prove_progress(self, baseline: dict[str, dict[str, Any]], phase: str) -> dict[str, Any]:
-        """Require external mining to advance the network before fault injection."""
+        """Require genuinely converged external-miner progress before injecting faults.
+
+        A transient not-ready RPC read during a just-mined block is a failed
+        *sample*, not permission to pass and not reason to skip the remaining
+        bounded verification window. Only fully validated five-node snapshots
+        can establish the required progress; every error remains recorded.
+        """
 
         baseline_max = max(node_data["/status"]["best_height"] for node_data in baseline.values())
         deadline = time.monotonic() + self.inventory.phase_timeout_seconds
         attempt = 0
+        last_error = "no validated five-node progress sample"
         while time.monotonic() < deadline:
             attempt += 1
-            snapshot = self.snapshot(f"{phase}-attempt-{attempt:02d}")
-            summary = self.validate_convergence(snapshot)
-            current_max = max(summary["heights"].values())
-            progress = current_max - baseline_max
-            if progress >= self.inventory.min_progress_blocks:
-                return {**summary, "baseline_height": baseline_max, "progress_blocks": progress, "attempts": attempt}
+            try:
+                snapshot = self.snapshot(f"{phase}-attempt-{attempt:02d}")
+                summary = self.validate_convergence(snapshot)
+                current_max = max(summary["heights"].values())
+                progress = current_max - baseline_max
+                if progress >= self.inventory.min_progress_blocks:
+                    return {
+                        **summary,
+                        "baseline_height": baseline_max,
+                        "progress_blocks": progress,
+                        "attempts": attempt,
+                    }
+                last_error = (
+                    f"validated progress {progress} below required "
+                    f"{self.inventory.min_progress_blocks}"
+                )
+            except RehearsalError as exc:
+                last_error = str(exc)
             time.sleep(self.inventory.poll_interval_seconds)
-        raise RehearsalError("external mining did not produce the required block progress")
+        raise RehearsalError(f"{phase}: external-miner convergence timeout: {last_error}")
 
     def restart_target(self) -> None:
         """Restart one ordinary node and require convergence afterward."""

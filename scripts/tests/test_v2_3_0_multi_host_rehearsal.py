@@ -9,6 +9,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Sequence
 
@@ -192,6 +193,46 @@ class RehearsalTests(unittest.TestCase):
             snapshot["node-2"]["/sync/status"]["readiness_reasons"] = ["pending block request"]
             with self.assertRaisesRegex(module.RehearsalError, "sync readiness failed"):
                 runner.validate_convergence(snapshot)
+
+    def test_pre_fault_progress_retries_transient_p2p_readiness_without_waiving_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner = self.build_runner(root)
+            baseline = runner.snapshot("baseline")
+            stable = runner.snapshot("valid-after-one-transient-sample")
+            transient = json.loads(json.dumps(stable))
+            transient["node-2"]["/p2p/status"]["p2p_ready_for_private_rehearsal"] = False
+            transient["node-2"]["/p2p/status"]["readiness_reasons"] = [
+                "sync pipeline reports degraded state"
+            ]
+            with self.assertRaisesRegex(module.RehearsalError, "P2P readiness failed"):
+                runner.validate_convergence(transient)
+            with patch.object(runner, "snapshot", side_effect=[transient, stable]):
+                with patch.object(module.time, "sleep", return_value=None):
+                    result = runner.prove_progress(baseline, "pre-fault-progress")
+            self.assertEqual(result["attempts"], 2)
+            self.assertGreaterEqual(
+                result["progress_blocks"], runner.inventory.min_progress_blocks
+            )
+
+    def test_pre_fault_progress_never_accepts_persistent_p2p_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner = self.build_runner(root)
+            baseline = runner.snapshot("baseline")
+            invalid = runner.snapshot("invalid-progress")
+            invalid["node-2"]["/p2p/status"]["p2p_ready_for_private_rehearsal"] = False
+            invalid["node-2"]["/p2p/status"]["readiness_reasons"] = [
+                "unresolved monetary sidecar"
+            ]
+            with patch.object(runner, "snapshot", return_value=invalid):
+                with patch.object(module.time, "monotonic", side_effect=[0.0, 0.0, 100.0]):
+                    with patch.object(module.time, "sleep", return_value=None):
+                        with self.assertRaisesRegex(
+                            module.RehearsalError,
+                            "external-miner convergence timeout: node-2: P2P readiness failed",
+                        ):
+                            runner.prove_progress(baseline, "pre-fault-progress")
 
     def test_checksum_tampering_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

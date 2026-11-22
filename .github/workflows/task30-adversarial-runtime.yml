@@ -105,6 +105,9 @@ jobs:
             scripts/lib/test_task30_tx_topic_accounting.py
           python3 -m unittest discover -v -s scripts/lib -p 'test_task30_candidate_lock_wasm.py'
           python3 -m unittest discover -v -s scripts/lib -p 'test_task30_tx_topic_accounting.py'
+          # Offline/internal harness regression: invalid interim P2P samples
+          # must retry within bounded deadline, never bypass convergence.
+          python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py -v
           PULSEDAG_REHEARSAL_VERSION=v3.0.0 \
           PULSEDAG_REHEARSAL_VERSION_SLUG=v3_0_0 \
           OUT_DIR="$out/version-preflight" \
