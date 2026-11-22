@@ -1,4 +1,6 @@
 use axum::{extract::State, Json};
+
+use super::canonical_sync::{build_canonical_sync_state, CanonicalSyncState};
 use pulsedag_p2p::{
     connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
     P2pStatus, PeerRecoveryStatus,
@@ -73,6 +75,7 @@ fn p2p_readiness_reasons(
     pending_missing_parents: usize,
     orphan_count: usize,
     best_height: u64,
+    canonical_sync: Option<&CanonicalSyncState>,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if !enabled {
@@ -117,7 +120,17 @@ fn p2p_readiness_reasons(
     if orphan_count > 0 {
         reasons.push(format!("{} orphan block(s) queued", orphan_count));
     }
-    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
+    // The raw last_error is historical after all missing-parent/request
+    // blockers recover. The canonical view shares live sync semantics with
+    // /sync/status, while active errors and incomplete replay remain blocked.
+    if canonical_sync.is_none_or(|sync| {
+        sync.live_sync_error_active > 0
+            || sync.sync_state != "synced"
+            || sync.catchup_stage != "steady"
+            || sync.storage_memory_mismatch
+            || sync.network_selected_tip_mismatch
+            || sync.network_selected_height_gap > 0
+    }) {
         reasons.push("sync pipeline reports degraded state".to_string());
     }
     reasons
@@ -135,6 +148,7 @@ fn disabled_p2p_payload(
         pending_missing_parents,
         orphan_count,
         0,
+        None,
     );
     let mut payload = serde_json::json!({
         "p2p_enabled": false,
@@ -801,6 +815,23 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 "compact_relay_controller".into(),
                 serde_json::json!(&runtime.compact_relay_controller),
             );
+            // Fail closed on unavailable persistence. Use exactly the count
+            // used by /sync/status for canonical replay consistency.
+            let persisted_block_count = match state.storage().block_count() {
+                Ok(count) => count,
+                Err(e) => {
+                    payload.insert("p2p_status_degraded".into(), serde_json::json!(true));
+                    payload.insert(
+                        "p2p_status_degraded_reason".into(),
+                        serde_json::json!(e.to_string()),
+                    );
+                    payload.insert(
+                        "readiness_reasons".into(),
+                        serde_json::json!(["storage unavailable during P2P readiness capture"]),
+                    );
+                    return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
+                }
+            };
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
@@ -822,6 +853,13 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && pending_missing_parents > 0
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
+            let canonical_sync = build_canonical_sync_state(
+                &chain,
+                &runtime,
+                persisted_block_count,
+                now_unix,
+                status.selected_sync_peer.clone(),
+            );
             let readiness_reasons = p2p_readiness_reasons(
                 true,
                 Some(&status),
@@ -829,6 +867,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 pending_missing_parents,
                 orphan_count,
                 chain.dag.best_height,
+                Some(&canonical_sync),
             );
             let isolated_genesis_node_total =
                 isolated_genesis_node_total(true, Some(&status), chain.dag.best_height);
@@ -975,7 +1014,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(missing_parent_index_mismatch),
             );
             payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
-            payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
+            payload.insert(
+                "sync_state".into(),
+                serde_json::json!(&canonical_sync.sync_state),
+            );
             payload.insert(
                 "last_accepted_peer_block".into(),
                 serde_json::json!(runtime.last_accepted_peer_block),
