@@ -147,8 +147,14 @@ fn native_v3_32_real_pow_headers_recover_identically_on_five_local_replicas() {
         &replicas[0],
     )
     .expect("complete real native-v3 PoW ancestry");
-    assert_eq!(baseline.ordered_reachable_headers.len(), NATIVE_POW_HEADERS + 1);
-    assert_eq!(baseline.ordered_reachable_headers.first(), Some(&genesis.hash));
+    assert_eq!(
+        baseline.ordered_reachable_headers.len(),
+        NATIVE_POW_HEADERS + 1
+    );
+    assert_eq!(
+        baseline.ordered_reachable_headers.first(),
+        Some(&genesis.hash)
+    );
     assert_eq!(baseline.ordered_reachable_headers.last(), Some(&tip));
     assert_eq!(
         baseline.verified_dag.authenticated_non_genesis_headers,
