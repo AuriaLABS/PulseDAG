@@ -1038,9 +1038,19 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(missing_parent_index_mismatch),
             );
             payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
+            // A stale historical error plus no fresh authenticated remote
+            // tip is an UNCONFIRMED rejoin even when the local canonical
+            // snapshot has zero work. Never report a false "synced" state.
+            let rejoin_unconfirmed = !fresh_authenticated_remote_tip
+                && (runtime.sync_pipeline.last_error.is_some()
+                    || runtime.sync_state != "synced");
             payload.insert(
                 "sync_state".into(),
-                serde_json::json!(&canonical_sync.sync_state),
+                serde_json::json!(if rejoin_unconfirmed {
+                    "catching_up"
+                } else {
+                    &canonical_sync.sync_state
+                }),
             );
             payload.insert(
                 "last_accepted_peer_block".into(),
@@ -1980,7 +1990,7 @@ mod tests {
         let Json(recovered) = get_p2p_status(State(state.clone())).await;
         assert!(recovered.ok);
         let recovered = recovered.data.expect("recovered status");
-        assert_eq!(recovered["sync_state"], "synced");
+        assert_eq!(recovered["sync_state"], "catching_up");
         // No fresh authenticated peer tip yet: do NOT turn a historical
         // error into a false green when the remote chain may be far ahead.
         assert_eq!(recovered["p2p_ready_for_private_rehearsal"], false);
@@ -2021,7 +2031,7 @@ mod tests {
         let Json(unconfirmed) = get_p2p_status(State(state.clone())).await;
         assert!(unconfirmed.ok);
         let unconfirmed = unconfirmed.data.expect("unconfirmed status");
-        assert_eq!(unconfirmed["sync_state"], "synced");
+        assert_eq!(unconfirmed["sync_state"], "catching_up");
         assert_eq!(unconfirmed["p2p_ready_for_private_rehearsal"], false);
 
         let genesis_hash = state.chain.read().await.dag.genesis_hash.clone();
