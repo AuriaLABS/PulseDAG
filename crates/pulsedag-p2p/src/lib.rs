@@ -6972,6 +6972,9 @@ async fn run_libp2p_real_runtime(
     // bootstrap race; do not treat TCP/Noise connection as topic membership.
     // Mark only after a successful publish, and clear on final disconnect.
     let mut tips_refreshed_after_remote_sync_subscription: HashSet<PeerId> = HashSet::new();
+    // A failed publish cannot revoke a valid observed remote subscription:
+    // otherwise the periodic repair is disabled forever after AllQueuesFull.
+    let mut authenticated_remote_sync_subscriptions: HashSet<PeerId> = HashSet::new();
     let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
     for (peer_id, addr) in &bootstrap_peers {
         if let Ok(mut guard) = inner.lock() {
@@ -7518,6 +7521,13 @@ async fn run_libp2p_real_runtime(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                        // Record the actual authenticated remote subscription
+                        // independently of whether one-shot publish succeeds.
+                        if swarm.is_connected(&peer_id)
+                            && topic.as_str() == format!("{}-sync", cfg.chain_id)
+                        {
+                            authenticated_remote_sync_subscriptions.insert(peer_id);
+                        }
                         // GetTips sent immediately on ConnectionEstablished can be
                         // rejected before remote Gossipsub has advertised the
                         // chain's -sync topic. Retry ONCE per authenticated
@@ -7571,6 +7581,13 @@ async fn run_libp2p_real_runtime(
                                     );
                                 }
                             }
+                        }
+                    }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
+                        // Never continue periodic discovery after remote
+                        // unsubscribe, even if the Noise transport stays up.
+                        if topic.as_str() == format!("{}-sync", cfg.chain_id) {
+                            authenticated_remote_sync_subscriptions.remove(&peer_id);
                         }
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message, .. })) => {
@@ -7749,6 +7766,7 @@ async fn run_libp2p_real_runtime(
                         );
                         if should_mark_disconnected {
                             tips_refreshed_after_remote_sync_subscription.remove(&peer_id);
+                            authenticated_remote_sync_subscriptions.remove(&peer_id);
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
@@ -7810,7 +7828,7 @@ async fn run_libp2p_real_runtime(
                 // An authenticated Noise connection alone is insufficient.
                 // Publish ONLY while at least one connected remote peer has
                 // advertised its actual Gossipsub -sync topic subscription.
-                if tips_refreshed_after_remote_sync_subscription
+                if authenticated_remote_sync_subscriptions
                     .iter()
                     .any(|peer| swarm.is_connected(peer))
                 {
