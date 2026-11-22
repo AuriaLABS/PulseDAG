@@ -14706,7 +14706,10 @@ mod bounded_authenticated_tip_refresh_regressions {
         let peer = identity::Keypair::generate_ed25519().public().to_peer_id();
         let mut observed = HashSet::new();
         let delivered_one_shot = HashSet::<PeerId>::new();
-        assert!(!authenticated_periodic_tip_refresh_allowed(&observed, |_| true));
+        assert!(!authenticated_periodic_tip_refresh_allowed(
+            &observed,
+            |_| true
+        ));
         observed.insert(peer);
         assert!(
             authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
