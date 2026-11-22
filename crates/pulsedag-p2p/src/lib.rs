@@ -489,6 +489,7 @@ pub struct RemoteSelectedTipStatus {
     pub observed_at_unix: u64,
     // Locally measured authenticated-message receipt, NEVER supplied by
     // the remote inventory. Only this timestamp can authorize freshness.
+    #[serde(default)]
     pub received_at_unix: u64,
     pub inventory_generation: u64,
     pub age_secs: u64,
