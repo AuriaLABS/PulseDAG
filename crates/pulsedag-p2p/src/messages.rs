@@ -13,13 +13,13 @@ pub mod direct_getblock_pending_v1;
 pub mod direct_getblock_response_channel_v1;
 pub mod direct_getblock_swarm_bindings_v1;
 pub mod direct_getblock_v1;
-pub mod native_v3_getblock_candidate_v1;
 pub mod fast_sync_carrier_v1;
 #[path = "messages/fast_sync_carrier_v1/multi_source_v1.rs"]
 pub mod fast_sync_multisource_v1;
 pub mod fast_sync_runtime_v1;
 pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
+pub mod native_v3_getblock_candidate_v1;
 mod network_message_decode_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
