@@ -1981,8 +1981,14 @@ mod tests {
         assert!(recovered.ok);
         let recovered = recovered.data.expect("recovered status");
         assert_eq!(recovered["sync_state"], "synced");
-        assert_eq!(recovered["p2p_ready_for_private_rehearsal"], true);
-        assert_eq!(recovered["readiness_reasons"], serde_json::json!([]));
+        // No fresh authenticated peer tip yet: do NOT turn a historical
+        // error into a false green when the remote chain may be far ahead.
+        assert_eq!(recovered["p2p_ready_for_private_rehearsal"], false);
+        assert!(recovered["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "rejoin lacks fresh authenticated remote selected tip"));
 
         // The same historical error MUST still block while its missing
         // block request is genuinely active; a green readiness cannot be
@@ -2004,17 +2010,51 @@ mod tests {
             .iter()
             .any(|reason| reason == "sync pipeline reports degraded state"));
 
-        // Clearing the active blocker restores readiness without erasing
-        // forensic history from the live runtime.
+        // Local cleanup is NOT enough: the actual failing node was at
+        // height 2 while four peers had advanced to height 62, with only
+        // stale remote inventory. Keep the gate closed until a NEW peer
+        // tip is authenticated.
         {
             let mut runtime = state.runtime.write().await;
             runtime.pending_block_requests = 0;
         }
-        let Json(recovered_again) = get_p2p_status(State(state)).await;
-        assert!(recovered_again.ok);
-        let recovered_again = recovered_again.data.expect("recovered status");
-        assert_eq!(recovered_again["sync_state"], "synced");
-        assert_eq!(recovered_again["p2p_ready_for_private_rehearsal"], true);
+        let Json(unconfirmed) = get_p2p_status(State(state.clone())).await;
+        assert!(unconfirmed.ok);
+        let unconfirmed = unconfirmed.data.expect("unconfirmed status");
+        assert_eq!(unconfirmed["sync_state"], "synced");
+        assert_eq!(unconfirmed["p2p_ready_for_private_rehearsal"], false);
+
+        let genesis_hash = state.chain.read().await.dag.genesis_hash.clone();
+        let fresh_state = mk_state(P2pStatus {
+            chain_id: "testnet-dev".into(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/30333".into()],
+            connected_peers: vec!["peer-a".into()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".into(),
+                chain_id: "testnet-dev".into(),
+                selected_tip: Some(genesis_hash),
+                selected_height: 0,
+                observed_at_unix: unix_now_secs(),
+                direct_request_capable: true,
+                connected: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        });
+        {
+            let mut runtime = fresh_state.runtime.write().await;
+            runtime.sync_state = "catching_up".to_string();
+            runtime.sync_pipeline.last_error =
+                Some("historical orphan already resolved".to_string());
+        }
+        let Json(confirmed) = get_p2p_status(State(fresh_state)).await;
+        assert!(confirmed.ok);
+        let confirmed = confirmed.data.expect("fresh authenticated remote status");
+        assert_eq!(confirmed["sync_state"], "synced");
+        assert_eq!(confirmed["p2p_ready_for_private_rehearsal"], true);
+        assert_eq!(confirmed["readiness_reasons"], serde_json::json!([]));
     }
 
     #[tokio::test]
