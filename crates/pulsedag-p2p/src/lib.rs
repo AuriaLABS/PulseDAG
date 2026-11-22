@@ -7014,8 +7014,7 @@ async fn run_libp2p_real_runtime(
     // reach 62: refreshing a *signed* tip request every 15 s re-discovers the
     // actual selected tip, without enabling any direct GetBlock path.
     let mut authenticated_tip_refresh_tick = tokio::time::interval(Duration::from_secs(15));
-    authenticated_tip_refresh_tick
-        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    authenticated_tip_refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -14688,7 +14687,10 @@ mod bounded_authenticated_tip_refresh_regressions {
             inventory_generation: 0,
         };
         next_local_tip_inventory(&mut state, original);
-        let frozen = state.local_tip_inventory.clone().expect("local selected tip");
+        let frozen = state
+            .local_tip_inventory
+            .clone()
+            .expect("local selected tip");
         assert!(
             periodic_authenticated_get_tips_inventory(
                 &mut state,
@@ -14709,7 +14711,10 @@ mod bounded_authenticated_tip_refresh_regressions {
         assert_eq!(published.inventory_generation, frozen.inventory_generation);
         assert_eq!(published.observed_at_unix, frozen.observed_at_unix + 15);
         assert_eq!(
-            state.local_tip_inventory.as_ref().expect("unchanged authority"),
+            state
+                .local_tip_inventory
+                .as_ref()
+                .expect("unchanged authority"),
             &frozen,
             "transport freshness must not change canonical tip generation"
         );
