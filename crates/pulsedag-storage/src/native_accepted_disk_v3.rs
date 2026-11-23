@@ -393,7 +393,9 @@ mod tests {
         assert_eq!(decoded.committed_generation, 1);
         let mut malformed = encoded;
         malformed.push(0);
-        assert!(native_row_codec().deserialize::<PersistedNativeRowV1>(&malformed).is_err());
+        assert!(native_row_codec()
+            .deserialize::<PersistedNativeRowV1>(&malformed)
+            .is_err());
     }
 
     #[test]
@@ -411,10 +413,21 @@ mod tests {
         let reader =
             NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
         assert_eq!(reader.current_generation(), Ok(5));
-        assert_eq!(reader.read_accepted(&hash).unwrap().unwrap().committed_generation, 5);
+        assert_eq!(
+            reader
+                .read_accepted(&hash)
+                .unwrap()
+                .unwrap()
+                .committed_generation,
+            5
+        );
         assert_eq!(reader.has_accepted_membership(&hash, 5), Ok(Some(4)));
         assert_eq!(
-            reader.independent_journal(&hash, 5).unwrap().unwrap().accepted_generation,
+            reader
+                .independent_journal(&hash, 5)
+                .unwrap()
+                .unwrap()
+                .accepted_generation,
             5
         );
         // The daemon read adapter must reject 4 != 5 != 5; old bool
