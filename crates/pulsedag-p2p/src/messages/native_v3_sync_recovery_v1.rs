@@ -1113,7 +1113,8 @@ mod tests {
             sync.enqueue_missing(&body.hash, now).unwrap();
             let requests = sync.plan_fetches(&[first_provider], now, &|_| false);
             assert_eq!(requests.len(), 1);
-            sync.on_candidate(&body.hash, &first_provider, Some(body), now, &|_| false)
+            let hash = body.hash.clone();
+            sync.on_candidate(&hash, &first_provider, Some(body), now, &|_| false)
                 .unwrap();
         }
         assert_eq!(
