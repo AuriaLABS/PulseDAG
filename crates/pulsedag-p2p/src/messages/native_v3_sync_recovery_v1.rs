@@ -336,6 +336,15 @@ impl NativeV3SyncRecovery {
             let item = self.items.get_mut(&hash).expect("queued hash exists");
             item.attempts = item.attempts.saturating_add(1);
             item.last_peer = Some(peer);
+            // Local staging pressure can refund a transport attempt while
+            // peers churn indefinitely. Provider history is only a bounded
+            // rotation hint, NOT an unlimited seen-peer set. Never retain
+            // more identities than the finite retry budget allows.
+            if item.attempted_peers.len() >= usize::from(NATIVE_V3_SYNC_MAX_RETRIES)
+                && !item.attempted_peers.contains(&peer.to_string())
+            {
+                item.attempted_peers.clear();
+            }
             item.attempted_peers.insert(peer.to_string());
             item.phase = Phase::Fetching {
                 peer,
