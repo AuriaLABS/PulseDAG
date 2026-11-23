@@ -198,8 +198,8 @@ impl NativeV3SyncRecovery {
         let mut ready = self
             .items
             .iter()
-            .filter_map(|(hash, item)| match item.phase {
-                Phase::Waiting { not_before } if now >= not_before => {
+            .filter_map(|(hash, item)| match &item.phase {
+                Phase::Waiting { not_before } if now >= *not_before => {
                     Some((!item.parent_priority, hash.clone()))
                 }
                 _ => None,
@@ -303,6 +303,7 @@ impl NativeV3SyncRecovery {
             return self.dispatch_failed(requested_hash, actual_peer, now);
         };
         if envelope.hash != requested_hash || envelope.chain_id != self.chain_id {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::WrongBodyHash);
         }
         if envelope.header.height == 0
@@ -315,16 +316,24 @@ impl NativeV3SyncRecovery {
                 .any(|pair| pair[0] >= pair[1])
             || envelope.header.parents.iter().any(|hash| hash == requested_hash)
         {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::InvalidCandidate);
         }
-        validate_dormant_native_v3_monetary_body_preflight(&envelope, &self.chain_id)
-            .map_err(|_| NativeV3SyncError::InvalidCandidate)?;
-        verify_v3_header_pow(&envelope.header, &self.chain_id)
-            .map_err(|_| NativeV3SyncError::InvalidCandidate)?;
-        let bytes = serde_json::to_vec(&envelope)
-            .map_err(|_| NativeV3SyncError::InvalidCandidate)?
-            .len();
+        if validate_dormant_native_v3_monetary_body_preflight(&envelope, &self.chain_id).is_err()
+            || verify_v3_header_pow(&envelope.header, &self.chain_id).is_err()
+        {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
+            return Err(NativeV3SyncError::InvalidCandidate);
+        }
+        let bytes = match serde_json::to_vec(&envelope) {
+            Ok(raw) => raw.len(),
+            Err(_) => {
+                let _ = self.dispatch_failed(requested_hash, actual_peer, now);
+                return Err(NativeV3SyncError::InvalidCandidate);
+            }
+        };
         if bytes > MAX_CANDIDATE_FRAME {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::StagingFull);
         }
         let (staged_count, staged_bytes) =
@@ -337,6 +346,7 @@ impl NativeV3SyncRecovery {
         if staged_count >= NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
             || staged_bytes + bytes > NATIVE_V3_SYNC_MAX_STAGED_BYTES
         {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::StagingFull);
         }
         let new_parents = envelope
@@ -350,6 +360,7 @@ impl NativeV3SyncRecovery {
         if self.items.len() + new_parents.len() > NATIVE_V3_SYNC_MAX_KNOWN_HASHES
             || new_parents.iter().any(|hash| !canonical_hash(hash))
         {
+            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::QueueFull);
         }
         for parent in &envelope.header.parents {
@@ -394,7 +405,7 @@ impl NativeV3SyncRecovery {
             || self
                 .items
                 .get(hash)
-                .is_some_and(|item| matches!(item.phase, Phase::ConsensusAccepted))
+                .is_some_and(|item| matches!(&item.phase, Phase::ConsensusAccepted))
     }
 
     /// Invoke ONLY from the independently verified native-v3 daemon consensus
@@ -450,7 +461,7 @@ impl NativeV3SyncRecovery {
     pub fn report(&self) -> NativeV3SyncReport {
         let mut report = NativeV3SyncReport::default();
         for item in self.items.values() {
-            match item.phase {
+            match &item.phase {
                 Phase::Waiting { .. } => report.queued += 1,
                 Phase::Fetching { .. } => report.in_flight += 1,
                 Phase::Staged { .. } => report.awaiting_consensus += 1,
@@ -607,8 +618,13 @@ mod tests {
             sync.on_candidate(&candidate.hash, &honest, Some(wrong), now),
             Err(NativeV3SyncError::WrongBodyHash)
         );
-        assert_eq!(sync.report().in_flight, 1);
-        sync.on_candidate(&candidate.hash, &honest, Some(candidate.clone()), now)
+        assert_eq!(sync.report().in_flight, 0);
+        assert_eq!(sync.report().queued, 1);
+        // Own authenticated malformed response consumed its wire ticket.
+        // Request a fresh one instead of leaving a zombie in-flight request.
+        let retry_clock = now + Duration::from_secs(1);
+        assert_eq!(sync.plan_fetches(&[honest], retry_clock).len(), 1);
+        sync.on_candidate(&candidate.hash, &honest, Some(candidate.clone()), retry_clock)
             .unwrap();
         assert_eq!(sync.report().awaiting_consensus, 1);
         assert_eq!(sync.report().accepted, 0);
@@ -667,12 +683,14 @@ mod tests {
         let second = sync.plan_fetches(&[a, b], second_clock);
         assert_eq!(second.len(), 1);
         assert_ne!(first[0].authenticated_peer, second[0].authenticated_peer);
+        let mut current = second;
         for attempt in 2..=NATIVE_V3_SYNC_MAX_RETRIES {
             let time = now + Duration::from_secs(u64::from(attempt) * 12);
-            sync.expire(time);
+            assert_eq!(current.len(), 1);
+            sync.dispatch_failed(&hash, &current[0].authenticated_peer, time)
+                .unwrap();
             if attempt < NATIVE_V3_SYNC_MAX_RETRIES {
-                let next = sync.plan_fetches(&[a, b], time + Duration::from_secs(10));
-                assert_eq!(next.len(), 1);
+                current = sync.plan_fetches(&[a, b], time + Duration::from_secs(10));
             }
         }
         assert_eq!(sync.report().exhausted, 1);
