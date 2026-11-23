@@ -31,8 +31,7 @@ pub use fast_sync_transfer::{
     MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES,
 };
 pub use native_accepted_disk_v3::{
-    NativeV3AcceptedDiskRowV1, NativeV3AcceptedRocksDbReadOnlyV1,
-    NativeV3IndependentJournalV1,
+    NativeV3AcceptedDiskRowV1, NativeV3AcceptedRocksDbReadOnlyV1, NativeV3IndependentJournalV1,
 };
 pub use native_envelope_v3::{
     NativeV3EnvelopeRestoreRecordV1, MAX_NATIVE_V3_ENVELOPE_RESTORE_RECORD_BYTES,
