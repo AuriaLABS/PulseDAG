@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use libp2p::PeerId;
 use pulsedag_core::{
     block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
+    genesis_v3::dormant_native_genesis_envelope_v3_ns,
     pow_v3::verify_v3_header_pow,
 };
 
@@ -113,11 +114,15 @@ fn cooldown(attempts: u8) -> Duration {
 impl NativeV3SyncRecovery {
     pub fn new(
         chain_id: &str,
+        trusted_genesis_timestamp_ns: u64,
         trusted_genesis_hash: &str,
     ) -> Result<Self, NativeV3SyncError> {
         if chain_id.is_empty()
             || chain_id.len() > 96
             || !canonical_hash(trusted_genesis_hash)
+            || dormant_native_genesis_envelope_v3_ns(chain_id, trusted_genesis_timestamp_ns)
+                .map(|genesis| genesis.hash != trusted_genesis_hash)
+                .unwrap_or(true)
         {
             return Err(NativeV3SyncError::InvalidIdentity);
         }
@@ -546,7 +551,7 @@ mod tests {
         }
         assert_eq!(all.len(), 32);
         assert!(all.values().any(|b| b.header.parents.len() == 2));
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, &genesis.hash).unwrap();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let now = Instant::now();
         sync.enqueue_missing(&spine, now).unwrap();
         let providers = vec![peer(), peer(), peer(), peer(), peer()];
@@ -601,7 +606,7 @@ mod tests {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let candidate = mine(vec![genesis.hash.clone()], 1, 1);
         let now = Instant::now();
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, &genesis.hash).unwrap();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         sync.enqueue_missing(&candidate.hash, now).unwrap();
         let honest = peer();
         let attacker = peer();
@@ -643,7 +648,7 @@ mod tests {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let parent = mine(vec![genesis.hash.clone()], 1, 10);
         let child = mine(vec![parent.hash.clone()], 2, 20);
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, &genesis.hash).unwrap();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let now = Instant::now();
         let p = peer();
         sync.enqueue_missing(&child.hash, now).unwrap();
@@ -672,7 +677,7 @@ mod tests {
         let now = Instant::now();
         let a = peer();
         let b = peer();
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, &genesis.hash).unwrap();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let hash = "a".repeat(64);
         sync.enqueue_missing(&hash, now).unwrap();
         let first = sync.plan_fetches(&[a, b], now);
@@ -701,7 +706,7 @@ mod tests {
     #[test]
     fn peer_disconnect_and_bounded_queue_fail_closed() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, &genesis.hash).unwrap();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let now = Instant::now();
         let first_peer = peer();
         let other = peer();
