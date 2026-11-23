@@ -289,3 +289,139 @@ async fn thirty_two_real_pow_native_v3_envelopes_cross_authenticated_noise_witho
     .await
     .expect("32 real native-v3 envelopes must traverse Noise within fixed timeout");
 }
+
+
+/// A forged response crossing an otherwise authentic TCP/Noise stream must
+/// never become a native-v3 candidate solely because the transport is valid.
+/// All four messages use the SAME hash but distinct locally minted tickets.
+#[tokio::test(flavor = "current_thread")]
+async fn authenticated_noise_rejects_spoofed_peer_hash_and_body_before_valid_native_v3() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let candidate = mine_candidate(vec![genesis.hash], 1, 1);
+        let hash = candidate.hash.clone();
+        let server_key = identity::Keypair::generate_ed25519();
+        let client_key = identity::Keypair::generate_ed25519();
+        let server_id = PeerId::from(server_key.public());
+        let client_id = PeerId::from(client_key.public());
+        let mut server = test_swarm(server_key, ProtocolSupport::Inbound);
+        let mut client = test_swarm(client_key, ProtocolSupport::Outbound);
+        server
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse::<Multiaddr>().unwrap())
+            .unwrap();
+
+        let mut dialed = false;
+        let mut connected = false;
+        let mut served = 0_usize;
+        let mut received = 0_usize;
+        let mut inflight: HashMap<OutboundRequestId, DirectGetBlockRequestV1> = HashMap::new();
+
+        while received < 4 {
+            tokio::select! {
+                event = server.select_next_some() => match event {
+                    SwarmEvent::NewListenAddr { address, .. } if !dialed => {
+                        dialed = true;
+                        client.dial(address.with(Protocol::P2p(server_id)))
+                            .expect("dial exact Noise peer once");
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Request { request: raw, channel, .. },
+                        ..
+                    }) => {
+                        assert_eq!(peer, client_id);
+                        let verified = decode_direct_getblock_request(
+                            &raw, CHAIN, &peer.to_string(), &server_id.to_string(),
+                        ).expect("authenticated exact-hash request");
+                        assert_eq!(verified.block_hash, hash);
+                        let mut reply = NativeV3GetBlockCandidateResponse {
+                            version: NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
+                            chain_id: CHAIN.to_owned(),
+                            request_id: verified.request_id.clone(),
+                            responding_peer_id: server_id.to_string(),
+                            block_hash: hash.clone(),
+                            block: Some(candidate.clone()),
+                        };
+                        let wire = match served {
+                            0 => {
+                                reply.responding_peer_id = client_id.to_string();
+                                serde_json::to_vec(&reply).unwrap()
+                            }
+                            1 => {
+                                reply.block_hash = "f".repeat(64);
+                                serde_json::to_vec(&reply).unwrap()
+                            }
+                            2 => {
+                                reply.block.as_mut().unwrap().header.nonce ^= 1;
+                                serde_json::to_vec(&reply).unwrap()
+                            }
+                            3 => encode_native_v3_getblock_candidate_response(
+                                &reply, &verified, CHAIN, &peer.to_string(),
+                                &server_id.to_string(),
+                            ).expect("valid candidate after three forged replies"),
+                            _ => panic!("server must not receive extra requests"),
+                        };
+                        assert!(server.behaviour_mut().send_response(channel, wire).is_ok());
+                        served += 1;
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::InboundFailure { error, .. }) => {
+                        panic!("real Noise server unexpectedly failed: {error:?}");
+                    }
+                    _ => {}
+                },
+                event = client.select_next_some() => match event {
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } if !connected => {
+                        assert_eq!(peer_id, server_id);
+                        connected = true;
+                        let first = request(&hash, 100, &client_id, &server_id);
+                        let wire = encode_direct_getblock_request(
+                            &first, CHAIN, &client_id.to_string(), &server_id.to_string(),
+                        ).unwrap();
+                        let id = client.behaviour_mut().send_request(&server_id, wire);
+                        assert!(inflight.insert(id, first).is_none());
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Response { request_id, response },
+                        ..
+                    }) => {
+                        assert_eq!(peer, server_id);
+                        let original = inflight.remove(&request_id)
+                            .expect("no unsolicited or replayed real transport ticket");
+                        let decoded = decode_native_v3_getblock_candidate_response(
+                            &response, &original, CHAIN,
+                            &client_id.to_string(), &peer.to_string(),
+                        );
+                        if received < 3 {
+                            assert!(
+                                decoded.is_err(),
+                                "forged peer/hash/PoW commitment must fail closed"
+                            );
+                        } else {
+                            let valid = decoded.expect("genuine response must remain usable");
+                            assert_eq!(valid.block.unwrap().hash, hash);
+                        }
+                        received += 1;
+                        if received < 4 {
+                            let next = request(&hash, 100 + received, &client_id, &server_id);
+                            let wire = encode_direct_getblock_request(
+                                &next, CHAIN, &client_id.to_string(), &server_id.to_string(),
+                            ).unwrap();
+                            let id = client.behaviour_mut().send_request(&server_id, wire);
+                            assert!(inflight.insert(id, next).is_none());
+                        }
+                    }
+                    SwarmEvent::Behaviour(request_response::Event::OutboundFailure { error, .. }) => {
+                        panic!("real Noise client unexpectedly failed: {error:?}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(served, 4);
+        assert_eq!(received, 4);
+        assert!(inflight.is_empty());
+    })
+    .await
+    .expect("four authenticated Noise replies must complete without promoting forgeries");
+}
