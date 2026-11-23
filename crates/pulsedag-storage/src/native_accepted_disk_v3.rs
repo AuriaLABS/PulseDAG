@@ -397,6 +397,33 @@ mod tests {
     }
 
     #[test]
+    fn partial_seal_update_keeps_the_old_membership_generation_visible() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        let hash = frame.envelope().hash.clone();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 4, true, true);
+            // Simulate a buggy future writer updating body and independent
+            // journal to generation 5 while leaving membership at 4.
+            trial_write(&db, &frame, &genesis, 5, false, true);
+        }
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        assert_eq!(reader.current_generation(), Ok(5));
+        assert_eq!(reader.read_accepted(&hash).unwrap().unwrap().committed_generation, 5);
+        assert_eq!(reader.has_accepted_membership(&hash, 5), Ok(Some(4)));
+        assert_eq!(
+            reader.independent_journal(&hash, 5).unwrap().unwrap().accepted_generation,
+            5
+        );
+        // The daemon read adapter must reject 4 != 5 != 5; old bool
+        // membership API discarded the evidence of this inconsistent seal.
+        drop(reader);
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
     fn body_only_or_accepted_index_without_journal_never_becomes_accepted() {
         let db_path = path();
         let (genesis, frame) = fixture();
