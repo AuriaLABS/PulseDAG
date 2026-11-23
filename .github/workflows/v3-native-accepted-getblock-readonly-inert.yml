@@ -1,0 +1,46 @@
+name: "First-native-v3 accepted-only GetBlock daemon read authority (NO GO)"
+
+on:
+  pull_request:
+    paths:
+      - "apps/pulsedagd/src/native_v3_accepted_getblock_authority.rs"
+      - "apps/pulsedagd/src/main.rs"
+      - ".github/workflows/v3-native-accepted-getblock-readonly-inert.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-v3-accepted-reader:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify native-first fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          grep -Fq 'mod native_v3_accepted_getblock_authority;' apps/pulsedagd/src/main.rs
+          ! grep -Fq 'native_v3_accepted_getblock_authority::' apps/pulsedagd/src/main.rs
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact-head format
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Verify native accepted-only reader rejects untrusted block and torn state
+        run: cargo +1.91.0 test --locked -p pulsedagd --bin pulsedagd native_v3_accepted_getblock_authority -- --nocapture
+      - name: Strict daemon clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedagd --all-targets -- -D warnings
+      - name: Lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock
