@@ -61,7 +61,9 @@ pub struct NativeV3AcceptedRocksDbReadOnlyV1 {
 
 fn canonical_hash(hash: &str) -> bool {
     hash.len() == 64
-        && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn positive_generation(bytes: &[u8]) -> Result<u64, String> {
@@ -111,8 +113,16 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
         Ok(reader)
     }
 
-    fn checked_get(&self, cf_name: &str, key: &[u8], limit: usize) -> Result<Option<Vec<u8>>, String> {
-        let cf = self.db.cf_handle(cf_name).ok_or_else(|| format!("missing {cf_name}"))?;
+    fn checked_get(
+        &self,
+        cf_name: &str,
+        key: &[u8],
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("missing {cf_name}"))?;
         let value = self
             .db
             .get_cf(cf, key)
@@ -168,7 +178,11 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
         }))
     }
 
-    pub fn has_accepted_membership(&self, hash: &str, snapshot_generation: u64) -> Result<bool, String> {
+    pub fn has_accepted_membership(
+        &self,
+        hash: &str,
+        snapshot_generation: u64,
+    ) -> Result<bool, String> {
         if !canonical_hash(hash) || snapshot_generation == 0 {
             return Err("invalid native-v3 accepted membership lookup".into());
         }
@@ -193,9 +207,10 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
         let Some(raw) = self.checked_get(CF_JOURNAL, hash.as_bytes(), MAX_JOURNAL_BYTES)? else {
             return Ok(None);
         };
-        let entry: NativeV3IndependentJournalV1 =
-            serde_json::from_slice(&raw).map_err(|e| format!("strict independent GD08 entry: {e}"))?;
-        if entry.accepted_generation == 0 || entry.accepted_generation > snapshot_generation
+        let entry: NativeV3IndependentJournalV1 = serde_json::from_slice(&raw)
+            .map_err(|e| format!("strict independent GD08 entry: {e}"))?;
+        if entry.accepted_generation == 0
+            || entry.accepted_generation > snapshot_generation
             || !canonical_hash(&entry.monetary_state_root)
             || !canonical_hash(&entry.gd08_order_digest)
         {
@@ -209,12 +224,9 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        block_envelope_v3::build_block_envelope_v3,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
+        block_envelope_v3::build_block_envelope_v3, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
     use rocksdb::{ColumnFamilyDescriptor, WriteBatch};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -223,9 +235,14 @@ mod tests {
     const NS: u64 = 1_800_000_000_500_000_000;
 
     fn path() -> String {
-        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("native-v3-journal-{}-{n}", std::process::id()))
-            .to_string_lossy().into_owned()
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("native-v3-journal-{}-{n}", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn open_test_writer(path: &str) -> DB {
@@ -233,15 +250,18 @@ mod tests {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         DB::open_cf_descriptors(
-            &opts, path,
-            [CF_BODIES, CF_MEMBERSHIP, CF_JOURNAL, CF_META].map(|name|
-                ColumnFamilyDescriptor::new(name, Options::default()))
-        ).unwrap()
+            &opts,
+            path,
+            [CF_BODIES, CF_MEMBERSHIP, CF_JOURNAL, CF_META]
+                .map(|name| ColumnFamilyDescriptor::new(name, Options::default())),
+        )
+        .unwrap()
     }
 
     fn fixture() -> (String, NativeV3EnvelopeRestoreRecordV1) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
-        let txs = vec![build_reward_claim_transaction_v3("pulse1nativejournal", 12, CHAIN).unwrap()];
+        let txs =
+            vec![build_reward_claim_transaction_v3("pulse1nativejournal", 12, CHAIN).unwrap()];
         let mut h = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
             parents: vec![genesis.hash.clone()],
@@ -253,22 +273,30 @@ mod tests {
             blue_score: 1,
             height: 1,
         };
-        h.nonce = (0..4096).find(|n| {
-            h.nonce = *n;
-            evaluate_v3_header_pow(&h, CHAIN).unwrap().pow.accepted
-        }).unwrap();
+        h.nonce = (0..4096)
+            .find(|n| {
+                h.nonce = *n;
+                evaluate_v3_header_pow(&h, CHAIN).unwrap().pow.accepted
+            })
+            .unwrap();
         let body = build_block_envelope_v3(CHAIN, h, txs).unwrap();
-        let frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            body, CHAIN, NS, &genesis.hash,
-        ).unwrap();
+        let frame =
+            NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body, CHAIN, NS, &genesis.hash)
+                .unwrap();
         (genesis.hash, frame)
     }
 
     // No production API accepts or persists an economic block. This test
     // helper imitates the future consensus writer solely to exercise RocksDB
     // power-loss atomicity and strict read logic.
-    fn trial_write(db: &DB, frame: &NativeV3EnvelopeRestoreRecordV1,
-        genesis: &str, generation: u64, include_membership: bool, include_journal: bool) {
+    fn trial_write(
+        db: &DB,
+        frame: &NativeV3EnvelopeRestoreRecordV1,
+        genesis: &str,
+        generation: u64,
+        include_membership: bool,
+        include_journal: bool,
+    ) {
         let hash = frame.envelope().hash.as_bytes();
         let row = PersistedNativeRowV1 {
             schema: JOURNAL_SCHEMA,
@@ -309,15 +337,29 @@ mod tests {
             let db = open_test_writer(&db_path);
             trial_write(&db, &frame, &genesis, 7, true, true);
         }
-        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
         assert_eq!(reader.current_generation(), Ok(7));
-        assert_eq!(reader.read_accepted(&hash).unwrap().unwrap().frame.envelope().hash, hash);
+        assert_eq!(
+            reader
+                .read_accepted(&hash)
+                .unwrap()
+                .unwrap()
+                .frame
+                .envelope()
+                .hash,
+            hash
+        );
         assert_eq!(reader.has_accepted_membership(&hash, 7), Ok(true));
         let journal = reader.independent_journal(&hash, 7).unwrap().unwrap();
         assert_eq!(journal.gd08_order_digest, "a".repeat(64));
-        assert_eq!(journal.monetary_state_root, frame.envelope().header.state_root);
-        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(
-            &db_path, CHAIN, NS + 1, &genesis).is_err());
+        assert_eq!(
+            journal.monetary_state_root,
+            frame.envelope().header.state_root
+        );
+        assert!(
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS + 1, &genesis).is_err()
+        );
         drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
@@ -331,7 +373,8 @@ mod tests {
             let db = open_test_writer(&db_path);
             trial_write(&db, &frame, &genesis, 3, false, false);
         }
-        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
         assert!(reader.read_accepted(&hash).unwrap().is_some());
         assert_eq!(reader.has_accepted_membership(&hash, 3), Ok(false));
         assert_eq!(reader.independent_journal(&hash, 3), Ok(None));
@@ -340,7 +383,8 @@ mod tests {
             let db = open_test_writer(&db_path);
             trial_write(&db, &frame, &genesis, 4, true, false);
         }
-        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
         assert_eq!(reader.has_accepted_membership(&hash, 4), Ok(true));
         assert_eq!(reader.independent_journal(&hash, 4), Ok(None));
         assert!(reader.independent_journal(&hash, 0).is_err());
