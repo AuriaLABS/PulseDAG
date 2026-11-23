@@ -449,7 +449,7 @@ mod tests {
         let independent = store.independently_committed.remove(&b.hash).unwrap();
         store.independently_committed.insert(wrong.clone(), independent);
         store.accepted.insert(wrong.clone());
-        req.block_hash = wrong;
+        req.block_hash = wrong.clone();
         assert_eq!(
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::InvalidHash)
