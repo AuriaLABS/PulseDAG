@@ -621,14 +621,25 @@ mod tests {
         assert!(all.values().any(|b| b.header.parents.len() == 2));
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let now = Instant::now();
-        sync.enqueue_missing(&spine, now).unwrap();
+        let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header)]);
+        for (hash, envelope) in &all {
+            headers.insert(hash.clone(), envelope.header.clone());
+        }
+        assert_eq!(
+            sync.enqueue_pow_verified_header_dag(&spine, &headers, now)
+                .unwrap(),
+            32,
+            "header-first should schedule every PoW-verified ancestor body"
+        );
         let providers = vec![peer(), peer(), peer(), peer(), peer()];
         let mut ticks = 0u64;
         let mut had_timeout = false;
+        let mut peak_parallel = 0usize;
 
         while sync.report().accepted < 32 && ticks < 512 {
             let clock = now + Duration::from_secs(ticks);
             let assignments = sync.plan_fetches(&providers, clock);
+            peak_parallel = peak_parallel.max(assignments.len());
             for assignment in assignments {
                 if !had_timeout {
                     // Genuine timeout on the first provider, then peer
@@ -660,9 +671,48 @@ mod tests {
             ticks += 1;
         }
         assert!(had_timeout);
+        assert_eq!(peak_parallel, 20, "4 tickets each across 5 authenticated peers");
         assert_eq!(sync.report().accepted, 32);
         assert!(sync.report().local_work_finished());
         assert!(!sync.has_blockers());
+    }
+
+    #[test]
+    fn foreign_or_incomplete_header_dag_never_triggers_body_requests() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let candidate = mine(vec![genesis.hash.clone()], 1, 1);
+        let now = Instant::now();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let mut headers = BTreeMap::from([
+            (genesis.hash.clone(), genesis.header.clone()),
+            (candidate.hash.clone(), candidate.header.clone()),
+        ]);
+        assert_eq!(
+            sync.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            Ok(1)
+        );
+        assert_eq!(sync.report().queued, 1);
+
+        // Identity must come from independently frozen genesis and chain,
+        // not a remote-supplied preferred chain or timestamp.
+        assert!(matches!(
+            NativeV3SyncRecovery::new(CHAIN, GENESIS_NS + 1, &genesis.hash),
+            Err(NativeV3SyncError::InvalidIdentity)
+        ));
+        let mut other = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        headers.remove(&genesis.hash);
+        assert_eq!(
+            other.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            Err(NativeV3SyncError::InvalidHeaderDag)
+        );
+        assert_eq!(other.report(), NativeV3SyncReport::default());
+        headers.insert(genesis.hash.clone(), genesis.header);
+        headers.get_mut(&candidate.hash).unwrap().nonce ^= 1;
+        assert_eq!(
+            other.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            Err(NativeV3SyncError::InvalidHeaderDag)
+        );
+        assert_eq!(other.report(), NativeV3SyncReport::default());
     }
 
     #[test]
