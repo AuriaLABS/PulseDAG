@@ -98,11 +98,7 @@ impl NativeV3AcceptedReadOnlyV1 for NativeV3AcceptedRocksDbReadOnlyV1 {
         })
     }
 
-    fn has_committed_native_membership(
-        &self,
-        hash: &str,
-        generation: u64,
-    ) -> Result<bool, String> {
+    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String> {
         self.has_accepted_membership(hash, generation)
     }
 
