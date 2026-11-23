@@ -496,14 +496,15 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            bodies[&stale_tip].header.state_root,
-            observed.resulting_state_root,
+            bodies[&stale_tip].header.state_root, observed.resulting_state_root,
             "the original PoW fixture intentionally advertises a fake root"
         );
-        assert!(inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
-            CHAIN, TS, &genesis, &stale_tip, &bodies, 0, &opening,
-        )
-        .is_err());
+        assert!(
+            inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                CHAIN, TS, &genesis, &stale_tip, &bodies, 0, &opening,
+            )
+            .is_err()
+        );
 
         let old = bodies.remove(&stale_tip).unwrap();
         let mut header = old.header.clone();
@@ -516,13 +517,22 @@ mod tests {
                 break;
             }
         }
-        assert!(found, "re-commit real tip root under authenticated KHeavyHash");
+        assert!(
+            found,
+            "re-commit real tip root under authenticated KHeavyHash"
+        );
         let fresh = build_block_envelope_v3(CHAIN, header, old.transactions).unwrap();
         let canonical_tip = fresh.hash.clone();
         assert_ne!(canonical_tip, stale_tip);
         bodies.insert(canonical_tip.clone(), fresh);
         let checked = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
-            CHAIN, TS, &genesis, &canonical_tip, &bodies, 0, &opening,
+            CHAIN,
+            TS,
+            &genesis,
+            &canonical_tip,
+            &bodies,
+            0,
+            &opening,
         )
         .unwrap();
         assert_eq!(checked.resulting_state_root, observed.resulting_state_root);
