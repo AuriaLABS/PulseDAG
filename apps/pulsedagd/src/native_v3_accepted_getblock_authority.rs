@@ -278,6 +278,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         generation: Cell<u64>,
+        membership_generation_override: Cell<u64>,
         mutate_on_read: bool,
         accepted: BTreeSet<String>,
         rows: BTreeMap<String, NativeV3CommittedEnvelopeRowV1>,
@@ -297,7 +298,12 @@ mod tests {
             Ok(self.rows.get(hash).cloned())
         }
         fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<Option<u64>, String> {
-            Ok(self.accepted.contains(hash).then_some(self.generation.get()))
+            let generation = if self.membership_generation_override.get() == 0 {
+                self.generation.get()
+            } else {
+                self.membership_generation_override.get()
+            };
+            Ok(self.accepted.contains(hash).then_some(generation))
         }
         fn independent_consensus_commitment(
             &self,
@@ -506,15 +512,14 @@ mod tests {
     fn stale_membership_generation_cannot_match_newer_body_and_journal() {
         let (genesis, b, req, mut store) = fixture();
         store.accepted.insert(b.hash.clone());
-        store.generation.set(4);
-        // Body + journal still refer to the original test commit generation 5.
-        // Old boolean membership returned true, silently laundering this
-        // torn 3-column acceptance into a servable native-v3 body.
+        store.membership_generation_override.set(3);
+        // Body + journal refer to commit generation 5, but accepted index
+        // still records generation 3. A boolean membership silently passes.
         assert_eq!(
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::TornGeneration)
         );
-        store.generation.set(5);
+        store.membership_generation_override.set(5);
         assert!(wire(&store, &genesis, &req).is_ok());
     }
 
