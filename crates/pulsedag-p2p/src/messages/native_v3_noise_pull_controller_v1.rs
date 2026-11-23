@@ -67,11 +67,8 @@ impl<I: Copy + Eq + Hash> NativeV3NoisePullControllerV1<I> {
         let recovery =
             NativeV3SyncRecovery::new(chain_id, frozen_genesis_timestamp_ns, frozen_genesis_hash)
                 .map_err(NativeV3NoisePullErrorV1::Recovery)?;
-        let correlation = NativeV3GetBlockCorrelationBookV1::new(
-            chain_id,
-            actual_local_noise_peer,
-        )
-        .map_err(NativeV3NoisePullErrorV1::Correlation)?;
+        let correlation = NativeV3GetBlockCorrelationBookV1::new(chain_id, actual_local_noise_peer)
+            .map_err(NativeV3NoisePullErrorV1::Correlation)?;
         Ok(Self {
             recovery,
             correlation,
@@ -79,7 +76,11 @@ impl<I: Copy + Eq + Hash> NativeV3NoisePullControllerV1<I> {
         })
     }
 
-    pub fn enqueue_missing(&mut self, hash: &str, now: Instant) -> Result<bool, NativeV3NoisePullErrorV1> {
+    pub fn enqueue_missing(
+        &mut self,
+        hash: &str,
+        now: Instant,
+    ) -> Result<bool, NativeV3NoisePullErrorV1> {
         self.recovery
             .enqueue_missing(hash, now)
             .map_err(NativeV3NoisePullErrorV1::Recovery)
@@ -114,9 +115,9 @@ impl<I: Copy + Eq + Hash> NativeV3NoisePullControllerV1<I> {
         F: FnMut(&PeerId, Vec<u8>) -> I,
     {
         self.expire(now);
-        let assignments = self
-            .recovery
-            .plan_fetches(connected_noise_peers, now, accepted_by_daemon);
+        let assignments =
+            self.recovery
+                .plan_fetches(connected_noise_peers, now, accepted_by_daemon);
         let mut dispatched = NativeV3PullDispatchV1 {
             transmitted: Vec::new(),
             rejected: Vec::new(),
@@ -217,7 +218,8 @@ impl<I: Copy + Eq + Hash> NativeV3NoisePullControllerV1<I> {
             return Err(NativeV3NoisePullErrorV1::WrongAuthenticatedPeer);
         }
         let hash = slot.hash.clone();
-        self.correlation.cancel(actual_transport_id, authenticated_target);
+        self.correlation
+            .cancel(actual_transport_id, authenticated_target);
         self.inflight.remove(actual_transport_id);
         self.recovery
             .dispatch_failed(&hash, authenticated_target, now)
@@ -268,17 +270,6 @@ impl<I: Copy + Eq + Hash> NativeV3NoisePullControllerV1<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeSet, HashMap};
-    use libp2p::identity;
-    use pulsedag_core::{
-        block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
-    };
     use crate::messages::{
         direct_getblock_v1::{decode_direct_getblock_request, DirectGetBlockRequestV1},
         native_v3_getblock_candidate_v1::{
@@ -286,6 +277,14 @@ mod tests {
             NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
         },
     };
+    use libp2p::identity;
+    use pulsedag_core::{
+        block_envelope_v3::build_block_envelope_v3,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
+    };
+    use std::collections::{BTreeSet, HashMap};
 
     const CHAIN: &str = "first-native-v3-noise-pull-controller-test-only";
     const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
@@ -295,7 +294,8 @@ mod tests {
     }
 
     fn candidate(genesis_hash: &str) -> BlockEnvelopeV3 {
-        let txs = vec![build_reward_claim_transaction_v3("pulse1noise-controller", 1, CHAIN).unwrap()];
+        let txs =
+            vec![build_reward_claim_transaction_v3("pulse1noise-controller", 1, CHAIN).unwrap()];
         let mut header = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
             parents: vec![genesis_hash.to_string()],
@@ -360,9 +360,13 @@ mod tests {
         });
         assert_eq!(sent.transmitted, vec![91]);
         assert!(sent.rejected.is_empty());
-        let req =
-            decode_direct_getblock_request(&wire[&91], CHAIN, &local.to_string(), &remote.to_string())
-                .unwrap();
+        let req = decode_direct_getblock_request(
+            &wire[&91],
+            CHAIN,
+            &local.to_string(),
+            &remote.to_string(),
+        )
+        .unwrap();
         assert_eq!(req.block_hash, mined.hash);
         let raw = response(&req, &local, &remote, Some(mined.clone()));
 
@@ -389,10 +393,9 @@ mod tests {
             ))
         );
         let trusted = BTreeSet::from([mined.hash.clone()]);
-        controller.accepted_by_daemon_after_atomic_commit(
-            &mined.hash,
-            &|hash| trusted.contains(hash),
-        ).unwrap();
+        controller
+            .accepted_by_daemon_after_atomic_commit(&mined.hash, &|hash| trusted.contains(hash))
+            .unwrap();
         assert!(controller.report().local_work_finished());
         assert_eq!(controller.report().accepted, 1);
         assert_eq!(
@@ -422,8 +425,12 @@ mod tests {
         assert_eq!(first.transmitted, vec![101]);
         let first_peer = bytes[0].0;
         let first_req = decode_direct_getblock_request(
-            &bytes[0].1, CHAIN, &local.to_string(), &first_peer.to_string(),
-        ).unwrap();
+            &bytes[0].1,
+            CHAIN,
+            &local.to_string(),
+            &first_peer.to_string(),
+        )
+        .unwrap();
         let mut forged = response(&first_req, &local, &first_peer, Some(mined.clone()));
         // An authenticated responder can still lie in the JSON body.
         forged[0] = b'!';
@@ -436,13 +443,15 @@ mod tests {
         let later = now + std::time::Duration::from_secs(2);
         let second = controller.drive(&[remote, other], later, &|_| false, |_, _| 102);
         assert_eq!(second.transmitted, vec![102]);
-        let next_peer = if first_peer == remote {other} else {remote};
+        let next_peer = if first_peer == remote { other } else { remote };
         assert_eq!(
             controller.outbound_failure(&102, &attacker, later),
             Err(NativeV3NoisePullErrorV1::WrongAuthenticatedPeer)
         );
         assert_eq!(controller.transport_inflight_count(), 1);
-        controller.outbound_failure(&102, &next_peer, later).unwrap();
+        controller
+            .outbound_failure(&102, &next_peer, later)
+            .unwrap();
         assert_eq!(controller.transport_inflight_count(), 0);
         assert_eq!(controller.report().queued, 1);
         assert_eq!(controller.report().accepted, 0);
