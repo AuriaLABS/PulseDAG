@@ -10,13 +10,9 @@ use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{identity, Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder};
 use pulsedag_core::{
-    block_envelope_v3::build_block_envelope_v3,
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
-    header_v3::BlockHeaderV3,
-    pow_v3::evaluate_v3_header_pow,
-    protocol::BLOCK_HEADER_VERSION_V3,
-    reward_settlement_v3::build_reward_claim_transaction_v3,
-    types::compute_merkle_root,
+    block_envelope_v3::build_block_envelope_v3, genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    header_v3::BlockHeaderV3, pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+    reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
 };
 use pulsedag_p2p::messages::{
     direct_getblock_codec_v1::{DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1},
