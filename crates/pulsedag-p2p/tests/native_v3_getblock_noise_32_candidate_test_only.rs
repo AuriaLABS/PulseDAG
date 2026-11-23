@@ -290,7 +290,6 @@ async fn thirty_two_real_pow_native_v3_envelopes_cross_authenticated_noise_witho
     .expect("32 real native-v3 envelopes must traverse Noise within fixed timeout");
 }
 
-
 /// A forged response crossing an otherwise authentic TCP/Noise stream must
 /// never become a native-v3 candidate solely because the transport is valid.
 /// All four messages use the SAME hash but distinct locally minted tickets.
