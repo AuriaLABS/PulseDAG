@@ -699,19 +699,25 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns,
+        header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow,
+        protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3,
+        types::compute_merkle_root,
     };
 
     const CHAIN: &str = "native-first-public-network-sync-planner-test-only";
     const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
+
     fn peer() -> PeerId {
         PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
     }
+
     fn mine(parents: Vec<String>, height: u64, salt: u64) -> BlockEnvelopeV3 {
-        let txs =
-            vec![build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap()];
+        let txs = vec![
+            build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap(),
+        ];
         let mut parents = parents;
         parents.sort();
         let mut header = BlockHeaderV3 {
@@ -731,11 +737,30 @@ mod tests {
                 return build_block_envelope_v3(CHAIN, header, txs).unwrap();
             }
         }
-        panic!("test PoW must be easy enough");
+        panic!("easy-target KHeavyHash test fixture must find PoW");
+    }
+
+    // Simulated trusted store ONLY in tests. The production daemon must
+    // independently perform atomic GD-08/UTXO/reward validation and persistence.
+    fn test_oracle_commit_ready(
+        sync: &mut NativeV3SyncRecovery,
+        accepted: &mut BTreeSet<String>,
+    ) {
+        loop {
+            let ready = sync.ready_for_consensus(&|hash| accepted.contains(hash));
+            if ready.is_empty() {
+                break;
+            }
+            for block in ready {
+                accepted.insert(block.hash.clone());
+                sync.consensus_committed(&block.hash, &|hash| accepted.contains(hash))
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
-    fn authentic_native_v3_thirty_two_candidate_recovery_tracks_missing_parents() {
+    fn headers_first_thirty_two_real_pow_bodies_use_twenty_parallel_peer_slots() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let mut all = BTreeMap::new();
         let mut spine = genesis.hash.clone();
@@ -746,9 +771,9 @@ mod tests {
             if height == 13 {
                 parents.push(side.clone().unwrap());
             }
-            let b = mine(parents, height, height);
-            spine = b.hash.clone();
-            all.insert(b.hash.clone(), b);
+            let block = mine(parents, height, height);
+            spine = block.hash.clone();
+            all.insert(block.hash.clone(), block);
             if height == 12 {
                 let fork = mine(vec![old], height, 100 + height);
                 side = Some(fork.hash.clone());
@@ -758,33 +783,38 @@ mod tests {
         assert_eq!(all.len(), 32);
         assert!(all.values().any(|b| b.header.parents.len() == 2));
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let mut accepted = BTreeSet::new();
         let now = Instant::now();
         let mut headers = BTreeMap::from([(genesis.hash.clone(), genesis.header)]);
-        for (hash, envelope) in &all {
-            headers.insert(hash.clone(), envelope.header.clone());
+        for (hash, block) in &all {
+            headers.insert(hash.clone(), block.header.clone());
         }
         assert_eq!(
-            sync.enqueue_pow_verified_header_dag(&spine, &headers, now)
-                .unwrap(),
-            32,
-            "header-first should schedule every PoW-verified ancestor body"
+            sync.enqueue_pow_verified_header_dag(
+                &spine, &headers, now, &|hash| accepted.contains(hash)
+            ),
+            Ok(32),
+            "native KHeavyHash/ancestor preflight should schedule all 32 bodies"
         );
         let providers = vec![peer(), peer(), peer(), peer(), peer()];
         let mut ticks = 0u64;
-        let mut had_timeout = false;
+        let mut injected_timeout = false;
         let mut peak_parallel = 0usize;
 
         while sync.report().accepted < 32 && ticks < 512 {
             let clock = now + Duration::from_secs(ticks);
-            let assignments = sync.plan_fetches(&providers, clock);
+            let assignments =
+                sync.plan_fetches(&providers, clock, &|hash| accepted.contains(hash));
             peak_parallel = peak_parallel.max(assignments.len());
             for assignment in assignments {
-                if !had_timeout {
-                    // Genuine timeout on the first provider, then peer
-                    // alternation must preserve the missing hash.
-                    had_timeout = true;
-                    sync.dispatch_failed(&assignment.hash, &assignment.authenticated_peer, clock)
-                        .unwrap();
+                if !injected_timeout {
+                    injected_timeout = true;
+                    sync.dispatch_failed(
+                        &assignment.hash,
+                        &assignment.authenticated_peer,
+                        clock,
+                    )
+                    .unwrap();
                     continue;
                 }
                 sync.on_candidate(
@@ -792,47 +822,35 @@ mod tests {
                     &assignment.authenticated_peer,
                     Some(all[&assignment.hash].clone()),
                     clock,
+                    &|hash| accepted.contains(hash),
                 )
                 .unwrap();
             }
-            loop {
-                let ready = sync.ready_for_consensus();
-                if ready.is_empty() {
-                    break;
-                }
-                for b in ready {
-                    // THIS IS ONLY A TEST ORACLE FOR THE SCHEDULER. Real
-                    // daemon consensus GD-08 is deliberately NOT wired.
-                    sync.consensus_committed(&b.hash).unwrap();
-                }
-            }
+            test_oracle_commit_ready(&mut sync, &mut accepted);
             ticks += 1;
         }
-        assert!(had_timeout);
-        assert_eq!(peak_parallel, 20, "4 tickets each across 5 authenticated peers");
+        assert!(injected_timeout);
+        assert_eq!(peak_parallel, 20, "four slots each across five peers");
         assert_eq!(sync.report().accepted, 32);
+        assert_eq!(accepted.len(), 32);
         assert!(sync.report().local_work_finished());
         assert!(!sync.has_blockers());
     }
 
     #[test]
-    fn foreign_or_incomplete_header_dag_never_triggers_body_requests() {
+    fn foreign_missing_or_corrupt_pow_header_dag_cannot_enqueue_bodies() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
-        let candidate = mine(vec![genesis.hash.clone()], 1, 1);
+        let block = mine(vec![genesis.hash.clone()], 1, 1);
         let now = Instant::now();
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let mut headers = BTreeMap::from([
             (genesis.hash.clone(), genesis.header.clone()),
-            (candidate.hash.clone(), candidate.header.clone()),
+            (block.hash.clone(), block.header.clone()),
         ]);
         assert_eq!(
-            sync.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            sync.enqueue_pow_verified_header_dag(&block.hash, &headers, now, &|_| false),
             Ok(1)
         );
-        assert_eq!(sync.report().queued, 1);
-
-        // Identity must come from independently frozen genesis and chain,
-        // not a remote-supplied preferred chain or timestamp.
         assert!(matches!(
             NativeV3SyncRecovery::new(CHAIN, GENESIS_NS + 1, &genesis.hash),
             Err(NativeV3SyncError::InvalidIdentity)
@@ -840,97 +858,212 @@ mod tests {
         let mut other = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         headers.remove(&genesis.hash);
         assert_eq!(
-            other.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            other.enqueue_pow_verified_header_dag(&block.hash, &headers, now, &|_| false),
             Err(NativeV3SyncError::InvalidHeaderDag)
         );
         assert_eq!(other.report(), NativeV3SyncReport::default());
         headers.insert(genesis.hash.clone(), genesis.header);
-        headers.get_mut(&candidate.hash).unwrap().nonce ^= 1;
+        headers.get_mut(&block.hash).unwrap().nonce ^= 1;
         assert_eq!(
-            other.enqueue_pow_verified_header_dag(&candidate.hash, &headers, now),
+            other.enqueue_pow_verified_header_dag(&block.hash, &headers, now, &|_| false),
             Err(NativeV3SyncError::InvalidHeaderDag)
         );
         assert_eq!(other.report(), NativeV3SyncReport::default());
     }
 
     #[test]
-    fn forged_peer_and_misbound_hash_never_clear_an_inflight_candidate() {
+    fn spoofed_peer_or_hash_never_promotes_candidate_without_store_acceptance() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
-        let candidate = mine(vec![genesis.hash.clone()], 1, 1);
+        let block = mine(vec![genesis.hash.clone()], 1, 1);
         let now = Instant::now();
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
-        sync.enqueue_missing(&candidate.hash, now).unwrap();
         let honest = peer();
         let attacker = peer();
-        let assigned = sync.plan_fetches(&[honest], now);
-        assert_eq!(assigned.len(), 1);
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        sync.enqueue_missing(&block.hash, now).unwrap();
+        assert_eq!(sync.plan_fetches(&[honest], now, &|_| false).len(), 1);
         assert_eq!(
-            sync.on_candidate(&candidate.hash, &attacker, Some(candidate.clone()), now),
+            sync.on_candidate(&block.hash, &attacker, Some(block.clone()), now, &|_| false),
             Err(NativeV3SyncError::WrongAuthenticatedPeer)
         );
         assert_eq!(sync.report().in_flight, 1);
-        let mut wrong = candidate.clone();
-        wrong.hash = "f".repeat(64);
+        let mut bad = block.clone();
+        bad.hash = "f".repeat(64);
         assert_eq!(
-            sync.on_candidate(&candidate.hash, &honest, Some(wrong), now),
+            sync.on_candidate(&block.hash, &honest, Some(bad), now, &|_| false),
             Err(NativeV3SyncError::WrongBodyHash)
         );
         assert_eq!(sync.report().in_flight, 0);
-        assert_eq!(sync.report().queued, 1);
-        // Own authenticated malformed response consumed its wire ticket.
-        // Request a fresh one instead of leaving a zombie in-flight request.
-        let retry_clock = now + Duration::from_secs(1);
-        assert_eq!(sync.plan_fetches(&[honest], retry_clock).len(), 1);
-        sync.on_candidate(
-            &candidate.hash,
-            &honest,
-            Some(candidate.clone()),
-            retry_clock,
-        )
-        .unwrap();
-        assert_eq!(sync.report().awaiting_consensus, 1);
-        assert_eq!(sync.report().accepted, 0);
-        assert_eq!(sync.ready_for_consensus().len(), 1);
-        assert!(sync.has_blockers());
-        sync.consensus_committed(&candidate.hash).unwrap();
-        assert!(sync.report().local_work_finished());
+        let later = now + Duration::from_secs(2);
+        assert_eq!(sync.plan_fetches(&[honest], later, &|_| false).len(), 1);
+        sync.on_candidate(&block.hash, &honest, Some(block.clone()), later, &|_| false)
+            .unwrap();
+        assert_eq!(sync.ready_for_consensus(&|_| false).len(), 1);
         assert_eq!(
-            sync.consensus_committed(&candidate.hash),
-            Err(NativeV3SyncError::NotStagedForConsensus)
+            sync.consensus_committed(&block.hash, &|_| false),
+            Err(NativeV3SyncError::NotInAcceptedStore)
         );
+        let accepted = BTreeSet::from([block.hash.clone()]);
+        sync.consensus_committed(&block.hash, &|hash| accepted.contains(hash))
+            .unwrap();
+        assert_eq!(sync.report().accepted, 1);
+        assert!(sync.report().local_work_finished());
     }
 
     #[test]
-    fn missing_parent_blocks_economic_readiness_until_independent_commit() {
+    fn missing_parent_is_not_conflated_with_accepted_state() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let parent = mine(vec![genesis.hash.clone()], 1, 10);
         let child = mine(vec![parent.hash.clone()], 2, 20);
-        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let mut accepted = BTreeSet::new();
         let now = Instant::now();
-        let p = peer();
+        let provider = peer();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         sync.enqueue_missing(&child.hash, now).unwrap();
-        let fetch = sync.plan_fetches(&[p], now);
-        assert_eq!(fetch.len(), 1);
-        sync.on_candidate(&child.hash, &p, Some(child.clone()), now)
-            .unwrap();
-        assert!(sync.ready_for_consensus().is_empty());
+        assert_eq!(sync.plan_fetches(&[provider], now, &|_| false).len(), 1);
+        sync.on_candidate(
+            &child.hash,
+            &provider,
+            Some(child.clone()),
+            now,
+            &|hash| accepted.contains(hash),
+        )
+        .unwrap();
+        assert!(sync.ready_for_consensus(&|hash| accepted.contains(hash)).is_empty());
+        // Even an incorrectly asserted accepted child cannot bypass its parent.
         assert_eq!(
-            sync.consensus_committed(&child.hash),
+            sync.consensus_committed(&child.hash, &|hash| hash == child.hash),
             Err(NativeV3SyncError::MissingConsensusParents)
         );
-        let parent_work = sync.plan_fetches(&[p], now);
-        assert_eq!(parent_work[0].hash, parent.hash);
-        sync.on_candidate(&parent.hash, &p, Some(parent.clone()), now)
-            .unwrap();
-        assert_eq!(sync.ready_for_consensus()[0].hash, parent.hash);
-        sync.consensus_committed(&parent.hash).unwrap();
-        assert_eq!(sync.ready_for_consensus()[0].hash, child.hash);
-        sync.consensus_committed(&child.hash).unwrap();
+        assert_eq!(
+            sync.plan_fetches(&[provider], now, &|_| false)[0].hash,
+            parent.hash
+        );
+        sync.on_candidate(
+            &parent.hash,
+            &provider,
+            Some(parent.clone()),
+            now,
+            &|hash| accepted.contains(hash),
+        )
+        .unwrap();
+        assert_eq!(
+            sync.ready_for_consensus(&|hash| accepted.contains(hash))[0].hash,
+            parent.hash
+        );
+        test_oracle_commit_ready(&mut sync, &mut accepted);
+        assert_eq!(accepted.len(), 2);
         assert!(!sync.has_blockers());
     }
 
     #[test]
-    fn timeout_switches_peers_and_exhaustion_never_becomes_synced() {
+    fn two_unhelpful_providers_cannot_prevent_the_third_from_serving() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let block = mine(vec![genesis.hash.clone()], 1, 4);
+        let mut providers = vec![peer(), peer(), peer(), peer(), peer()];
+        providers.sort_unstable_by_key(ToString::to_string);
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let now = Instant::now();
+        sync.enqueue_missing(&block.hash, now).unwrap();
+        let mut observed = Vec::new();
+        for attempt in 0..3u64 {
+            let clock = now + Duration::from_secs(attempt * 3);
+            let assignments = sync.plan_fetches(&providers, clock, &|_| false);
+            assert_eq!(assignments.len(), 1);
+            let provider = assignments[0].authenticated_peer;
+            observed.push(provider);
+            if attempt < 2 {
+                sync.on_candidate(&block.hash, &provider, None, clock, &|_| false)
+                    .unwrap();
+            } else {
+                sync.on_candidate(&block.hash, &provider, Some(block.clone()), clock, &|_| false)
+                    .unwrap();
+            }
+        }
+        assert_eq!(observed, providers[..3]);
+        assert_eq!(sync.ready_for_consensus(&|_| false).len(), 1);
+        let accepted = BTreeSet::from([block.hash.clone()]);
+        sync.consensus_committed(&block.hash, &|hash| accepted.contains(hash))
+            .unwrap();
+        assert!(!sync.has_blockers());
+    }
+
+    #[test]
+    fn sixty_five_tip_only_blocks_reclaim_staging_for_oldest_ancestor() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let mut all = BTreeMap::new();
+        let mut tip = genesis.hash.clone();
+        for height in 1..=65u64 {
+            let block = mine(vec![tip.clone()], height, height);
+            tip = block.hash.clone();
+            all.insert(block.hash.clone(), block);
+        }
+        let mut accepted = BTreeSet::new();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let now = Instant::now();
+        let provider = peer();
+        sync.enqueue_missing(&tip, now).unwrap();
+        let mut witnessed_deferred = false;
+        for t in 0..512u64 {
+            let clock = now + Duration::from_secs(t);
+            let work = sync.plan_fetches(&[provider], clock, &|hash| accepted.contains(hash));
+            for request in work {
+                sync.on_candidate(
+                    &request.hash,
+                    &request.authenticated_peer,
+                    Some(all[&request.hash].clone()),
+                    clock,
+                    &|hash| accepted.contains(hash),
+                )
+                .unwrap();
+            }
+            witnessed_deferred |= sync.report().deferred_for_ancestors > 0;
+            test_oracle_commit_ready(&mut sync, &mut accepted);
+            if sync.report().accepted == 65 {
+                break;
+            }
+        }
+        assert!(witnessed_deferred, "tip-only deep recovery must exercise eviction");
+        assert_eq!(accepted.len(), 65);
+        assert_eq!(sync.report().accepted, 65);
+        assert!(!sync.has_blockers());
+    }
+
+    #[test]
+    fn more_than_256_sequential_commits_do_not_fill_the_pending_queue() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let mut tip = genesis.hash.clone();
+        let mut accepted = BTreeSet::new();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        let now = Instant::now();
+        let provider = peer();
+        for height in 1..=300u64 {
+            let block = mine(vec![tip.clone()], height, height);
+            tip = block.hash.clone();
+            let clock = now + Duration::from_secs(height);
+            sync.enqueue_missing(&block.hash, clock).unwrap();
+            assert_eq!(
+                sync.plan_fetches(&[provider], clock, &|hash| accepted.contains(hash))
+                    .len(),
+                1
+            );
+            sync.on_candidate(
+                &block.hash,
+                &provider,
+                Some(block.clone()),
+                clock,
+                &|hash| accepted.contains(hash),
+            )
+            .unwrap();
+            test_oracle_commit_ready(&mut sync, &mut accepted);
+            assert_eq!(sync.items.len(), 0, "accepted bodies retire from the queue");
+        }
+        assert_eq!(accepted.len(), 300);
+        assert_eq!(sync.report().accepted, 300);
+        assert!(sync.report().local_work_finished());
+    }
+
+    #[test]
+    fn exhausted_fetch_timeout_never_declares_network_ready() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let now = Instant::now();
         let a = peer();
@@ -938,46 +1071,52 @@ mod tests {
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let hash = "a".repeat(64);
         sync.enqueue_missing(&hash, now).unwrap();
-        let first = sync.plan_fetches(&[a, b], now);
+        let first = sync.plan_fetches(&[a, b], now, &|_| false);
         assert_eq!(first.len(), 1);
         sync.dispatch_failed(&hash, &first[0].authenticated_peer, now)
             .unwrap();
-        assert!(sync.plan_fetches(&[a, b], now).is_empty());
-        let second_clock = now + Duration::from_secs(1);
-        let second = sync.plan_fetches(&[a, b], second_clock);
+        assert!(sync.plan_fetches(&[a, b], now, &|_| false).is_empty());
+        let second = sync.plan_fetches(&[a, b], now + Duration::from_secs(1), &|_| false);
         assert_eq!(second.len(), 1);
         assert_ne!(first[0].authenticated_peer, second[0].authenticated_peer);
         let mut current = second;
         for attempt in 2..=NATIVE_V3_SYNC_MAX_RETRIES {
-            let time = now + Duration::from_secs(u64::from(attempt) * 12);
-            assert_eq!(current.len(), 1);
-            sync.dispatch_failed(&hash, &current[0].authenticated_peer, time)
+            let clock = now + Duration::from_secs(u64::from(attempt) * 12);
+            sync.dispatch_failed(&hash, &current[0].authenticated_peer, clock)
                 .unwrap();
             if attempt < NATIVE_V3_SYNC_MAX_RETRIES {
-                current = sync.plan_fetches(&[a, b], time + Duration::from_secs(10));
+                current = sync.plan_fetches(
+                    &[a, b],
+                    clock + Duration::from_secs(10),
+                    &|_| false,
+                );
+                assert_eq!(current.len(), 1);
             }
         }
         assert_eq!(sync.report().exhausted, 1);
         assert!(sync.has_blockers());
         assert!(sync
-            .plan_fetches(&[a, b], now + Duration::from_secs(300))
+            .plan_fetches(&[a, b], now + Duration::from_secs(300), &|_| false)
             .is_empty());
     }
 
     #[test]
-    fn peer_disconnect_and_bounded_queue_fail_closed() {
+    fn peer_disconnect_and_queue_caps_fail_closed() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         let now = Instant::now();
-        let first_peer = peer();
+        let first = peer();
         let other = peer();
         sync.enqueue_missing(&"a".repeat(64), now).unwrap();
-        let assignments = sync.plan_fetches(&[first_peer], now);
-        assert_eq!(assignments.len(), 1);
+        assert_eq!(sync.plan_fetches(&[first], now, &|_| false).len(), 1);
         assert_eq!(sync.peer_disconnected(&other, now), 0);
-        assert_eq!(sync.peer_disconnected(&first_peer, now), 1);
+        assert_eq!(sync.peer_disconnected(&first, now), 1);
         assert!(sync.has_blockers());
-        let again = sync.plan_fetches(&[other], now + Duration::from_secs(1));
+        let again = sync.plan_fetches(
+            &[other],
+            now + Duration::from_secs(1),
+            &|_| false,
+        );
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].authenticated_peer, other);
         assert_eq!(
@@ -985,8 +1124,8 @@ mod tests {
             Err(NativeV3SyncError::InvalidHash)
         );
         for i in 0..NATIVE_V3_SYNC_MAX_KNOWN_HASHES {
-            let h = format!("{i:064x}");
-            sync.enqueue_missing(&h, now).ok();
+            let hash = format!("{i:064x}");
+            let _ = sync.enqueue_missing(&hash, now);
         }
         assert_eq!(sync.items.len(), NATIVE_V3_SYNC_MAX_KNOWN_HASHES);
         assert_eq!(
