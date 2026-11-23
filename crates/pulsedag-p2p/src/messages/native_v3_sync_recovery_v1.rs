@@ -207,6 +207,7 @@ impl NativeV3SyncRecovery {
         tip: &str,
         complete_headers: &BTreeMap<String, BlockHeaderV3>,
         now: Instant,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
     ) -> Result<usize, NativeV3SyncError> {
         let order = derive_dormant_native_v3_topological_evaluation(
             &self.chain_id,
@@ -220,7 +221,9 @@ impl NativeV3SyncRecovery {
             .ordered_reachable_headers
             .iter()
             .filter(|hash| {
-                hash.as_str() != self.trusted_genesis_hash && !self.items.contains_key(*hash)
+                hash.as_str() != self.trusted_genesis_hash
+                    && !accepted_by_daemon(hash)
+                    && !self.items.contains_key(*hash)
             })
             .count();
         if self.items.len() + new_count > NATIVE_V3_SYNC_MAX_KNOWN_HASHES {
@@ -228,6 +231,9 @@ impl NativeV3SyncRecovery {
         }
         let mut added = 0;
         for hash in order.ordered_reachable_headers.iter().skip(1) {
+            if accepted_by_daemon(hash) {
+                continue;
+            }
             if self.enqueue_inner(hash, now, false)? {
                 added += 1;
             }
@@ -364,6 +370,7 @@ impl NativeV3SyncRecovery {
         actual_peer: &PeerId,
         candidate: Option<BlockEnvelopeV3>,
         now: Instant,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
     ) -> Result<(), NativeV3SyncError> {
         let item = self
             .items
@@ -435,7 +442,9 @@ impl NativeV3SyncRecovery {
             .parents
             .iter()
             .filter(|hash| {
-                hash.as_str() != self.trusted_genesis_hash && !self.items.contains_key(*hash)
+                hash.as_str() != self.trusted_genesis_hash
+                    && !accepted_by_daemon(hash)
+                    && !self.items.contains_key(*hash)
             })
             .collect::<Vec<_>>();
         if self.items.len() + new_parents.len() > NATIVE_V3_SYNC_MAX_KNOWN_HASHES
@@ -445,20 +454,28 @@ impl NativeV3SyncRecovery {
             return Err(NativeV3SyncError::QueueFull);
         }
         for parent in &envelope.header.parents {
-            self.enqueue_inner(parent, now, true)?;
+            if !accepted_by_daemon(parent) {
+                self.enqueue_inner(parent, now, true)?;
+            }
         }
         let item = self
             .items
             .get_mut(requested_hash)
             .ok_or(NativeV3SyncError::UnknownRequest)?;
-        item.phase = Phase::Staged { envelope, bytes };
+        item.phase = Phase::Staged {
+            envelope: Box::new(envelope),
+            bytes,
+        };
         Ok(())
     }
 
     /// Bodies are exposed parent-first only when all parents have already
     /// been ACKed by the native-v3 consensus authority. `Staged` is NOT a
     /// positive monetary/UTXO/blue-work acceptance verdict.
-    pub fn ready_for_consensus(&self) -> Vec<BlockEnvelopeV3> {
+    pub fn ready_for_consensus(
+        &self,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
+    ) -> Vec<BlockEnvelopeV3> {
         let mut ready = self
             .items
             .values()
@@ -468,9 +485,9 @@ impl NativeV3SyncRecovery {
                         .header
                         .parents
                         .iter()
-                        .all(|parent| self.parent_consensus_accepted(parent)) =>
+                        .all(|parent| self.parent_consensus_accepted(parent, accepted_by_daemon)) =>
                 {
-                    Some(envelope.clone())
+                    Some((**envelope).clone())
                 }
                 _ => None,
             })
@@ -484,19 +501,27 @@ impl NativeV3SyncRecovery {
         ready
     }
 
-    fn parent_consensus_accepted(&self, hash: &str) -> bool {
-        hash == self.trusted_genesis_hash
-            || self
-                .items
-                .get(hash)
-                .is_some_and(|item| matches!(&item.phase, Phase::ConsensusAccepted))
+    fn parent_consensus_accepted(
+        &self,
+        hash: &str,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
+    ) -> bool {
+        hash == self.trusted_genesis_hash || accepted_by_daemon(hash)
     }
 
-    /// Invoke ONLY from the independently verified native-v3 daemon consensus
-    /// callback **after** committing GD-08/UTXO/rewards atomically. This API
-    /// does not implement or assert those checks; external user input or P2P
-    /// messages must NEVER call it.
-    pub fn consensus_committed(&mut self, hash: &str) -> Result<(), NativeV3SyncError> {
+    /// Only after the INDEPENDENT native-v3 monetary consensus and database
+    /// transaction have atomically committed this hash AND its parents.
+    /// The authoritative store lookup is a separate requirement, not a
+    /// remote self-asserted peer, PoW-only candidate or local queued flag.
+    ///
+    /// Accepted entries are retired. Their parent membership must thereafter
+    /// be checked against the trusted daemon store, so >256 successful
+    /// blocks cannot deadlock the bounded pending queue.
+    pub fn consensus_committed(
+        &mut self,
+        hash: &str,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
+    ) -> Result<(), NativeV3SyncError> {
         let item = self
             .items
             .get(hash)
@@ -504,18 +529,19 @@ impl NativeV3SyncRecovery {
         let Phase::Staged { envelope, .. } = &item.phase else {
             return Err(NativeV3SyncError::NotStagedForConsensus);
         };
+        if !accepted_by_daemon(hash) {
+            return Err(NativeV3SyncError::NotInAcceptedStore);
+        }
         if !envelope
             .header
             .parents
             .iter()
-            .all(|parent| self.parent_consensus_accepted(parent))
+            .all(|parent| self.parent_consensus_accepted(parent, accepted_by_daemon))
         {
             return Err(NativeV3SyncError::MissingConsensusParents);
         }
-        self.items
-            .get_mut(hash)
-            .expect("staged candidate exists")
-            .phase = Phase::ConsensusAccepted;
+        self.items.remove(hash);
+        self.accepted_committed_total = self.accepted_committed_total.saturating_add(1);
         Ok(())
     }
 
