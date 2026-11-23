@@ -412,23 +412,39 @@ mod tests {
             Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit)
         );
         store.rows.get_mut(&b.hash).unwrap().committed_gd08_digest = "a".repeat(64);
-        store.independently_committed.get_mut(&b.hash).unwrap().gd08_order_digest =
-            "c".repeat(64);
+        store
+            .independently_committed
+            .get_mut(&b.hash)
+            .unwrap()
+            .gd08_order_digest = "c".repeat(64);
         assert_eq!(
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit)
         );
-        store.independently_committed.get_mut(&b.hash).unwrap().gd08_order_digest =
-            "a".repeat(64);
-        store.independently_committed.get_mut(&b.hash).unwrap().monetary_state_root =
-            "e".repeat(64);
+        store
+            .independently_committed
+            .get_mut(&b.hash)
+            .unwrap()
+            .gd08_order_digest = "a".repeat(64);
+        store
+            .independently_committed
+            .get_mut(&b.hash)
+            .unwrap()
+            .monetary_state_root = "e".repeat(64);
         assert_eq!(
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::WrongStateRoot)
         );
-        store.independently_committed.get_mut(&b.hash).unwrap().monetary_state_root =
-            b.header.state_root.clone();
-        store.independently_committed.get_mut(&b.hash).unwrap().accepted_generation = 4;
+        store
+            .independently_committed
+            .get_mut(&b.hash)
+            .unwrap()
+            .monetary_state_root = b.header.state_root.clone();
+        store
+            .independently_committed
+            .get_mut(&b.hash)
+            .unwrap()
+            .accepted_generation = 4;
         assert_eq!(
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::TornGeneration)
@@ -447,7 +463,9 @@ mod tests {
         let row = store.rows.remove(&b.hash).unwrap();
         store.rows.insert(wrong.clone(), row);
         let independent = store.independently_committed.remove(&b.hash).unwrap();
-        store.independently_committed.insert(wrong.clone(), independent);
+        store
+            .independently_committed
+            .insert(wrong.clone(), independent);
         store.accepted.insert(wrong.clone());
         req.block_hash = wrong.clone();
         assert_eq!(
@@ -459,7 +477,9 @@ mod tests {
         row.committed_generation = 6;
         store.rows.insert(b.hash.clone(), row);
         let independent = store.independently_committed.remove(&wrong).unwrap();
-        store.independently_committed.insert(b.hash.clone(), independent);
+        store
+            .independently_committed
+            .insert(b.hash.clone(), independent);
         store.accepted.insert(b.hash);
         assert_eq!(
             wire(&store, &genesis, &req),
