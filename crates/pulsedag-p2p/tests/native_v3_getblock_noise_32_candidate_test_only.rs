@@ -32,8 +32,8 @@ use pulsedag_core::{
 use pulsedag_p2p::messages::{
     direct_getblock_codec_v1::{DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1},
     direct_getblock_v1::{
-        decode_direct_getblock_request, encode_direct_getblock_request,
-        DirectGetBlockRequestV1, DIRECT_GETBLOCK_PROTOCOL_V1,
+        decode_direct_getblock_request, encode_direct_getblock_request, DirectGetBlockRequestV1,
+        DIRECT_GETBLOCK_PROTOCOL_V1,
     },
     native_v3_getblock_candidate_v1::{
         decode_native_v3_getblock_candidate_response, encode_native_v3_getblock_candidate_response,
@@ -73,10 +73,11 @@ fn test_swarm(key: identity::Keypair, mode: ProtocolSupport) -> DirectSwarm {
 }
 
 fn mine_candidate(parents: Vec<BlockId>, height: u64, salt: u64) -> BlockEnvelopeV3 {
-    let transactions = vec![
-        build_reward_claim_transaction_v3("pulse1native-test-miner", salt, CHAIN)
-            .expect("syntactically valid amountless reward claim"),
-    ];
+    let transactions =
+        vec![
+            build_reward_claim_transaction_v3("pulse1native-test-miner", salt, CHAIN)
+                .expect("syntactically valid amountless reward claim"),
+        ];
     let mut parents = parents;
     parents.sort();
     parents.dedup();
@@ -139,10 +140,7 @@ fn native_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>) {
     assert_eq!(map.len(), CANDIDATES);
     assert_eq!(requested.len(), CANDIDATES);
     assert_eq!(
-        map.get(requested.last().unwrap())
-            .unwrap()
-            .header
-            .height,
+        map.get(requested.last().unwrap()).unwrap().header.height,
         31
     );
     assert_eq!(
