@@ -69,16 +69,26 @@ impl NativeV3SyncReport {
     /// ONLY completeness of this explicitly enqueued set; not network
     /// readiness, a validated selected tip, or an economic consensus result.
     pub fn local_work_finished(self) -> bool {
-        self.queued == 0 && self.in_flight == 0 && self.awaiting_consensus == 0
+        self.queued == 0
+            && self.in_flight == 0
+            && self.awaiting_consensus == 0
             && self.exhausted == 0
     }
 }
 
 #[derive(Debug)]
 enum Phase {
-    Waiting { not_before: Instant },
-    Fetching { peer: PeerId, deadline: Instant },
-    Staged { envelope: BlockEnvelopeV3, bytes: usize },
+    Waiting {
+        not_before: Instant,
+    },
+    Fetching {
+        peer: PeerId,
+        deadline: Instant,
+    },
+    Staged {
+        envelope: BlockEnvelopeV3,
+        bytes: usize,
+    },
     ConsensusAccepted,
     Exhausted,
 }
@@ -135,11 +145,7 @@ impl NativeV3SyncRecovery {
 
     /// Untrusted tip inventories only enqueue a bounded candidate hash. They
     /// never change consensus, readiness, monetary supply or accepted state.
-    pub fn enqueue_missing(
-        &mut self,
-        hash: &str,
-        now: Instant,
-    ) -> Result<bool, NativeV3SyncError> {
+    pub fn enqueue_missing(&mut self, hash: &str, now: Instant) -> Result<bool, NativeV3SyncError> {
         self.enqueue_inner(hash, now, false)
     }
 
@@ -275,7 +281,10 @@ impl NativeV3SyncRecovery {
         actual_peer: &PeerId,
         now: Instant,
     ) -> Result<(), NativeV3SyncError> {
-        let item = self.items.get_mut(hash).ok_or(NativeV3SyncError::UnknownRequest)?;
+        let item = self
+            .items
+            .get_mut(hash)
+            .ok_or(NativeV3SyncError::UnknownRequest)?;
         match &item.phase {
             Phase::Fetching { peer, .. } if peer == actual_peer => {
                 Self::reschedule(item, now);
@@ -296,7 +305,10 @@ impl NativeV3SyncRecovery {
         candidate: Option<BlockEnvelopeV3>,
         now: Instant,
     ) -> Result<(), NativeV3SyncError> {
-        let item = self.items.get(requested_hash).ok_or(NativeV3SyncError::UnknownRequest)?;
+        let item = self
+            .items
+            .get(requested_hash)
+            .ok_or(NativeV3SyncError::UnknownRequest)?;
         match &item.phase {
             Phase::Fetching { peer, deadline } if peer == actual_peer && now < *deadline => {}
             Phase::Fetching { peer, .. } if peer != actual_peer => {
@@ -319,7 +331,11 @@ impl NativeV3SyncRecovery {
                 .parents
                 .windows(2)
                 .any(|pair| pair[0] >= pair[1])
-            || envelope.header.parents.iter().any(|hash| hash == requested_hash)
+            || envelope
+                .header
+                .parents
+                .iter()
+                .any(|hash| hash == requested_hash)
         {
             let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::InvalidCandidate);
@@ -342,12 +358,12 @@ impl NativeV3SyncRecovery {
             return Err(NativeV3SyncError::StagingFull);
         }
         let (staged_count, staged_bytes) =
-            self.items.values().fold((0usize, 0usize), |(n, total), item| {
-                match &item.phase {
+            self.items
+                .values()
+                .fold((0usize, 0usize), |(n, total), item| match &item.phase {
                     Phase::Staged { bytes, .. } => (n + 1, total + bytes),
                     _ => (n, total),
-                }
-            });
+                });
         if staged_count >= NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
             || staged_bytes + bytes > NATIVE_V3_SYNC_MAX_STAGED_BYTES
         {
@@ -371,7 +387,10 @@ impl NativeV3SyncRecovery {
         for parent in &envelope.header.parents {
             self.enqueue_inner(parent, now, true)?;
         }
-        let item = self.items.get_mut(requested_hash).ok_or(NativeV3SyncError::UnknownRequest)?;
+        let item = self
+            .items
+            .get_mut(requested_hash)
+            .ok_or(NativeV3SyncError::UnknownRequest)?;
         item.phase = Phase::Staged { envelope, bytes };
         Ok(())
     }
@@ -418,7 +437,10 @@ impl NativeV3SyncRecovery {
     /// does not implement or assert those checks; external user input or P2P
     /// messages must NEVER call it.
     pub fn consensus_committed(&mut self, hash: &str) -> Result<(), NativeV3SyncError> {
-        let item = self.items.get(hash).ok_or(NativeV3SyncError::NotStagedForConsensus)?;
+        let item = self
+            .items
+            .get(hash)
+            .ok_or(NativeV3SyncError::NotStagedForConsensus)?;
         let Phase::Staged { envelope, .. } = &item.phase else {
             return Err(NativeV3SyncError::NotStagedForConsensus);
         };
@@ -489,12 +511,9 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
 
     const CHAIN: &str = "native-first-public-network-sync-planner-test-only";
@@ -503,9 +522,8 @@ mod tests {
         PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
     }
     fn mine(parents: Vec<String>, height: u64, salt: u64) -> BlockEnvelopeV3 {
-        let txs = vec![
-            build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap(),
-        ];
+        let txs =
+            vec![build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap()];
         let mut parents = parents;
         parents.sort();
         let mut header = BlockHeaderV3 {
@@ -566,12 +584,8 @@ mod tests {
                     // Genuine timeout on the first provider, then peer
                     // alternation must preserve the missing hash.
                     had_timeout = true;
-                    sync.dispatch_failed(
-                        &assignment.hash,
-                        &assignment.authenticated_peer,
-                        clock,
-                    )
-                    .unwrap();
+                    sync.dispatch_failed(&assignment.hash, &assignment.authenticated_peer, clock)
+                        .unwrap();
                     continue;
                 }
                 sync.on_candidate(
@@ -629,8 +643,13 @@ mod tests {
         // Request a fresh one instead of leaving a zombie in-flight request.
         let retry_clock = now + Duration::from_secs(1);
         assert_eq!(sync.plan_fetches(&[honest], retry_clock).len(), 1);
-        sync.on_candidate(&candidate.hash, &honest, Some(candidate.clone()), retry_clock)
-            .unwrap();
+        sync.on_candidate(
+            &candidate.hash,
+            &honest,
+            Some(candidate.clone()),
+            retry_clock,
+        )
+        .unwrap();
         assert_eq!(sync.report().awaiting_consensus, 1);
         assert_eq!(sync.report().accepted, 0);
         assert_eq!(sync.ready_for_consensus().len(), 1);
@@ -654,7 +673,8 @@ mod tests {
         sync.enqueue_missing(&child.hash, now).unwrap();
         let fetch = sync.plan_fetches(&[p], now);
         assert_eq!(fetch.len(), 1);
-        sync.on_candidate(&child.hash, &p, Some(child.clone()), now).unwrap();
+        sync.on_candidate(&child.hash, &p, Some(child.clone()), now)
+            .unwrap();
         assert!(sync.ready_for_consensus().is_empty());
         assert_eq!(
             sync.consensus_committed(&child.hash),
@@ -682,7 +702,8 @@ mod tests {
         sync.enqueue_missing(&hash, now).unwrap();
         let first = sync.plan_fetches(&[a, b], now);
         assert_eq!(first.len(), 1);
-        sync.dispatch_failed(&hash, &first[0].authenticated_peer, now).unwrap();
+        sync.dispatch_failed(&hash, &first[0].authenticated_peer, now)
+            .unwrap();
         assert!(sync.plan_fetches(&[a, b], now).is_empty());
         let second_clock = now + Duration::from_secs(1);
         let second = sync.plan_fetches(&[a, b], second_clock);
@@ -700,7 +721,9 @@ mod tests {
         }
         assert_eq!(sync.report().exhausted, 1);
         assert!(sync.has_blockers());
-        assert!(sync.plan_fetches(&[a, b], now + Duration::from_secs(300)).is_empty());
+        assert!(sync
+            .plan_fetches(&[a, b], now + Duration::from_secs(300))
+            .is_empty());
     }
 
     #[test]
