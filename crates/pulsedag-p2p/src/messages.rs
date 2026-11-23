@@ -21,6 +21,7 @@ pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
 pub mod native_v3_getblock_candidate_v1;
 pub mod native_v3_getblock_correlation_v1;
+pub mod native_v3_sync_recovery_v1;
 mod network_message_decode_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
