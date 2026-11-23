@@ -121,13 +121,14 @@ fn native_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>) {
         if height == 13 {
             parents.push(side_parent.clone().expect("side branch present"));
         }
+        let preceding_spine_parent = parents[0].clone();
         let block = mine_candidate(parents, height, height);
         parent = block.hash.clone();
         requested.push(block.hash.clone());
         assert!(map.insert(block.hash.clone(), block).is_none());
 
         if height == 12 {
-            let side = mine_candidate(vec![genesis.hash.clone()], height, 100 + height);
+            let side = mine_candidate(vec![preceding_spine_parent], height, 100 + height);
             // An independently mined sibling at the same height.
             assert_ne!(side.hash, parent);
             side_parent = Some(side.hash.clone());
