@@ -43,6 +43,16 @@ pub(super) struct NativeV3CommittedEnvelopeRowV1 {
     pub committed_gd08_digest: String,
 }
 
+/// A separate, independently committed GD-08/monetary consensus journal.
+/// Neither the P2P frame nor its accepted-row JSON is allowed to supply this
+/// evidence. Generation, root and digest are from the *same* durable commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeV3ConsensusCommitmentV1 {
+    pub accepted_generation: u64,
+    pub monetary_state_root: String,
+    pub gd08_order_digest: String,
+}
+
 /// A future atomic consensus store must independently implement these calls.
 /// The accepted namespace, NOT a generic candidate cache, must be consulted.
 /// There is intentionally no production implementation or writer in v3.0.
@@ -53,6 +63,14 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         hash: &str,
     ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
     fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String>;
+    /// Independent immutable consensus-journal lookup. Implementations MUST
+    /// NOT derive this from the candidate envelope, accepted body row or
+    /// remote peer's claim. No production implementation exists yet.
+    fn independent_consensus_commitment(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String>;
 }
 
 fn canonical_hex256(value: &str) -> bool {
@@ -78,6 +96,9 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     let is_accepted = reader
         .has_committed_native_membership(requested_hash, before)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
+    let independent = reader
+        .independent_consensus_commitment(requested_hash, before)
+        .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
     let after = reader
         .current_generation()
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
@@ -85,16 +106,23 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
         return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
     }
     let Some(record) = record else {
-        if is_accepted {
+        if is_accepted || independent.is_some() {
             // A corrupted accepted index/missing body is NOT an authenticated
             // peer-local Missing. Fail rather than hide a broken local store.
             return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
         }
         return Ok(None);
     };
-    if !is_accepted {
+    if !is_accepted || independent.is_none() {
         // A valid PoW candidate is NOT automatically an accepted block.
         return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
+    }
+    let independently_committed = independent.expect("checked Some above");
+    if independently_committed.accepted_generation != record.committed_generation
+        || independently_committed.accepted_generation > before
+        || independently_committed.accepted_generation == 0
+    {
+        return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
     }
     if record.committed_generation == 0 || record.committed_generation > before {
         return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
@@ -102,7 +130,10 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     if record.chain_id != chain_id || record.genesis_hash != genesis_hash {
         return Err(NativeV3AcceptedReadErrorV1::InvalidDomain);
     }
-    if !canonical_hex256(&record.committed_gd08_digest) {
+    if !canonical_hex256(&record.committed_gd08_digest)
+        || !canonical_hex256(&independently_committed.gd08_order_digest)
+        || record.committed_gd08_digest != independently_committed.gd08_order_digest
+    {
         return Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit);
     }
     record
@@ -114,6 +145,8 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
         return Err(NativeV3AcceptedReadErrorV1::InvalidHash);
     }
     if record.committed_state_root != body.header.state_root
+        || record.committed_state_root != independently_committed.monetary_state_root
+        || !canonical_hex256(&independently_committed.monetary_state_root)
         || !canonical_hex256(&record.committed_state_root)
     {
         return Err(NativeV3AcceptedReadErrorV1::WrongStateRoot);
@@ -202,6 +235,7 @@ mod tests {
         mutate_on_read: bool,
         accepted: BTreeSet<String>,
         rows: BTreeMap<String, NativeV3CommittedEnvelopeRowV1>,
+        independently_committed: BTreeMap<String, NativeV3ConsensusCommitmentV1>,
     }
     impl NativeV3AcceptedReadOnlyV1 for FakeStore {
         fn current_generation(&self) -> Result<u64, String> {
@@ -218,6 +252,13 @@ mod tests {
         }
         fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<bool, String> {
             Ok(self.accepted.contains(hash))
+        }
+        fn independent_consensus_commitment(
+            &self,
+            hash: &str,
+            _generation: u64,
+        ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String> {
+            Ok(self.independently_committed.get(hash).cloned())
         }
     }
     fn fixture() -> (String, BlockEnvelopeV3, DirectGetBlockRequestV1, FakeStore) {
@@ -270,6 +311,14 @@ mod tests {
         };
         let mut store = FakeStore::default();
         store.generation.set(5);
+        store.independently_committed.insert(
+            b.hash.clone(),
+            NativeV3ConsensusCommitmentV1 {
+                accepted_generation: 5,
+                monetary_state_root: b.header.state_root.clone(),
+                gd08_order_digest: "a".repeat(64),
+            },
+        );
         store.rows.insert(b.hash.clone(), row);
         (genesis.hash, b, req, store)
     }
