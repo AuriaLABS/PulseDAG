@@ -18,6 +18,8 @@ use libp2p::PeerId;
 use pulsedag_core::{
     block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    header_v3::BlockHeaderV3,
+    native_topological_evaluation_v3::derive_dormant_native_v3_topological_evaluation,
     pow_v3::verify_v3_header_pow,
 };
 
@@ -38,6 +40,7 @@ const RETRY_BASE_MILLIS: u64 = 250;
 pub enum NativeV3SyncError {
     InvalidIdentity,
     InvalidHash,
+    InvalidHeaderDag,
     QueueFull,
     StagingFull,
     UnknownRequest,
@@ -100,12 +103,14 @@ struct Item {
     last_peer: Option<PeerId>,
     /// Missing-parent work outranks descendant/frontier work.
     parent_priority: bool,
+    verified_header_height: Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct NativeV3SyncRecovery {
     chain_id: String,
     trusted_genesis_hash: String,
+    trusted_genesis_timestamp_ns: u64,
     items: BTreeMap<String, Item>,
 }
 
@@ -139,6 +144,7 @@ impl NativeV3SyncRecovery {
         Ok(Self {
             chain_id: chain_id.to_string(),
             trusted_genesis_hash: trusted_genesis_hash.to_string(),
+            trusted_genesis_timestamp_ns,
             items: BTreeMap::new(),
         })
     }
@@ -175,9 +181,53 @@ impl NativeV3SyncRecovery {
                 attempts: 0,
                 last_peer: None,
                 parent_priority,
+                verified_header_height: None,
             },
         );
         Ok(true)
+    }
+
+    /// Header-first fast path: independently authenticate the complete
+    /// bounded PoW header DAG back to our frozen genesis, then schedule the
+    /// full bodies in parent-before-child height order. A remote assertion of
+    /// headers/tip alone NEVER implies selected-parent or monetary authority.
+    ///
+    /// Unlike recursive tip-only fetch, this enables concurrent body
+    /// downloads as soon as verified native headers are available.
+    pub fn enqueue_pow_verified_header_dag(
+        &mut self,
+        tip: &str,
+        complete_headers: &BTreeMap<String, BlockHeaderV3>,
+        now: Instant,
+    ) -> Result<usize, NativeV3SyncError> {
+        let order = derive_dormant_native_v3_topological_evaluation(
+            &self.chain_id,
+            self.trusted_genesis_timestamp_ns,
+            &self.trusted_genesis_hash,
+            &[tip.to_owned()],
+            complete_headers,
+        )
+        .map_err(|_| NativeV3SyncError::InvalidHeaderDag)?;
+        let new_count = order
+            .ordered_reachable_headers
+            .iter()
+            .filter(|hash| {
+                hash.as_str() != self.trusted_genesis_hash && !self.items.contains_key(*hash)
+            })
+            .count();
+        if self.items.len() + new_count > NATIVE_V3_SYNC_MAX_KNOWN_HASHES {
+            return Err(NativeV3SyncError::QueueFull);
+        }
+        let mut added = 0;
+        for hash in order.ordered_reachable_headers.iter().skip(1) {
+            if self.enqueue_inner(hash, now, false)? {
+                added += 1;
+            }
+            if let Some(item) = self.items.get_mut(hash) {
+                item.verified_header_height = complete_headers.get(hash).map(|header| header.height);
+            }
+        }
+        Ok(added)
     }
 
     /// Select which hash to request from which *already authenticated,
@@ -211,7 +261,7 @@ impl NativeV3SyncRecovery {
             .iter()
             .filter_map(|(hash, item)| match &item.phase {
                 Phase::Waiting { not_before } if now >= *not_before => {
-                    Some((!item.parent_priority, hash.clone()))
+                    Some((!item.parent_priority, item.verified_header_height.unwrap_or(u64::MAX), hash.clone()))
                 }
                 _ => None,
             })
