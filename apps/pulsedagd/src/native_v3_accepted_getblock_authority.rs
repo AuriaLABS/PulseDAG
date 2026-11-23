@@ -62,7 +62,7 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         &self,
         hash: &str,
     ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
-    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String>;
+    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<Option<u64>, String>;
     /// Independent immutable consensus-journal lookup. Implementations MUST
     /// NOT derive this from the candidate envelope, accepted body row or
     /// remote peer's claim. No production implementation exists yet.
@@ -98,7 +98,7 @@ impl NativeV3AcceptedReadOnlyV1 for NativeV3AcceptedRocksDbReadOnlyV1 {
         })
     }
 
-    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String> {
+    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<Option<u64>, String> {
         self.has_accepted_membership(hash, generation)
     }
 
@@ -137,7 +137,7 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     let record = reader
         .read_native_accepted(requested_hash)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
-    let is_accepted = reader
+    let accepted_membership_generation = reader
         .has_committed_native_membership(requested_hash, before)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
     let independent = reader
@@ -150,19 +150,21 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
         return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
     }
     let Some(record) = record else {
-        if is_accepted || independent.is_some() {
+        if accepted_membership_generation.is_some() || independent.is_some() {
             // A corrupted accepted index/missing body is NOT an authenticated
             // peer-local Missing. Fail rather than hide a broken local store.
             return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
         }
         return Ok(None);
     };
-    if !is_accepted || independent.is_none() {
+    if accepted_membership_generation.is_none() || independent.is_none() {
         // A valid PoW candidate is NOT automatically an accepted block.
         return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
     }
     let independently_committed = independent.expect("checked Some above");
-    if independently_committed.accepted_generation != record.committed_generation
+    let membership_generation = accepted_membership_generation.expect("checked Some above");
+    if membership_generation != record.committed_generation
+        || independently_committed.accepted_generation != record.committed_generation
         || independently_committed.accepted_generation > before
         || independently_committed.accepted_generation == 0
     {
@@ -294,8 +296,8 @@ mod tests {
             }
             Ok(self.rows.get(hash).cloned())
         }
-        fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<bool, String> {
-            Ok(self.accepted.contains(hash))
+        fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<Option<u64>, String> {
+            Ok(self.accepted.contains(hash).then_some(self.generation.get()))
         }
         fn independent_consensus_commitment(
             &self,
@@ -498,6 +500,22 @@ mod tests {
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::MissingMembership)
         );
+    }
+
+    #[test]
+    fn stale_membership_generation_cannot_match_newer_body_and_journal() {
+        let (genesis, b, req, mut store) = fixture();
+        store.accepted.insert(b.hash.clone());
+        store.generation.set(4);
+        // Body + journal still refer to the original test commit generation 5.
+        // Old boolean membership returned true, silently laundering this
+        // torn 3-column acceptance into a servable native-v3 body.
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::TornGeneration)
+        );
+        store.generation.set(5);
+        assert!(wire(&store, &genesis, &req).is_ok());
     }
 
     #[test]
