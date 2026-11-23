@@ -16,7 +16,7 @@ use pulsedag_p2p::messages::{
         NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
     },
 };
-use pulsedag_storage::NativeV3EnvelopeRestoreRecordV1;
+use pulsedag_storage::{NativeV3AcceptedRocksDbReadOnlyV1, NativeV3EnvelopeRestoreRecordV1};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum NativeV3AcceptedReadErrorV1 {
@@ -71,6 +71,54 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         hash: &str,
         generation: u64,
     ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String>;
+}
+
+/// Read-only disk adapter. This is NOT the GD-08 monetary writer: a separate
+/// native accepted journal is opened read-only and every accepted entry MUST
+/// already have been atomically sealed by an independently validated future
+/// consensus authority. Test fixture rows cannot confer production authority.
+impl NativeV3AcceptedReadOnlyV1 for NativeV3AcceptedRocksDbReadOnlyV1 {
+    fn current_generation(&self) -> Result<u64, String> {
+        NativeV3AcceptedRocksDbReadOnlyV1::current_generation(self)
+    }
+
+    fn read_native_accepted(
+        &self,
+        hash: &str,
+    ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String> {
+        self.read_accepted(hash).map(|row| {
+            row.map(|value| NativeV3CommittedEnvelopeRowV1 {
+                frame: value.frame,
+                chain_id: value.chain_id,
+                genesis_hash: value.genesis_hash,
+                committed_generation: value.committed_generation,
+                committed_state_root: value.committed_state_root,
+                committed_gd08_digest: value.committed_gd08_digest,
+            })
+        })
+    }
+
+    fn has_committed_native_membership(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<bool, String> {
+        self.has_accepted_membership(hash, generation)
+    }
+
+    fn independent_consensus_commitment(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String> {
+        self.independent_journal(hash, generation).map(|value| {
+            value.map(|entry| NativeV3ConsensusCommitmentV1 {
+                accepted_generation: entry.accepted_generation,
+                monetary_state_root: entry.monetary_state_root,
+                gd08_order_digest: entry.gd08_order_digest,
+            })
+        })
+    }
 }
 
 fn canonical_hex256(value: &str) -> bool {
