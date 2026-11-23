@@ -11,7 +11,7 @@
 //! subsystem explicitly confirms them. Production does not instantiate this
 //! planner. No legacy types::Block or protocol compatibility fallback.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
