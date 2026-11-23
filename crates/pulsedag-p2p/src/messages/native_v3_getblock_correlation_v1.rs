@@ -115,7 +115,11 @@ impl<I: Copy + Eq + Hash> NativeV3GetBlockCorrelationBookV1<I> {
             return Err(NativeV3GetBlockCorrelationError::InvalidTarget);
         }
         if self.pending.len() >= MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL
-            || self.pending.values().filter(|slot| slot.target == *target).count()
+            || self
+                .pending
+                .values()
+                .filter(|slot| slot.target == *target)
+                .count()
                 >= MAX_DIRECT_GETBLOCK_INFLIGHT_PER_PEER
         {
             return Err(NativeV3GetBlockCorrelationError::BudgetExceeded);
@@ -234,8 +238,8 @@ impl<I: Copy + Eq + Hash> NativeV3GetBlockCorrelationBookV1<I> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::native_v3_getblock_candidate_v1::NATIVE_V3_GETBLOCK_CANDIDATE_VERSION;
+    use super::*;
     use std::time::Duration;
 
     fn peer() -> PeerId {
@@ -259,8 +263,8 @@ mod tests {
         let local = peer();
         let remote = peer();
         let attacker = peer();
-        let mut book = NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local)
-            .unwrap();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local).unwrap();
         let now = Instant::now();
         let hash = "a".repeat(64);
         let first = book
@@ -280,11 +284,13 @@ mod tests {
         );
         let valid = missing(book.expected_request(&first).unwrap(), &remote);
         assert_eq!(
-            book.complete_from_noise(&999, &remote, &valid, now).unwrap_err(),
+            book.complete_from_noise(&999, &remote, &valid, now)
+                .unwrap_err(),
             NativeV3GetBlockCorrelationError::UnknownTransportId
         );
         assert_eq!(
-            book.complete_from_noise(&first, &attacker, &valid, now).unwrap_err(),
+            book.complete_from_noise(&first, &attacker, &valid, now)
+                .unwrap_err(),
             NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer
         );
         assert_eq!(book.len(), 2, "attacker cannot cancel a pending request");
@@ -292,10 +298,14 @@ mod tests {
             .complete_from_noise(&first, &remote, &valid, now)
             .unwrap();
         assert_eq!(verified.block_hash, hash);
-        assert!(verified.block.is_none(), "authenticated miss is not a block");
+        assert!(
+            verified.block.is_none(),
+            "authenticated miss is not a block"
+        );
         assert_eq!(book.len(), 1);
         assert_eq!(
-            book.complete_from_noise(&first, &remote, &valid, now).unwrap_err(),
+            book.complete_from_noise(&first, &remote, &valid, now)
+                .unwrap_err(),
             NativeV3GetBlockCorrelationError::UnknownTransportId
         );
         assert!(!book.cancel(&second, &attacker));
@@ -307,8 +317,8 @@ mod tests {
     fn malicious_authenticated_response_is_consumed_without_admission() {
         let local = peer();
         let remote = peer();
-        let mut book = NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local)
-            .unwrap();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local).unwrap();
         let now = Instant::now();
         let id = book
             .issue_with(&remote, &"b".repeat(64), true, now, |_, _| 7)
@@ -324,7 +334,8 @@ mod tests {
         ));
         assert!(book.is_empty(), "invalid response cannot be replayed");
         assert_eq!(
-            book.complete_from_noise(&id, &remote, &missing(&original, &remote), now).unwrap_err(),
+            book.complete_from_noise(&id, &remote, &missing(&original, &remote), now)
+                .unwrap_err(),
             NativeV3GetBlockCorrelationError::UnknownTransportId
         );
     }
@@ -334,8 +345,8 @@ mod tests {
         let local = peer();
         let remote = peer();
         let impostor = peer();
-        let mut book = NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local)
-            .unwrap();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local).unwrap();
         let now = Instant::now();
         assert_eq!(
             book.issue_with(&remote, &"x".repeat(64), true, now, |_, _| 0),
@@ -362,9 +373,12 @@ mod tests {
         let first = book.expected_request(&0).unwrap().clone();
         assert_eq!(
             book.complete_from_noise(
-                &0, &impostor, &missing(&first, &remote),
+                &0,
+                &impostor,
+                &missing(&first, &remote),
                 now + Duration::from_secs(30)
-            ).unwrap_err(),
+            )
+            .unwrap_err(),
             NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer
         );
         assert_eq!(book.len(), 4);
@@ -389,8 +403,8 @@ mod tests {
     fn collision_cannot_replace_existing_local_transport_ticket() {
         let local = peer();
         let remote = peer();
-        let mut book = NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local)
-            .unwrap();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<u64>::new("first-native-v3", local).unwrap();
         let now = Instant::now();
         book.issue_with(&remote, &"a".repeat(64), true, now, |_, _| 1)
             .unwrap();
