@@ -65,6 +65,7 @@ pub struct NativeV3SyncReport {
     pub queued: usize,
     pub in_flight: usize,
     pub awaiting_consensus: usize,
+    pub deferred_for_ancestors: usize,
     pub accepted: usize,
     pub exhausted: usize,
 }
@@ -76,6 +77,7 @@ impl NativeV3SyncReport {
         self.queued == 0
             && self.in_flight == 0
             && self.awaiting_consensus == 0
+            && self.deferred_for_ancestors == 0
             && self.exhausted == 0
     }
 }
@@ -93,6 +95,9 @@ enum Phase {
         envelope: Box<BlockEnvelopeV3>,
         bytes: usize,
     },
+    /// Body intentionally discarded under storage pressure; do not fetch
+    /// again until independently accepted parent bodies unblock it.
+    DeferredUntilParents { parents: Vec<String> },
     Exhausted,
 }
 
@@ -253,8 +258,22 @@ impl NativeV3SyncRecovery {
         &mut self,
         currently_connected_noise_peers: &[PeerId],
         now: Instant,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
     ) -> Vec<NativeV3SyncAssignment> {
         self.expire(now);
+        // A deferred body must never refetch repeatedly while any ancestor
+        // remains unaccepted. Release only once the trusted daemon store
+        // reports all immediate parents committed (not just PoW staged).
+        for item in self.items.values_mut() {
+            if let Phase::DeferredUntilParents { parents } = &item.phase {
+                if parents
+                    .iter()
+                    .all(|parent| parent == &self.trusted_genesis_hash || accepted_by_daemon(parent))
+                {
+                    item.phase = Phase::Waiting { not_before: now };
+                }
+            }
+        }
         let mut peers = currently_connected_noise_peers.to_vec();
         peers.sort_unstable_by_key(ToString::to_string);
         peers.dedup();
@@ -578,6 +597,7 @@ impl NativeV3SyncRecovery {
                 Phase::Waiting { .. } => report.queued += 1,
                 Phase::Fetching { .. } => report.in_flight += 1,
                 Phase::Staged { .. } => report.awaiting_consensus += 1,
+                Phase::DeferredUntilParents { .. } => report.deferred_for_ancestors += 1,
                 Phase::Exhausted => report.exhausted += 1,
             }
         }
