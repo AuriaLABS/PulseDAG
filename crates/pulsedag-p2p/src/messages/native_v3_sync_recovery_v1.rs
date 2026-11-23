@@ -1098,6 +1098,63 @@ mod tests {
     }
 
     #[test]
+    fn local_stage_pressure_with_peer_churn_cannot_grow_provider_history() {
+        // 64 independent, valid siblings have already been verified over
+        // Noise but the *trusted daemon* has not economically admitted them.
+        // Another equally low sibling cannot evict these ready candidates.
+        // Retrying it after local memory pressure must not retain unbounded
+        // ever-changing PeerIds or exhaust otherwise honest providers.
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let now = Instant::now();
+        let first_provider = peer();
+        let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
+        for salt in 1..=NATIVE_V3_SYNC_MAX_STAGED_BLOCKS {
+            let body = mine(vec![genesis.hash.clone()], 1, salt as u64);
+            sync.enqueue_missing(&body.hash, now).unwrap();
+            let requests = sync.plan_fetches(&[first_provider], now, &|_| false);
+            assert_eq!(requests.len(), 1);
+            sync.on_candidate(&body.hash, &first_provider, Some(body), now, &|_| false)
+                .unwrap();
+        }
+        assert_eq!(sync.report().awaiting_consensus, NATIVE_V3_SYNC_MAX_STAGED_BLOCKS);
+        let blocked = mine(vec![genesis.hash.clone()], 1, 65);
+        sync.enqueue_missing(&blocked.hash, now).unwrap();
+        let mut unique_peers = BTreeSet::new();
+
+        for round in 0..12u64 {
+            let another_provider = loop {
+                let candidate = peer();
+                if unique_peers.insert(candidate) {
+                    break candidate;
+                }
+            };
+            let clock = now + Duration::from_secs(3 * (round + 1));
+            let requests = sync.plan_fetches(&[another_provider], clock, &|_| false);
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].hash, blocked.hash);
+            assert_eq!(requests[0].authenticated_peer, another_provider);
+            sync.on_candidate(
+                &blocked.hash,
+                &another_provider,
+                Some(blocked.clone()),
+                clock,
+                &|_| false,
+            )
+            .unwrap();
+            let pending = sync.items.get(&blocked.hash).unwrap();
+            assert!(
+                pending.attempted_peers.len() <= usize::from(NATIVE_V3_SYNC_MAX_RETRIES),
+                "local RAM pressure must never retain unbounded provider IDs"
+            );
+            assert!(matches!(&pending.phase, Phase::Waiting { .. }));
+            assert_eq!(sync.report().awaiting_consensus, NATIVE_V3_SYNC_MAX_STAGED_BLOCKS);
+        }
+        assert_eq!(unique_peers.len(), 12);
+        assert_eq!(sync.report().exhausted, 0);
+        assert!(sync.has_blockers(), "blocked consensus must not claim synced");
+    }
+
+    #[test]
     fn peer_disconnect_and_queue_caps_fail_closed() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
