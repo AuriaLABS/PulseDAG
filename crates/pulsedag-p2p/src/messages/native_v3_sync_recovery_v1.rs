@@ -97,7 +97,9 @@ enum Phase {
     },
     /// Body intentionally discarded under storage pressure; do not fetch
     /// again until independently accepted parent bodies unblock it.
-    DeferredUntilParents { parents: Vec<String> },
+    DeferredUntilParents {
+        parents: Vec<String>,
+    },
     Exhausted,
 }
 
@@ -243,7 +245,8 @@ impl NativeV3SyncRecovery {
                 added += 1;
             }
             if let Some(item) = self.items.get_mut(hash) {
-                item.verified_header_height = complete_headers.get(hash).map(|header| header.height);
+                item.verified_header_height =
+                    complete_headers.get(hash).map(|header| header.height);
             }
         }
         Ok(added)
@@ -266,10 +269,9 @@ impl NativeV3SyncRecovery {
         // reports all immediate parents committed (not just PoW staged).
         for item in self.items.values_mut() {
             if let Phase::DeferredUntilParents { parents } = &item.phase {
-                if parents
-                    .iter()
-                    .all(|parent| parent == &self.trusted_genesis_hash || accepted_by_daemon(parent))
-                {
+                if parents.iter().all(|parent| {
+                    parent == &self.trusted_genesis_hash || accepted_by_daemon(parent)
+                }) {
                     item.phase = Phase::Waiting { not_before: now };
                 }
             }
@@ -293,9 +295,11 @@ impl NativeV3SyncRecovery {
             .items
             .iter()
             .filter_map(|(hash, item)| match &item.phase {
-                Phase::Waiting { not_before } if now >= *not_before => {
-                    Some((!item.parent_priority, item.verified_header_height.unwrap_or(u64::MAX), hash.clone()))
-                }
+                Phase::Waiting { not_before } if now >= *not_before => Some((
+                    !item.parent_priority,
+                    item.verified_header_height.unwrap_or(u64::MAX),
+                    hash.clone(),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -582,11 +586,9 @@ impl NativeV3SyncRecovery {
             .values()
             .filter_map(|item| match &item.phase {
                 Phase::Staged { envelope, .. }
-                    if envelope
-                        .header
-                        .parents
-                        .iter()
-                        .all(|parent| self.parent_consensus_accepted(parent, accepted_by_daemon)) =>
+                    if envelope.header.parents.iter().all(|parent| {
+                        self.parent_consensus_accepted(parent, accepted_by_daemon)
+                    }) =>
                 {
                     Some((**envelope).clone())
                 }
@@ -699,12 +701,9 @@ mod tests {
     use super::*;
     use pulsedag_core::{
         block_envelope_v3::build_block_envelope_v3,
-        genesis_v3::dormant_native_genesis_envelope_v3_ns,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
+        genesis_v3::dormant_native_genesis_envelope_v3_ns, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
 
     const CHAIN: &str = "native-first-public-network-sync-planner-test-only";
@@ -715,9 +714,8 @@ mod tests {
     }
 
     fn mine(parents: Vec<String>, height: u64, salt: u64) -> BlockEnvelopeV3 {
-        let txs = vec![
-            build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap(),
-        ];
+        let txs =
+            vec![build_reward_claim_transaction_v3("pulse1recovery-test", salt, CHAIN).unwrap()];
         let mut parents = parents;
         parents.sort();
         let mut header = BlockHeaderV3 {
@@ -742,10 +740,7 @@ mod tests {
 
     // Simulated trusted store ONLY in tests. The production daemon must
     // independently perform atomic GD-08/UTXO/reward validation and persistence.
-    fn test_oracle_commit_ready(
-        sync: &mut NativeV3SyncRecovery,
-        accepted: &mut BTreeSet<String>,
-    ) {
+    fn test_oracle_commit_ready(sync: &mut NativeV3SyncRecovery, accepted: &mut BTreeSet<String>) {
         loop {
             let ready = sync.ready_for_consensus(&|hash| accepted.contains(hash));
             if ready.is_empty() {
@@ -790,9 +785,8 @@ mod tests {
             headers.insert(hash.clone(), block.header.clone());
         }
         assert_eq!(
-            sync.enqueue_pow_verified_header_dag(
-                &spine, &headers, now, &|hash| accepted.contains(hash)
-            ),
+            sync.enqueue_pow_verified_header_dag(&spine, &headers, now, &|hash| accepted
+                .contains(hash)),
             Ok(32),
             "native KHeavyHash/ancestor preflight should schedule all 32 bodies"
         );
@@ -803,18 +797,13 @@ mod tests {
 
         while sync.report().accepted < 32 && ticks < 512 {
             let clock = now + Duration::from_secs(ticks);
-            let assignments =
-                sync.plan_fetches(&providers, clock, &|hash| accepted.contains(hash));
+            let assignments = sync.plan_fetches(&providers, clock, &|hash| accepted.contains(hash));
             peak_parallel = peak_parallel.max(assignments.len());
             for assignment in assignments {
                 if !injected_timeout {
                     injected_timeout = true;
-                    sync.dispatch_failed(
-                        &assignment.hash,
-                        &assignment.authenticated_peer,
-                        clock,
-                    )
-                    .unwrap();
+                    sync.dispatch_failed(&assignment.hash, &assignment.authenticated_peer, clock)
+                        .unwrap();
                     continue;
                 }
                 sync.on_candidate(
@@ -920,15 +909,13 @@ mod tests {
         let mut sync = NativeV3SyncRecovery::new(CHAIN, GENESIS_NS, &genesis.hash).unwrap();
         sync.enqueue_missing(&child.hash, now).unwrap();
         assert_eq!(sync.plan_fetches(&[provider], now, &|_| false).len(), 1);
-        sync.on_candidate(
-            &child.hash,
-            &provider,
-            Some(child.clone()),
-            now,
-            &|hash| accepted.contains(hash),
-        )
+        sync.on_candidate(&child.hash, &provider, Some(child.clone()), now, &|hash| {
+            accepted.contains(hash)
+        })
         .unwrap();
-        assert!(sync.ready_for_consensus(&|hash| accepted.contains(hash)).is_empty());
+        assert!(sync
+            .ready_for_consensus(&|hash| accepted.contains(hash))
+            .is_empty());
         // Even an incorrectly asserted accepted child cannot bypass its parent.
         assert_eq!(
             sync.consensus_committed(&child.hash, &|hash| hash == child.hash),
@@ -975,8 +962,10 @@ mod tests {
                 sync.on_candidate(&block.hash, &provider, None, clock, &|_| false)
                     .unwrap();
             } else {
-                sync.on_candidate(&block.hash, &provider, Some(block.clone()), clock, &|_| false)
-                    .unwrap();
+                sync.on_candidate(&block.hash, &provider, Some(block.clone()), clock, &|_| {
+                    false
+                })
+                .unwrap();
             }
         }
         assert_eq!(observed, providers[..3]);
@@ -1022,7 +1011,10 @@ mod tests {
                 break;
             }
         }
-        assert!(witnessed_deferred, "tip-only deep recovery must exercise eviction");
+        assert!(
+            witnessed_deferred,
+            "tip-only deep recovery must exercise eviction"
+        );
         assert_eq!(accepted.len(), 65);
         assert_eq!(sync.report().accepted, 65);
         assert!(!sync.has_blockers());
@@ -1085,11 +1077,7 @@ mod tests {
             sync.dispatch_failed(&hash, &current[0].authenticated_peer, clock)
                 .unwrap();
             if attempt < NATIVE_V3_SYNC_MAX_RETRIES {
-                current = sync.plan_fetches(
-                    &[a, b],
-                    clock + Duration::from_secs(10),
-                    &|_| false,
-                );
+                current = sync.plan_fetches(&[a, b], clock + Duration::from_secs(10), &|_| false);
                 assert_eq!(current.len(), 1);
             }
         }
@@ -1112,11 +1100,7 @@ mod tests {
         assert_eq!(sync.peer_disconnected(&other, now), 0);
         assert_eq!(sync.peer_disconnected(&first, now), 1);
         assert!(sync.has_blockers());
-        let again = sync.plan_fetches(
-            &[other],
-            now + Duration::from_secs(1),
-            &|_| false,
-        );
+        let again = sync.plan_fetches(&[other], now + Duration::from_secs(1), &|_| false);
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].authenticated_peer, other);
         assert_eq!(
