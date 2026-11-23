@@ -280,12 +280,12 @@ mod tests {
         );
         let valid = missing(book.expected_request(&first).unwrap(), &remote);
         assert_eq!(
-            book.complete_from_noise(&999, &remote, &valid, now),
-            Err(NativeV3GetBlockCorrelationError::UnknownTransportId)
+            book.complete_from_noise(&999, &remote, &valid, now).unwrap_err(),
+            NativeV3GetBlockCorrelationError::UnknownTransportId
         );
         assert_eq!(
-            book.complete_from_noise(&first, &attacker, &valid, now),
-            Err(NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer)
+            book.complete_from_noise(&first, &attacker, &valid, now).unwrap_err(),
+            NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer
         );
         assert_eq!(book.len(), 2, "attacker cannot cancel a pending request");
         let verified = book
@@ -295,8 +295,8 @@ mod tests {
         assert!(verified.block.is_none(), "authenticated miss is not a block");
         assert_eq!(book.len(), 1);
         assert_eq!(
-            book.complete_from_noise(&first, &remote, &valid, now),
-            Err(NativeV3GetBlockCorrelationError::UnknownTransportId)
+            book.complete_from_noise(&first, &remote, &valid, now).unwrap_err(),
+            NativeV3GetBlockCorrelationError::UnknownTransportId
         );
         assert!(!book.cancel(&second, &attacker));
         assert!(book.cancel(&second, &remote));
@@ -324,8 +324,8 @@ mod tests {
         ));
         assert!(book.is_empty(), "invalid response cannot be replayed");
         assert_eq!(
-            book.complete_from_noise(&id, &remote, &missing(&original, &remote), now),
-            Err(NativeV3GetBlockCorrelationError::UnknownTransportId)
+            book.complete_from_noise(&id, &remote, &missing(&original, &remote), now).unwrap_err(),
+            NativeV3GetBlockCorrelationError::UnknownTransportId
         );
     }
 
@@ -364,8 +364,8 @@ mod tests {
             book.complete_from_noise(
                 &0, &impostor, &missing(&first, &remote),
                 now + Duration::from_secs(30)
-            ),
-            Err(NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer)
+            ).unwrap_err(),
+            NativeV3GetBlockCorrelationError::WrongAuthenticatedPeer
         );
         assert_eq!(book.len(), 4);
         assert_eq!(book.expire(now + book.lifetime()), 4);
