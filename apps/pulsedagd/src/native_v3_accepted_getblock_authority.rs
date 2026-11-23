@@ -5,8 +5,7 @@
 //! atomically committed native-v3 monetary database. Test stores are not proof.
 
 use pulsedag_core::{
-    block_envelope_v3::BlockEnvelopeV3,
-    genesis_v3::dormant_native_genesis_envelope_v3_ns,
+    block_envelope_v3::BlockEnvelopeV3, genesis_v3::dormant_native_genesis_envelope_v3_ns,
 };
 use pulsedag_p2p::messages::{
     direct_getblock_v1::{
@@ -49,15 +48,18 @@ pub(super) struct NativeV3CommittedEnvelopeRowV1 {
 /// There is intentionally no production implementation or writer in v3.0.
 pub(super) trait NativeV3AcceptedReadOnlyV1 {
     fn current_generation(&self) -> Result<u64, String>;
-    fn read_native_accepted(&self, hash: &str)
-        -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
-    fn has_committed_native_membership(&self, hash: &str, generation: u64)
-        -> Result<bool, String>;
+    fn read_native_accepted(
+        &self,
+        hash: &str,
+    ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
+    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String>;
 }
 
 fn canonical_hex256(value: &str) -> bool {
     value.len() == 64
-        && value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
 fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
@@ -67,12 +69,18 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     genesis_hash: &str,
     requested_hash: &str,
 ) -> Result<Option<BlockEnvelopeV3>, NativeV3AcceptedReadErrorV1> {
-    let before = reader.current_generation().map_err(NativeV3AcceptedReadErrorV1::Storage)?;
-    let record = reader.read_native_accepted(requested_hash)
+    let before = reader
+        .current_generation()
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
-    let is_accepted = reader.has_committed_native_membership(requested_hash, before)
+    let record = reader
+        .read_native_accepted(requested_hash)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
-    let after = reader.current_generation().map_err(NativeV3AcceptedReadErrorV1::Storage)?;
+    let is_accepted = reader
+        .has_committed_native_membership(requested_hash, before)
+        .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
+    let after = reader
+        .current_generation()
+        .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
     if before != after || before == 0 {
         return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
     }
@@ -97,7 +105,9 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     if !canonical_hex256(&record.committed_gd08_digest) {
         return Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit);
     }
-    record.frame.verify(chain_id, genesis_ns, genesis_hash)
+    record
+        .frame
+        .verify(chain_id, genesis_ns, genesis_hash)
         .map_err(|_| NativeV3AcceptedReadErrorV1::InvalidAcceptedRecord)?;
     let body = record.frame.envelope();
     if body.hash != requested_hash {
@@ -130,7 +140,8 @@ pub(super) fn prepare_native_v3_accepted_getblock_wire<R: NativeV3AcceptedReadOn
         chain_id,
         authenticated_remote_requester,
         authenticated_local_responder,
-    ).map_err(NativeV3AcceptedReadErrorV1::Wire)?;
+    )
+    .map_err(NativeV3AcceptedReadErrorV1::Wire)?;
     let frozen = dormant_native_genesis_envelope_v3_ns(chain_id, genesis_ns)
         .map_err(|_| NativeV3AcceptedReadErrorV1::InvalidGenesis)?;
     if frozen.hash != trusted_genesis_hash {
@@ -141,7 +152,11 @@ pub(super) fn prepare_native_v3_accepted_getblock_wire<R: NativeV3AcceptedReadOn
         return Err(NativeV3AcceptedReadErrorV1::InvalidHash);
     }
     let body = lookup_consistent(
-        reader, chain_id, genesis_ns, trusted_genesis_hash, &request.block_hash,
+        reader,
+        chain_id,
+        genesis_ns,
+        trusted_genesis_hash,
+        &request.block_hash,
     )?;
     let response = NativeV3GetBlockCandidateResponse {
         version: NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
@@ -152,27 +167,29 @@ pub(super) fn prepare_native_v3_accepted_getblock_wire<R: NativeV3AcceptedReadOn
         block: body,
     };
     encode_native_v3_getblock_candidate_response(
-        &response, request, chain_id, authenticated_remote_requester, authenticated_local_responder,
-    ).map_err(NativeV3AcceptedReadErrorV1::Wire)
+        &response,
+        request,
+        chain_id,
+        authenticated_remote_requester,
+        authenticated_local_responder,
+    )
+    .map_err(NativeV3AcceptedReadErrorV1::Wire)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-    use std::collections::{BTreeMap, BTreeSet};
     use pulsedag_core::{
-        block_envelope_v3::build_block_envelope_v3,
-        header_v3::BlockHeaderV3,
-        pow_v3::evaluate_v3_header_pow,
-        protocol::BLOCK_HEADER_VERSION_V3,
-        reward_settlement_v3::build_reward_claim_transaction_v3,
-        types::compute_merkle_root,
+        block_envelope_v3::build_block_envelope_v3, header_v3::BlockHeaderV3,
+        pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
+        reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
     use pulsedag_p2p::messages::{
         direct_getblock_v1::DIRECT_GETBLOCK_PROTOCOL_V1,
         native_v3_getblock_candidate_v1::decode_native_v3_getblock_candidate_response,
     };
+    use std::cell::Cell;
+    use std::collections::{BTreeMap, BTreeSet};
 
     const CHAIN: &str = "native-v3-accepted-getblock-reader-test-only";
     const NS: u64 = 1_800_000_000_500_000_000;
@@ -190,25 +207,26 @@ mod tests {
         fn current_generation(&self) -> Result<u64, String> {
             Ok(self.generation.get())
         }
-        fn read_native_accepted(&self, hash: &str)
-            -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>
-        {
+        fn read_native_accepted(
+            &self,
+            hash: &str,
+        ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String> {
             if self.mutate_on_read {
                 self.generation.set(self.generation.get() + 1);
             }
             Ok(self.rows.get(hash).cloned())
         }
-        fn has_committed_native_membership(&self, hash: &str, _gen: u64)
-            -> Result<bool, String>
-        {
+        fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<bool, String> {
             Ok(self.accepted.contains(hash))
         }
     }
     fn fixture() -> (String, BlockEnvelopeV3, DirectGetBlockRequestV1, FakeStore) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
-        let txs = vec![
-            build_reward_claim_transaction_v3("pulse1native-read-only-fixture", 1, CHAIN).unwrap(),
-        ];
+        let txs =
+            vec![
+                build_reward_claim_transaction_v3("pulse1native-read-only-fixture", 1, CHAIN)
+                    .unwrap(),
+            ];
         let mut h = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
             parents: vec![genesis.hash.clone()],
@@ -236,8 +254,12 @@ mod tests {
             block_hash: b.hash.clone(),
         };
         let record = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-            b.clone(), CHAIN, NS, &genesis.hash,
-        ).unwrap();
+            b.clone(),
+            CHAIN,
+            NS,
+            &genesis.hash,
+        )
+        .unwrap();
         let row = NativeV3CommittedEnvelopeRowV1 {
             frame: record,
             chain_id: CHAIN.to_string(),
@@ -252,7 +274,9 @@ mod tests {
         (genesis.hash, b, req, store)
     }
     fn wire(
-        store: &FakeStore, genesis: &str, request: &DirectGetBlockRequestV1,
+        store: &FakeStore,
+        genesis: &str,
+        request: &DirectGetBlockRequestV1,
     ) -> Result<Vec<u8>, NativeV3AcceptedReadErrorV1> {
         prepare_native_v3_accepted_getblock_wire(
             store, CHAIN, NS, genesis, request, REQUESTER, RESPONDER,
@@ -261,13 +285,15 @@ mod tests {
     #[test]
     fn staged_pow_valid_candidate_cannot_be_served_without_independent_acceptance() {
         let (genesis, b, req, mut store) = fixture();
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::MissingMembership));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::MissingMembership)
+        );
         store.accepted.insert(b.hash.clone());
         let reply = wire(&store, &genesis, &req).unwrap();
-        let parsed = decode_native_v3_getblock_candidate_response(
-            &reply, &req, CHAIN, REQUESTER, RESPONDER,
-        ).unwrap();
+        let parsed =
+            decode_native_v3_getblock_candidate_response(&reply, &req, CHAIN, REQUESTER, RESPONDER)
+                .unwrap();
         assert_eq!(parsed.block.unwrap().hash, b.hash);
     }
     #[test]
@@ -275,35 +301,51 @@ mod tests {
         let (genesis, b, req, mut store) = fixture();
         store.rows.clear();
         let reply = wire(&store, &genesis, &req).unwrap();
-        let parsed = decode_native_v3_getblock_candidate_response(
-            &reply, &req, CHAIN, REQUESTER, RESPONDER,
-        ).unwrap();
+        let parsed =
+            decode_native_v3_getblock_candidate_response(&reply, &req, CHAIN, REQUESTER, RESPONDER)
+                .unwrap();
         assert!(parsed.block.is_none());
         store.accepted.insert(b.hash);
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::MissingMembership));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::MissingMembership)
+        );
     }
     #[test]
     fn torn_generation_wrong_root_chain_and_noise_binding_fail_closed() {
         let (genesis, b, req, mut store) = fixture();
         store.accepted.insert(b.hash.clone());
         store.mutate_on_read = true;
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::TornGeneration));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::TornGeneration)
+        );
         store.mutate_on_read = false;
         store.generation.set(5);
-        assert_eq!(wire(&store, &"f".repeat(64), &req),
-            Err(NativeV3AcceptedReadErrorV1::InvalidGenesis));
+        assert_eq!(
+            wire(&store, &"f".repeat(64), &req),
+            Err(NativeV3AcceptedReadErrorV1::InvalidGenesis)
+        );
         store.rows.get_mut(&b.hash).unwrap().committed_state_root = "f".repeat(64);
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::WrongStateRoot));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::WrongStateRoot)
+        );
         store.rows.get_mut(&b.hash).unwrap().committed_state_root = b.header.state_root.clone();
         store.rows.get_mut(&b.hash).unwrap().committed_gd08_digest = "INVALID".into();
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit)
+        );
         assert!(matches!(
             prepare_native_v3_accepted_getblock_wire(
-                &store, CHAIN, NS, &genesis, &req, REQUESTER, "forgedOtherPeer",
+                &store,
+                CHAIN,
+                NS,
+                &genesis,
+                &req,
+                REQUESTER,
+                "forgedOtherPeer",
             ),
             Err(NativeV3AcceptedReadErrorV1::Wire(_))
         ));
@@ -316,14 +358,18 @@ mod tests {
         store.rows.insert(wrong.clone(), row);
         store.accepted.insert(wrong.clone());
         req.block_hash = wrong;
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::InvalidHash));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::InvalidHash)
+        );
         req.block_hash = b.hash.clone();
         let mut row = store.rows.remove(&"b".repeat(64)).unwrap();
         row.committed_generation = 6;
         store.rows.insert(b.hash.clone(), row);
         store.accepted.insert(b.hash);
-        assert_eq!(wire(&store, &genesis, &req),
-            Err(NativeV3AcceptedReadErrorV1::TornGeneration));
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::TornGeneration)
+        );
     }
 }
