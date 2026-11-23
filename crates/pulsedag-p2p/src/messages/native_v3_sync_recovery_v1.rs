@@ -306,7 +306,7 @@ impl NativeV3SyncRecovery {
         ready.sort_unstable();
 
         let mut planned = Vec::new();
-        for (_, hash) in ready {
+        for (_, _, hash) in ready {
             if active >= MAX_DIRECT_GETBLOCK_INFLIGHT_GLOBAL {
                 break;
             }
