@@ -1,0 +1,47 @@
+name: "First-network native-v3 same-Noise-Swarm pull coordinator (dormant)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-p2p/src/messages/native_v3_noise_pull_controller_v1.rs"
+      - "crates/pulsedag-p2p/src/messages/native_v3_sync_recovery_v1.rs"
+      - "crates/pulsedag-p2p/src/messages/native_v3_getblock_correlation_v1.rs"
+      - "crates/pulsedag-p2p/src/messages.rs"
+      - ".github/workflows/v3-native-noise-pull-coordinator-inert.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-v3-noise-coordinator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin first-network security gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_HEAD"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          ! grep -Fq 'native_v3_noise_pull_controller_v1::' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact-head Rustfmt
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Test same-Swarm transport correlation, expiration, forged peers and no monetary acceptance
+        run: cargo +1.91.0 test --locked -p pulsedag-p2p --lib native_v3_noise_pull_controller_v1 -- --nocapture
+      - name: Strict P2P Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+      - name: No lockfile modification
+        run: git diff --exit-code -- Cargo.lock
