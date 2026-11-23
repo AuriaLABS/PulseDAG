@@ -349,6 +349,7 @@ mod tests {
     fn true_absence_is_missing_but_torn_accepted_index_is_error() {
         let (genesis, b, req, mut store) = fixture();
         store.rows.clear();
+        store.independently_committed.clear();
         let reply = wire(&store, &genesis, &req).unwrap();
         let parsed =
             decode_native_v3_getblock_candidate_response(&reply, &req, CHAIN, REQUESTER, RESPONDER)
@@ -400,11 +401,53 @@ mod tests {
         ));
     }
     #[test]
+    fn well_formed_but_wrong_gd08_digest_cannot_launder_an_accepted_body() {
+        let (genesis, b, req, mut store) = fixture();
+        store.accepted.insert(b.hash.clone());
+        // This is the exact Codex P2: the original implementation accepted
+        // arbitrary canonical "a"/"b" hex even if committed GD-08 differs.
+        store.rows.get_mut(&b.hash).unwrap().committed_gd08_digest = "b".repeat(64);
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit)
+        );
+        store.rows.get_mut(&b.hash).unwrap().committed_gd08_digest = "a".repeat(64);
+        store.independently_committed.get_mut(&b.hash).unwrap().gd08_order_digest =
+            "c".repeat(64);
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::InvalidOrderCommit)
+        );
+        store.independently_committed.get_mut(&b.hash).unwrap().gd08_order_digest =
+            "a".repeat(64);
+        store.independently_committed.get_mut(&b.hash).unwrap().monetary_state_root =
+            "e".repeat(64);
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::WrongStateRoot)
+        );
+        store.independently_committed.get_mut(&b.hash).unwrap().monetary_state_root =
+            b.header.state_root.clone();
+        store.independently_committed.get_mut(&b.hash).unwrap().accepted_generation = 4;
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::TornGeneration)
+        );
+        store.independently_committed.remove(&b.hash);
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::MissingMembership)
+        );
+    }
+
+    #[test]
     fn wrong_accepted_key_and_future_generation_are_rejected() {
         let (genesis, b, mut req, mut store) = fixture();
         let wrong = "b".repeat(64);
         let row = store.rows.remove(&b.hash).unwrap();
         store.rows.insert(wrong.clone(), row);
+        let independent = store.independently_committed.remove(&b.hash).unwrap();
+        store.independently_committed.insert(wrong.clone(), independent);
         store.accepted.insert(wrong.clone());
         req.block_hash = wrong;
         assert_eq!(
@@ -415,6 +458,8 @@ mod tests {
         let mut row = store.rows.remove(&"b".repeat(64)).unwrap();
         row.committed_generation = 6;
         store.rows.insert(b.hash.clone(), row);
+        let independent = store.independently_committed.remove(&wrong).unwrap();
+        store.independently_committed.insert(b.hash.clone(), independent);
         store.accepted.insert(b.hash);
         assert_eq!(
             wire(&store, &genesis, &req),
