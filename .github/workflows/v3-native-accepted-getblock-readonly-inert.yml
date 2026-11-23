@@ -5,6 +5,8 @@ on:
     paths:
       - "apps/pulsedagd/src/native_v3_accepted_getblock_authority.rs"
       - "apps/pulsedagd/src/main.rs"
+      - "crates/pulsedag-storage/src/native_accepted_disk_v3.rs"
+      - "crates/pulsedag-storage/src/root.rs"
       - ".github/workflows/v3-native-accepted-getblock-readonly-inert.yml"
   workflow_dispatch:
 
@@ -34,12 +36,17 @@ jobs:
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
           grep -Fq 'mod native_v3_accepted_getblock_authority;' apps/pulsedagd/src/main.rs
           ! grep -Fq 'native_v3_accepted_getblock_authority::' apps/pulsedagd/src/main.rs
+          ! grep -Fq 'NativeV3AcceptedRocksDbReadOnlyV1::open' apps/pulsedagd/src/main.rs
       - name: Install pinned Rust
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
       - name: Exact-head format
         run: cargo +1.91.0 fmt --all -- --check
       - name: Verify native accepted-only reader rejects untrusted block and torn state
         run: cargo +1.91.0 test --locked -p pulsedagd --bin pulsedagd native_v3_accepted_getblock_authority -- --nocapture
+      - name: Validate separate native-v3 RocksDB accepted journal after restart and torn-seal rejects
+        run: cargo +1.91.0 test --locked -p pulsedag-storage --lib native_accepted_disk_v3 -- --nocapture
+      - name: Strict storage clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-storage --all-targets -- -D warnings
       - name: Strict daemon clippy
         run: cargo +1.91.0 clippy --locked -p pulsedagd --all-targets -- -D warnings
       - name: Lockfile unchanged
