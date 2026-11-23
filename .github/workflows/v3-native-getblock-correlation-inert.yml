@@ -5,6 +5,7 @@ on:
     paths:
       - "crates/pulsedag-p2p/src/messages/native_v3_getblock_correlation_v1.rs"
       - "crates/pulsedag-p2p/src/messages/native_v3_sync_recovery_v1.rs"
+      - "crates/pulsedag-p2p/src/messages/native_v3_noise_pull_controller_v1.rs"
       - "crates/pulsedag-p2p/src/messages/native_v3_getblock_candidate_v1.rs"
       - "crates/pulsedag-p2p/src/messages.rs"
       - ".github/workflows/v3-native-getblock-correlation-inert.yml"
@@ -36,6 +37,7 @@ jobs:
           grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
           ! grep -Fq 'native_v3_getblock_correlation_v1::' crates/pulsedag-p2p/src/lib.rs
           ! grep -Fq 'native_v3_sync_recovery_v1::' crates/pulsedag-p2p/src/lib.rs
+          ! grep -Fq 'native_v3_noise_pull_controller_v1::' crates/pulsedag-p2p/src/lib.rs
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
       - name: Exact-head Rustfmt
@@ -44,6 +46,8 @@ jobs:
         run: cargo +1.91.0 test --locked -p pulsedag-p2p --lib native_v3_getblock_correlation_v1 -- --nocapture
       - name: Verify parent-first multi-peer native-v3 recovery controller
         run: cargo +1.91.0 test --locked -p pulsedag-p2p --lib native_v3_sync_recovery_v1 -- --nocapture
+      - name: Verify same-Swarm native-v3 transport ID and recovery controller
+        run: cargo +1.91.0 test --locked -p pulsedag-p2p --lib native_v3_noise_pull_controller_v1 -- --nocapture
       - name: Strict P2P Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
       - name: No lockfile modification
