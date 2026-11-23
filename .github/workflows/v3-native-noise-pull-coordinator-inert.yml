@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "crates/pulsedag-p2p/src/messages/native_v3_noise_pull_controller_v1.rs"
+      - "crates/pulsedag-p2p/tests/native_v3_noise_pull_controller_real_swarm.rs"
       - "crates/pulsedag-p2p/src/messages/native_v3_sync_recovery_v1.rs"
       - "crates/pulsedag-p2p/src/messages/native_v3_getblock_correlation_v1.rs"
       - "crates/pulsedag-p2p/src/messages.rs"
@@ -41,6 +42,8 @@ jobs:
         run: cargo +1.91.0 fmt --all -- --check
       - name: Test same-Swarm transport correlation, expiration, forged peers and no monetary acceptance
         run: cargo +1.91.0 test --locked -p pulsedag-p2p --lib native_v3_noise_pull_controller_v1 -- --nocapture
+      - name: Real two-Swarm TCP Noise GetBlock forged-peer reissue and candidate-only test
+        run: cargo +1.91.0 test --locked -p pulsedag-p2p --test native_v3_noise_pull_controller_real_swarm -- --nocapture
       - name: Strict P2P Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
       - name: No lockfile modification
