@@ -1116,7 +1116,10 @@ mod tests {
             sync.on_candidate(&body.hash, &first_provider, Some(body), now, &|_| false)
                 .unwrap();
         }
-        assert_eq!(sync.report().awaiting_consensus, NATIVE_V3_SYNC_MAX_STAGED_BLOCKS);
+        assert_eq!(
+            sync.report().awaiting_consensus,
+            NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
+        );
         let blocked = mine(vec![genesis.hash.clone()], 1, 65);
         sync.enqueue_missing(&blocked.hash, now).unwrap();
         let mut unique_peers = BTreeSet::new();
@@ -1147,11 +1150,17 @@ mod tests {
                 "local RAM pressure must never retain unbounded provider IDs"
             );
             assert!(matches!(&pending.phase, Phase::Waiting { .. }));
-            assert_eq!(sync.report().awaiting_consensus, NATIVE_V3_SYNC_MAX_STAGED_BLOCKS);
+            assert_eq!(
+                sync.report().awaiting_consensus,
+                NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
+            );
         }
         assert_eq!(unique_peers.len(), 12);
         assert_eq!(sync.report().exhausted, 0);
-        assert!(sync.has_blockers(), "blocked consensus must not claim synced");
+        assert!(
+            sync.has_blockers(),
+            "blocked consensus must not claim synced"
+        );
     }
 
     #[test]
