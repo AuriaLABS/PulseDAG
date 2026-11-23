@@ -11,7 +11,7 @@
 //! subsystem explicitly confirms them. Production does not instantiate this
 //! planner. No legacy types::Block or protocol compatibility fallback.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
@@ -50,6 +50,7 @@ pub enum NativeV3SyncError {
     InvalidCandidate,
     MissingConsensusParents,
     NotStagedForConsensus,
+    NotInAcceptedStore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,10 +90,9 @@ enum Phase {
         deadline: Instant,
     },
     Staged {
-        envelope: BlockEnvelopeV3,
+        envelope: Box<BlockEnvelopeV3>,
         bytes: usize,
     },
-    ConsensusAccepted,
     Exhausted,
 }
 
@@ -101,6 +101,10 @@ struct Item {
     phase: Phase,
     attempts: u8,
     last_peer: Option<PeerId>,
+    /// Track providers per hash so an unhelpful A/B pair cannot exhaust all
+    /// retries without trying C/D/E. Strictly bounded by MAX_RETRIES.
+    attempted_peers: BTreeSet<String>,
+    evictions: u8,
     /// Missing-parent work outranks descendant/frontier work.
     parent_priority: bool,
     verified_header_height: Option<u64>,
@@ -112,6 +116,7 @@ pub struct NativeV3SyncRecovery {
     trusted_genesis_hash: String,
     trusted_genesis_timestamp_ns: u64,
     items: BTreeMap<String, Item>,
+    accepted_committed_total: usize,
 }
 
 fn canonical_hash(hash: &str) -> bool {
@@ -146,6 +151,7 @@ impl NativeV3SyncRecovery {
             trusted_genesis_hash: trusted_genesis_hash.to_string(),
             trusted_genesis_timestamp_ns,
             items: BTreeMap::new(),
+            accepted_committed_total: 0,
         })
     }
 
@@ -180,6 +186,8 @@ impl NativeV3SyncRecovery {
                 phase: Phase::Waiting { not_before: now },
                 attempts: 0,
                 last_peer: None,
+                attempted_peers: BTreeSet::new(),
+                evictions: 0,
                 parent_priority,
                 verified_header_height: None,
             },
@@ -287,6 +295,7 @@ impl NativeV3SyncRecovery {
                 .collect::<Vec<_>>();
             ranked.sort_by_key(|peer| {
                 (
+                    item.attempted_peers.contains(&peer.to_string()),
                     Some(*peer) == previous,
                     per_peer.get(&peer.to_string()).copied().unwrap_or(0),
                     peer.to_string(),
@@ -298,6 +307,7 @@ impl NativeV3SyncRecovery {
             let item = self.items.get_mut(&hash).expect("queued hash exists");
             item.attempts = item.attempts.saturating_add(1);
             item.last_peer = Some(peer);
+            item.attempted_peers.insert(peer.to_string());
             item.phase = Phase::Fetching {
                 peer,
                 deadline: now + DIRECT_GETBLOCK_REQUEST_TTL,
@@ -542,10 +552,10 @@ impl NativeV3SyncRecovery {
                 Phase::Waiting { .. } => report.queued += 1,
                 Phase::Fetching { .. } => report.in_flight += 1,
                 Phase::Staged { .. } => report.awaiting_consensus += 1,
-                Phase::ConsensusAccepted => report.accepted += 1,
                 Phase::Exhausted => report.exhausted += 1,
             }
         }
+        report.accepted = self.accepted_committed_total;
         report
     }
 
