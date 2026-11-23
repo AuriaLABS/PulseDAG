@@ -347,6 +347,70 @@ impl NativeV3SyncRecovery {
         planned
     }
 
+    /// A deep tip-only chain can fill all 64 staged slots before its oldest
+    /// missing ancestor arrives. Evict only an *unready, higher* descendant
+    /// and retain a lightweight parent dependency until trusted consensus
+    /// commits its parents. Never use an unbounded cache or keep repeating
+    /// poisoned/rejected bodies as an alleged recovery success.
+    fn reclaim_staging_for_ancestor(
+        &mut self,
+        incoming_height: u64,
+        incoming_bytes: usize,
+        accepted_by_daemon: &impl Fn(&str) -> bool,
+    ) -> Result<(), NativeV3SyncError> {
+        let (mut staged_count, mut staged_bytes) =
+            self.items
+                .values()
+                .fold((0usize, 0usize), |(n, total), item| match &item.phase {
+                    Phase::Staged { bytes, .. } => (n + 1, total + bytes),
+                    _ => (n, total),
+                });
+
+        while staged_count >= NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
+            || staged_bytes + incoming_bytes > NATIVE_V3_SYNC_MAX_STAGED_BYTES
+        {
+            let victim = self
+                .items
+                .iter()
+                .filter_map(|(hash, item)| {
+                    if let Phase::Staged { envelope, bytes } = &item.phase {
+                        if envelope.header.height > incoming_height
+                            && envelope.header.parents.iter().any(|parent| {
+                                parent != &self.trusted_genesis_hash && !accepted_by_daemon(parent)
+                            })
+                        {
+                            return Some((
+                                envelope.header.height,
+                                hash.clone(),
+                                *bytes,
+                                envelope.header.parents.clone(),
+                            ));
+                        }
+                    }
+                    None
+                })
+                .max_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+            let Some((_, hash, released_bytes, parents)) = victim else {
+                return Err(NativeV3SyncError::StagingFull);
+            };
+            let item = self
+                .items
+                .get_mut(&hash)
+                .expect("verified victim is still staged");
+            item.evictions = item.evictions.saturating_add(1);
+            item.attempts = 0;
+            item.parent_priority = false;
+            item.phase = if item.evictions >= 4 {
+                Phase::Exhausted
+            } else {
+                Phase::DeferredUntilParents { parents }
+            };
+            staged_count -= 1;
+            staged_bytes -= released_bytes;
+        }
+        Ok(())
+    }
+
     fn reschedule(item: &mut Item, now: Instant) {
         if item.attempts >= NATIVE_V3_SYNC_MAX_RETRIES {
             item.phase = Phase::Exhausted;
@@ -443,19 +507,9 @@ impl NativeV3SyncRecovery {
             let _ = self.dispatch_failed(requested_hash, actual_peer, now);
             return Err(NativeV3SyncError::StagingFull);
         }
-        let (staged_count, staged_bytes) =
-            self.items
-                .values()
-                .fold((0usize, 0usize), |(n, total), item| match &item.phase {
-                    Phase::Staged { bytes, .. } => (n + 1, total + bytes),
-                    _ => (n, total),
-                });
-        if staged_count >= NATIVE_V3_SYNC_MAX_STAGED_BLOCKS
-            || staged_bytes + bytes > NATIVE_V3_SYNC_MAX_STAGED_BYTES
-        {
-            let _ = self.dispatch_failed(requested_hash, actual_peer, now);
-            return Err(NativeV3SyncError::StagingFull);
-        }
+        // Authenticate the complete referenced parent set before any cache
+        // mutation. Never let a malicious candidate allocate beyond the
+        // bounded queue, even if a victim would otherwise be evicted.
         let new_parents = envelope
             .header
             .parents
@@ -477,6 +531,34 @@ impl NativeV3SyncRecovery {
                 self.enqueue_inner(parent, now, true)?;
             }
         }
+
+        if self
+            .reclaim_staging_for_ancestor(envelope.header.height, bytes, accepted_by_daemon)
+            .is_err()
+        {
+            // Staging pressure is NOT evidence that the authenticated peer
+            // failed. Drop this valid body, retain only its parent dependency
+            // and refetch with a fresh wire ticket once the real daemon makes
+            // progress. Do not burn the network retry budget on RAM pressure.
+            let parents = envelope.header.parents.clone();
+            let all_accepted = parents
+                .iter()
+                .all(|parent| self.parent_consensus_accepted(parent, accepted_by_daemon));
+            let item = self
+                .items
+                .get_mut(requested_hash)
+                .ok_or(NativeV3SyncError::UnknownRequest)?;
+            item.attempts = item.attempts.saturating_sub(1);
+            item.phase = if all_accepted {
+                Phase::Waiting {
+                    not_before: now + Duration::from_secs(2),
+                }
+            } else {
+                Phase::DeferredUntilParents { parents }
+            };
+            return Ok(());
+        }
+
         let item = self
             .items
             .get_mut(requested_hash)
