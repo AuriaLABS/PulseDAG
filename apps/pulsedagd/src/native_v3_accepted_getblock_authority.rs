@@ -62,7 +62,11 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         &self,
         hash: &str,
     ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
-    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<Option<u64>, String>;
+    fn has_committed_native_membership(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<u64>, String>;
     /// Independent immutable consensus-journal lookup. Implementations MUST
     /// NOT derive this from the candidate envelope, accepted body row or
     /// remote peer's claim. No production implementation exists yet.
@@ -98,7 +102,11 @@ impl NativeV3AcceptedReadOnlyV1 for NativeV3AcceptedRocksDbReadOnlyV1 {
         })
     }
 
-    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<Option<u64>, String> {
+    fn has_committed_native_membership(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<u64>, String> {
         self.has_accepted_membership(hash, generation)
     }
 
@@ -297,7 +305,11 @@ mod tests {
             }
             Ok(self.rows.get(hash).cloned())
         }
-        fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<Option<u64>, String> {
+        fn has_committed_native_membership(
+            &self,
+            hash: &str,
+            _gen: u64,
+        ) -> Result<Option<u64>, String> {
             let generation = if self.membership_generation_override.get() == 0 {
                 self.generation.get()
             } else {
