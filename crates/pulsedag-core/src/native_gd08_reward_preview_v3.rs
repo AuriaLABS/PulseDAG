@@ -27,6 +27,15 @@ use crate::{
 
 const MAX_REWARD_PREVIEW_BLOCKS: usize = 128;
 
+/// Explicit experimental K and economic-time cadence; NEVER a frozen native
+/// GD-08 policy or an authorization for mining/reward settlement.
+#[derive(Debug, Clone, Copy)]
+pub struct DormantNativeRewardTrialPolicyV3<'a> {
+    pub trial_k: usize,
+    pub cadence_segments: &'a [MonetaryCadenceSegment],
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeGd08RewardEntryV3 {
     pub block_hash: BlockId,
@@ -73,17 +82,17 @@ pub fn inspect_dormant_native_gd08_reward_preview(
     frozen_genesis_hash: &str,
     tip: &BlockId,
     envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
-    trial_k: usize,
     opening_utxo: &UtxoState,
-    cadence_segments: &[MonetaryCadenceSegment],
+    policy: DormantNativeRewardTrialPolicyV3<'_>,
 ) -> Result<DormantNativeGd08RewardPreviewV3, PulseError> {
+    let cadence_segments = policy.cadence_segments;
     let signed = inspect_dormant_native_gd08_signed_prefix(
         chain_id,
         frozen_genesis_ns,
         frozen_genesis_hash,
         tip,
         envelopes,
-        trial_k,
+        policy.trial_k,
         opening_utxo,
     )?;
     if signed.ordered_blocks.len() < 2
@@ -202,6 +211,13 @@ mod tests {
     const CHAIN: &str = "native-v3-gd08-hypothetical-reward-preview-fixture";
     const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
 
+    fn trial_policy(cadence: &[MonetaryCadenceSegment]) -> DormantNativeRewardTrialPolicyV3<'_> {
+        DormantNativeRewardTrialPolicyV3 {
+            trial_k: 0,
+            cadence_segments: cadence,
+        }
+    }
+
     fn signed_spend(
         key: &SigningKey,
         source: &OutPoint,
@@ -299,9 +315,8 @@ mod tests {
             &g,
             &tip,
             &blocks,
-            0,
             &opening,
-            &PRODUCTION_CADENCE_V3,
+            trial_policy(&PRODUCTION_CADENCE_V3),
         )
         .unwrap();
         assert_eq!(result.trial_score, 1);
@@ -333,9 +348,8 @@ mod tests {
             &g,
             &tip,
             &blocks,
-            0,
             &opening,
-            &PRODUCTION_CADENCE_V3,
+            trial_policy(&PRODUCTION_CADENCE_V3),
         )
         .is_err());
         let (g, tip, blocks, opening) = fixture();
@@ -344,7 +358,7 @@ mod tests {
             target_interval_ns: 0,
         }];
         assert!(inspect_dormant_native_gd08_reward_preview(
-            CHAIN, GENESIS_NS, &g, &tip, &blocks, 0, &opening, &invalid,
+            CHAIN, GENESIS_NS, &g, &tip, &blocks, &opening, trial_policy(&invalid),
         )
         .is_err());
     }
