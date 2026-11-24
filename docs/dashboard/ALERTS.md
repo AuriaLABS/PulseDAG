@@ -1,55 +1,14 @@
-# PulseDAG v2.3.0 private-testnet alerts
+# PulseDAG first-network alert policy
 
-The canonical Prometheus alert rules are:
+The current candidate alert definitions and thresholds are maintained only in [v3.0.0 alert rules](../../ops/observability/v3.0.0/alert-rules.yml) and [host operations alerts](../../ops/observability/v3.0.0/alert-rules-operations.yml). They are operating baselines, not consensus parameters or authorization to launch.
 
-- `ops/observability/v2.3.0/alert-rules.yml`
+## Response surfaces
 
-Thresholds are private-testnet operating baselines, not consensus parameters.
+- Exporter/RPC unreachability, staleness, degraded liveness and mining-submit pressure: [maintenance self-check](../runbooks/MAINTENANCE_SELF_CHECK.md).
+- Peer isolation, low effective peers and dropped recovery work: [P2P recovery](../runbooks/P2P_RECOVERY.md).
+- Commit publication mismatch, lost accepted hashes, invalid roots, selected-tip divergence and stalled recovery: [recovery orchestration](../runbooks/RECOVERY_ORCHESTRATION.md).
+- Missing or unverifiable snapshots and replay gaps: [snapshot restore](../runbooks/SNAPSHOT_RESTORE.md) and [snapshot and delta recovery](../runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md).
 
-## Observability and RPC
+Before public testnet authorization, independently validate operational signals for native monetary admission, target cadence, missing-parent pressure, checkpoint integrity and recovery. Prototype thresholds are not automatically valid for the first deployed network. Track missing coverage under #1418 and #1465.
 
-- `PulseDAGExporterDown` — exporter unreachable for 2 minutes; critical.
-- `PulseDAGRPCCollectionFailed` — one or more required RPC endpoints unavailable for 1 minute; critical.
-- `PulseDAGRPCStatusStale` — status served from stale data for 2 minutes; warning.
-
-Primary response: `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-
-## P2P
-
-- `PulseDAGNoConnectedPeers` — zero peers for 3 minutes; critical.
-- `PulseDAGP2PStatusDegraded` — degraded P2P status for 3 minutes; warning.
-
-Primary response: `docs/runbooks/P2P_RECOVERY.md`.
-
-## Sync and recovery
-
-- `PulseDAGSyncConsistencyFailure` — consistency failure or issue count above zero for 1 minute; critical.
-- `PulseDAGSyncLagHigh` — lag above 100 blocks for 5 minutes; warning.
-- `PulseDAGSyncLagCritical` — lag above 500 blocks for 5 minutes; critical.
-- `PulseDAGMissingParentBacklog` — more than 128 pending missing parents for 5 minutes; warning.
-
-Primary response: `docs/runbooks/RECOVERY_ORCHESTRATION.md`. Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` for critical lag or storage divergence.
-
-## Mempool
-
-- `PulseDAGMempoolOrphanPressure` — orphan pool above 80 percent of its configured limit for 5 minutes; warning.
-
-Primary response: `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-
-## Snapshot, pruning, and replay
-
-- `PulseDAGSnapshotMissing` — no snapshot for 15 minutes; warning.
-- `PulseDAGStorageReplayGap` — storage replay gap above zero for 5 minutes; critical.
-
-Primary response: `docs/runbooks/SNAPSHOT_RESTORE.md` and `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
-
-## PoW cadence
-
-- `PulseDAGPoWProductionSlow` — average block interval above 90 seconds for 10 minutes; warning.
-- `PulseDAGPoWProductionTooFast` — non-zero average block interval below 30 seconds for 10 minutes; warning.
-
-Primary response: verify external miner attachment, template freshness, accepted submissions, and difficulty evidence using `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-
-## Escalation
-
-Treat simultaneous critical alerts across sync and storage as a private-testnet no-go condition until consistency is restored and evidence is captured. Alert resolution does not authorize a public testnet, a release tag, or the 30-day public-testnet clock.
+An unresolved integrity or security incident blocks the affected acceptance decision. Alert resolution is not public testnet GO, mainnet GO or permission to start the 30-day public-testnet clock. Smart contracts remain inactive.
