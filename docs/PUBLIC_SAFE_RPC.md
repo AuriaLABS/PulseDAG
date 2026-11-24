@@ -1,8 +1,8 @@
-# v2.4.0 public-safe RPC contract
+# First-network public-safe RPC contract
 
 ## Scope
 
-This document defines the read-only RPC edge contract required before a PulseDAG public testnet may be exposed. It does not activate a listener, allocate DNS, issue TLS certificates, start Day 0 or authorize public launch.
+This document defines the read-only RPC edge safety baseline required before the first PulseDAG public testnet may be exposed. The exact candidate must demonstrate these restrictions; this document does not assert native runtime acceptance. It does not activate a listener, allocate DNS, issue TLS certificates, start Day 0 or authorize public launch.
 
 The public listener and the operator/admin listener are separate security boundaries. A public process must use `PULSEDAG_API_PROFILE=public_safe`, keep admin disabled and omit any operator token from that listener. Operator/admin RPC remains bound to loopback or a private management network.
 
@@ -25,7 +25,7 @@ The repository test contract fixes representative forbidden paths from every wri
 
 ## Request limits
 
-The default v2.4.0 public-safe policy is:
+The retained public-safe policy baseline, to be verified on the exact first-network candidate, is:
 
 - request body limit: 131072 bytes;
 - request quota: 30 requests per 60-second window;

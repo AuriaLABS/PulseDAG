@@ -156,17 +156,10 @@ case "$expected_version" in
     )
     claim_files=(README.md docs/VERSION_MATRIX.md docs/V2_2_20_START.md docs/V2_2_20_FIRST_STRESS_EVIDENCE.md)
     ;;
-  v2.4.0)
-    required_docs=(
-      "docs/VERSION_MATRIX.md"
-      "docs/PROTOCOL_ACTIVATION_V2_4_0.md"
-      "docs/ROADMAP_V2_4_0.md"
-    )
-    claim_files=(README.md docs/VERSION_MATRIX.md docs/PROTOCOL_ACTIVATION_V2_4_0.md docs/ROADMAP_V2_4_0.md)
-    ;;
   *)
     echo "FAIL: unsupported rehearsal preflight version: $expected_version" >&2
     fail=1
+    exit 1
     ;;
 esac
 

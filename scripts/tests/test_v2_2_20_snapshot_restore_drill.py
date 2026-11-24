@@ -73,7 +73,8 @@ def test_restore_summary_comparison_includes_snapshot_checksum_gate():
             "selected_tip": "abc123",
             "block_count": 4,
             "snapshot_height": 3,
-            "snapshot_sha256": "deadbeef",
+            "schema_version": 1,
+            "snapshot_sha256": "ab" * 32,
         }
         a = write_json(tmp, "a.json", base)
         b = write_json(tmp, "b.json", dict(base))
@@ -86,6 +87,7 @@ def test_restore_summary_comparison_includes_snapshot_checksum_gate():
         assert out["block_count_match"] is True
         assert out["snapshot_height_match"] is True
         assert out["snapshot_checksum_present"] is True
+        assert out["schema_version_match"] is True
 
 
 def test_restore_summary_comparison_detects_tip_mismatch():
@@ -97,7 +99,8 @@ def test_restore_summary_comparison_detects_tip_mismatch():
             "selected_tip": "tip-a",
             "block_count": 4,
             "snapshot_height": 3,
-            "snapshot_sha256": "deadbeef",
+            "schema_version": 1,
+            "snapshot_sha256": "ab" * 32,
         })
         b = write_json(tmp, "b.json", {
             "chain_id": "c",
@@ -105,9 +108,53 @@ def test_restore_summary_comparison_detects_tip_mismatch():
             "selected_tip": "tip-b",
             "block_count": 4,
             "snapshot_height": 3,
-            "snapshot_sha256": "deadbeef",
+            "schema_version": 1,
+            "snapshot_sha256": "ab" * 32,
         })
         proc = run("--compare-summaries", str(a), str(b))
         assert proc.returncode == 0, proc.stderr
         out = json.loads(proc.stdout)
         assert out["selected_tip_match"] is False
+
+
+def test_restore_comparison_rejects_missing_or_changed_checksum_and_schema():
+    base = {
+        "chain_id": "c",
+        "schema_version": 1,
+        "best_height": 3,
+        "selected_tip": "tip",
+        "block_count": 4,
+        "snapshot_height": 3,
+        "snapshot_sha256": "ab" * 32,
+    }
+    cases = [
+        ("snapshot_sha256", None, "snapshot_checksum_present"),
+        ("snapshot_sha256", "cd" * 32, "snapshot_checksum_present"),
+        ("schema_version", None, "schema_version_match"),
+        ("schema_version", 2, "schema_version_match"),
+        ("chain_id", "other", "chain_id_match"),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        original = write_json(tmp, "original.json", base)
+        for field, value, result_key in cases:
+            changed = dict(base)
+            if value is None:
+                changed.pop(field)
+            else:
+                changed[field] = value
+            restored = write_json(tmp, "restored.json", changed)
+            proc = run("--compare-summaries", str(original), str(restored))
+            assert proc.returncode == 0, proc.stderr
+            assert json.loads(proc.stdout)[result_key] is False
+
+
+if __name__ == "__main__":
+    tests = sorted(
+        (name, test) for name, test in globals().items()
+        if name.startswith("test_") and callable(test)
+    )
+    for name, test in tests:
+        test()
+        print(f"PASS {name}")
+    print(f"{len(tests)} snapshot parser regressions passed")

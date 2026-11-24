@@ -1,11 +1,5 @@
-# v2.3.0 legacy private-testnet configuration compatibility
+# Retired prototype topology families
 
-Current v2.3.0 workflows and runbooks should use v2.3.0 or neutral configuration paths.
+The historical family `configs/private-testnet/v2_2_*/*` is no longer required for a previously deployed network. Its old topology files have been retired from the active tree. If a remaining test dependency requires a fixture, replace it with an explicitly isolated native development fixture and keep its safety checks.
 
-The following historical configuration family remains tracked for reproducibility only:
-
-- `configs/private-testnet/v2_2_*/*`
-
-These files preserve topology and rehearsal inputs used by v2.2.x evidence. They are not current defaults and must not be copied into new operator instructions without an explicit v2.3.0 review.
-
-Current private-testnet templates belong under `configs/private-testnet/v2_3_0/` or a version-neutral path referenced by a current workflow.
+No private live network or migration requirement exists. See the [first-network policy](../../docs/runbooks/V3_FIRST_NETWORK_NATIVE_ONLY.md).

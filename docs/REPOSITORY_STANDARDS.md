@@ -15,8 +15,8 @@ User-facing localization may use another language only when localization is the 
 ## Active and historical material
 
 - `README.md`, `CONTRIBUTING.md`, and current files directly under `docs/` describe active behavior.
-- Historical roadmaps, release notes, closeout reports, and retired procedures belong under `docs/archive/`.
-- Archive indexes must explain that archived files are historical and must use valid relative links.
+- Superseded prototype roadmaps, release notes, closeout reports and retired procedures belong in immutable Git history, with concise provenance indexes where needed. Do not duplicate historical files in the active source tree.
+- Provenance indexes must explain historical status and use valid links to immutable commits.
 - An active document must not instruct operators to run a missing or archived script.
 - A historical file may not be deleted merely because it is old; it must first be classified as retained evidence, archive material, duplicate material, generated output, or safe deletion.
 
@@ -35,7 +35,7 @@ User-facing localization may use another language only when localization is the 
 - Versioned examples belong in `configs/` and use obvious placeholders.
 - Local configuration belongs in ignored `.env` or runtime files.
 - Private keys, seed phrases, tokens, credentials, private certificates, and operator secrets are prohibited in version control.
-- Private-testnet identities and RocksDB state must use persistent operator-owned paths outside the source tree.
+- Deployed testnet/mainnet identities and RocksDB state must use persistent operator-owned paths outside the source tree.
 
 ## Generated and runtime files
 
@@ -69,7 +69,7 @@ Curated evidence summaries may be committed when they are small, reviewed, check
 
 1. Run `scripts/list_cleanup_candidates.sh` to produce an inventory.
 2. Classify every proposed move or deletion.
-3. Preserve required historical and release evidence under `docs/archive/`.
+3. Preserve required historical and release evidence by immutable commit references; retain applicable regression fixtures and compact current evidence.
 4. Remove generated, duplicate, stale, or unsafe material in a focused pull request.
 5. Run `bash scripts/repository_hygiene.sh --strict`.
 6. Attach the cleanup report and note any intentionally retained exception.
