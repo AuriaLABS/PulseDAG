@@ -37,6 +37,7 @@ Transaction/header v2 documents remain protocol-component specifications inside 
 
 - [`RUNBOOK.md`](RUNBOOK.md)
 - [`API_V1.md`](API_V1.md)
+- [`PUBLIC_SAFE_RPC.md`](PUBLIC_SAFE_RPC.md)
 - [`POW_SPEC_FINAL.md`](POW_SPEC_FINAL.md)
 - [`POW_CURRENT_PATH.md`](POW_CURRENT_PATH.md)
 
