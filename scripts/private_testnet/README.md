@@ -1,6 +1,6 @@
-# Private-testnet operator helpers
+# Transitional development lifecycle helpers
 
-This directory contains supported host-local tooling for PulseDAG private-testnet operations.
+These prototype controllers remain only for isolated development regressions until replaced by first-network native tooling. The commands below describe historical interfaces, not supported private-network deployment instructions. Do not execute them to deploy a network. Follow the [first-network launch policy](../../docs/runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md).
 
 ## Node lifecycle controller
 

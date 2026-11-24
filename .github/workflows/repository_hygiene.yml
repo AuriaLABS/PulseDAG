@@ -87,6 +87,23 @@ jobs:
           bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
           bash scripts/tests/test_v2_4_0_private_testnet_preflight.sh
 
+      - name: Preserve local process lifecycle and namespace safety contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/test_v2_3_0_node_lifecycle.sh
+          bash scripts/tests/test_v2_3_0_netns_rehearsal.sh
+          python3 scripts/check_code_comment_language.py \
+            scripts/private_testnet/lifecycle_core.py \
+            scripts/private_testnet/lifecycle_bootnodes.py \
+            scripts/private_testnet/lifecycle_service.py \
+            scripts/private_testnet/node_lifecycle.py \
+            scripts/private_testnet/netns_rehearsal.sh \
+            scripts/private_testnet/netns_network.sh \
+            scripts/private_testnet/netns_nodes.sh \
+            scripts/private_testnet/netns_inventory.py \
+            scripts/private_testnet/netns_fault.sh
+
       - name: Run consolidated snapshot evidence parser regressions
         shell: bash
         run: python3 scripts/tests/test_v2_2_20_snapshot_restore_drill.py
