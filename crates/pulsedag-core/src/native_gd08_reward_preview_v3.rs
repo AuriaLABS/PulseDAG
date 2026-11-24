@@ -336,6 +336,142 @@ mod tests {
         );
     }
 
+    /// Fully KHeavyHash-PoW-mined native-v3 fork and multiparent rejoin.
+    /// Header state roots are placeholders: this reward *preview* does not
+    /// claim to verify committed roots or issue any real coinbase UTXO.
+    fn mined_multiparent_preview_body(
+        mut parents: Vec<BlockId>,
+        timestamp_ns: u64,
+        height: u64,
+        blue_score: u64,
+        state_marker: &str,
+        beneficiary: &str,
+        transfers: Vec<Transaction>,
+    ) -> BlockEnvelopeV3 {
+        parents.sort();
+        let mut transactions =
+            vec![build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap()];
+        transactions.extend(transfers);
+        let mut header = BlockHeaderV3 {
+            version: BLOCK_HEADER_VERSION_V3,
+            parents,
+            timestamp_ns,
+            difficulty: 0x207f_ffff,
+            nonce: 0,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: state_marker.repeat(32),
+            blue_score,
+            height,
+        };
+        header.nonce = (0u64..4096)
+            .find(|nonce| {
+                header.nonce = *nonce;
+                evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            })
+            .expect("genuine easy-target KHeavyHash nonce");
+        build_block_envelope_v3(CHAIN, header, transactions).unwrap()
+    }
+
+    #[test]
+    fn multiparent_conflicting_fees_and_supply_are_independent_of_block_arrival() {
+        // Compare red-side (K=0) and blue-side (K=1) diagnostic roles.
+        // Neither K value is an approved live protocol parameter.
+        for k in [0usize, 1] {
+            let (genesis_hash, _, _, opening) = fixture();
+            let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+            assert_eq!(genesis.hash, genesis_hash);
+            let key = SigningKey::from_bytes(&[9u8; 32]);
+            let source = opening.utxos.keys().next().unwrap().clone();
+            let a_signed = signed_spend(&key, &source, 9, 1, 10);
+            let b_signed = signed_spend(&key, &source, 8, 2, 11);
+            let a = mined_multiparent_preview_body(
+                vec![genesis_hash.clone()],
+                GENESIS_NS + 500_000_000,
+                1,
+                1,
+                "11",
+                "pulse1fork-a",
+                vec![a_signed],
+            );
+            let b = mined_multiparent_preview_body(
+                vec![genesis_hash.clone()],
+                GENESIS_NS + 600_000_000,
+                1,
+                1,
+                "22",
+                "pulse1fork-b",
+                vec![b_signed],
+            );
+            let join = mined_multiparent_preview_body(
+                vec![a.hash.clone(), b.hash.clone()],
+                GENESIS_NS + 1_000_000_000,
+                2,
+                2 + k as u64,
+                "33",
+                "pulse1merge",
+                vec![],
+            );
+            let tip = join.hash.clone();
+            let blocks = BTreeMap::from([
+                (genesis_hash.clone(), genesis),
+                (a.hash.clone(), a.clone()),
+                (b.hash.clone(), b.clone()),
+                (tip.clone(), join),
+            ]);
+            let policy = trial_policy(&PRODUCTION_CADENCE_V3);
+            let policy = DormantNativeRewardTrialPolicyV3 { trial_k: k, ..policy };
+            let first = inspect_dormant_native_gd08_reward_preview(
+                CHAIN, GENESIS_NS, &genesis_hash, &tip, &blocks, &opening, policy,
+            )
+            .unwrap();
+            assert_eq!(first.trial_score, 3);
+            assert_eq!(first.hypothetical_rewards.len(), 3);
+            assert_eq!(
+                first.total_hypothetical_subsidy_atoms,
+                first.scheduled_supply_atoms
+            );
+            let fees_a = first.hypothetical_rewards.iter()
+                .find(|reward| reward.block_hash == a.hash).unwrap()
+                .hypothetical_eligible_fees_atoms;
+            let fees_b = first.hypothetical_rewards.iter()
+                .find(|reward| reward.block_hash == b.hash).unwrap()
+                .hypothetical_eligible_fees_atoms;
+            assert!(
+                (fees_a == 1 && fees_b == 0) || (fees_a == 0 && fees_b == 2),
+                "only the earliest authenticated spend can collect its fee"
+            );
+            assert_eq!(first.total_hypothetical_eligible_fees_atoms, fees_a + fees_b);
+            assert_eq!(
+                first.hypothetical_rewards.iter().find(|r| r.block_hash == tip)
+                    .unwrap().hypothetical_eligible_fees_atoms,
+                0
+            );
+            assert!(
+                first.hypothetical_rewards.iter().all(|r| !r.economic_maturity_only),
+                "no future immature reward should become spendable"
+            );
+
+            // Peer arrival order and map insertion order must never change
+            // hypothetical subsidy, fee ownership, replay root or GD08 digest.
+            let reverse_order = blocks.iter().rev()
+                .map(|(hash, body)| (hash.clone(), body.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let second = inspect_dormant_native_gd08_reward_preview(
+                CHAIN, GENESIS_NS, &genesis_hash, &tip, &reverse_order, &opening, policy,
+            )
+            .unwrap();
+            assert_eq!(first, second);
+
+            // Incomplete fork ancestry cannot erase a competing signed spend.
+            let mut missing_side = blocks;
+            missing_side.remove(&a.hash);
+            assert!(inspect_dormant_native_gd08_reward_preview(
+                CHAIN, GENESIS_NS, &genesis_hash, &tip, &missing_side, &opening, policy,
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn manipulated_claim_and_invalid_cadence_cannot_produce_reward_preview() {
         let (g, tip, mut blocks, opening) = fixture();
