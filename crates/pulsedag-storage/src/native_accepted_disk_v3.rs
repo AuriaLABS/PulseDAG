@@ -19,6 +19,8 @@ const CF_MEMBERSHIP: &str = "native_v3_accepted_membership";
 const CF_JOURNAL: &str = "native_v3_consensus_journal";
 const CF_META: &str = "native_v3_meta";
 const GENERATION_KEY: &[u8] = b"accepted_generation";
+const IDENTITY_KEY: &[u8] = b"frozen_native_identity";
+const MAX_IDENTITY_BYTES: usize = 1024;
 const JOURNAL_SCHEMA: u32 = 1;
 const MAX_ROW_BYTES: usize = MAX_NATIVE_V3_ENVELOPE_RESTORE_RECORD_BYTES + 32768;
 const MAX_JOURNAL_BYTES: usize = 8192;
@@ -28,6 +30,17 @@ fn native_row_codec() -> impl bincode::Options {
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .with_limit(MAX_ROW_BYTES as u64)
+}
+
+/// Immutable database-wide domain seal, separate from individual body rows.
+/// The eventual authoritative writer must create it with its initial state.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedNativeIdentityV1 {
+    schema: u32,
+    chain_id: String,
+    genesis_timestamp_ns: u64,
+    genesis_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +130,7 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
             genesis_timestamp_ns,
             frozen_genesis_hash: frozen_genesis_hash.to_owned(),
         };
+        reader.verify_frozen_identity()?;
         reader.current_generation()?;
         Ok(reader)
     }
@@ -141,6 +155,22 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
             }
         }
         Ok(value)
+    }
+
+    fn verify_frozen_identity(&self) -> Result<(), String> {
+        let raw = self
+            .checked_get(CF_META, IDENTITY_KEY, MAX_IDENTITY_BYTES)?
+            .ok_or_else(|| "native accepted database identity missing".to_string())?;
+        let identity: PersistedNativeIdentityV1 = serde_json::from_slice(&raw)
+            .map_err(|e| format!("invalid native accepted database identity: {e}"))?;
+        if identity.schema != JOURNAL_SCHEMA
+            || identity.chain_id != self.chain_id
+            || identity.genesis_timestamp_ns != self.genesis_timestamp_ns
+            || identity.genesis_hash != self.frozen_genesis_hash
+        {
+            return Err("foreign native accepted database identity".into());
+        }
+        Ok(())
     }
 
     pub fn current_generation(&self) -> Result<u64, String> {
@@ -326,6 +356,15 @@ mod tests {
         let body_cf = db.cf_handle(CF_BODIES).unwrap();
         let membership = db.cf_handle(CF_MEMBERSHIP).unwrap();
         let journal = db.cf_handle(CF_JOURNAL).unwrap();
+        if db.get_cf(meta, IDENTITY_KEY).unwrap().is_none() {
+            let identity = PersistedNativeIdentityV1 {
+                schema: JOURNAL_SCHEMA,
+                chain_id: CHAIN.to_owned(),
+                genesis_timestamp_ns: NS,
+                genesis_hash: genesis.to_owned(),
+            };
+            batch.put_cf(meta, IDENTITY_KEY, serde_json::to_vec(&identity).unwrap());
+        }
         batch.put_cf(meta, GENERATION_KEY, generation.to_le_bytes());
         batch.put_cf(body_cf, hash, native_row_codec().serialize(&row).unwrap());
         if include_membership {
@@ -370,6 +409,73 @@ mod tests {
             NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS + 1, &genesis).is_err()
         );
         drop(reader);
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn foreign_database_is_rejected_even_with_valid_requested_genesis() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 1, true, true);
+        }
+        let other_chain = "foreign-native-v3-journal";
+        let other_genesis = dormant_native_genesis_envelope_v3_ns(other_chain, NS)
+            .unwrap()
+            .hash;
+        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(
+            &db_path,
+            other_chain,
+            NS,
+            &other_genesis,
+        )
+        .is_err());
+        let other_time = NS + 1;
+        let other_genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, other_time)
+            .unwrap()
+            .hash;
+        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(
+            &db_path,
+            CHAIN,
+            other_time,
+            &other_genesis,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn missing_or_invalid_database_seal_fails_before_serving_any_hash() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 1, true, true);
+            db.delete_cf(db.cf_handle(CF_META).unwrap(), IDENTITY_KEY)
+                .unwrap();
+        }
+        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).is_err());
+        for invalid in [
+            b"{}".to_vec(),
+            vec![b'x'; MAX_IDENTITY_BYTES + 1],
+            serde_json::to_vec(&PersistedNativeIdentityV1 {
+                schema: JOURNAL_SCHEMA + 1,
+                chain_id: CHAIN.to_owned(),
+                genesis_timestamp_ns: NS,
+                genesis_hash: genesis.clone(),
+            })
+            .unwrap(),
+        ] {
+            {
+                let db = open_test_writer(&db_path);
+                db.put_cf(db.cf_handle(CF_META).unwrap(), IDENTITY_KEY, invalid)
+                    .unwrap();
+            }
+            assert!(
+                NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).is_err()
+            );
+        }
         let _ = std::fs::remove_dir_all(db_path);
     }
 
