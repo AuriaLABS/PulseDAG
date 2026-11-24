@@ -16,7 +16,7 @@ use pulsedag_p2p::messages::{
         NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
     },
 };
-use pulsedag_storage::NativeV3EnvelopeRestoreRecordV1;
+use pulsedag_storage::{NativeV3AcceptedRocksDbReadOnlyV1, NativeV3EnvelopeRestoreRecordV1};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum NativeV3AcceptedReadErrorV1 {
@@ -62,7 +62,11 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         &self,
         hash: &str,
     ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String>;
-    fn has_committed_native_membership(&self, hash: &str, generation: u64) -> Result<bool, String>;
+    fn has_committed_native_membership(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<u64>, String>;
     /// Independent immutable consensus-journal lookup. Implementations MUST
     /// NOT derive this from the candidate envelope, accepted body row or
     /// remote peer's claim. No production implementation exists yet.
@@ -71,6 +75,54 @@ pub(super) trait NativeV3AcceptedReadOnlyV1 {
         hash: &str,
         generation: u64,
     ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String>;
+}
+
+/// Read-only disk adapter. This is NOT the GD-08 monetary writer: a separate
+/// native accepted journal is opened read-only and every accepted entry MUST
+/// already have been atomically sealed by an independently validated future
+/// consensus authority. Test fixture rows cannot confer production authority.
+impl NativeV3AcceptedReadOnlyV1 for NativeV3AcceptedRocksDbReadOnlyV1 {
+    fn current_generation(&self) -> Result<u64, String> {
+        NativeV3AcceptedRocksDbReadOnlyV1::current_generation(self)
+    }
+
+    fn read_native_accepted(
+        &self,
+        hash: &str,
+    ) -> Result<Option<NativeV3CommittedEnvelopeRowV1>, String> {
+        self.read_accepted(hash).map(|row| {
+            row.map(|value| NativeV3CommittedEnvelopeRowV1 {
+                frame: value.frame,
+                chain_id: value.chain_id,
+                genesis_hash: value.genesis_hash,
+                committed_generation: value.committed_generation,
+                committed_state_root: value.committed_state_root,
+                committed_gd08_digest: value.committed_gd08_digest,
+            })
+        })
+    }
+
+    fn has_committed_native_membership(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<u64>, String> {
+        self.has_accepted_membership(hash, generation)
+    }
+
+    fn independent_consensus_commitment(
+        &self,
+        hash: &str,
+        generation: u64,
+    ) -> Result<Option<NativeV3ConsensusCommitmentV1>, String> {
+        self.independent_journal(hash, generation).map(|value| {
+            value.map(|entry| NativeV3ConsensusCommitmentV1 {
+                accepted_generation: entry.accepted_generation,
+                monetary_state_root: entry.monetary_state_root,
+                gd08_order_digest: entry.gd08_order_digest,
+            })
+        })
+    }
 }
 
 fn canonical_hex256(value: &str) -> bool {
@@ -93,7 +145,7 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
     let record = reader
         .read_native_accepted(requested_hash)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
-    let is_accepted = reader
+    let accepted_membership_generation = reader
         .has_committed_native_membership(requested_hash, before)
         .map_err(NativeV3AcceptedReadErrorV1::Storage)?;
     let independent = reader
@@ -106,19 +158,21 @@ fn lookup_consistent<R: NativeV3AcceptedReadOnlyV1>(
         return Err(NativeV3AcceptedReadErrorV1::TornGeneration);
     }
     let Some(record) = record else {
-        if is_accepted || independent.is_some() {
+        if accepted_membership_generation.is_some() || independent.is_some() {
             // A corrupted accepted index/missing body is NOT an authenticated
             // peer-local Missing. Fail rather than hide a broken local store.
             return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
         }
         return Ok(None);
     };
-    if !is_accepted || independent.is_none() {
+    if accepted_membership_generation.is_none() || independent.is_none() {
         // A valid PoW candidate is NOT automatically an accepted block.
         return Err(NativeV3AcceptedReadErrorV1::MissingMembership);
     }
     let independently_committed = independent.expect("checked Some above");
-    if independently_committed.accepted_generation != record.committed_generation
+    let membership_generation = accepted_membership_generation.expect("checked Some above");
+    if membership_generation != record.committed_generation
+        || independently_committed.accepted_generation != record.committed_generation
         || independently_committed.accepted_generation > before
         || independently_committed.accepted_generation == 0
     {
@@ -232,6 +286,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         generation: Cell<u64>,
+        membership_generation_override: Cell<u64>,
         mutate_on_read: bool,
         accepted: BTreeSet<String>,
         rows: BTreeMap<String, NativeV3CommittedEnvelopeRowV1>,
@@ -250,8 +305,17 @@ mod tests {
             }
             Ok(self.rows.get(hash).cloned())
         }
-        fn has_committed_native_membership(&self, hash: &str, _gen: u64) -> Result<bool, String> {
-            Ok(self.accepted.contains(hash))
+        fn has_committed_native_membership(
+            &self,
+            hash: &str,
+            _gen: u64,
+        ) -> Result<Option<u64>, String> {
+            let generation = if self.membership_generation_override.get() == 0 {
+                self.generation.get()
+            } else {
+                self.membership_generation_override.get()
+            };
+            Ok(self.accepted.contains(hash).then_some(generation))
         }
         fn independent_consensus_commitment(
             &self,
@@ -454,6 +518,21 @@ mod tests {
             wire(&store, &genesis, &req),
             Err(NativeV3AcceptedReadErrorV1::MissingMembership)
         );
+    }
+
+    #[test]
+    fn stale_membership_generation_cannot_match_newer_body_and_journal() {
+        let (genesis, b, req, mut store) = fixture();
+        store.accepted.insert(b.hash.clone());
+        store.membership_generation_override.set(3);
+        // Body + journal refer to commit generation 5, but accepted index
+        // still records generation 3. A boolean membership silently passes.
+        assert_eq!(
+            wire(&store, &genesis, &req),
+            Err(NativeV3AcceptedReadErrorV1::TornGeneration)
+        );
+        store.membership_generation_override.set(5);
+        assert!(wire(&store, &genesis, &req).is_ok());
     }
 
     #[test]
