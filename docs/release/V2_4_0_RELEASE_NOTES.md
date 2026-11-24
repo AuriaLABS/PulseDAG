@@ -2,7 +2,7 @@
 
 Status: **TASK31 CANDIDATE PREPARATION — NOT RELEASED / NOT ACTIVATED**
 
-These notes describe the current v2.4.0 technical candidate. They do not authorize a tag, publication, protocol activation, public-testnet launch, Day 0, default high cadence, smart contracts, or an official end-user custody wallet.
+Historical prototype evidence only; not an active release or operator instruction. These notes describe the retired v2.4.0 technical candidate. They do not authorize a tag, publication, protocol activation, public-testnet launch, Day 0, default high cadence, smart contracts, or an official end-user custody wallet.
 
 ## Protocol and consensus scope
 
@@ -15,7 +15,7 @@ PulseDAG v2.4.0 introduces an explicit activated protocol path rather than reint
 - P2P compatibility and sync require compatible chain/genesis/activated-consensus identity;
 - mining, mempool and RPC admission consume the same activation identity.
 
-The authoritative compatibility, mixed-version, migration and rollback contract is `docs/PROTOCOL_ACTIVATION_V2_4_0.md`.
+The authoritative compatibility, mixed-version, migration and rollback contract is [the historical activation contract in Git](https://github.com/AuriaLABS/PulseDAG/blob/5937a6b972a495108bbb6569e96ee1b6df317930/docs/PROTOCOL_ACTIVATION_V2_4_0.md).
 
 ## Node and miner scope
 
