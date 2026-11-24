@@ -11,7 +11,7 @@ Public native-v3 testnet is the first deployed network. This index does not auth
 - [Native pull synchronization](NATIVE_V3_PULL_SYNC_FIRST_PUBLIC_TESTNET.md)
 - [Binary installation](../INSTALL_BINARIES.md)
 - [Release evidence](../RELEASE_EVIDENCE.md)
-- [Public monitoring](../dashboard/README.md)
+- [Public monitoring](../dashboard/README.md) — repository path: `docs/dashboard/README.md`.
 
 ## Recovery and operational safeguards
 
