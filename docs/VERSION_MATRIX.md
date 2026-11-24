@@ -6,7 +6,7 @@
 |---|---|
 | VERSION file | `v3.0.0` |
 | Cargo workspace version | `3.0.0` |
-| Current milestone | v3.0.0 candidate construction and exact-SHA validation |
+| Current milestone | Active candidate construction — v3.0.0 first-network implementation and exact-SHA validation |
 | Candidate state | Moving candidate; exact final SHA not frozen |
 | Final decision | `PENDING_EXACT_CANDIDATE_EVIDENCE` |
 | Active CI target | v3.0.0 only |
