@@ -73,6 +73,10 @@ jobs:
         shell: bash
         run: bash scripts/tests/test_repository_hygiene.sh
 
+      - name: Run v3 preflight environment regressions
+        shell: bash
+        run: bash scripts/tests/test_v3_preflight_environment.sh
+
       - name: Run consolidated snapshot evidence parser regressions
         shell: bash
         run: python3 scripts/tests/test_v2_2_20_snapshot_restore_drill.py
