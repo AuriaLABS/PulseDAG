@@ -137,6 +137,8 @@ jobs:
               Path("crates/pulsedag-core/src/lib.rs"),
               Path("crates/pulsedag-core/tests/native_gd08_order_kernel_v3.rs"),
               Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
+              # Only independent test vectors; no production callers allowed.
+              Path("crates/pulsedag-core/tests/native_v3_gd08_crosslang_order_digest.rs"),
           }
           assert not (gd08_consumers - allowed_gd08_consumers), (
               f"unexpected GD-08 live caller: {sorted(map(str, gd08_consumers - allowed_gd08_consumers))}"
