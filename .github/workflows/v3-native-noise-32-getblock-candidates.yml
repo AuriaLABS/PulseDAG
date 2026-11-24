@@ -38,7 +38,7 @@ jobs:
         run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
       - name: Exact-head Rustfmt
         run: cargo +1.91.0 fmt --all -- --check
-      - name: Verify 32 genuine native-v3 PoW candidates over two real Noise peers
+      - name: Verify native-v3 PoW transport and five-peer isolation/rejoin
         run: cargo +1.91.0 test --locked -p pulsedag-p2p --test native_v3_getblock_noise_32_candidate_test_only -- --nocapture
       - name: Strict P2P Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
