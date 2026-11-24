@@ -322,11 +322,9 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                 )
             })
             .collect();
-        let mut book = NativeV3GetBlockCorrelationBookV1::<OutboundRequestId>::new(
-            CHAIN,
-            peers[ISOLATED],
-        )
-        .unwrap();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<OutboundRequestId>::new(CHAIN, peers[ISOLATED])
+                .unwrap();
         let mut listener: Option<Multiaddr> = None;
         let mut seed_up = [false; 5];
         let mut leaf_up = [false; 5];
@@ -349,9 +347,7 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
             }));
             let ((index, event), _, _) = next.await;
             match event {
-                SwarmEvent::NewListenAddr { address, .. }
-                    if index == 0 && listener.is_none() =>
-                {
+                SwarmEvent::NewListenAddr { address, .. } if index == 0 && listener.is_none() => {
                     listener = Some(address.clone());
                     for leaf in swarms.iter_mut().skip(1) {
                         leaf.dial(address.clone().with(Protocol::P2p(peers[0])))
@@ -385,15 +381,24 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                 }
                 SwarmEvent::Behaviour(request_response::Event::Message {
                     peer,
-                    message: request_response::Message::Request { request: raw, channel, .. },
+                    message:
+                        request_response::Message::Request {
+                            request: raw,
+                            channel,
+                            ..
+                        },
                     ..
                 }) => {
                     assert_eq!(phase, 3);
                     assert_eq!(index, 0);
                     assert_eq!(peer, peers[ISOLATED]);
                     let verified = decode_direct_getblock_request(
-                        &raw, CHAIN, &peer.to_string(), &peers[0].to_string(),
-                    ).unwrap();
+                        &raw,
+                        CHAIN,
+                        &peer.to_string(),
+                        &peers[0].to_string(),
+                    )
+                    .unwrap();
                     let block = cache.get(&verified.block_hash).cloned().unwrap();
                     let reply = NativeV3GetBlockCandidateResponse {
                         version: NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
@@ -404,22 +409,34 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                         block: Some(block),
                     };
                     let wire = encode_native_v3_getblock_candidate_response(
-                        &reply, &verified, CHAIN, &peer.to_string(), &peers[0].to_string(),
-                    ).unwrap();
-                    assert!(swarms[0].behaviour_mut().send_response(channel, wire).is_ok());
+                        &reply,
+                        &verified,
+                        CHAIN,
+                        &peer.to_string(),
+                        &peers[0].to_string(),
+                    )
+                    .unwrap();
+                    assert!(swarms[0]
+                        .behaviour_mut()
+                        .send_response(channel, wire)
+                        .is_ok());
                     served += 1;
                 }
                 SwarmEvent::Behaviour(request_response::Event::Message {
                     peer,
-                    message: request_response::Message::Response { request_id, response },
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
                     ..
                 }) => {
                     assert_eq!(phase, 3);
                     assert_eq!(index, ISOLATED);
                     assert_eq!(peer, peers[0]);
-                    let verified = book.complete_from_noise(
-                        &request_id, &peer, &response, Instant::now(),
-                    ).unwrap();
+                    let verified = book
+                        .complete_from_noise(&request_id, &peer, &response, Instant::now())
+                        .unwrap();
                     let candidate = verified.block.unwrap();
                     assert_eq!(candidate.hash, hashes[delivered]);
                     assert_eq!(candidate.header, cache[&candidate.hash].header);
@@ -439,8 +456,7 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                 _ => {}
             }
 
-            if phase == 0 && seed_up[1..].iter().all(|up| *up)
-                && leaf_up[1..].iter().all(|up| *up)
+            if phase == 0 && seed_up[1..].iter().all(|up| *up) && leaf_up[1..].iter().all(|up| *up)
             {
                 assert!(cache.is_empty() && hashes.is_empty());
                 swarms[ISOLATED].disconnect_peer_id(peers[0]).unwrap();
@@ -459,7 +475,13 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                 assert_eq!(hashes.len(), CANDIDATES);
                 assert!(!swarms[ISOLATED].is_connected(&peers[0]));
                 swarms[ISOLATED]
-                    .dial(listener.as_ref().unwrap().clone().with(Protocol::P2p(peers[0])))
+                    .dial(
+                        listener
+                            .as_ref()
+                            .unwrap()
+                            .clone()
+                            .with(Protocol::P2p(peers[0])),
+                    )
                     .unwrap();
                 phase = 2;
             }
@@ -475,7 +497,8 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                     connected,
                     Instant::now(),
                     |peer, wire| swarms[ISOLATED].behaviour_mut().send_request(peer, wire),
-                ).unwrap();
+                )
+                .unwrap();
             }
         }
         assert!(closed_seed && closed_leaf);
