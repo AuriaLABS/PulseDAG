@@ -48,7 +48,7 @@ Do not commit:
 ## Repository structure
 
 - Active documentation belongs in `docs/`.
-- Historical release material belongs in `docs/archive/` and must not be presented as current guidance.
+- Retired prototype release material belongs in immutable Git history; compact provenance indexes may link to it, but it must not be presented as current guidance.
 - Runtime output belongs outside version control in `data/`, `logs/`, `run/`, `artifacts/`, or `ci-evidence/`.
 - Reusable scripts belong in `scripts/`; test-only helpers belong in `scripts/tests/`.
 - Example configuration belongs in `configs/` and must contain placeholders, never credentials.
