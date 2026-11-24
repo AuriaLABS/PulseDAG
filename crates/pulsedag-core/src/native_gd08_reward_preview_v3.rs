@@ -35,7 +35,6 @@ pub struct DormantNativeRewardTrialPolicyV3<'a> {
     pub cadence_segments: &'a [MonetaryCadenceSegment],
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeGd08RewardEntryV3 {
     pub block_hash: BlockId,
@@ -358,7 +357,13 @@ mod tests {
             target_interval_ns: 0,
         }];
         assert!(inspect_dormant_native_gd08_reward_preview(
-            CHAIN, GENESIS_NS, &g, &tip, &blocks, &opening, trial_policy(&invalid),
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            &tip,
+            &blocks,
+            &opening,
+            trial_policy(&invalid),
         )
         .is_err());
     }
