@@ -4,11 +4,11 @@ Status: **Task 23 implementation contract**
 
 Issue: `#863`
 
-Depends on: `docs/PROTOCOL_ACTIVATION_V2_4_0.md`
+First-network authority: [FIRST_NETWORK_BASELINE.md](FIRST_NETWORK_BASELINE.md). This is a wire-component specification, not a predecessor network or a standalone release. Legacy and `ghostdag_v1` descriptions below document prototype test behavior only; native-v3 public admission is governed by #1466/#1410 and the launch runbook.
 
 ## Purpose
 
-This document freezes the transaction-level behavior required by PulseDAG v2.4.0 without mutating historical transaction/signing v1 semantics.
+This document retains the chain-bound transaction-v2 encoding and signing rules used by the native-v3 candidate, with prototype regression context. It does not authorize legacy network admission.
 
 It is consumed by core validation, mempool, RPC, P2P, storage/replay, mining templates and wallet code. Downstream components must not invent independent version, replay, replacement or retry identity rules.
 

@@ -237,7 +237,7 @@ def comment_language_check(report: Report) -> None:
 def readiness_claim_check(report: Report) -> None:
     pattern = re.compile(r"public testnet (?:is|now) live", re.IGNORECASE)
     problems: list[str] = []
-    for path in [Path("README.md"), Path("docs/VERSION_MATRIX.md"), Path("docs/ROADMAP_V2_3_0.md")]:
+    for path in [Path("README.md"), Path("docs/VERSION_MATRIX.md"), Path("docs/ROADMAP_V3_0_0.md")]:
         if not path.exists():
             continue
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):

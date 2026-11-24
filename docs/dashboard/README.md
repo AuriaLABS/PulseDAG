@@ -27,9 +27,9 @@ python3 scripts/validate_observability_package.py
 
 ## Historical compatibility
 
-`ops/observability/v2.3.0/` and its validator/tests remain retained for historical private-testnet evidence. The exporter continues to accept a v2.3.0 inventory only when explicitly selected for historical compatibility; the default inventory is v3.0.0. New v3.0.0 candidate/rehearsal evidence must use the v3.0.0 package explicitly.
+The v2.3.0 inventory, dashboard, alerts and validation tools are retired to Git history. The exporter rejects that inventory identity. The duplicate v2.4.0 package has also been retired; only the v3.0.0 inventory is supported. Current candidate evidence must use the v3.0.0 package.
 
-The former **Operator Dashboard Package (v2.2)** is historical compatibility material only. Keeping that label documented preserves the release/RPC compatibility contract; it is not the active dashboard source of truth.
+The retired v2.2 dashboard and datasource examples are available in Git history. Current release/RPC validation references the canonical v3.0.0 dashboard and Prometheus scrape configuration.
 
 ## Supported v3.0.0 operator surfaces
 

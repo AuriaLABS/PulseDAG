@@ -124,6 +124,6 @@ test "$partial_status" -eq 2
 jq -e '.result == "PARTIAL" and .collection_failure_count == 1' \
   "$tmp_dir/partial.json" >/dev/null
 
-python3 scripts/validate_v2_3_0_runbooks.py
+python3 scripts/validate_first_network_runbooks.py
 
-echo "PASS: v2.3.0 operator runbook and incident evidence contract"
+echo "PASS: first-network operator runbook and incident evidence contract"
