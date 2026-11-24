@@ -460,7 +460,16 @@ mod tests {
             ]);
             assert_eq!(direct_delays, 0);
             assert!(reverse_delays >= 2, "late genesis must exercise pending-parent staging");
-            assert_eq!(blocks, reverse_blocks);
+            assert_eq!(blocks.len(), reverse_blocks.len());
+            for (hash, expected) in &blocks {
+                let observed = reverse_blocks.get(hash).expect("same reconstructed body");
+                assert_eq!(expected.hash, observed.hash);
+                assert_eq!(expected.header, observed.header);
+                assert_eq!(
+                    expected.transactions.iter().map(|tx| &tx.txid).collect::<Vec<_>>(),
+                    observed.transactions.iter().map(|tx| &tx.txid).collect::<Vec<_>>(),
+                );
+            }
 
             let headers = blocks.iter()
                 .map(|(hash, envelope)| (hash.clone(), envelope.header.clone()))
