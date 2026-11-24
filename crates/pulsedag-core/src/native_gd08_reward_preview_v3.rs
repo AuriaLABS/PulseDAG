@@ -90,7 +90,9 @@ pub fn inspect_dormant_native_gd08_reward_preview(
         || signed.ordered_blocks.len() > MAX_REWARD_PREVIEW_BLOCKS
         || signed.ordered_blocks.first().map(String::as_str) != Some(frozen_genesis_hash)
     {
-        return Err(invalid("invalid bounded genesis-anchored native reward preview"));
+        return Err(invalid(
+            "invalid bounded genesis-anchored native reward preview",
+        ));
     }
     let current_score = u64::try_from(signed.ordered_blocks.len() - 1)
         .map_err(|_| invalid("trial monetary score exceeds u64"))?;
@@ -104,8 +106,13 @@ pub fn inspect_dormant_native_gd08_reward_preview(
         return Err(invalid("signed replay fee coverage is incomplete"));
     }
     let all_trial_hashes: BTreeSet<_> = signed.ordered_blocks.iter().cloned().collect();
-    if expected_fees.keys().any(|hash| !all_trial_hashes.contains(hash)) {
-        return Err(invalid("fees refer to a block absent from authenticated order"));
+    if expected_fees
+        .keys()
+        .any(|hash| !all_trial_hashes.contains(hash))
+    {
+        return Err(invalid(
+            "fees refer to a block absent from authenticated order",
+        ));
     }
 
     let mut rewards = Vec::with_capacity(signed.ordered_blocks.len() - 1);
@@ -142,8 +149,9 @@ pub fn inspect_dormant_native_gd08_reward_preview(
         total_fees = total_fees
             .checked_add(fees)
             .ok_or_else(|| invalid("accepted-fee accumulation overflow"))?;
-        let mature_economic_time = economic_maturity_reached(score, current_score, cadence_segments)
-            .map_err(|e| invalid(format!("economic maturity schedule invalid: {e}")))?;
+        let mature_economic_time =
+            economic_maturity_reached(score, current_score, cadence_segments)
+                .map_err(|e| invalid(format!("economic maturity schedule invalid: {e}")))?;
         rewards.push(DormantNativeGd08RewardEntryV3 {
             block_hash: hash.clone(),
             trial_score: score,
@@ -158,7 +166,9 @@ pub fn inspect_dormant_native_gd08_reward_preview(
     let scheduled = total_supply_atoms_for_score(current_score, cadence_segments)
         .map_err(|e| invalid(format!("scheduled monetary supply error: {e}")))?;
     if total_subsidy != scheduled {
-        return Err(invalid("hypothetical subsidy total diverges from scheduled supply"));
+        return Err(invalid(
+            "hypothetical subsidy total diverges from scheduled supply",
+        ));
     }
     Ok(DormantNativeGd08RewardPreviewV3 {
         trial_order_digest: signed.order_digest,
@@ -174,7 +184,6 @@ pub fn inspect_dormant_native_gd08_reward_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
     use crate::{
         block_envelope_v3::build_block_envelope_v3,
         genesis_v3::dormant_native_genesis_envelope_v3_ns,
@@ -183,14 +192,23 @@ mod tests {
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         reward_settlement_v3::build_reward_claim_transaction_v3,
-        tx::{address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2},
+        tx::{
+            address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2,
+        },
         types::{compute_merkle_root, OutPoint, Transaction, TxInput, TxOutput, Utxo},
     };
+    use ed25519_dalek::{Signer, SigningKey};
 
     const CHAIN: &str = "native-v3-gd08-hypothetical-reward-preview-fixture";
     const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
 
-    fn signed_spend(key: &SigningKey, source: &OutPoint, amount: u64, fee: u64, nonce: u64) -> Transaction {
+    fn signed_spend(
+        key: &SigningKey,
+        source: &OutPoint,
+        amount: u64,
+        fee: u64,
+        nonce: u64,
+    ) -> Transaction {
         let mut tx = Transaction {
             txid: String::new(),
             version: TRANSACTION_VERSION_V2,
@@ -199,7 +217,10 @@ mod tests {
                 public_key: hex::encode(key.verifying_key().to_bytes()),
                 signature: String::new(),
             }],
-            outputs: vec![TxOutput { address: "pulse1native-reward-preview-recipient".into(), amount }],
+            outputs: vec![TxOutput {
+                address: "pulse1native-reward-preview-recipient".into(),
+                amount,
+            }],
             fee,
             nonce,
         };
@@ -209,10 +230,18 @@ mod tests {
         tx
     }
 
-    fn fixture() -> (String, String, BTreeMap<BlockId, BlockEnvelopeV3>, UtxoState) {
+    fn fixture() -> (
+        String,
+        String,
+        BTreeMap<BlockId, BlockEnvelopeV3>,
+        UtxoState,
+    ) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
         let key = SigningKey::from_bytes(&[9u8; 32]);
-        let source = OutPoint { txid: "test-only-independent-opening-utxo".into(), index: 0 };
+        let source = OutPoint {
+            txid: "test-only-independent-opening-utxo".into(),
+            index: 0,
+        };
         let coin = Utxo {
             outpoint: source.clone(),
             address: address_from_public_key(&hex::encode(key.verifying_key().to_bytes())),
@@ -221,7 +250,9 @@ mod tests {
             height: 0,
         };
         let mut opening = UtxoState::default();
-        opening.address_index.insert(coin.address.clone(), vec![source.clone()]);
+        opening
+            .address_index
+            .insert(coin.address.clone(), vec![source.clone()]);
         opening.utxos.insert(source.clone(), coin);
         // Two conflicting genuine signed spends, both valid in isolation.
         // Only the first spend gets its fee; the loser NEVER gets paid.
@@ -241,23 +272,38 @@ mod tests {
             blue_score: 1,
             height: 1,
         };
-        let nonce = (0..4096u64).find(|nonce| {
-            header.nonce = *nonce;
-            evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
-        }).unwrap();
+        let nonce = (0..4096u64)
+            .find(|nonce| {
+                header.nonce = *nonce;
+                evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            })
+            .unwrap();
         header.nonce = nonce;
         let body = build_block_envelope_v3(CHAIN, header, transactions).unwrap();
         let tip = body.hash.clone();
         let g = genesis.hash.clone();
-        (g.clone(), tip.clone(), BTreeMap::from([(g, genesis), (tip, body)]), opening)
+        (
+            g.clone(),
+            tip.clone(),
+            BTreeMap::from([(g, genesis), (tip, body)]),
+            opening,
+        )
     }
 
     #[test]
     fn hypothetically_scheduled_subsidy_matches_supply_and_excludes_losing_fees() {
         let (g, tip, blocks, opening) = fixture();
         let result = inspect_dormant_native_gd08_reward_preview(
-            CHAIN, GENESIS_NS, &g, &tip, &blocks, 0, &opening, &PRODUCTION_CADENCE_V3,
-        ).unwrap();
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            &tip,
+            &blocks,
+            0,
+            &opening,
+            &PRODUCTION_CADENCE_V3,
+        )
+        .unwrap();
         assert_eq!(result.trial_score, 1);
         assert_eq!(result.hypothetical_rewards.len(), 1);
         let block = &result.hypothetical_rewards[0];
@@ -266,8 +312,14 @@ mod tests {
         assert_eq!(block.hypothetical_eligible_fees_atoms, 1);
         assert!(!block.economic_maturity_only);
         assert_eq!(result.total_hypothetical_eligible_fees_atoms, 1);
-        assert_eq!(result.total_hypothetical_subsidy_atoms, result.scheduled_supply_atoms);
-        assert_eq!(block.hypothetical_claim_atoms, block.hypothetical_subsidy_atoms + 1);
+        assert_eq!(
+            result.total_hypothetical_subsidy_atoms,
+            result.scheduled_supply_atoms
+        );
+        assert_eq!(
+            block.hypothetical_claim_atoms,
+            block.hypothetical_subsidy_atoms + 1
+        );
     }
 
     #[test]
@@ -276,12 +328,24 @@ mod tests {
         let edited = blocks.get_mut(&tip).unwrap();
         edited.transactions[0].outputs[0].amount = 99;
         assert!(inspect_dormant_native_gd08_reward_preview(
-            CHAIN, GENESIS_NS, &g, &tip, &blocks, 0, &opening, &PRODUCTION_CADENCE_V3,
-        ).is_err());
+            CHAIN,
+            GENESIS_NS,
+            &g,
+            &tip,
+            &blocks,
+            0,
+            &opening,
+            &PRODUCTION_CADENCE_V3,
+        )
+        .is_err());
         let (g, tip, blocks, opening) = fixture();
-        let invalid = [MonetaryCadenceSegment { activation_score: 2, target_interval_ns: 0 }];
+        let invalid = [MonetaryCadenceSegment {
+            activation_score: 2,
+            target_interval_ns: 0,
+        }];
         assert!(inspect_dormant_native_gd08_reward_preview(
             CHAIN, GENESIS_NS, &g, &tip, &blocks, 0, &opening, &invalid,
-        ).is_err());
+        )
+        .is_err());
     }
 }
