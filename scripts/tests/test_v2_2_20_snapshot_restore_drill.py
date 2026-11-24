@@ -147,3 +147,14 @@ def test_restore_comparison_rejects_missing_or_changed_checksum_and_schema():
             proc = run("--compare-summaries", str(original), str(restored))
             assert proc.returncode == 0, proc.stderr
             assert json.loads(proc.stdout)[result_key] is False
+
+
+if __name__ == "__main__":
+    tests = sorted(
+        (name, test) for name, test in globals().items()
+        if name.startswith("test_") and callable(test)
+    )
+    for name, test in tests:
+        test()
+        print(f"PASS {name}")
+    print(f"{len(tests)} snapshot parser regressions passed")
