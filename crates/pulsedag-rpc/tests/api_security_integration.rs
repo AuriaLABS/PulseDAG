@@ -70,7 +70,7 @@ async fn call(app: axum::Router, req: Request<Body>) -> (StatusCode, String) {
 }
 
 #[tokio::test]
-async fn api_security_coverage_v2_2_17() {
+async fn operator_rpc_security_and_readiness_do_not_expose_auth_token() {
     let token = "test-operator-token-123";
 
     let disabled_state = test_state("api-security-disabled");
@@ -288,6 +288,42 @@ async fn public_safe_router_enforces_negative_route_body_and_liveness_contract()
             body.contains("public_route_forbidden"),
             "missing code for {path}"
         );
+    }
+
+    // Exercise the actual mutation methods, not only GET route probes.
+    for path in [
+        "/admin/snapshot/create",
+        "/admin/prune",
+        "/admin/sync/rebuild",
+        "/admin/sync/reconcile-mempool",
+    ] {
+        let (status, body) = call(
+            tiny_app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "unexpected status for {path}");
+        assert!(
+            body.contains("public_route_forbidden"),
+            "missing code for {path}"
+        );
+    }
+
+    for path in ["/health", "/status", "/api/v1/health", "/api/v1/status"] {
+        let (status, _) = call(
+            tiny_app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "unexpected status for {path}");
     }
 
     let (relay_wrong_method_status, _) = call(
