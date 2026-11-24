@@ -10,7 +10,7 @@ Extract to a fresh directory and check the binary version against the approved r
 
 ## Network setup
 
-Follow the [testnet-first launch runbook](runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md) and [launch control #781](https://github.com/AuriaLABS/PulseDAG/issues/781). Do not start monetary mining before the separate testnet GO. Use only approved testnet-specific genesis, chain ID, signing domain, bootnodes, wallet and storage directories. Keep admin RPC private; ordinary RPC defaults to loopback unless a reviewed public-safe configuration is supplied. Contracts remain INACTIVE. Testnet coins have no monetary value and the network may reset.
+Follow the [testnet-first launch runbook](https://github.com/AuriaLABS/PulseDAG/blob/main/docs/runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md) and [launch control #781](https://github.com/AuriaLABS/PulseDAG/issues/781). Do not start monetary mining before the separate testnet GO. Use only approved testnet-specific genesis, chain ID, signing domain, bootnodes, wallet and storage directories. Keep admin RPC private; ordinary RPC defaults to loopback unless a reviewed public-safe configuration is supplied. Contracts remain INACTIVE. Testnet coins have no monetary value and the network may reset.
 
 ## Operations
 

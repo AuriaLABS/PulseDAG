@@ -1,39 +1,40 @@
-# PulseDAG v2.3.0 Private-Testnet Runbook Index
+# PulseDAG first-network runbook index
 
-This is the active operator entrypoint for v2.3.0. It does not authorize a public testnet, tag publication, or the start of the 30-day public-testnet clock.
+Public native-v3 testnet is the first deployed network. This index does not authorize launch, monetary mining, smart contracts or the 30-day public-testnet clock. The only launch decision record is [#781](https://github.com/AuriaLABS/PulseDAG/issues/781).
 
-## Primary operations
+## First-network preparation
 
-- `V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, lifecycle, upgrade, rollback, state protection, and evidence.
-- `V2_3_0_PRIVATE_TESTNET_REHEARSAL.md` — five-node rehearsal, restart, partition, rejoin, and GO/NO-GO evidence.
-- `V2_3_0_NETNS_REHEARSAL.md` — isolated Linux namespace rehearsal.
-- `V2_3_0_INCIDENT_RESPONSE.md` — severity model, roles, containment, recovery, and closure.
-- `V2_3_0_SECURITY_AND_CAPACITY.md` — RPC pressure, disk capacity, identity rotation, and monitoring access.
+- [Launch sequence and acceptance gates](V3_0_0_TESTNET_FIRST_LAUNCH.md)
+- [Native-only network policy](V3_FIRST_NETWORK_NATIVE_ONLY.md)
+- [Public testnet preparation and role separation](V3_0_0_PUBLIC_TESTNET_PREP.md)
+- [Offline identity preparation](V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md)
+- [Native pull synchronization](NATIVE_V3_PULL_SYNC_FIRST_PUBLIC_TESTNET.md)
+- [Binary installation](../INSTALL_BINARIES.md)
+- [Release evidence](../RELEASE_EVIDENCE.md)
+- [Public monitoring](../dashboard/README.md)
 
-## Recovery
+## Recovery and operational safeguards
 
-- `MAINTENANCE_SELF_CHECK.md`
-- `P2P_RECOVERY.md`
-- `RECOVERY_ORCHESTRATION.md`
-- `REBUILD_FROM_SNAPSHOT_AND_DELTA.md`
-- `SNAPSHOT_RESTORE.md`
-- `SNAPSHOT_PRUNE_RESTORE_DRILL.md`
-- `CHAOS_RESTART_RECOVERY_SUITE.md`
-- `FAST_BOOT_AND_FALLBACK.md`
+The following procedures preserve transferable operational requirements. Validate their commands and assumptions against the exact native candidate before use; a prototype recovery result does not establish native monetary acceptance.
 
-## Upgrade compatibility
+- [Maintenance self-check](MAINTENANCE_SELF_CHECK.md)
+- [Peer recovery](P2P_RECOVERY.md)
+- [Recovery orchestration](RECOVERY_ORCHESTRATION.md)
+- [Snapshot and delta recovery](REBUILD_FROM_SNAPSHOT_AND_DELTA.md)
+- [Snapshot restore](SNAPSHOT_RESTORE.md)
+- [Prune and restore drill](SNAPSHOT_PRUNE_RESTORE_DRILL.md)
+- [Restart and recovery suite](CHAOS_RESTART_RECOVERY_SUITE.md)
+- [Fast boot and fallback](FAST_BOOT_AND_FALLBACK.md)
 
+## Transitional development references
+
+Retained prototype procedures are not active operator instructions or compatibility requirements. Their useful incident, security, storage and upgrade safeguards must survive replacement. Do not deploy their old network profiles or start their historical miner/lifecycle commands.
+
+- `V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`
+- `V2_3_0_INCIDENT_RESPONSE.md`
+- `V2_3_0_SECURITY_AND_CAPACITY.md`
 - `STAGING_UPGRADE.md`
 - `STAGING_ROLLBACK.md`
+- Redacted incident evidence collector: `scripts/private_testnet/collect_incident_evidence.py`.
 
-The v2.3.0 lifecycle controller remains the active upgrade and rollback mechanism.
-
-## Evidence and observability
-
-- `docs/RELEASE_EVIDENCE.md`
-- `docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`
-- `docs/dashboard/README.md`
-- `scripts/private_testnet/collect_incident_evidence.py`
-- `ops/observability/v2.3.0/README.md`
-
-An unresolved integrity, security, storage, convergence, recovery, or evidence failure is a private-testnet NO-GO. Private-testnet completion never changes `public_testnet_ready=false` or starts/backdates the 30-day public-testnet clock.
+Unresolved integrity, security, storage, convergence or recovery failures block the relevant network acceptance. Current launch boundaries: `public_testnet_ready=false`, `contracts_enabled=false`; no start or backdating of the 30-day public-testnet clock.

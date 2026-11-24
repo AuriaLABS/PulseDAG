@@ -1,5 +1,7 @@
 # PulseDAG v2.3.0 Private-Testnet Operations
 
+> RETIRED PROTOTYPE PROCEDURE — not first-network operator guidance. Do not execute the historical deployment commands. See [the first-network launch runbook](V3_0_0_TESTNET_FIRST_LAUNCH.md). Retained only for transitional test and safeguard provenance.
+
 ## Purpose
 
 Provide the canonical day-to-day operating sequence for a multi-host PulseDAG private testnet. This runbook ties together the Task 07 configuration contract, Task 09 lifecycle controller, Task 10 observability package, external miner workflow, state protection, and evidence collection.

@@ -77,6 +77,10 @@ jobs:
         shell: bash
         run: bash scripts/tests/test_v3_preflight_environment.sh
 
+      - name: Validate first-network runbooks and incident evidence
+        shell: bash
+        run: bash scripts/tests/test_first_network_runbooks.sh
+
       - name: Run consolidated snapshot evidence parser regressions
         shell: bash
         run: python3 scripts/tests/test_v2_2_20_snapshot_restore_drill.py

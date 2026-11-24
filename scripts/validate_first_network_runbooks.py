@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the v2.3.0 private-testnet operator and incident runbook package."""
+"""Validate first-network preparation and retained incident evidence contracts."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ OPERATIONS = RUNBOOKS / "V2_3_0_PRIVATE_TESTNET_OPERATIONS.md"
 INCIDENT = RUNBOOKS / "V2_3_0_INCIDENT_RESPONSE.md"
 SECURITY = RUNBOOKS / "V2_3_0_SECURITY_AND_CAPACITY.md"
 COLLECTOR = ROOT / "scripts/private_testnet/collect_incident_evidence.py"
-ALERTS = ROOT / "ops/observability/v2.3.0/alert-rules.yml"
+ALERTS = ROOT / "ops/observability/v3.0.0/alert-rules.yml"
+LAUNCH = RUNBOOKS / "V3_0_0_TESTNET_FIRST_LAUNCH.md"
+PREP = RUNBOOKS / "V3_0_0_PUBLIC_TESTNET_PREP.md"
 PATH_REFERENCE = re.compile(r"`((?:docs|scripts|ops|configs)/[A-Za-z0-9_./-]+)`")
 RUNBOOK_ANNOTATION = re.compile(r"^\s*runbook:\s*(\S+)\s*$", re.MULTILINE)
 FORBIDDEN_CLAIM = re.compile(
@@ -45,9 +47,9 @@ def read(path: Path) -> str:
 
 
 def validate_required_files(validation: Validation) -> None:
-    """Require the canonical v2.3.0 runbooks and collector."""
+    """Require active launch runbooks and retained operational safeguards."""
 
-    for path in (INDEX, OPERATIONS, INCIDENT, SECURITY, COLLECTOR, ALERTS):
+    for path in (INDEX, OPERATIONS, INCIDENT, SECURITY, COLLECTOR, ALERTS, LAUNCH, PREP):
         validation.require(path.is_file(), f"required file exists: {path.relative_to(ROOT)}")
 
 
@@ -55,7 +57,7 @@ def validate_index(validation: Validation) -> None:
     """Validate active and compatibility runbook index references."""
 
     text = read(INDEX)
-    validation.require(text.startswith("# PulseDAG v2.3.0"), "runbook index is labeled v2.3.0")
+    validation.require(text.startswith("# PulseDAG first-network"), "runbook index identifies the first network")
     required_references = [
         "V2_3_0_PRIVATE_TESTNET_OPERATIONS.md",
         "V2_3_0_INCIDENT_RESPONSE.md",
@@ -66,7 +68,12 @@ def validate_index(validation: Validation) -> None:
         "P2P_RECOVERY.md",
         "STAGING_UPGRADE.md",
         "STAGING_ROLLBACK.md",
-        "docs/dashboard/README.md",
+        "../dashboard/README.md",
+        "V3_0_0_TESTNET_FIRST_LAUNCH.md",
+        "V3_FIRST_NETWORK_NATIVE_ONLY.md",
+        "V3_0_0_PUBLIC_TESTNET_PREP.md",
+        "V3_PUBLIC_TESTNET_IDENTITY_DRAFT_OFFLINE.md",
+        "NATIVE_V3_PULL_SYNC_FIRST_PUBLIC_TESTNET.md",
         "collect_incident_evidence.py",
     ]
     for reference in required_references:
@@ -77,6 +84,8 @@ def validate_sections(validation: Validation) -> None:
     """Require decision-critical sections in each canonical runbook."""
 
     required_sections = {
+        LAUNCH: ["## Testnet entry gate T0", "## Public testnet validation T1", "## Mainnet gate M0", "## STOP / NO-GO policy"],
+        PREP: ["## Hard preconditions", "## Role separation", "## Network/firewall policy", "## Storage, snapshot and recovery", "## Hard-stop conditions"],
         OPERATIONS: [
             "## Scope and guardrails",
             "## 1. Bootstrap a node host",
@@ -163,6 +172,9 @@ def validate_collector_contract(validation: Validation) -> None:
 def validate_guardrails(validation: Validation) -> None:
     """Reject unsupported launch/readiness claims from active runbook material."""
 
+    validation.require("no mandatory private network" in read(LAUNCH), "first launch does not require a private network")
+    validation.require("GO_PUBLIC_TESTNET" in read(LAUNCH) and "GO_V3_MAINNET" in read(LAUNCH), "separate launch decisions preserved")
+    validation.require("Smart contracts remain INACTIVE" in read(PREP), "contracts remain inactive")
     for path in (INDEX, OPERATIONS, INCIDENT, SECURITY):
         text = read(path)
         validation.require(
@@ -176,7 +188,7 @@ def validate_guardrails(validation: Validation) -> None:
 
 
 def main() -> int:
-    """Run the complete Task 11 documentation and evidence contract."""
+    """Run the first-network documentation and evidence contract."""
 
     validation = Validation()
     validate_required_files(validation)
@@ -189,12 +201,12 @@ def main() -> int:
         validate_guardrails(validation)
 
     if validation.errors:
-        print("v2.3.0 runbook validation failed:", file=sys.stderr)
+        print("first-network runbook validation failed:", file=sys.stderr)
         for error in validation.errors:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print("v2.3.0 runbook validation passed")
+    print("first-network runbook validation passed")
     print(f"validated {len(validation.passes)} package invariants")
     return 0
 
