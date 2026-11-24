@@ -73,6 +73,10 @@ jobs:
         shell: bash
         run: bash scripts/tests/test_repository_hygiene.sh
 
+      - name: Run consolidated snapshot evidence parser regressions
+        shell: bash
+        run: python3 scripts/tests/test_v2_2_20_snapshot_restore_drill.py
+
       - name: Build cleanup and version-surface evidence
         if: always()
         shell: bash
