@@ -20,7 +20,7 @@ Provide the canonical day-to-day operating sequence for a multi-host PulseDAG pr
 
 Before private-testnet release closeout, record one exact candidate SHA and run the required lifecycle, recovery, packaging, smoke, evidence, and repository gates against that SHA. Evidence from an earlier candidate remains historical and must not be silently relabelled after active documentation, workflow, packaging, or operator-entrypoint changes.
 
-An evidence-only closeout update may reference the already tested candidate, but it must not change runtime code or packaged release inputs. Any later change to runtime code, `README.md`, `docs/INSTALL_BINARIES_V2_3_0.md`, packaging scripts, release workflows, or release metadata requires a new exact-candidate evidence run.
+An evidence-only closeout update may reference the already tested candidate, but it must not change runtime code or packaged release inputs. Any later change to runtime code, `README.md`, the [historical v2.3.0 installation guide](https://github.com/AuriaLABS/PulseDAG/blob/5937a6b972a495108bbb6569e96ee1b6df317930/docs/INSTALL_BINARIES_V2_3_0.md), packaging scripts, release workflows, or release metadata requires a new exact-candidate evidence run.
 
 ## Host layout
 
