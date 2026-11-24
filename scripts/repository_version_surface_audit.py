@@ -152,21 +152,18 @@ def main() -> int:
         failures,
     )
 
-    if version == "v2.4.0":
-        require_markers(
-            Path("docs/ROADMAP_V2_4_0.md"), ["v2.4.0"], failures
-        )
-        require_markers(
-            Path("docs/PROTOCOL_ACTIVATION_V2_4_0.md"),
-            ["v2.4.0", "ghostdag_v1"],
-            failures,
-        )
-    elif version == "v3.0.0":
-        require_markers(
-            Path("docs/ROADMAP_V3_0_0.md"),
-            ["v3.0.0", "ACTIVE v3.0.0 CANDIDATE ROADMAP", "contracts_enabled=false"],
-            failures,
-        )
+    if version != "v3.0.0":
+        failures.append(f"unsupported first-network candidate identity: {version}")
+    require_markers(
+        Path("docs/ROADMAP_V3_0_0.md"),
+        ["v3.0.0", "ACTIVE v3.0.0 CANDIDATE ROADMAP", "contracts_enabled=false"],
+        failures,
+    )
+    require_markers(
+        Path("docs/FIRST_NETWORK_BASELINE.md"),
+        ["no previously deployed network", "Contracts INACTIVE", "Mainnet NO-GO"],
+        failures,
+    )
 
     # Primary surfaces must not still identify a different release as current.
     for path in PRIMARY_ACTIVE_FILES:
