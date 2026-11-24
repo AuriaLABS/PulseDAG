@@ -47,21 +47,30 @@ pub fn inspect_dormant_native_gd08_zero_issuance_bootstrap_trial(
     let genesis = envelopes
         .get(trusted_genesis)
         .ok_or_else(|| invalid("missing full native-v3 frozen genesis"))?;
-    verify_dormant_native_genesis_freeze_v3_ns(
-        genesis, chain_id, genesis_ns, trusted_genesis,
-    )?;
+    verify_dormant_native_genesis_freeze_v3_ns(genesis, chain_id, genesis_ns, trusted_genesis)?;
     let empty_utxo = UtxoState::default();
     if empty_utxo.compute_state_root()? != canonical.header.state_root {
         return Err(invalid("genesis root must bind exactly zero issuance"));
     }
     let report = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
-        chain_id, genesis_ns, trusted_genesis, tip, envelopes, trial_k, &empty_utxo,
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        envelopes,
+        trial_k,
+        &empty_utxo,
     )?;
     if !report.applied_txids.is_empty()
-        || report.eligible_fees_by_block.iter().any(|(_, fee)| *fee != 0)
+        || report
+            .eligible_fees_by_block
+            .iter()
+            .any(|(_, fee)| *fee != 0)
         || report.resulting_state_root != canonical.header.state_root
     {
-        return Err(invalid("ordinary spending requires independently settled native rewards"));
+        return Err(invalid(
+            "ordinary spending requires independently settled native rewards",
+        ));
     }
     Ok(report)
 }
@@ -69,7 +78,6 @@ pub fn inspect_dormant_native_gd08_zero_issuance_bootstrap_trial(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
     use crate::{
         block_envelope_v3::build_block_envelope_v3,
         header_v3::BlockHeaderV3,
@@ -79,6 +87,7 @@ mod tests {
         tx::{compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2},
         types::{compute_merkle_root, OutPoint, Transaction, TxInput, TxOutput},
     };
+    use ed25519_dalek::{Signer, SigningKey};
 
     const CHAIN: &str = "native-v3-zero-genesis-utxo-bootstrap-test";
     const NS: u64 = 1_800_000_000_500_000_000;
@@ -89,9 +98,8 @@ mod tests {
     ) -> (String, BlockId, BTreeMap<BlockId, BlockEnvelopeV3>) {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
         let g = genesis.hash.clone();
-        let mut txs = vec![
-            build_reward_claim_transaction_v3("pulse1unspendable-reward", 1, CHAIN).unwrap(),
-        ];
+        let mut txs =
+            vec![build_reward_claim_transaction_v3("pulse1unspendable-reward", 1, CHAIN).unwrap()];
         txs.extend(transfers);
         let mut header = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
@@ -112,7 +120,11 @@ mod tests {
             .expect("easy native-v3 PoW target");
         let child = build_block_envelope_v3(CHAIN, header, txs).unwrap();
         let tip = child.hash.clone();
-        (g.clone(), tip.clone(), BTreeMap::from([(g, genesis), (tip, child)]))
+        (
+            g.clone(),
+            tip.clone(),
+            BTreeMap::from([(g, genesis), (tip, child)]),
+        )
     }
 
     #[test]
@@ -128,11 +140,21 @@ mod tests {
         assert_eq!(report.eligible_fees_by_block, vec![(tip.clone(), 0)]);
         assert_eq!(report.resulting_state_root, empty_root);
         assert!(inspect_dormant_native_gd08_zero_issuance_bootstrap_trial(
-            CHAIN, NS + 1, &genesis, &tip, &blocks, 0,
+            CHAIN,
+            NS + 1,
+            &genesis,
+            &tip,
+            &blocks,
+            0,
         )
         .is_err());
         assert!(inspect_dormant_native_gd08_zero_issuance_bootstrap_trial(
-            CHAIN, NS, &"f".repeat(64), &tip, &blocks, 0,
+            CHAIN,
+            NS,
+            &"f".repeat(64),
+            &tip,
+            &blocks,
+            0,
         )
         .is_err());
     }
@@ -144,11 +166,17 @@ mod tests {
             txid: String::new(),
             version: TRANSACTION_VERSION_V2,
             inputs: vec![TxInput {
-                previous_output: OutPoint { txid: "unissued-genesis-coin".into(), index: 0 },
+                previous_output: OutPoint {
+                    txid: "unissued-genesis-coin".into(),
+                    index: 0,
+                },
                 public_key: hex::encode(key.verifying_key().to_bytes()),
                 signature: String::new(),
             }],
-            outputs: vec![TxOutput { address: "pulse1fake-bootstrap-output".into(), amount: 9 }],
+            outputs: vec![TxOutput {
+                address: "pulse1fake-bootstrap-output".into(),
+                amount: 9,
+            }],
             fee: 1,
             nonce: 7,
         };
