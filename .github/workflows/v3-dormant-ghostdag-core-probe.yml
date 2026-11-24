@@ -137,7 +137,7 @@ jobs:
               Path("crates/pulsedag-core/src/lib.rs"),
               Path("crates/pulsedag-core/tests/native_gd08_order_kernel_v3.rs"),
               Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
-              # Only independent test vectors; no production callers allowed.
+              # Dormant cross-language test vector: never a live consensus caller.
               Path("crates/pulsedag-core/tests/native_v3_gd08_crosslang_order_digest.rs"),
           }
           assert not (gd08_consumers - allowed_gd08_consumers), (
@@ -147,7 +147,9 @@ jobs:
           allowed_signed_consumers = {
               Path("crates/pulsedag-core/src/lib.rs"),
               Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
-              # Zero-issuance genesis-bound trial; NOT a live consensus caller.
+              # New strictly dormant signed-reward economic preview. No daemon or miner.
+              Path("crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs"),
+              # Zero-issued frozen genesis trial only; still forbid runtime callers.
               Path("crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs"),
           }
           assert not (signed_consumers - allowed_signed_consumers), (

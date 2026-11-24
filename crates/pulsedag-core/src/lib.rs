@@ -51,6 +51,7 @@ pub mod native_anticone_matrix_v3;
 pub mod native_dag_relation_v3;
 pub mod native_gd08_genesis_bootstrap_trial_v3;
 pub mod native_gd08_order_kernel_v3;
+pub mod native_gd08_reward_preview_v3;
 pub mod native_gd08_signed_utxo_trial_v3;
 pub mod native_ghostdag_policy_candidate_v3;
 pub mod native_merge_set_v3;
