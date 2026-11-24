@@ -395,9 +395,15 @@ mod tests {
             }
             pending.insert(hash, incoming);
             loop {
-                let next_ready = pending.iter().find(|(_, body)| {
-                    body.header.parents.iter().all(|parent| ready.contains_key(parent))
-                }).map(|(hash, _)| hash.clone());
+                let next_ready = pending
+                    .iter()
+                    .find(|(_, body)| {
+                        body.header
+                            .parents
+                            .iter()
+                            .all(|parent| ready.contains_key(parent))
+                    })
+                    .map(|(hash, _)| hash.clone());
                 let Some(hash) = next_ready else {
                     break;
                 };
@@ -405,7 +411,10 @@ mod tests {
                 assert!(ready.insert(hash, envelope).is_none());
             }
         }
-        assert!(pending.is_empty(), "complete native parent closure is required");
+        assert!(
+            pending.is_empty(),
+            "complete native parent closure is required"
+        );
         (ready, delayed_arrivals)
     }
 
@@ -453,34 +462,60 @@ mod tests {
             // while the second must defer the join and both siblings until
             // the missing genesis arrives. Neither path is live P2P.
             let (blocks, direct_delays) = reconstruct_fork_from_arrival_history(vec![
-                genesis.clone(), a.clone(), b.clone(), join.clone(),
+                genesis.clone(),
+                a.clone(),
+                b.clone(),
+                join.clone(),
             ]);
-            let (reverse_blocks, reverse_delays) = reconstruct_fork_from_arrival_history(vec![
-                join, b.clone(), a.clone(), genesis,
-            ]);
+            let (reverse_blocks, reverse_delays) =
+                reconstruct_fork_from_arrival_history(vec![join, b.clone(), a.clone(), genesis]);
             assert_eq!(direct_delays, 0);
-            assert!(reverse_delays >= 2, "late genesis must exercise pending-parent staging");
+            assert!(
+                reverse_delays >= 2,
+                "late genesis must exercise pending-parent staging"
+            );
             assert_eq!(blocks.len(), reverse_blocks.len());
             for (hash, expected) in &blocks {
                 let observed = reverse_blocks.get(hash).expect("same reconstructed body");
                 assert_eq!(expected.hash, observed.hash);
                 assert_eq!(expected.header, observed.header);
                 assert_eq!(
-                    expected.transactions.iter().map(|tx| &tx.txid).collect::<Vec<_>>(),
-                    observed.transactions.iter().map(|tx| &tx.txid).collect::<Vec<_>>(),
+                    expected
+                        .transactions
+                        .iter()
+                        .map(|tx| &tx.txid)
+                        .collect::<Vec<_>>(),
+                    observed
+                        .transactions
+                        .iter()
+                        .map(|tx| &tx.txid)
+                        .collect::<Vec<_>>(),
                 );
             }
 
-            let headers = blocks.iter()
+            let headers = blocks
+                .iter()
                 .map(|(hash, envelope)| (hash.clone(), envelope.header.clone()))
                 .collect::<BTreeMap<_, _>>();
             let authenticated_order = derive_dormant_native_gd08_order_from_ghostdag_trial(
-                CHAIN, GENESIS_NS, &genesis_hash, &tip, &headers, k,
-            ).unwrap();
-            let a_position = authenticated_order.ordered.iter()
-                .position(|hash| hash == &a.hash).unwrap();
-            let b_position = authenticated_order.ordered.iter()
-                .position(|hash| hash == &b.hash).unwrap();
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &headers,
+                k,
+            )
+            .unwrap();
+            let a_position = authenticated_order
+                .ordered
+                .iter()
+                .position(|hash| hash == &a.hash)
+                .unwrap();
+            let b_position = authenticated_order
+                .ordered
+                .iter()
+                .position(|hash| hash == &b.hash)
+                .unwrap();
             let expected_fees = if a_position < b_position {
                 (1_u64, 0_u64)
             } else {
@@ -488,9 +523,18 @@ mod tests {
             };
 
             let policy = trial_policy(&PRODUCTION_CADENCE_V3);
-            let policy = DormantNativeRewardTrialPolicyV3 { trial_k: k, ..policy };
+            let policy = DormantNativeRewardTrialPolicyV3 {
+                trial_k: k,
+                ..policy
+            };
             let first = inspect_dormant_native_gd08_reward_preview(
-                CHAIN, GENESIS_NS, &genesis_hash, &tip, &blocks, &opening, policy,
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &blocks,
+                &opening,
+                policy,
             )
             .unwrap();
             assert_eq!(first.trial_score, 3);
@@ -499,32 +543,54 @@ mod tests {
                 first.total_hypothetical_subsidy_atoms,
                 first.scheduled_supply_atoms
             );
-            let fees_a = first.hypothetical_rewards.iter()
-                .find(|reward| reward.block_hash == a.hash).unwrap()
+            let fees_a = first
+                .hypothetical_rewards
+                .iter()
+                .find(|reward| reward.block_hash == a.hash)
+                .unwrap()
                 .hypothetical_eligible_fees_atoms;
-            let fees_b = first.hypothetical_rewards.iter()
-                .find(|reward| reward.block_hash == b.hash).unwrap()
+            let fees_b = first
+                .hypothetical_rewards
+                .iter()
+                .find(|reward| reward.block_hash == b.hash)
+                .unwrap()
                 .hypothetical_eligible_fees_atoms;
             assert_eq!(
                 (fees_a, fees_b),
                 expected_fees,
                 "the uniquely earlier GD08-authenticated signed spend is the only fee winner"
             );
-            assert_eq!(first.total_hypothetical_eligible_fees_atoms, fees_a + fees_b);
             assert_eq!(
-                first.hypothetical_rewards.iter().find(|r| r.block_hash == tip)
-                    .unwrap().hypothetical_eligible_fees_atoms,
+                first.total_hypothetical_eligible_fees_atoms,
+                fees_a + fees_b
+            );
+            assert_eq!(
+                first
+                    .hypothetical_rewards
+                    .iter()
+                    .find(|r| r.block_hash == tip)
+                    .unwrap()
+                    .hypothetical_eligible_fees_atoms,
                 0
             );
             assert!(
-                first.hypothetical_rewards.iter().all(|r| !r.economic_maturity_only),
+                first
+                    .hypothetical_rewards
+                    .iter()
+                    .all(|r| !r.economic_maturity_only),
                 "no future immature reward should become spendable"
             );
 
             // Distinct histories have genuinely exercised pending-parent
             // reconstruction before identical authenticated economic replay.
             let second = inspect_dormant_native_gd08_reward_preview(
-                CHAIN, GENESIS_NS, &genesis_hash, &tip, &reverse_blocks, &opening, policy,
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &reverse_blocks,
+                &opening,
+                policy,
             )
             .unwrap();
             assert_eq!(first, second);
@@ -533,7 +599,13 @@ mod tests {
             let mut missing_side = blocks;
             missing_side.remove(&a.hash);
             assert!(inspect_dormant_native_gd08_reward_preview(
-                CHAIN, GENESIS_NS, &genesis_hash, &tip, &missing_side, &opening, policy,
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &missing_side,
+                &opening,
+                policy,
             )
             .is_err());
         }
