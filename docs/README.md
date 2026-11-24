@@ -33,6 +33,8 @@ Transaction/header v2 documents remain protocol-component specifications inside 
 
 ## Operator documentation
 
+- [`INSTALL_BINARIES.md`](INSTALL_BINARIES.md)
+
 - [`RUNBOOK.md`](RUNBOOK.md)
 - [`API_V1.md`](API_V1.md)
 - [`POW_SPEC_FINAL.md`](POW_SPEC_FINAL.md)
