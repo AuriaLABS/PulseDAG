@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - SECURITY.md
-      - configs/private-testnet/miner.env.example
       - configs/public-testnet/**
       - docs/API_V1.md
       - docs/dashboard/README.md
@@ -25,7 +24,6 @@ on:
       - main
     paths:
       - SECURITY.md
-      - configs/private-testnet/miner.env.example
       - configs/public-testnet/**
       - docs/API_V1.md
       - docs/dashboard/README.md
@@ -113,7 +111,6 @@ jobs:
           } > ci-evidence/public-hardening/provenance.txt
           sha256sum \
             SECURITY.md \
-            configs/private-testnet/miner.env.example \
             configs/public-testnet/README.md \
             configs/public-testnet/seed.env.template \
             configs/public-testnet/node.env.template \

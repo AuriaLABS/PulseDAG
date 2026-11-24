@@ -81,6 +81,12 @@ jobs:
         shell: bash
         run: bash scripts/tests/test_first_network_runbooks.sh
 
+      - name: Preserve isolated prototype bootstrap safety regressions
+        shell: bash
+        run: |
+          bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+          bash scripts/tests/test_v2_4_0_private_testnet_preflight.sh
+
       - name: Run consolidated snapshot evidence parser regressions
         shell: bash
         run: python3 scripts/tests/test_v2_2_20_snapshot_restore_drill.py
