@@ -175,13 +175,14 @@ fi
 grep -q '^pulsedag_exporter_scrape_success 0$' "$tmp_dir/failed-metrics.txt"
 
 # Reject a retired release identity even when the inventory has valid metric shape.
-python3 - "$tmp_dir/retired-inventory.json" <<'PY'
+for retired in v2.3.0 v2.4.0; do
+python3 - "$tmp_dir/retired-inventory.json" "$retired" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 inventory = json.loads(Path("ops/observability/v3.0.0/metrics-inventory.json").read_text())
-inventory["release_line"] = "v2.3.0"
+inventory["release_line"] = sys.argv[2]
 Path(sys.argv[1]).write_text(json.dumps(inventory), encoding="utf-8")
 PY
 if python3 scripts/private_testnet/runtime_metrics_exporter.py \
@@ -193,5 +194,6 @@ if python3 scripts/private_testnet/runtime_metrics_exporter.py \
 fi
 grep -Fq "unsupported release line" "$tmp_dir/retired.err"
 test ! -s "$tmp_dir/retired.out"
+done
 
 echo "PASS: v3.0.0 observability contract"

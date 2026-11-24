@@ -27,7 +27,7 @@ python3 scripts/validate_observability_package.py
 
 ## Historical compatibility
 
-The v2.3.0 inventory, dashboard, alerts and validation tools are retired to Git history. The exporter rejects that inventory identity. The v2.4.0 package remains a transitional development dependency pending separate removal. Current candidate evidence must use the v3.0.0 package.
+The v2.3.0 inventory, dashboard, alerts and validation tools are retired to Git history. The exporter rejects that inventory identity. The duplicate v2.4.0 package has also been retired; only the v3.0.0 inventory is supported. Current candidate evidence must use the v3.0.0 package.
 
 The retired v2.2 dashboard and datasource examples are available in Git history. Current release/RPC validation references the canonical v3.0.0 dashboard and Prometheus scrape configuration.
 

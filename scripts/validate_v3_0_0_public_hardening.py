@@ -192,6 +192,7 @@ def main() -> None:
     security = require(
         "SECURITY.md",
         "security/advisories/new",
+        "Do **not** open a public GitHub issue",
         "public_testnet_ready=false",
         "thirty_day_public_testnet_clock_started=false",
         "contracts_enabled=false",
@@ -322,6 +323,7 @@ def main() -> None:
         "request body limit: **128 KiB**",
         "rate limit: **30 requests per 60 seconds**",
         "wildcard CORS origin (`*`): **rejected**",
+        "Unsafe overrides are not part of the supported public-testnet baseline",
     )
     config = require(
         "apps/pulsedagd/src/config.rs",
@@ -329,6 +331,7 @@ def main() -> None:
         '"public_safe" => Ok(Self::PublicSafe)',
         "admin endpoints cannot be enabled",
         "wildcard origin is not allowed",
+        "PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED",
     )
     if "fn default_admin_enabled(_network_profile: &str, _rpc_bind: &str) -> bool {\n    false\n}" not in config:
         fail("admin default is no longer fail-closed")
@@ -337,12 +340,15 @@ def main() -> None:
         "crates/pulsedag-rpc/src/routes.rs",
         "ApiExposureProfile::PublicSafe",
         "public_safe_routes",
+        "request_body_limit_bytes: 128 * 1024",
+        "requests_per_window: 30",
+        "public_safe_api_v1_router",
     )
     public_safe = function_slice(routes, "fn public_safe_routes")
     for endpoint in ('"/metrics"', '"/status"', '"/mempool"'):
         if endpoint not in public_safe:
             fail(f"public_safe route block lost {endpoint}")
-    for forbidden in ('"/admin"', '"/runtime"'):
+    for forbidden in ("/admin", '"/runtime"', "post_snapshot_create", "post_prune_chain", "post_sync_rebuild"):
         if forbidden in public_safe:
             fail(f"public_safe route block unexpectedly contains {forbidden}")
 

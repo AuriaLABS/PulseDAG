@@ -27,7 +27,7 @@ The technical candidate contains:
 - packaged-node/miner recovery validation;
 - exact-SHA packaging/provenance checks;
 - a fail-closed `public_safe` RPC profile and pre-GO public-testnet configuration templates;
-- the v2.4.0 release-candidate observability package under `ops/observability/v2.4.0/`.
+- the v2.4.0 release-candidate observability package under [retired observability package](https://github.com/AuriaLABS/PulseDAG/tree/c7bade703cbd992b930b84becc9c7676a8b425b3/ops/observability/v2.4.0).
 
 The CPU miner path remains the canonical operational reference. No pool, payout or accounting service is implied.
 
@@ -66,7 +66,7 @@ Evidence from different source SHAs or activation contracts must not be combined
 
 ## Observability and operations
 
-The v2.4.0 package under `ops/observability/v2.4.0/` polls only public-safe read surfaces (`/metrics`, `/status`, `/mempool`) and does not require admin/runtime RPC or secrets. Its inventory and alerts cover commit/state-root safety, snapshot verification, mining-submit actor health, P2P recovery, sync convergence and RPC liveness in addition to basic node/mempool state.
+The v2.4.0 package under [retired observability package](https://github.com/AuriaLABS/PulseDAG/tree/c7bade703cbd992b930b84becc9c7676a8b425b3/ops/observability/v2.4.0) polls only public-safe read surfaces (`/metrics`, `/status`, `/mempool`) and does not require admin/runtime RPC or secrets. Its inventory and alerts cover commit/state-root safety, snapshot verification, mining-submit actor health, P2P recovery, sync convergence and RPC liveness in addition to basic node/mempool state.
 
 Repository dashboards/templates do not prove real public infrastructure. Failure-domain separation, persistent P2P identities, DNS/TLS ownership, firewall rules, NTP, storage/backup, on-call ownership and incident/recovery drills remain launch evidence in #794/#781.
 
