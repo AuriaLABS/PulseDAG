@@ -5,7 +5,7 @@ Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 Date: 2026-09-16 UTC
 Parent issues: #1178, #794
 Source thesis: `ROADMAP_V3_0_0.md` Task P6
-Related: miner protocol v3 in `ROADMAP_V2_5_0.md`, `POW_SPEC_FINAL.md`
+Related: `MINING_PROTOCOL_V3.md`, `POW_SPEC_FINAL.md`
 
 Planning only. Does **not** add a pool, vardiff, share accounting, or payout logic to `pulsedagd` or the official miner.
 

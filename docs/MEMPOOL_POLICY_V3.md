@@ -121,3 +121,7 @@ RPC responses preserve the pre-existing typed `classification` field (for exampl
 Exact-head validation for this bridge must run on top of the current `main` integration baseline so unrelated launch gates, including the fast-sync restore/rejoin regression, are present rather than silently skipped by an outdated branch base.
 
 This bridge does not change consensus validation, replace package-aware eviction ordering, or close the still-open `Resource limits, eviction and expiry` scope.
+
+## First-network operational acceptance
+
+Preserve bounded tracked-outpoint and transaction indexes, duplicate/confirmed/missing-input/duplicate-input/zero-output/signature rejection, automatic removal of confirmed or invalidated entries on canonical state update, deduplicated bounded peer relay, and observable admission/rejection/relay/sanitize counters. Verify under public-testnet load and reordering; exact resource and expiry parameters require the current policy freeze. The obsolete private-testnet configuration does not define native consensus or new limits. Local first-seen ordering is not canonical DAG monetary ordering.

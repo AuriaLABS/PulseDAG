@@ -6,11 +6,11 @@
 |---|---|
 | VERSION file | `v3.0.0` |
 | Cargo workspace version | `3.0.0` |
-| Current milestone | v3.0.0 candidate construction and exact-SHA validation |
+| Current milestone | Active candidate construction — v3.0.0 first-network implementation and exact-SHA validation |
 | Candidate state | Moving candidate; exact final SHA not frozen |
 | Final decision | `PENDING_EXACT_CANDIDATE_EVIDENCE` |
 | Active CI target | v3.0.0 only |
-| Protocol baseline | transaction v2 + block-header v2 + `ghostdag_v1` with v3 runtime/evidence surfaces |
+| Protocol baseline | native-v3 GHOSTDAG and UTXO/PoW authority (integration pending) |
 | Chain identity | Fresh v3 chain/genesis identity required; final digest not frozen |
 | Release scope | node + standalone miner; user surfaces require their own v3 gate |
 | High cadence | disabled by default pending v3 evidence |
@@ -20,20 +20,18 @@
 | 30-day clock | `thirty_day_public_testnet_clock_started=false` |
 | Smart contracts | `contracts_enabled=false` |
 
-## Version progression
+## Network lifecycle
 
-| Version | Scope | Status |
-|---|---|---|
-| `v2.2.x` | Earlier private-testnet hardening and rehearsal | Historical |
-| `v2.3.0` | Previous private-testnet candidate baseline | Historical / compatibility only |
-| `v2.4.0` | Transaction/header v2 and GHOSTDAG predecessor candidate | Historical predecessor / regression input |
-| `v2.5.0` | Scale/GPU/resilience planning source | Folded into v3 backlog; not an active release target |
-| `v2.6.0` | Programmability planning source | Folded into v3 backlog; not an active release target |
-| `v3.0.0` | Current Pulse Layer candidate | **Active candidate construction** |
+| Stage | Status |
+|---|---|
+| Public native-v3 testnet | First network; PRE-GO preparation, launch not authorized |
+| Mainnet | Separate genesis and GO after testnet evidence |
+
+No earlier deployed network or state migration obligation exists.
 
 ## v3.0.0 evidence state
 
-All release/readiness evidence that can affect launch must be regenerated or explicitly validated on the exact v3.0.0 candidate SHA. Historical v2.x evidence can prove compatibility, regression coverage, migration behavior, or provenance, but it is not a v3 launch gate.
+All release/readiness evidence that can affect launch must be regenerated or explicitly validated on the exact v3.0.0 candidate SHA. Prototype evidence may support applicable regression and provenance only; it does not establish native launch acceptance.
 
 The active v3 candidate is closing:
 
@@ -61,19 +59,19 @@ The active v3 candidate is closing:
 
 ## Repository version rule
 
-Primary active repository surfaces must identify `v3.0.0` / `3.0.0` consistently. Active pull-request, release, evidence, and readiness workflows must be v3.0 workflows. Earlier-version files may remain only when clearly historical, compatibility-oriented, migration-oriented, or archival; they must not be required as earlier-version release gates.
+Primary active repository surfaces must identify `v3.0.0` / `3.0.0` consistently. Active pull-request, release, evidence, and readiness workflows must be v3.0 workflows. Retire obsolete prototype material from the active tree once its useful requirements and regressions are preserved. No prior network compatibility or migration gate.
 
 ## What `main` is
 
 `main` is the **moving v3.0.0 candidate line**, not a frozen release or launch authorization.
 
-Presence of inactive modules does not activate them. In particular, `contracts_enabled=false` remains mandatory until a separate explicit activation decision changes that boundary.
+Presence of inactive modules does not activate them. In particular, `contracts_enabled=false` remains mandatory throughout v3.0.0; activation requires a later separately versioned decision.
 
 | Line | Meaning |
 |---|---|
 | `main` | Moving v3.0.0 candidate construction line |
 | Frozen v3 candidate | Does not exist until an exact SHA is recorded and all mandatory evidence is rerun |
-| Historical v2.x | Compatibility, migration, regression, and provenance only |
+| Earlier development | Git provenance and applicable regression only |
 
 ## Live control issues
 
