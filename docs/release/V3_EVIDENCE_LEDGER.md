@@ -29,3 +29,7 @@ Mainnet must reference prior testnet source_sha, tree_sha, config_digest (matchi
 ## Validation
 
 Run `python3 scripts/release/validate_v3_evidence_ledger.py --self-test`. To check a populated ledger, pass its JSON path. No actual GO ledger is committed while the candidate is unfrozen. The self-test uses deliberately synthetic identities and URLs, never deployment inputs. PRE-GO, mining OFF, contracts INACTIVE and mainnet NO-GO remain unchanged.
+
+### Independent authorization and prior file binding
+
+For a mainnet GO ledger, pass `--prior-testnet-ledger <path>` to the validator. The exact original UTF-8 testnet GO ledger bytes must match the recorded SHA-256 digest; source/tree, full testnet identity and authorization record must also match. Mainnet must cite a different #781 authorization comment. Duplicate JSON keys fail closed. This checks file consistency, not the authenticity or substance of external approval or public activity. CI uses the optional `docs/release/v3-testnet-evidence-ledger.json` as the prior file when validating a mainnet GO ledger; no synthetic GO artifacts are checked in.

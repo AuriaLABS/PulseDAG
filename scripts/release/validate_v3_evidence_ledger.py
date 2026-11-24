@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import re
 import sys
@@ -380,6 +381,8 @@ def validate_ledger(raw: Any) -> None:
             if parse_timestamp(entry["ended_at"], "evidence.ended_at") > approved_at:
                 fail("GO decision precedes evidence completion")
         if stage == "mainnet":
+            if record["issue_comment"] == prior["go_record"]["issue_comment"]:
+                fail("mainnet GO must reference a separate authorization comment")
             if parse_timestamp(prior["period_end"], "prior_testnet.period_end") > approved_at:
                 fail("mainnet decision precedes accepted testnet period")
             burn = gates["production-burn-in-168h"]
@@ -425,6 +428,40 @@ def validate_prior_testnet(raw: Any, identity: dict[str, Any]) -> None:
         fail("prior testnet dates must follow authorization and first accepted block")
     if end - start < timedelta(days=30):
         fail("prior testnet accepted period is shorter than 30 consecutive days")
+
+
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_ledger_bytes(raw: bytes) -> dict[str, Any]:
+    try:
+        return require_dict(json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object), "ledger")
+    except UnicodeDecodeError as exc:
+        raise LedgerError("ledger must be UTF-8 JSON") from exc
+
+
+def verify_prior_ledger(mainnet: dict[str, Any], raw: bytes) -> None:
+    prior = mainnet["prior_testnet"]
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != prior["ledger_digest"]:
+        fail("prior testnet ledger bytes do not match the recorded digest")
+    testnet = parse_ledger_bytes(raw)
+    validate_ledger(testnet)
+    if testnet["stage"] != "testnet" or testnet["decision"] != "GO_PUBLIC_TESTNET":
+        fail("prior ledger must contain a valid testnet GO record")
+    for key in ("source_sha", "tree_sha"):
+        if testnet["candidate"][key] != prior[key]:
+            fail(f"prior testnet ledger has a different {key}")
+    if testnet["networks"]["testnet"] != mainnet["networks"]["testnet"]:
+        fail("prior testnet ledger has a different network identity")
+    if testnet["decision_record"] != prior["go_record"]:
+        fail("prior testnet ledger has a different authorization record")
+
 
 
 def sample_ledger() -> dict[str, Any]:
@@ -579,12 +616,13 @@ def run_self_test() -> None:
              ended_at="2026-10-09T00:00:00Z")
         for gate in sorted(REQUIRED_GATES["mainnet"])
     ]
-    main["decision_record"]["decided_at"] = "2026-10-09T00:00:00Z"
+    main["decision_record"] = {"issue_comment": "https://github.com/AuriaLABS/PulseDAG/issues/781#issuecomment-2", "decided_at": "2026-10-09T00:00:00Z"}
+    prior_bytes = json.dumps(valid, sort_keys=True).encode("utf-8")
     main["prior_testnet"] = {
         "source_sha": valid["candidate"]["source_sha"],
         "tree_sha": valid["candidate"]["tree_sha"],
         "config_digest": valid["networks"]["testnet"]["config_digest"],
-        "ledger_digest": "sha256:"+"a"*64,
+        "ledger_digest": "sha256:" + hashlib.sha256(prior_bytes).hexdigest(),
         "acceptance_evidence_digest": "sha256:"+"b"*64,
         "go_record": valid["decision_record"],
         "first_block_at": "2026-09-01T02:00:00Z",
@@ -592,7 +630,9 @@ def run_self_test() -> None:
         "period_end": "2026-10-01T02:00:00Z",
     }
     validate_ledger(main)
+    verify_prior_ledger(main, prior_bytes)
     for label, mutate in [
+        ("reused authorization", lambda x: x["decision_record"].update(issue_comment=x["prior_testnet"]["go_record"]["issue_comment"])),
         ("missing prior", lambda x: x.update(prior_testnet=None)),
         ("short public period", lambda x: x["prior_testnet"].update(period_end="2026-09-30T02:00:00Z")),
         ("backdated period", lambda x: x["prior_testnet"].update(period_start="2026-09-01T00:00:00Z")),
@@ -604,19 +644,52 @@ def run_self_test() -> None:
         mutate(bad)
         expect_invalid(bad, label)
 
+    for label, raw in [
+        ("modified prior bytes", prior_bytes + b" "),
+        ("duplicate JSON key", b'{"stage":"testnet","stage":"mainnet"}'),
+    ]:
+        try:
+            if label == "duplicate JSON key":
+                parse_ledger_bytes(raw)
+            else:
+                verify_prior_ledger(main, raw)
+        except LedgerError:
+            continue
+        fail(f"self-test expected rejection: {label}")
+    altered = copy.deepcopy(valid)
+    altered["candidate"]["source_sha"] = "9"*40
+    for entry in altered["evidence"]:
+        entry["source_sha"] = "9"*40
+    altered_bytes = json.dumps(altered).encode("utf-8")
+    wrong = copy.deepcopy(main)
+    wrong["prior_testnet"]["ledger_digest"] = "sha256:" + hashlib.sha256(altered_bytes).hexdigest()
+    try:
+        verify_prior_ledger(wrong, altered_bytes)
+    except LedgerError:
+        pass
+    else:
+        fail("self-test expected rejection of different prior candidate")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("ledger", nargs="?", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--prior-testnet-ledger", type=Path)
     args = parser.parse_args()
 
     try:
         if args.self_test:
             run_self_test()
         if args.ledger is not None:
-            with args.ledger.open("r", encoding="utf-8") as handle:
-                validate_ledger(json.load(handle))
+            ledger = parse_ledger_bytes(args.ledger.read_bytes())
+            validate_ledger(ledger)
+            if ledger["stage"] == "mainnet" and ledger["decision"] == "GO_V3_MAINNET":
+                if args.prior_testnet_ledger is None:
+                    fail("mainnet GO validation requires --prior-testnet-ledger")
+                verify_prior_ledger(ledger, args.prior_testnet_ledger.read_bytes())
+            elif args.prior_testnet_ledger is not None:
+                fail("prior ledger input is only used for mainnet GO validation")
         if not args.self_test and args.ledger is None:
             parser.error("provide a ledger path and/or --self-test")
     except (LedgerError, json.JSONDecodeError, OSError) as exc:
