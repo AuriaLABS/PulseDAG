@@ -12,18 +12,30 @@ import copy
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 FORMAT = "pulsedag-v3-evidence-ledger"
-FORMAT_VERSION = 1
-PENDING_DECISION = "PENDING_V3_DUAL_LAUNCH"
-FINAL_DECISIONS = {
-    "GO_V3_DUAL_LAUNCH",
-    "DELAY_V3_DUAL_LAUNCH",
-    "NO_GO_V3_DUAL_LAUNCH",
+FORMAT_VERSION = 2
+STAGES = {"testnet", "mainnet"}
+PENDING_DECISION = "PENDING"
+GO_DECISIONS = {"testnet": "GO_PUBLIC_TESTNET", "mainnet": "GO_V3_MAINNET"}
+REQUIRED_GATES = {
+    "testnet": {
+        "native-consensus-monetary", "local-native-regressions",
+        "testnet-only-activation", "testnet-identity",
+        "public-security", "operator-release", "contracts-inactive",
+    },
+    "mainnet": {
+        "production-release-security", "native-replay-checkpoint",
+        "production-adversarial-25n16m", "production-burn-in-168h",
+        "contracts-ready-inactive", "mainnet-identity", "public-testnet-acceptance",
+    },
 }
+DECISION_LINK_RE = re.compile(
+    r"https://github\.com/AuriaLABS/PulseDAG/issues/781#issuecomment-[1-9][0-9]*"
+)
 HEX_RE = re.compile(r"^[0-9a-f]+$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$")
@@ -281,6 +293,9 @@ def validate_ledger(raw: Any) -> None:
         "format",
         "format_version",
         "candidate_frozen",
+        "stage",
+        "prior_testnet",
+        "decision_record",
         "candidate",
         "networks",
         "configs",
@@ -317,50 +332,99 @@ def validate_ledger(raw: Any) -> None:
     tree_sha = require_commit(candidate["tree_sha"], "candidate.tree_sha")
     validate_protocol_identities(candidate["protocol_identities"])
 
+    stage = require_str(ledger["stage"], "stage")
+    if stage not in STAGES:
+        fail("stage must be testnet or mainnet")
     networks = require_dict(ledger["networks"], "networks")
-    require_keys(networks, "networks", {"mainnet", "parallel_testnet"})
-    require_only_keys(networks, "networks", {"mainnet", "parallel_testnet"})
-    mainnet = validate_network("mainnet", networks["mainnet"])
-    testnet = validate_network("parallel_testnet", networks["parallel_testnet"])
-    for field in (
-        "network_profile",
-        "chain_id",
-        "genesis_hash",
-        "config_digest",
-        "bootnode_identity_digest",
-        "signing_domain",
-        "application_domain",
-    ):
-        if mainnet[field] == testnet[field]:
-            fail(f"mainnet and parallel_testnet must not share {field}")
+    expected_networks = {"testnet"} if stage == "testnet" else {"testnet", "mainnet"}
+    require_keys(networks, "networks", expected_networks)
+    require_only_keys(networks, "networks", expected_networks)
+    identities = {name: validate_network(name, value) for name, value in networks.items()}
+    if stage == "mainnet":
+        for field in identities["mainnet"]:
+            if identities["mainnet"][field] == identities["testnet"][field]:
+                fail(f"mainnet and testnet must not share {field}")
 
     config_digests = validate_configs(ledger["configs"])
-    for network_name, network in (("mainnet", mainnet), ("parallel_testnet", testnet)):
-        if network["config_digest"] not in config_digests:
-            fail(
-                f"networks.{network_name}.config_digest is not declared "
-                "in the frozen config registry"
-            )
-
+    active_config = identities[stage]["config_digest"]
+    if active_config not in config_digests:
+        fail("active network config digest is not declared")
     artifact_digests = validate_artifacts(ledger["artifacts"])
     statuses = validate_evidence(
-        ledger["evidence"],
-        source_sha,
-        tree_sha,
-        artifact_digests,
-        config_digests,
+        ledger["evidence"], source_sha, tree_sha, artifact_digests, config_digests,
     )
 
+    prior = ledger["prior_testnet"]
+    if stage == "testnet":
+        if prior is not None:
+            fail("testnet entry must not require or claim prior live testnet acceptance")
+    else:
+        validate_prior_testnet(prior, identities["testnet"])
+
     decision = require_str(ledger["decision"], "decision")
-    if decision not in FINAL_DECISIONS | {PENDING_DECISION}:
-        fail("decision is not a recognized #781 launch-control value")
+    if decision not in {PENDING_DECISION, "DELAY", "NO_GO", GO_DECISIONS[stage]}:
+        fail("decision is not recognized for this stage")
     if not frozen and decision != PENDING_DECISION:
         fail("an unfrozen candidate may only carry the pending decision")
-    if decision == "GO_V3_DUAL_LAUNCH":
-        if not frozen:
-            fail("GO requires candidate_frozen=true")
-        if any(status != "PASS" for status in statuses):
-            fail("GO requires every ledger evidence record to be PASS")
+    record = ledger["decision_record"]
+    if decision == GO_DECISIONS[stage]:
+        if not frozen or any(status != "PASS" for status in statuses):
+            fail("GO record requires a frozen candidate and all evidence PASS")
+        gates = {entry["gate_id"]: entry for entry in ledger["evidence"]}
+        if not REQUIRED_GATES[stage] <= gates.keys():
+            fail("missing mandatory stage gate records")
+        approved_at = validate_decision_record(record)
+        for entry in gates.values():
+            if active_config not in entry["config_sha256s"]:
+                fail("GO evidence must reference the active network config")
+            if parse_timestamp(entry["ended_at"], "evidence.ended_at") > approved_at:
+                fail("GO decision precedes evidence completion")
+        if stage == "mainnet":
+            if parse_timestamp(prior["period_end"], "prior_testnet.period_end") > approved_at:
+                fail("mainnet decision precedes accepted testnet period")
+            burn = gates["production-burn-in-168h"]
+            if parse_timestamp(burn["ended_at"], "burn.end") - parse_timestamp(
+                burn["started_at"], "burn.start"
+            ) < timedelta(hours=168):
+                fail("production burn-in evidence covers less than 168 hours")
+    elif record is not None:
+        fail("non-GO ledger must not carry a GO authorization record")
+
+
+def validate_decision_record(raw: Any) -> datetime:
+    record = require_dict(raw, "decision_record")
+    keys = {"issue_comment", "decided_at"}
+    require_keys(record, "decision_record", keys)
+    require_only_keys(record, "decision_record", keys)
+    link = require_str(record["issue_comment"], "decision_record.issue_comment")
+    if not DECISION_LINK_RE.fullmatch(link):
+        fail("decision record must reference a #781 comment")
+    return parse_timestamp(record["decided_at"], "decision_record.decided_at")
+
+
+def validate_prior_testnet(raw: Any, identity: dict[str, Any]) -> None:
+    prior = require_dict(raw, "prior_testnet")
+    keys = {
+        "source_sha", "tree_sha", "config_digest", "ledger_digest",
+        "go_record", "first_block_at", "period_start", "period_end",
+        "acceptance_evidence_digest",
+    }
+    require_keys(prior, "prior_testnet", keys)
+    require_only_keys(prior, "prior_testnet", keys)
+    require_commit(prior["source_sha"], "prior_testnet.source_sha")
+    require_commit(prior["tree_sha"], "prior_testnet.tree_sha")
+    if require_sha256(prior["config_digest"], "prior_testnet.config_digest") != identity["config_digest"]:
+        fail("prior testnet config does not match declared testnet identity")
+    require_sha256(prior["ledger_digest"], "prior_testnet.ledger_digest")
+    require_sha256(prior["acceptance_evidence_digest"], "prior_testnet.acceptance_evidence_digest")
+    authorized = validate_decision_record(prior["go_record"])
+    first = parse_timestamp(prior["first_block_at"], "prior_testnet.first_block_at")
+    start = parse_timestamp(prior["period_start"], "prior_testnet.period_start")
+    end = parse_timestamp(prior["period_end"], "prior_testnet.period_end")
+    if not authorized <= first <= start <= end:
+        fail("prior testnet dates must follow authorization and first accepted block")
+    if end - start < timedelta(days=30):
+        fail("prior testnet accepted period is shorter than 30 consecutive days")
 
 
 def sample_ledger() -> dict[str, Any]:
@@ -375,8 +439,11 @@ def sample_ledger() -> dict[str, Any]:
     digest9 = "sha256:" + "9" * 64
     digesta = "sha256:" + "a" * 64
     digestb = "sha256:" + "b" * 64
-    return {
+    ledger = {
         "format": FORMAT,
+        "stage": "testnet",
+        "prior_testnet": None,
+        "decision_record": {"issue_comment": "https://github.com/AuriaLABS/PulseDAG/issues/781#issuecomment-1", "decided_at": "2026-09-01T01:00:00Z"},
         "format_version": FORMAT_VERSION,
         "candidate_frozen": True,
         "candidate": {
@@ -406,7 +473,7 @@ def sample_ledger() -> dict[str, Any]:
                 "signing_domain": "pulsedag-mainnet-v3",
                 "application_domain": "pulsedag-mainnet-app-v3",
             },
-            "parallel_testnet": {
+            "testnet": {
                 "network_profile": "public-testnet",
                 "chain_id": "pulsedag-public-testnet-v3",
                 "genesis_hash": "2" * 64,
@@ -447,8 +514,15 @@ def sample_ledger() -> dict[str, Any]:
                 "invalidated": False,
             }
         ],
-        "decision": "GO_V3_DUAL_LAUNCH",
+        "decision": "GO_PUBLIC_TESTNET",
     }
+
+    del ledger["networks"]["mainnet"]
+    ledger["configs"] = [ledger["configs"][1]]
+    template = ledger["evidence"][0]
+    template["config_sha256s"] = [digest7]
+    ledger["evidence"] = [dict(template, gate_id=gate) for gate in sorted(REQUIRED_GATES["testnet"])]
+    return ledger
 
 
 def expect_invalid(value: dict[str, Any], label: str) -> None:
@@ -462,43 +536,73 @@ def expect_invalid(value: dict[str, Any], label: str) -> None:
 def run_self_test() -> None:
     valid = sample_ledger()
     validate_ledger(valid)
+    cases = [
+        ("old format", lambda x: x.update(format_version=1)),
+        ("old dual launch", lambda x: x.update(decision="GO_V3_DUAL_LAUNCH")),
+        ("wrong stage GO", lambda x: x.update(decision="GO_V3_MAINNET")),
+        ("missing gate", lambda x: x["evidence"].pop()),
+        ("cross-candidate evidence", lambda x: x["evidence"][0].update(source_sha="f"*40)),
+        ("undeclared config", lambda x: x["evidence"][0].update(config_sha256s=["sha256:"+"f"*64])),
+        ("missing config binding", lambda x: x["evidence"][0].update(config_sha256s=[])),
+        ("malformed timestamp", lambda x: x["evidence"][0].update(started_at="2026-09-01 00:00:00Z")),
+        ("boolean version", lambda x: x.update(format_version=True)),
+        ("pending gate", lambda x: x["evidence"][0].update(status="PENDING")),
+        ("invalidated pass", lambda x: x["evidence"][0].update(invalidated=True)),
+        ("unfrozen GO", lambda x: x.update(candidate_frozen=False)),
+        ("missing GO record", lambda x: x.update(decision_record=None)),
+        ("premature decision", lambda x: x["decision_record"].update(decided_at="2026-09-01T00:00:00Z")),
+        ("unexpected mainnet", lambda x: x["networks"].update(mainnet=copy.deepcopy(x["networks"]["testnet"]))),
+    ]
+    for label, mutate in cases:
+        bad = copy.deepcopy(valid)
+        mutate(bad)
+        expect_invalid(bad, label)
+    pending = copy.deepcopy(valid)
+    pending.update(candidate_frozen=False, decision=PENDING_DECISION, decision_record=None)
+    validate_ledger(pending)
 
-    mismatch = copy.deepcopy(valid)
-    mismatch["evidence"][0]["source_sha"] = "f" * 40
-    expect_invalid(mismatch, "cross-candidate evidence")
-
-    network_collision = copy.deepcopy(valid)
-    network_collision["networks"]["parallel_testnet"]["chain_id"] = valid["networks"]["mainnet"]["chain_id"]
-    expect_invalid(network_collision, "network identity collision")
-
-    undeclared_config = copy.deepcopy(valid)
-    undeclared_config["evidence"][0]["config_sha256s"] = ["sha256:" + "c" * 64]
-    expect_invalid(undeclared_config, "undeclared evidence config")
-
-    malformed_timestamp = copy.deepcopy(valid)
-    malformed_timestamp["evidence"][0]["started_at"] = "2026-09-01 00:00:00Z"
-    expect_invalid(malformed_timestamp, "non-RFC3339 timestamp")
-
-    boolean_version = copy.deepcopy(valid)
-    boolean_version["format_version"] = True
-    expect_invalid(boolean_version, "boolean format version")
-
-    go_with_pending = copy.deepcopy(valid)
-    go_with_pending["evidence"][0]["status"] = "PENDING"
-    expect_invalid(go_with_pending, "GO with pending evidence")
-
-    invalidated_pass = copy.deepcopy(valid)
-    invalidated_pass["evidence"][0]["invalidated"] = True
-    expect_invalid(invalidated_pass, "invalidated PASS evidence")
-
-    unfrozen_pending = copy.deepcopy(valid)
-    unfrozen_pending["candidate_frozen"] = False
-    unfrozen_pending["decision"] = PENDING_DECISION
-    validate_ledger(unfrozen_pending)
-
-    unfrozen_go = copy.deepcopy(valid)
-    unfrozen_go["candidate_frozen"] = False
-    expect_invalid(unfrozen_go, "GO on unfrozen candidate")
+    main = copy.deepcopy(valid)
+    main.update(stage="mainnet", decision="GO_V3_MAINNET")
+    main["networks"]["mainnet"] = {
+        key: ("sha256:"+"c"*64 if key == "config_digest" else
+              "sha256:"+"d"*64 if key == "bootnode_identity_digest" else
+              "3"*64 if key == "genesis_hash" else "mainnet-"+key)
+        for key in main["networks"]["testnet"]
+    }
+    config = main["networks"]["mainnet"]["config_digest"]
+    main["configs"].append({"name": "mainnet", "role": "network", "sha256": config})
+    main["candidate"]["source_sha"] = "e"*40
+    main["candidate"]["tree_sha"] = "f"*40
+    main["evidence"] = [
+        dict(valid["evidence"][0], gate_id=gate, source_sha="e"*40, tree_sha="f"*40,
+             config_sha256s=[config], started_at="2026-10-02T00:00:00Z",
+             ended_at="2026-10-09T00:00:00Z")
+        for gate in sorted(REQUIRED_GATES["mainnet"])
+    ]
+    main["decision_record"]["decided_at"] = "2026-10-09T00:00:00Z"
+    main["prior_testnet"] = {
+        "source_sha": valid["candidate"]["source_sha"],
+        "tree_sha": valid["candidate"]["tree_sha"],
+        "config_digest": valid["networks"]["testnet"]["config_digest"],
+        "ledger_digest": "sha256:"+"a"*64,
+        "acceptance_evidence_digest": "sha256:"+"b"*64,
+        "go_record": valid["decision_record"],
+        "first_block_at": "2026-09-01T02:00:00Z",
+        "period_start": "2026-09-01T02:00:00Z",
+        "period_end": "2026-10-01T02:00:00Z",
+    }
+    validate_ledger(main)
+    for label, mutate in [
+        ("missing prior", lambda x: x.update(prior_testnet=None)),
+        ("short public period", lambda x: x["prior_testnet"].update(period_end="2026-09-30T02:00:00Z")),
+        ("backdated period", lambda x: x["prior_testnet"].update(period_start="2026-09-01T00:00:00Z")),
+        ("identity collision", lambda x: x["networks"]["mainnet"].update(chain_id=x["networks"]["testnet"]["chain_id"])),
+        ("wrong prior identity", lambda x: x["prior_testnet"].update(config_digest="sha256:"+"f"*64)),
+        ("short production burn-in", lambda x: next(e for e in x["evidence"] if e["gate_id"]=="production-burn-in-168h").update(ended_at="2026-10-08T00:00:00Z")),
+    ]:
+        bad = copy.deepcopy(main)
+        mutate(bad)
+        expect_invalid(bad, label)
 
 
 def main() -> int:
