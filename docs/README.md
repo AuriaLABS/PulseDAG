@@ -11,7 +11,13 @@ Current guardrails:
 - `thirty_day_public_testnet_clock_started=false`;
 - `contracts_enabled=false`;
 - active release/readiness CI must identify v3.0.0;
-- v2.x material is historical/compatibility evidence only.
+- PulseDAG has no previously deployed network; no legacy network compatibility is required.
+
+## First-network authority
+
+- [`FIRST_NETWORK_BASELINE.md`](FIRST_NETWORK_BASELINE.md)
+- [`MONETARY_POLICY_V3_0_0.md`](MONETARY_POLICY_V3_0_0.md)
+- [`runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md`](runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md)
 
 ## Current v3.0.0 authority
 
@@ -38,7 +44,7 @@ Transaction/header v2 documents remain protocol-component specifications inside 
 - [`BURN_IN_GATE.md`](BURN_IN_GATE.md)
 - [`checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md`](checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md)
 
-Evidence generated for v2.x may be retained for regression, compatibility, and provenance. It does not satisfy a v3.0.0 launch gate unless the corresponding v3 workflow reruns it against the exact v3 candidate SHA.
+Earlier development evidence may be retained for applicable regression and provenance, not network compatibility. It does not satisfy a v3.0.0 launch gate unless the corresponding v3 workflow reruns it against the exact v3 candidate SHA.
 
 ## v3 product and protocol work
 
@@ -62,4 +68,4 @@ These surfaces remain independently gated. The v3 version identity does not by i
 - [`archive/README.md`](archive/README.md)
 - [`codex_tasks/`](codex_tasks/)
 
-Historical v2.x evidence remains immutable provenance and compatibility material.
+Historical development evidence is not active operator guidance. Preserve applicable regression evidence and Git provenance; remove obsolete instructions from the active tree after reference review.
