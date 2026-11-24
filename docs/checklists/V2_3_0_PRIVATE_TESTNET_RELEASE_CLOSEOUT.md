@@ -40,7 +40,7 @@ Use this checklist to record the final private-testnet release decision for the 
 
 ## Operator and rollback readiness
 
-- [x] Installation and checksum instructions are current for v2.3.0 in `docs/INSTALL_BINARIES_V2_3_0.md`.
+- [x] Historical installation and checksum instructions were recorded in the [v2.3.0 prototype guide](https://github.com/AuriaLABS/PulseDAG/blob/5937a6b972a495108bbb6569e96ee1b6df317930/docs/INSTALL_BINARIES_V2_3_0.md). For first-network installation use [INSTALL_BINARIES.md](../INSTALL_BINARIES.md); historical evidence is not current launch acceptance.
 - [x] Node lifecycle install/start/stop/upgrade/rollback procedures pass. Post-cleanup lifecycle workflow run `29834892286` passed.
 - [x] Bootnode addresses include the complete `/p2p/<peer-id>` component. The Task 12 topology contract and post-cleanup bootstrap workflow run `29834892270` passed.
 - [ ] Snapshot, restore, rebuild, and reconciliation procedures are documented and tested for the final v2.3.0 candidate. The active procedures are now documented with v2.3.0 identity, loopback RPC examples, candidate binding, evidence requirements, RTO, reconciliation, and failure criteria; a fresh candidate-scoped execution bundle is still required.
