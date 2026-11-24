@@ -306,7 +306,11 @@ async fn public_safe_router_enforces_negative_route_body_and_liveness_contract()
                 .expect("request"),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "unexpected status for {path}");
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "unexpected status for {path}"
+        );
         assert!(
             body.contains("public_route_forbidden"),
             "missing code for {path}"
