@@ -197,6 +197,7 @@ mod tests {
         genesis_v3::dormant_native_genesis_envelope_v3_ns,
         header_v3::BlockHeaderV3,
         monetary_v3::PRODUCTION_CADENCE_V3,
+        native_gd08_order_kernel_v3::derive_dormant_native_gd08_order_from_ghostdag_trial,
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         reward_settlement_v3::build_reward_claim_transaction_v3,
@@ -372,6 +373,42 @@ mod tests {
         build_block_envelope_v3(CHAIN, header, transactions).unwrap()
     }
 
+    /// Offline test-only arrival staging, NOT a real daemon P2P/sync test.
+    /// A body remains pending until every native parent is available. The
+    /// authenticated GD08 evaluation below is the independent final judge.
+    fn reconstruct_fork_from_arrival_history(
+        arrivals: Vec<BlockEnvelopeV3>,
+    ) -> (BTreeMap<BlockId, BlockEnvelopeV3>, usize) {
+        let mut ready = BTreeMap::<BlockId, BlockEnvelopeV3>::new();
+        let mut pending = BTreeMap::<BlockId, BlockEnvelopeV3>::new();
+        let mut delayed_arrivals = 0;
+        for incoming in arrivals {
+            let hash = incoming.hash.clone();
+            assert!(!ready.contains_key(&hash) && !pending.contains_key(&hash));
+            if incoming
+                .header
+                .parents
+                .iter()
+                .any(|parent| !ready.contains_key(parent))
+            {
+                delayed_arrivals += 1;
+            }
+            pending.insert(hash, incoming);
+            loop {
+                let next_ready = pending.iter().find(|(_, body)| {
+                    body.header.parents.iter().all(|parent| ready.contains_key(parent))
+                }).map(|(hash, _)| hash.clone());
+                let Some(hash) = next_ready else {
+                    break;
+                };
+                let envelope = pending.remove(&hash).expect("ready pending body exists");
+                assert!(ready.insert(hash, envelope).is_none());
+            }
+        }
+        assert!(pending.is_empty(), "complete native parent closure is required");
+        (ready, delayed_arrivals)
+    }
+
     #[test]
     fn multiparent_conflicting_fees_and_supply_are_independent_of_block_arrival() {
         // Compare red-side (K=0) and blue-side (K=1) diagnostic roles.
@@ -412,12 +449,35 @@ mod tests {
                 vec![],
             );
             let tip = join.hash.clone();
-            let blocks = BTreeMap::from([
-                (genesis_hash.clone(), genesis),
-                (a.hash.clone(), a.clone()),
-                (b.hash.clone(), b.clone()),
-                (tip.clone(), join),
+            // Two real delivery histories: the first admits parent-first,
+            // while the second must defer the join and both siblings until
+            // the missing genesis arrives. Neither path is live P2P.
+            let (blocks, direct_delays) = reconstruct_fork_from_arrival_history(vec![
+                genesis.clone(), a.clone(), b.clone(), join.clone(),
             ]);
+            let (reverse_blocks, reverse_delays) = reconstruct_fork_from_arrival_history(vec![
+                join, b.clone(), a.clone(), genesis,
+            ]);
+            assert_eq!(direct_delays, 0);
+            assert!(reverse_delays >= 2, "late genesis must exercise pending-parent staging");
+            assert_eq!(blocks, reverse_blocks);
+
+            let headers = blocks.iter()
+                .map(|(hash, envelope)| (hash.clone(), envelope.header.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let authenticated_order = derive_dormant_native_gd08_order_from_ghostdag_trial(
+                CHAIN, GENESIS_NS, &genesis_hash, &tip, &headers, k,
+            ).unwrap();
+            let a_position = authenticated_order.ordered.iter()
+                .position(|hash| hash == &a.hash).unwrap();
+            let b_position = authenticated_order.ordered.iter()
+                .position(|hash| hash == &b.hash).unwrap();
+            let expected_fees = if a_position < b_position {
+                (1_u64, 0_u64)
+            } else {
+                (0_u64, 2_u64)
+            };
+
             let policy = trial_policy(&PRODUCTION_CADENCE_V3);
             let policy = DormantNativeRewardTrialPolicyV3 { trial_k: k, ..policy };
             let first = inspect_dormant_native_gd08_reward_preview(
@@ -436,9 +496,10 @@ mod tests {
             let fees_b = first.hypothetical_rewards.iter()
                 .find(|reward| reward.block_hash == b.hash).unwrap()
                 .hypothetical_eligible_fees_atoms;
-            assert!(
-                (fees_a == 1 && fees_b == 0) || (fees_a == 0 && fees_b == 2),
-                "only the earliest authenticated spend can collect its fee"
+            assert_eq!(
+                (fees_a, fees_b),
+                expected_fees,
+                "the uniquely earlier GD08-authenticated signed spend is the only fee winner"
             );
             assert_eq!(first.total_hypothetical_eligible_fees_atoms, fees_a + fees_b);
             assert_eq!(
@@ -451,13 +512,10 @@ mod tests {
                 "no future immature reward should become spendable"
             );
 
-            // Peer arrival order and map insertion order must never change
-            // hypothetical subsidy, fee ownership, replay root or GD08 digest.
-            let reverse_order = blocks.iter().rev()
-                .map(|(hash, body)| (hash.clone(), body.clone()))
-                .collect::<BTreeMap<_, _>>();
+            // Distinct histories have genuinely exercised pending-parent
+            // reconstruction before identical authenticated economic replay.
             let second = inspect_dormant_native_gd08_reward_preview(
-                CHAIN, GENESIS_NS, &genesis_hash, &tip, &reverse_order, &opening, policy,
+                CHAIN, GENESIS_NS, &genesis_hash, &tip, &reverse_blocks, &opening, policy,
             )
             .unwrap();
             assert_eq!(first, second);
