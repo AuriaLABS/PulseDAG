@@ -1,0 +1,44 @@
+name: "Native-v3 signed GD08 reward/fee supply preview (DORMANT)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - ".github/workflows/native-v3-gd08-reward-preview-inert.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-gd08-reward-preview-inert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require closed first-network launch gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_HEAD"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          ! grep -Fq 'native_gd08_reward_preview_v3::' apps/pulsedagd/src/main.rs
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact candidate format
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Validate signature-backed winner fees, supply telescoping and rejected forged claim
+        run: cargo +1.91.0 test --locked -p pulsedag-core --lib native_gd08_reward_preview_v3 -- --nocapture
+      - name: Strict core Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Unchanged lockfile
+        run: git diff --exit-code -- Cargo.lock
