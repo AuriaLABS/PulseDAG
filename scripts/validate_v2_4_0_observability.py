@@ -239,7 +239,7 @@ def validate_public_safe_routes(validation: Validation) -> None:
 def validate_exporter(validation: Validation) -> None:
     source = EXPORTER.read_text(encoding="utf-8")
     validation.require("SUPPORTED_RELEASE_LINES" in source, "exporter has an explicit release-line allowlist")
-    validation.require('"v2.3.0"' in source, "exporter preserves v2.3.0 inventory compatibility")
+    validation.require('"v2.3.0"' not in source, "exporter rejects retired v2.3.0 inventory identity")
     validation.require('"v2.4.0"' in source, "exporter accepts v2.4.0 inventories")
 
 
