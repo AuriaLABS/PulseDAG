@@ -145,6 +145,8 @@ jobs:
           allowed_signed_consumers = {
               Path("crates/pulsedag-core/src/lib.rs"),
               Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
+              # Zero-issuance genesis-bound trial; NOT a live consensus caller.
+              Path("crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs"),
           }
           assert not (signed_consumers - allowed_signed_consumers), (
               f"unexpected native signed-UTXO trial live caller: {sorted(map(str, signed_consumers - allowed_signed_consumers))}"
