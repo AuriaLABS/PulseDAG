@@ -14,8 +14,8 @@ use crate::{
     errors::PulseError,
     genesis_v3::verify_dormant_native_genesis_freeze_v3_ns,
     monetary_v3::{
-        economic_maturity_reached, subsidy_atoms_for_score, total_supply_atoms_for_score,
-        MonetaryCadenceSegment,
+        economic_maturity_reached, monetary_cadence_fingerprint_v3, subsidy_atoms_for_score,
+        total_supply_atoms_for_score, MonetaryCadenceSegment,
     },
     native_gd08_order_kernel_v3::derive_dormant_native_gd08_order_from_ghostdag_trial,
     native_gd08_signed_utxo_trial_v3::verify_full_signed_spend,
@@ -25,11 +25,14 @@ use crate::{
 };
 
 const MAX_TRIAL_BLOCKS: usize = 128;
+const MAX_TRIAL_CADENCE_SEGMENTS: usize = 128;
 const MAX_TRIAL_ORDINARY_ITEMS: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeLinearMonetaryReportV3 {
     pub order_digest: String,
+    /// Binds the entire validated trial schedule, including future segments.
+    pub cadence_fingerprint: String,
     pub state_root: String,
     pub monetary_score: u64,
     pub total_subsidy_atoms: u64,
@@ -75,6 +78,12 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     if envelopes.is_empty() || envelopes.len() > MAX_TRIAL_BLOCKS {
         return Err(invalid("unsupported bounded prefix length"));
     }
+    if cadence.len() > MAX_TRIAL_CADENCE_SEGMENTS {
+        return Err(invalid("trial cadence budget exceeded"));
+    }
+    // Validate even a genesis-only prefix; the replay loop may never execute.
+    let cadence_fingerprint =
+        monetary_cadence_fingerprint_v3(cadence).map_err(|e| invalid(e.to_string()))?;
     let genesis = envelopes
         .get(trusted_genesis)
         .ok_or_else(|| invalid("missing frozen genesis"))?;
@@ -237,6 +246,7 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     let spendable_atoms = state.utxos.values().map(|coin| coin.amount).sum();
     Ok(DormantNativeLinearMonetaryReportV3 {
         order_digest: order.digest,
+        cadence_fingerprint,
         state_root: state.compute_state_root()?,
         monetary_score: (order.ordered.len() - 1) as u64,
         total_subsidy_atoms: issued,
@@ -334,6 +344,48 @@ mod tests {
             coinbase: true,
             height: block.header.height,
         }
+    }
+
+    #[test]
+    fn genesis_only_rejects_invalid_cadence_and_binds_valid_schedule() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let corpus = BTreeMap::from([(g.clone(), genesis)]);
+        let inspect = |cadence: &[MonetaryCadenceSegment]| {
+            inspect_dormant_native_linear_monetary_trial(CHAIN, NS, &g, &g, &corpus, cadence)
+        };
+
+        let first = inspect(&CADENCE).unwrap();
+        assert_eq!(first.monetary_score, 0);
+        assert_eq!(first.total_subsidy_atoms, 0);
+        assert_eq!(first.pending_reward_atoms, 0);
+        assert_eq!(first.spendable_atoms, 0);
+        assert_eq!(
+            first.cadence_fingerprint,
+            monetary_cadence_fingerprint_v3(&CADENCE).unwrap()
+        );
+        let mut changed = CADENCE;
+        changed[0].target_interval_ns += 1;
+        let second = inspect(&changed).unwrap();
+        assert_eq!(first.state_root, second.state_root);
+        assert_eq!(first.order_digest, second.order_digest);
+        assert_ne!(first.cadence_fingerprint, second.cadence_fingerprint);
+
+        let mut invalid_start = CADENCE;
+        invalid_start[0].activation_score = 1;
+        let mut invalid_interval = CADENCE;
+        invalid_interval[0].target_interval_ns = 0;
+        assert!(inspect(&[]).is_err());
+        assert!(inspect(&invalid_start).is_err());
+        assert!(inspect(&invalid_interval).is_err());
+        assert!(inspect(&[CADENCE[0], CADENCE[0]]).is_err());
+        let oversized: Vec<_> = (0..=MAX_TRIAL_CADENCE_SEGMENTS)
+            .map(|score| MonetaryCadenceSegment {
+                activation_score: score as u64,
+                target_interval_ns: CADENCE[0].target_interval_ns,
+            })
+            .collect();
+        assert!(inspect(&oversized).is_err());
     }
 
     #[test]
