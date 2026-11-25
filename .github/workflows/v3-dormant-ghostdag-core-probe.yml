@@ -149,6 +149,8 @@ jobs:
               Path("crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"),
               # New strictly dormant signed-reward economic preview. No daemon or miner.
               Path("crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs"),
+              # Zero-issued frozen genesis trial only; still forbid runtime callers.
+              Path("crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs"),
           }
           assert not (signed_consumers - allowed_signed_consumers), (
               f"unexpected native signed-UTXO trial live caller: {sorted(map(str, signed_consumers - allowed_signed_consumers))}"
