@@ -19,11 +19,11 @@ expect_fail() {
   fi
 }
 
-cp "$ROOT_DIR/configs/private-testnet/seed.env.example" "$TMP_DIR/seed.env"
-cp "$ROOT_DIR/configs/private-testnet/node.env.example" "$TMP_DIR/node.env"
+cp "$ROOT_DIR/scripts/tests/fixtures/prototype_bootstrap/seed.txt" "$TMP_DIR/seed.env"
+cp "$ROOT_DIR/scripts/tests/fixtures/prototype_bootstrap/node.txt" "$TMP_DIR/node.env"
 for file in "$TMP_DIR/seed.env" "$TMP_DIR/node.env"; do
-  sed -i 's/private-testnet-v2.4.0/private-testnet-v2.3.0/g' "$file"
-  sed -i 's/pulsedag-private-v2.4.0/pulsedag-private-v2.3.0/g' "$file"
+  sed -i 's/private-testnet-v3.0.0/private-testnet-v2.3.0/g' "$file"
+  sed -i 's/pulsedag-private-v3.0.0/pulsedag-private-v2.3.0/g' "$file"
   sed -i '/^PULSEDAG_PROTOCOL_CONSENSUS_MODE=/d' "$file"
   sed -i 's/^PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "$file"
 done

@@ -1,5 +1,7 @@
 # PulseDAG v2.3.0 Isolated-Namespace Rehearsal
 
+> RETIRED PROTOTYPE PROCEDURE. The old live workflow is removed. Do not use this document to deploy a private network. Current first-network policy: [testnet-first launch](V3_0_0_TESTNET_FIRST_LAUNCH.md).
+
 ## Purpose
 
 Run the Task 12 five-node private-testnet rehearsal on one ephemeral Linux
@@ -49,18 +51,11 @@ available throughout the isolation.
 - stores controller evidence separately from operator logs so the controller
   checksum bundle is not modified after verification.
 
-## Actions execution
+## Historical Actions execution
 
-`.github/workflows/v2_3_0_netns_live_rehearsal.yml` has two modes:
+The [retired v2.3 namespace workflow](https://github.com/AuriaLABS/PulseDAG/blob/9cbe3ba51bd98d992b517c25e648717d01287d69/.github/workflows/v2_3_0_netns_live_rehearsal.yml) is preserved in Git history only. It required an obsolete release identity and is no longer a dispatch entrypoint.
 
-1. Pull requests run syntax, contract, comment-language, version guardrail, and
-   repository-hygiene checks without creating privileged namespaces.
-2. A push to `main` that changes the namespace rehearsal files, or a manual
-   dispatch with `run_live=true`, runs the live topology on `ubuntu-24.04`.
-
-The live job uses the GitHub environment
-`pulsedag-private-testnet-rehearsal`. Configure required reviewers for that
-environment before treating a run as protected release evidence.
+Current repository hygiene executes the isolated syntax, fixture and safety-contract regressions without creating privileged namespaces or a live network. The existing Task30 runtime acceptance gates remain unchanged pending their native-v3 replacement. No historical rehearsal constitutes native monetary acceptance.
 
 ## Evidence
 

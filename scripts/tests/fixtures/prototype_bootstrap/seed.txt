@@ -1,7 +1,5 @@
-# PulseDAG v3.0.0 private-testnet ordinary node profile.
-# Every host must use a distinct persistent identity key and RocksDB directory.
-# Replace the example seed PeerId with the value reported by the seed /p2p/status endpoint.
-PULSEDAG_PRIVATE_TESTNET_ROLE=node
+# Test-only synthetic prototype input; never use as deployment configuration.
+PULSEDAG_PRIVATE_TESTNET_ROLE=seed
 PULSEDAG_CONFIG_PROFILE=private
 PULSEDAG_NETWORK_PROFILE=private-testnet-v3.0.0
 PULSEDAG_CHAIN_ID=pulsedag-private-v3.0.0
@@ -11,11 +9,11 @@ PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1
 PULSEDAG_P2P_ENABLED=true
 PULSEDAG_P2P_MODE=libp2p-real
 PULSEDAG_P2P_LISTEN=/ip4/0.0.0.0/tcp/32333
-PULSEDAG_P2P_BOOTSTRAP=/dns4/seed-1.example.net/tcp/32333/p2p/12D3KooWQ6qJfRkGZK5m7pXvT9cN2sA4bH8uE3yD1LwM
+PULSEDAG_P2P_BOOTSTRAP=
 PULSEDAG_P2P_MDNS=false
 PULSEDAG_P2P_KADEMLIA=true
 PULSEDAG_P2P_IDENTITY_KEY=/var/lib/pulsedag/identity.key
-PULSEDAG_PUBLIC_P2P_MULTIADDR=/dns4/node-1.example.net/tcp/32333
+PULSEDAG_PUBLIC_P2P_MULTIADDR=/dns4/seed-1.example.net/tcp/32333
 
 PULSEDAG_RPC_BIND=127.0.0.1:8280
 PULSEDAG_API_PROFILE=private_operator

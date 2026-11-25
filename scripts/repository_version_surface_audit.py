@@ -201,6 +201,15 @@ def main() -> int:
             re.match(r"^docs/codex_tasks/v2_[234]_", path)
             or path.startswith("scripts/archive/v2_2_history/")
             or path in {
+                ".github/workflows/v2_3_0_netns_live_rehearsal.yml",
+                ".github/workflows/v2_3_0_node_lifecycle.yml",
+                ".github/workflows/v2_3_0_private_testnet_bootstrap.yml",
+                "configs/private-testnet/miner.env.example",
+                "configs/private-testnet/node.env.example",
+                "configs/private-testnet/seed.env.example",
+                "docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md",
+                "docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md",
+                "docs/release/V2_3_0_RELEASE_DECISION.md",
                 "docs/release/V2_4_0_RELEASE_NOTES.md",
                 "docs/release/V2_4_0_KNOWN_LIMITATIONS.md",
                 "scripts/v2_2_17_rpc_security_smoke.sh",

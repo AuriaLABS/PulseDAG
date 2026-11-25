@@ -91,4 +91,4 @@ Operational RTO target for this small drill profile remains **<= 5 seconds**. Th
 - Recovery triage: `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
 - Full rebuild path: `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
 - Maintenance gate before/after drill: `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-- Release closeout: `docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`.
+- Release closeout: [first-network release evidence policy](../RELEASE_EVIDENCE.md).
