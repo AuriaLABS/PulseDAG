@@ -53,7 +53,7 @@ fn reject(reason: impl Into<String>) -> PulseError {
 /// Independently verify signatures and full monetary conservation against
 /// input UTXOs, even for transactions that later lose a canonical conflict.
 /// Never classify a forged or phantom transfer as a harmless conflict loser.
-fn verify_full_signed_spend(
+pub(crate) fn verify_full_signed_spend(
     tx: &Transaction,
     chain_id: &str,
     view: &BTreeMap<OutPoint, Utxo>,

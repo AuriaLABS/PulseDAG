@@ -49,6 +49,8 @@ pub mod monetary_v3;
 pub mod multisig_v1;
 pub mod native_anticone_matrix_v3;
 pub mod native_dag_relation_v3;
+pub mod native_gd08_genesis_bootstrap_trial_v3;
+pub mod native_gd08_linear_monetary_trial_v3;
 pub mod native_gd08_order_kernel_v3;
 pub mod native_gd08_reward_preview_v3;
 pub mod native_gd08_signed_utxo_trial_v3;

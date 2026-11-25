@@ -69,6 +69,5 @@ These surfaces remain independently gated. The v3 version identity does not by i
 
 - [`REPOSITORY_STANDARDS.md`](REPOSITORY_STANDARDS.md)
 - [`archive/README.md`](archive/README.md)
-- [`codex_tasks/`](codex_tasks/)
 
 Historical development evidence is not active operator guidance. Preserve applicable regression evidence and Git provenance; remove obsolete instructions from the active tree after reference review.

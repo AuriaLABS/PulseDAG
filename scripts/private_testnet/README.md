@@ -1,142 +1,17 @@
-# Transitional development lifecycle helpers
+# Retained development and incident utilities — not a private network
 
-These prototype controllers remain only for isolated development regressions until replaced by first-network native tooling. The commands below describe historical interfaces, not supported private-network deployment instructions. Do not execute them to deploy a network. Follow the [first-network launch policy](../../docs/runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md).
+This historical directory name does not define a network, release target or supported deployment profile. PulseDAG has no deployed predecessor. Its first live network will be the native public testnet, subject to #781. Do not run the old remote rehearsal or node-start examples from Git history.
 
-## Node lifecycle controller
+## Retained utilities
 
-`node_lifecycle.py` is the canonical implementation. `node_lifecycle.sh` is a thin compatibility wrapper.
+- `collect_incident_evidence.py`: bounded redacted evidence collection; validate against the exact native runtime and preserve partial-collection failures.
+- `runtime_metrics_exporter.py`: current v3 monitoring integration, restricted to the active v3 inventory.
+- Lifecycle, namespace, multi-host, cadence, packaged recovery and PoW accounting modules: temporary development/CI dependencies. Some still exercise prototype protocol carriers. They are not a native monetary acceptance path or public operator deployment command. Replace them with native equivalents before deleting their remaining regression coverage.
 
-The controller manages one node under an operator-owned root:
+## Required transferable safeguards
 
-```text
-<root>/
-├── releases/<release-id>/
-│   ├── pulsedagd
-│   └── manifest.json
-├── current -> releases/<release-id>
-├── previous -> releases/<release-id>
-├── logs/pulsedagd.log
-├── run/pulsedagd.pid
-├── run/lifecycle.lock
-└── state/lifecycle.json
-```
+Immutable release directories and checksum verification; atomic activation and rollback; exclusive lock; no shell interpretation of environment files; verified ownership and permissions; DNS validation; persistent identities; PID reuse protection; bounded scoped network faults; preserved management and recovery access; no secret collection; deterministic redacted evidence and explicit incomplete/failure status. Preserve the existing isolated fixture tests while replacing the underlying harnesses. These safeguards apply to first-network tooling without requiring a predecessor protocol.
 
-Release directories are immutable. Activation uses atomic symlink replacement, and all mutating operations are serialized with a file lock.
+Current authorities: [first-network baseline](../../docs/FIRST_NETWORK_BASELINE.md), [testnet-first launch](../../docs/runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md), [runbook index](../../docs/runbooks/INDEX.md), [security](../../SECURITY.md). No script may set public readiness, start the 30-day clock, enable mining, or activate contracts.
 
-## Required arguments
-
-Every command receives:
-
-- `--root`: persistent operator-owned lifecycle directory;
-- `--env-file`: host-local private-testnet environment file;
-- optionally `--preflight-script`: Task 07 configuration contract path.
-
-Example command prefix:
-
-```bash
-lifecycle=(
-  python3 scripts/private_testnet/node_lifecycle.py
-  --root /var/lib/pulsedag/lifecycle
-  --env-file /etc/pulsedag/private-testnet.env
-)
-```
-
-## Common operations
-
-Install the first binary without starting it:
-
-```bash
-"${lifecycle[@]}" install \
-  --binary ./dist/pulsedagd \
-  --release-id v2.3.0-rc1
-```
-
-Validate configuration, ownership, links, checksums, and bootnode resolution:
-
-```bash
-"${lifecycle[@]}" verify
-```
-
-Start, inspect, restart, and stop:
-
-```bash
-"${lifecycle[@]}" start
-"${lifecycle[@]}" status
-"${lifecycle[@]}" restart
-"${lifecycle[@]}" stop
-```
-
-Upgrade to a new immutable release and wait for health:
-
-```bash
-"${lifecycle[@]}" upgrade \
-  --binary ./dist/pulsedagd-next \
-  --release-id v2.3.0-rc2
-```
-
-If the new process exits or `/health` does not become ready, the controller restores the prior release and restarts it when the node was previously running.
-
-Explicit rollback:
-
-```bash
-"${lifecycle[@]}" rollback
-```
-
-## Multi-host rehearsal controller
-
-`multi_host_rehearsal.py` is the Task 12 controller for one exact five-node candidate. It validates an operator-owned inventory, executes Task 07 preflight and Task 09 lifecycle commands through structured remote transports, collects loopback RPC evidence, proves external-mining progress, exercises restart and bounded P2P isolation, and writes a checksummed GO/NO-GO bundle.
-
-Validate the example contract:
-
-```bash
-python3 scripts/private_testnet/multi_host_rehearsal.py \
-  validate-inventory \
-  --inventory configs/private-testnet/rehearsal.inventory.example.json
-```
-
-Run only after following `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md`:
-
-```bash
-python3 scripts/private_testnet/multi_host_rehearsal.py \
-  run \
-  --inventory /secure/pulsedag/v2.3.0-rehearsal.json \
-  --out-dir /var/lib/pulsedag/rehearsals/<candidate-sha>-<utc-run-id>
-```
-
-Verify copied evidence:
-
-```bash
-python3 scripts/private_testnet/multi_host_rehearsal.py \
-  verify-evidence \
-  --evidence-dir /var/lib/pulsedag/rehearsals/<candidate-sha>-<utc-run-id>
-```
-
-The controller never reads environment-file contents or archives secrets. A Task 12 private-testnet `GO` does not authorize a version bump, public-testnet launch, or the 30-day clock.
-
-## Safety properties
-
-- Environment files are parsed as data; shell expansion and command substitution are rejected.
-- Task 07 preflight runs before process start.
-- DNS bootnodes resolve before start unless an operator explicitly uses `--allow-unresolved-bootnodes` for an offline drill.
-- Managed directories must be owned by the current user and must not be group/world writable.
-- PID reuse is detected using Linux process start ticks; a mismatched live PID is never signalled.
-- Logs, PID files, lifecycle state, release checksums, and timestamps are persisted outside the repository.
-- Reusing a release identifier with different binary content is rejected.
-- Rehearsal fault hooks use explicit argv arrays and must preserve SSH, loopback RPC, and recovery access.
-- `VERSION`, release publication, public-testnet readiness, and the 30-day clock are outside these controllers' authority.
-
-## Development contract
-
-Run:
-
-```bash
-python3 -m py_compile \
-  scripts/private_testnet/node_lifecycle.py \
-  scripts/private_testnet/multi_host_rehearsal.py \
-  scripts/tests/test_v2_3_0_multi_host_rehearsal.py
-bash -n scripts/private_testnet/node_lifecycle.sh
-bash scripts/tests/test_v2_3_0_node_lifecycle.sh
-python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py
-```
-
-Code comments, docstrings, diagnostics, evidence fields, and operator documentation must remain in English.
+Historical operator examples are available at [the pre-retirement commit](https://github.com/AuriaLABS/PulseDAG/blob/b97280e434d357bcc8336a19a73137a5ce90c7dd/scripts/private_testnet/README.md), not in active instructions.
