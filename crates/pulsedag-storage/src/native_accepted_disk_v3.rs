@@ -517,10 +517,11 @@ mod tests {
         {
             let db = open_test_writer(&db_path);
             for height in 1..=2_u64 {
-                let txs = vec![
-                    build_reward_claim_transaction_v3("pulse1nativejournal", height, CHAIN)
-                        .unwrap(),
-                ];
+                let txs =
+                    vec![
+                        build_reward_claim_transaction_v3("pulse1nativejournal", height, CHAIN)
+                            .unwrap(),
+                    ];
                 let mut header = BlockHeaderV3 {
                     version: BLOCK_HEADER_VERSION_V3,
                     parents: vec![parent.clone()],
@@ -546,25 +547,27 @@ mod tests {
                 )
                 .unwrap();
                 assert!(report.applied_txids.is_empty());
-                assert!(report.eligible_fees_by_block.iter().all(|(_, fee)| *fee == 0));
+                assert!(report
+                    .eligible_fees_by_block
+                    .iter()
+                    .all(|(_, fee)| *fee == 0));
                 assert_eq!(report.resulting_state_root, empty_root);
-                let frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
-                    body, CHAIN, NS, &g,
-                )
-                .unwrap();
-                trial_write_with_digest(
-                    &db, &frame, &g, height, true, true, &report.order_digest,
-                );
+                let frame =
+                    NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body, CHAIN, NS, &g)
+                        .unwrap();
+                trial_write_with_digest(&db, &frame, &g, height, true, true, &report.order_digest);
                 expected.push((parent.clone(), height, report));
             }
         }
-        let reader =
-            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
         assert_eq!(reader.current_generation(), Ok(2));
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
             let row = reader.read_accepted(&hash).unwrap().unwrap();
-            assert_eq!(reader.has_accepted_membership(&hash, 2), Ok(Some(generation)));
+            assert_eq!(
+                reader.has_accepted_membership(&hash, 2),
+                Ok(Some(generation))
+            );
             let journal = reader.independent_journal(&hash, 2).unwrap().unwrap();
             assert_eq!(journal.accepted_generation, generation);
             assert_eq!(row.committed_generation, generation);
