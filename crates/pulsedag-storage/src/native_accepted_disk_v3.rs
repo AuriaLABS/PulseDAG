@@ -328,13 +328,15 @@ mod tests {
     // No production API accepts or persists an economic block. This test
     // helper imitates the future consensus writer solely to exercise RocksDB
     // power-loss atomicity and strict read logic.
-    fn trial_write(
+    #[allow(clippy::too_many_arguments)]
+    fn trial_write_with_digest(
         db: &DB,
         frame: &NativeV3EnvelopeRestoreRecordV1,
         genesis: &str,
         generation: u64,
         include_membership: bool,
         include_journal: bool,
+        gd08_digest: &str,
     ) {
         let hash = frame.envelope().hash.as_bytes();
         let row = PersistedNativeRowV1 {
@@ -343,13 +345,13 @@ mod tests {
             genesis_hash: genesis.to_owned(),
             committed_generation: generation,
             committed_state_root: frame.envelope().header.state_root.clone(),
-            committed_gd08_digest: "a".repeat(64),
+            committed_gd08_digest: gd08_digest.to_owned(),
             full_native_v3_frame: frame.encode_verified(CHAIN, NS, genesis).unwrap(),
         };
         let entry = NativeV3IndependentJournalV1 {
             accepted_generation: generation,
             monetary_state_root: row.committed_state_root.clone(),
-            gd08_order_digest: "a".repeat(64),
+            gd08_order_digest: gd08_digest.to_owned(),
         };
         let mut batch = WriteBatch::default();
         let meta = db.cf_handle(CF_META).unwrap();
@@ -374,6 +376,25 @@ mod tests {
             batch.put_cf(journal, hash, serde_json::to_vec(&entry).unwrap());
         }
         db.write(batch).unwrap();
+    }
+
+    fn trial_write(
+        db: &DB,
+        frame: &NativeV3EnvelopeRestoreRecordV1,
+        genesis: &str,
+        generation: u64,
+        include_membership: bool,
+        include_journal: bool,
+    ) {
+        trial_write_with_digest(
+            db,
+            frame,
+            genesis,
+            generation,
+            include_membership,
+            include_journal,
+            &"a".repeat(64),
+        );
     }
 
     #[test]
@@ -473,6 +494,92 @@ mod tests {
                 NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).is_err()
             );
         }
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn replay_derived_zero_issuance_prefix_survives_atomic_fixture_reopen() {
+        use pulsedag_core::{
+            native_gd08_signed_utxo_trial_v3::inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial,
+            state::UtxoState,
+        };
+        use std::collections::BTreeMap;
+
+        let db_path = path();
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let opening = UtxoState::default();
+        let empty_root = opening.compute_state_root().unwrap();
+        assert_eq!(empty_root, genesis.header.state_root);
+        let mut corpus = BTreeMap::from([(g.clone(), genesis.clone())]);
+        let mut parent = g.clone();
+        let mut expected = Vec::new();
+        {
+            let db = open_test_writer(&db_path);
+            for height in 1..=2_u64 {
+                let txs = vec![
+                    build_reward_claim_transaction_v3("pulse1nativejournal", height, CHAIN)
+                        .unwrap(),
+                ];
+                let mut header = BlockHeaderV3 {
+                    version: BLOCK_HEADER_VERSION_V3,
+                    parents: vec![parent.clone()],
+                    timestamp_ns: NS + height * 500_000_000,
+                    difficulty: 0x207f_ffff,
+                    nonce: 0,
+                    merkle_root: compute_merkle_root(&txs),
+                    state_root: empty_root.clone(),
+                    blue_score: height,
+                    height,
+                };
+                header.nonce = (0..4096)
+                    .find(|nonce| {
+                        header.nonce = *nonce;
+                        evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+                    })
+                    .unwrap();
+                let body = build_block_envelope_v3(CHAIN, header, txs).unwrap();
+                parent = body.hash.clone();
+                corpus.insert(parent.clone(), body.clone());
+                let report = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                    CHAIN, NS, &g, &parent, &corpus, 0, &opening,
+                )
+                .unwrap();
+                assert!(report.applied_txids.is_empty());
+                assert!(report.eligible_fees_by_block.iter().all(|(_, fee)| *fee == 0));
+                assert_eq!(report.resulting_state_root, empty_root);
+                let frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+                    body, CHAIN, NS, &g,
+                )
+                .unwrap();
+                trial_write_with_digest(
+                    &db, &frame, &g, height, true, true, &report.order_digest,
+                );
+                expected.push((parent.clone(), height, report));
+            }
+        }
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert_eq!(reader.current_generation(), Ok(2));
+        let mut restored = BTreeMap::from([(g.clone(), genesis)]);
+        for (hash, generation, original) in expected {
+            let row = reader.read_accepted(&hash).unwrap().unwrap();
+            assert_eq!(reader.has_accepted_membership(&hash, 2), Ok(Some(generation)));
+            let journal = reader.independent_journal(&hash, 2).unwrap().unwrap();
+            assert_eq!(journal.accepted_generation, generation);
+            assert_eq!(row.committed_generation, generation);
+            restored.insert(hash.clone(), row.frame.envelope().clone());
+            let replay = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                CHAIN, NS, &g, &hash, &restored, 0, &opening,
+            )
+            .unwrap();
+            assert_eq!(replay, original);
+            assert_eq!(journal.gd08_order_digest, replay.order_digest);
+            assert_eq!(row.committed_gd08_digest, replay.order_digest);
+            assert_eq!(journal.monetary_state_root, replay.resulting_state_root);
+            assert_eq!(row.committed_state_root, replay.resulting_state_root);
+        }
+        drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
 
