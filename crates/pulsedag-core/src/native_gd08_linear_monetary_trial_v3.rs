@@ -10,9 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    block_envelope_v3::{
-        validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3,
-    },
+    block_envelope_v3::{validate_dormant_native_v3_monetary_body_preflight, BlockEnvelopeV3},
     errors::PulseError,
     genesis_v3::verify_dormant_native_genesis_freeze_v3_ns,
     monetary_v3::{
@@ -106,7 +104,12 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     // K=0 here has no anticone effect: only one parent per reachable block,
     // and the ordered set must cover the entire supplied corpus.
     let order = derive_dormant_native_gd08_order_from_ghostdag_trial(
-        chain_id, genesis_ns, trusted_genesis, tip, &headers, 0,
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        &headers,
+        0,
     )?;
     if order.ordered.len() != envelopes.len() {
         return Err(invalid("unrelated or competing blocks in linear trial"));
@@ -171,11 +174,13 @@ pub fn inspect_dormant_native_linear_monetary_trial(
                     },
                 )?;
             }
-            fees = fees.checked_add(tx.fee).ok_or_else(|| invalid("fee overflow"))?;
+            fees = fees
+                .checked_add(tx.fee)
+                .ok_or_else(|| invalid("fee overflow"))?;
             applied_transfers += 1;
         }
-        let subsidy = subsidy_atoms_for_score(score, cadence)
-            .map_err(|e| invalid(e.to_string()))?;
+        let subsidy =
+            subsidy_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))?;
         issued = issued
             .checked_add(subsidy)
             .ok_or_else(|| invalid("issuance overflow"))?;
@@ -208,12 +213,21 @@ pub fn inspect_dormant_native_linear_monetary_trial(
             }
             mature_rewards += 1;
         }
-        let spendable: u128 = state.utxos.values().map(|coin| u128::from(coin.amount)).sum();
-        let reserved: u128 = pending.iter().map(|(_, coin)| u128::from(coin.amount)).sum();
-        let scheduled = total_supply_atoms_for_score(score, cadence)
-            .map_err(|e| invalid(e.to_string()))?;
+        let spendable: u128 = state
+            .utxos
+            .values()
+            .map(|coin| u128::from(coin.amount))
+            .sum();
+        let reserved: u128 = pending
+            .iter()
+            .map(|(_, coin)| u128::from(coin.amount))
+            .sum();
+        let scheduled =
+            total_supply_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))?;
         if issued != scheduled || spendable + reserved != u128::from(scheduled) {
-            return Err(invalid("issued supply differs from UTXO plus pending rewards"));
+            return Err(invalid(
+                "issued supply differs from UTXO plus pending rewards",
+            ));
         }
         if state.compute_state_root()? != block.header.state_root {
             return Err(invalid("native committed state root mismatch"));
@@ -243,7 +257,9 @@ mod tests {
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         reward_settlement_v3::build_reward_claim_transaction_v3,
-        tx::{address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2},
+        tx::{
+            address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2,
+        },
         types::{compute_merkle_root, Transaction, TxInput, TxOutput},
     };
     use ed25519_dalek::{Signer, SigningKey};
@@ -301,8 +317,10 @@ mod tests {
             fee: 1,
             nonce: 3,
         };
-        tx.inputs[0].signature =
-            hex::encode(key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+        tx.inputs[0].signature = hex::encode(
+            key.sign(&signing_message_v2(&tx, CHAIN).unwrap())
+                .to_bytes(),
+        );
         tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
         tx
     }
@@ -331,7 +349,11 @@ mod tests {
         let r1 = reward(&b1, subsidy1);
         insert_coin(&mut expected, r1.clone()).unwrap();
         let b2 = mine(
-            &b1.hash, 2, &owner, expected.compute_state_root().unwrap(), vec![],
+            &b1.hash,
+            2,
+            &owner,
+            expected.compute_state_root().unwrap(),
+            vec![],
         );
         let spend = signed_spend(&key, &r1.outpoint, subsidy1);
         // Block 2 is the maturity boundary, so the same signed spend there
@@ -343,27 +365,53 @@ mod tests {
             (premature.hash.clone(), premature.clone()),
         ]);
         assert!(inspect_dormant_native_linear_monetary_trial(
-            CHAIN, NS, &g, &premature.hash, &bad, &CADENCE,
-        ).is_err());
+            CHAIN,
+            NS,
+            &g,
+            &premature.hash,
+            &bad,
+            &CADENCE,
+        )
+        .is_err());
 
         expected = UtxoState::default();
         insert_coin(
             &mut expected,
             Utxo {
-                outpoint: OutPoint { txid: spend.txid.clone(), index: 0 },
+                outpoint: OutPoint {
+                    txid: spend.txid.clone(),
+                    index: 0,
+                },
                 address: spend.outputs[0].address.clone(),
                 amount: spend.outputs[0].amount,
                 coinbase: false,
                 height: 3,
             },
-        ).unwrap();
-        insert_coin(&mut expected, reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap())).unwrap();
+        )
+        .unwrap();
+        insert_coin(
+            &mut expected,
+            reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap()),
+        )
+        .unwrap();
         let b3 = mine(
-            &b2.hash, 3, &owner, expected.compute_state_root().unwrap(), vec![spend.clone()],
+            &b2.hash,
+            3,
+            &owner,
+            expected.compute_state_root().unwrap(),
+            vec![spend.clone()],
         );
-        insert_coin(&mut expected, reward(&b3, subsidy_atoms_for_score(3, &CADENCE).unwrap() + 1)).unwrap();
+        insert_coin(
+            &mut expected,
+            reward(&b3, subsidy_atoms_for_score(3, &CADENCE).unwrap() + 1),
+        )
+        .unwrap();
         let b4 = mine(
-            &b3.hash, 4, &owner, expected.compute_state_root().unwrap(), vec![],
+            &b3.hash,
+            4,
+            &owner,
+            expected.compute_state_root().unwrap(),
+            vec![],
         );
         let corpus = BTreeMap::from([
             (g.clone(), genesis),
@@ -374,25 +422,50 @@ mod tests {
         ]);
         let observed = inspect_dormant_native_linear_monetary_trial(
             CHAIN, NS, &g, &b4.hash, &corpus, &CADENCE,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(observed.applied_transfers, 1);
         assert_eq!(observed.mature_rewards, 3);
         assert_eq!(observed.state_root, expected.compute_state_root().unwrap());
-        assert_eq!(observed.pending_reward_atoms, subsidy_atoms_for_score(4, &CADENCE).unwrap());
-        assert_eq!(observed.total_subsidy_atoms, observed.spendable_atoms + observed.pending_reward_atoms);
+        assert_eq!(
+            observed.pending_reward_atoms,
+            subsidy_atoms_for_score(4, &CADENCE).unwrap()
+        );
+        assert_eq!(
+            observed.total_subsidy_atoms,
+            observed.spendable_atoms + observed.pending_reward_atoms
+        );
 
-        let replay = mine(&b3.hash, 4, &owner, b4.header.state_root.clone(), vec![spend]);
+        let replay = mine(
+            &b3.hash,
+            4,
+            &owner,
+            b4.header.state_root.clone(),
+            vec![spend],
+        );
         let mut bad = corpus.clone();
         bad.remove(&b4.hash);
         bad.insert(replay.hash.clone(), replay.clone());
         assert!(inspect_dormant_native_linear_monetary_trial(
-            CHAIN, NS, &g, &replay.hash, &bad, &CADENCE,
-        ).is_err());
+            CHAIN,
+            NS,
+            &g,
+            &replay.hash,
+            &bad,
+            &CADENCE,
+        )
+        .is_err());
         let forged = mine(&b3.hash, 4, &owner, "f".repeat(64), vec![]);
         bad.remove(&replay.hash);
         bad.insert(forged.hash.clone(), forged.clone());
         assert!(inspect_dormant_native_linear_monetary_trial(
-            CHAIN, NS, &g, &forged.hash, &bad, &CADENCE,
-        ).is_err());
+            CHAIN,
+            NS,
+            &g,
+            &forged.hash,
+            &bad,
+            &CADENCE,
+        )
+        .is_err());
     }
 }
