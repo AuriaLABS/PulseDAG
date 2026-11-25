@@ -197,6 +197,7 @@ mod tests {
         genesis_v3::dormant_native_genesis_envelope_v3_ns,
         header_v3::BlockHeaderV3,
         monetary_v3::PRODUCTION_CADENCE_V3,
+        native_gd08_order_kernel_v3::derive_dormant_native_gd08_order_from_ghostdag_trial,
         pow_v3::evaluate_v3_header_pow,
         protocol::BLOCK_HEADER_VERSION_V3,
         reward_settlement_v3::build_reward_claim_transaction_v3,
@@ -334,6 +335,280 @@ mod tests {
             block.hypothetical_claim_atoms,
             block.hypothetical_subsidy_atoms + 1
         );
+    }
+
+    /// Fully KHeavyHash-PoW-mined native-v3 fork and multiparent rejoin.
+    /// Header state roots are placeholders: this reward *preview* does not
+    /// claim to verify committed roots or issue any real coinbase UTXO.
+    fn mined_multiparent_preview_body(
+        mut parents: Vec<BlockId>,
+        timestamp_ns: u64,
+        height: u64,
+        blue_score: u64,
+        state_marker: &str,
+        beneficiary: &str,
+        transfers: Vec<Transaction>,
+    ) -> BlockEnvelopeV3 {
+        parents.sort();
+        let mut transactions =
+            vec![build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap()];
+        transactions.extend(transfers);
+        let mut header = BlockHeaderV3 {
+            version: BLOCK_HEADER_VERSION_V3,
+            parents,
+            timestamp_ns,
+            difficulty: 0x207f_ffff,
+            nonce: 0,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: state_marker.repeat(32),
+            blue_score,
+            height,
+        };
+        header.nonce = (0u64..4096)
+            .find(|nonce| {
+                header.nonce = *nonce;
+                evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            })
+            .expect("genuine easy-target KHeavyHash nonce");
+        build_block_envelope_v3(CHAIN, header, transactions).unwrap()
+    }
+
+    /// Offline test-only arrival staging, NOT a real daemon P2P/sync test.
+    /// A body remains pending until every native parent is available. The
+    /// authenticated GD08 evaluation below is the independent final judge.
+    fn reconstruct_fork_from_arrival_history(
+        arrivals: Vec<BlockEnvelopeV3>,
+    ) -> (BTreeMap<BlockId, BlockEnvelopeV3>, usize) {
+        let mut ready = BTreeMap::<BlockId, BlockEnvelopeV3>::new();
+        let mut pending = BTreeMap::<BlockId, BlockEnvelopeV3>::new();
+        let mut delayed_arrivals = 0;
+        for incoming in arrivals {
+            let hash = incoming.hash.clone();
+            assert!(!ready.contains_key(&hash) && !pending.contains_key(&hash));
+            if incoming
+                .header
+                .parents
+                .iter()
+                .any(|parent| !ready.contains_key(parent))
+            {
+                delayed_arrivals += 1;
+            }
+            pending.insert(hash, incoming);
+            loop {
+                let next_ready = pending
+                    .iter()
+                    .find(|(_, body)| {
+                        body.header
+                            .parents
+                            .iter()
+                            .all(|parent| ready.contains_key(parent))
+                    })
+                    .map(|(hash, _)| hash.clone());
+                let Some(hash) = next_ready else {
+                    break;
+                };
+                let envelope = pending.remove(&hash).expect("ready pending body exists");
+                assert!(ready.insert(hash, envelope).is_none());
+            }
+        }
+        assert!(
+            pending.is_empty(),
+            "complete native parent closure is required"
+        );
+        (ready, delayed_arrivals)
+    }
+
+    #[test]
+    fn multiparent_conflicting_fees_and_supply_are_independent_of_block_arrival() {
+        // Compare red-side (K=0) and blue-side (K=1) diagnostic roles.
+        // Neither K value is an approved live protocol parameter.
+        for k in [0usize, 1] {
+            let (genesis_hash, _, _, opening) = fixture();
+            let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+            assert_eq!(genesis.hash, genesis_hash);
+            let key = SigningKey::from_bytes(&[9u8; 32]);
+            let source = opening.utxos.keys().next().unwrap().clone();
+            let a_signed = signed_spend(&key, &source, 9, 1, 10);
+            let b_signed = signed_spend(&key, &source, 8, 2, 11);
+            let a = mined_multiparent_preview_body(
+                vec![genesis_hash.clone()],
+                GENESIS_NS + 500_000_000,
+                1,
+                1,
+                "11",
+                "pulse1fork-a",
+                vec![a_signed],
+            );
+            let b = mined_multiparent_preview_body(
+                vec![genesis_hash.clone()],
+                GENESIS_NS + 600_000_000,
+                1,
+                1,
+                "22",
+                "pulse1fork-b",
+                vec![b_signed],
+            );
+            let join = mined_multiparent_preview_body(
+                vec![a.hash.clone(), b.hash.clone()],
+                GENESIS_NS + 1_000_000_000,
+                2,
+                2 + k as u64,
+                "33",
+                "pulse1merge",
+                vec![],
+            );
+            let tip = join.hash.clone();
+            // Two real delivery histories: the first admits parent-first,
+            // while the second must defer the join and both siblings until
+            // the missing genesis arrives. Neither path is live P2P.
+            let (blocks, direct_delays) = reconstruct_fork_from_arrival_history(vec![
+                genesis.clone(),
+                a.clone(),
+                b.clone(),
+                join.clone(),
+            ]);
+            let (reverse_blocks, reverse_delays) =
+                reconstruct_fork_from_arrival_history(vec![join, b.clone(), a.clone(), genesis]);
+            assert_eq!(direct_delays, 0);
+            assert!(
+                reverse_delays >= 2,
+                "late genesis must exercise pending-parent staging"
+            );
+            assert_eq!(blocks.len(), reverse_blocks.len());
+            for (hash, expected) in &blocks {
+                let observed = reverse_blocks.get(hash).expect("same reconstructed body");
+                assert_eq!(expected.hash, observed.hash);
+                assert_eq!(expected.header, observed.header);
+                assert_eq!(
+                    expected
+                        .transactions
+                        .iter()
+                        .map(|tx| &tx.txid)
+                        .collect::<Vec<_>>(),
+                    observed
+                        .transactions
+                        .iter()
+                        .map(|tx| &tx.txid)
+                        .collect::<Vec<_>>(),
+                );
+            }
+
+            let headers = blocks
+                .iter()
+                .map(|(hash, envelope)| (hash.clone(), envelope.header.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let authenticated_order = derive_dormant_native_gd08_order_from_ghostdag_trial(
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &headers,
+                k,
+            )
+            .unwrap();
+            let a_position = authenticated_order
+                .ordered
+                .iter()
+                .position(|hash| hash == &a.hash)
+                .unwrap();
+            let b_position = authenticated_order
+                .ordered
+                .iter()
+                .position(|hash| hash == &b.hash)
+                .unwrap();
+            let expected_fees = if a_position < b_position {
+                (1_u64, 0_u64)
+            } else {
+                (0_u64, 2_u64)
+            };
+
+            let policy = trial_policy(&PRODUCTION_CADENCE_V3);
+            let policy = DormantNativeRewardTrialPolicyV3 {
+                trial_k: k,
+                ..policy
+            };
+            let first = inspect_dormant_native_gd08_reward_preview(
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &blocks,
+                &opening,
+                policy,
+            )
+            .unwrap();
+            assert_eq!(first.trial_score, 3);
+            assert_eq!(first.hypothetical_rewards.len(), 3);
+            assert_eq!(
+                first.total_hypothetical_subsidy_atoms,
+                first.scheduled_supply_atoms
+            );
+            let fees_a = first
+                .hypothetical_rewards
+                .iter()
+                .find(|reward| reward.block_hash == a.hash)
+                .unwrap()
+                .hypothetical_eligible_fees_atoms;
+            let fees_b = first
+                .hypothetical_rewards
+                .iter()
+                .find(|reward| reward.block_hash == b.hash)
+                .unwrap()
+                .hypothetical_eligible_fees_atoms;
+            assert_eq!(
+                (fees_a, fees_b),
+                expected_fees,
+                "the uniquely earlier GD08-authenticated signed spend is the only fee winner"
+            );
+            assert_eq!(
+                first.total_hypothetical_eligible_fees_atoms,
+                fees_a + fees_b
+            );
+            assert_eq!(
+                first
+                    .hypothetical_rewards
+                    .iter()
+                    .find(|r| r.block_hash == tip)
+                    .unwrap()
+                    .hypothetical_eligible_fees_atoms,
+                0
+            );
+            assert!(
+                first
+                    .hypothetical_rewards
+                    .iter()
+                    .all(|r| !r.economic_maturity_only),
+                "no future immature reward should become spendable"
+            );
+
+            // Distinct histories have genuinely exercised pending-parent
+            // reconstruction before identical authenticated economic replay.
+            let second = inspect_dormant_native_gd08_reward_preview(
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &reverse_blocks,
+                &opening,
+                policy,
+            )
+            .unwrap();
+            assert_eq!(first, second);
+
+            // Incomplete fork ancestry cannot erase a competing signed spend.
+            let mut missing_side = blocks;
+            missing_side.remove(&a.hash);
+            assert!(inspect_dormant_native_gd08_reward_preview(
+                CHAIN,
+                GENESIS_NS,
+                &genesis_hash,
+                &tip,
+                &missing_side,
+                &opening,
+                policy,
+            )
+            .is_err());
+        }
     }
 
     #[test]
