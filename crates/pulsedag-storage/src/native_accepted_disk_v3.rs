@@ -19,6 +19,8 @@ const CF_MEMBERSHIP: &str = "native_v3_accepted_membership";
 const CF_JOURNAL: &str = "native_v3_consensus_journal";
 const CF_META: &str = "native_v3_meta";
 const GENERATION_KEY: &[u8] = b"accepted_generation";
+const IDENTITY_KEY: &[u8] = b"frozen_native_identity";
+const MAX_IDENTITY_BYTES: usize = 1024;
 const JOURNAL_SCHEMA: u32 = 1;
 const MAX_ROW_BYTES: usize = MAX_NATIVE_V3_ENVELOPE_RESTORE_RECORD_BYTES + 32768;
 const MAX_JOURNAL_BYTES: usize = 8192;
@@ -28,6 +30,17 @@ fn native_row_codec() -> impl bincode::Options {
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .with_limit(MAX_ROW_BYTES as u64)
+}
+
+/// Immutable database-wide domain seal, separate from individual body rows.
+/// The eventual authoritative writer must create it with its initial state.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedNativeIdentityV1 {
+    schema: u32,
+    chain_id: String,
+    genesis_timestamp_ns: u64,
+    genesis_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +130,7 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
             genesis_timestamp_ns,
             frozen_genesis_hash: frozen_genesis_hash.to_owned(),
         };
+        reader.verify_frozen_identity()?;
         reader.current_generation()?;
         Ok(reader)
     }
@@ -141,6 +155,22 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
             }
         }
         Ok(value)
+    }
+
+    fn verify_frozen_identity(&self) -> Result<(), String> {
+        let raw = self
+            .checked_get(CF_META, IDENTITY_KEY, MAX_IDENTITY_BYTES)?
+            .ok_or_else(|| "native accepted database identity missing".to_string())?;
+        let identity: PersistedNativeIdentityV1 = serde_json::from_slice(&raw)
+            .map_err(|e| format!("invalid native accepted database identity: {e}"))?;
+        if identity.schema != JOURNAL_SCHEMA
+            || identity.chain_id != self.chain_id
+            || identity.genesis_timestamp_ns != self.genesis_timestamp_ns
+            || identity.genesis_hash != self.frozen_genesis_hash
+        {
+            return Err("foreign native accepted database identity".into());
+        }
+        Ok(())
     }
 
     pub fn current_generation(&self) -> Result<u64, String> {
@@ -298,13 +328,15 @@ mod tests {
     // No production API accepts or persists an economic block. This test
     // helper imitates the future consensus writer solely to exercise RocksDB
     // power-loss atomicity and strict read logic.
-    fn trial_write(
+    #[allow(clippy::too_many_arguments)]
+    fn trial_write_with_digest(
         db: &DB,
         frame: &NativeV3EnvelopeRestoreRecordV1,
         genesis: &str,
         generation: u64,
         include_membership: bool,
         include_journal: bool,
+        gd08_digest: &str,
     ) {
         let hash = frame.envelope().hash.as_bytes();
         let row = PersistedNativeRowV1 {
@@ -313,19 +345,28 @@ mod tests {
             genesis_hash: genesis.to_owned(),
             committed_generation: generation,
             committed_state_root: frame.envelope().header.state_root.clone(),
-            committed_gd08_digest: "a".repeat(64),
+            committed_gd08_digest: gd08_digest.to_owned(),
             full_native_v3_frame: frame.encode_verified(CHAIN, NS, genesis).unwrap(),
         };
         let entry = NativeV3IndependentJournalV1 {
             accepted_generation: generation,
             monetary_state_root: row.committed_state_root.clone(),
-            gd08_order_digest: "a".repeat(64),
+            gd08_order_digest: gd08_digest.to_owned(),
         };
         let mut batch = WriteBatch::default();
         let meta = db.cf_handle(CF_META).unwrap();
         let body_cf = db.cf_handle(CF_BODIES).unwrap();
         let membership = db.cf_handle(CF_MEMBERSHIP).unwrap();
         let journal = db.cf_handle(CF_JOURNAL).unwrap();
+        if db.get_cf(meta, IDENTITY_KEY).unwrap().is_none() {
+            let identity = PersistedNativeIdentityV1 {
+                schema: JOURNAL_SCHEMA,
+                chain_id: CHAIN.to_owned(),
+                genesis_timestamp_ns: NS,
+                genesis_hash: genesis.to_owned(),
+            };
+            batch.put_cf(meta, IDENTITY_KEY, serde_json::to_vec(&identity).unwrap());
+        }
         batch.put_cf(meta, GENERATION_KEY, generation.to_le_bytes());
         batch.put_cf(body_cf, hash, native_row_codec().serialize(&row).unwrap());
         if include_membership {
@@ -335,6 +376,25 @@ mod tests {
             batch.put_cf(journal, hash, serde_json::to_vec(&entry).unwrap());
         }
         db.write(batch).unwrap();
+    }
+
+    fn trial_write(
+        db: &DB,
+        frame: &NativeV3EnvelopeRestoreRecordV1,
+        genesis: &str,
+        generation: u64,
+        include_membership: bool,
+        include_journal: bool,
+    ) {
+        trial_write_with_digest(
+            db,
+            frame,
+            genesis,
+            generation,
+            include_membership,
+            include_journal,
+            &"a".repeat(64),
+        );
     }
 
     #[test]
@@ -369,6 +429,159 @@ mod tests {
         assert!(
             NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS + 1, &genesis).is_err()
         );
+        drop(reader);
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn foreign_database_is_rejected_even_with_valid_requested_genesis() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 1, true, true);
+        }
+        let other_chain = "foreign-native-v3-journal";
+        let other_genesis = dormant_native_genesis_envelope_v3_ns(other_chain, NS)
+            .unwrap()
+            .hash;
+        assert!(
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, other_chain, NS, &other_genesis,)
+                .is_err()
+        );
+        let other_time = NS + 1;
+        let other_genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, other_time)
+            .unwrap()
+            .hash;
+        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(
+            &db_path,
+            CHAIN,
+            other_time,
+            &other_genesis,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn missing_or_invalid_database_seal_fails_before_serving_any_hash() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 1, true, true);
+            db.delete_cf(db.cf_handle(CF_META).unwrap(), IDENTITY_KEY)
+                .unwrap();
+        }
+        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).is_err());
+        for invalid in [
+            b"{}".to_vec(),
+            vec![b'x'; MAX_IDENTITY_BYTES + 1],
+            serde_json::to_vec(&PersistedNativeIdentityV1 {
+                schema: JOURNAL_SCHEMA + 1,
+                chain_id: CHAIN.to_owned(),
+                genesis_timestamp_ns: NS,
+                genesis_hash: genesis.clone(),
+            })
+            .unwrap(),
+        ] {
+            {
+                let db = open_test_writer(&db_path);
+                db.put_cf(db.cf_handle(CF_META).unwrap(), IDENTITY_KEY, invalid)
+                    .unwrap();
+            }
+            assert!(
+                NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).is_err()
+            );
+        }
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn replay_derived_zero_issuance_prefix_survives_atomic_fixture_reopen() {
+        use pulsedag_core::{
+            native_gd08_signed_utxo_trial_v3::inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial,
+            state::UtxoState,
+        };
+        use std::collections::BTreeMap;
+
+        let db_path = path();
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let opening = UtxoState::default();
+        let empty_root = opening.compute_state_root().unwrap();
+        assert_eq!(empty_root, genesis.header.state_root);
+        let mut corpus = BTreeMap::from([(g.clone(), genesis.clone())]);
+        let mut parent = g.clone();
+        let mut expected = Vec::new();
+        {
+            let db = open_test_writer(&db_path);
+            for height in 1..=2_u64 {
+                let txs =
+                    vec![
+                        build_reward_claim_transaction_v3("pulse1nativejournal", height, CHAIN)
+                            .unwrap(),
+                    ];
+                let mut header = BlockHeaderV3 {
+                    version: BLOCK_HEADER_VERSION_V3,
+                    parents: vec![parent.clone()],
+                    timestamp_ns: NS + height * 500_000_000,
+                    difficulty: 0x207f_ffff,
+                    nonce: 0,
+                    merkle_root: compute_merkle_root(&txs),
+                    state_root: empty_root.clone(),
+                    blue_score: height,
+                    height,
+                };
+                header.nonce = (0..4096)
+                    .find(|nonce| {
+                        header.nonce = *nonce;
+                        evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+                    })
+                    .unwrap();
+                let body = build_block_envelope_v3(CHAIN, header, txs).unwrap();
+                parent = body.hash.clone();
+                corpus.insert(parent.clone(), body.clone());
+                let report = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                    CHAIN, NS, &g, &parent, &corpus, 0, &opening,
+                )
+                .unwrap();
+                assert!(report.applied_txids.is_empty());
+                assert!(report
+                    .eligible_fees_by_block
+                    .iter()
+                    .all(|(_, fee)| *fee == 0));
+                assert_eq!(report.resulting_state_root, empty_root);
+                let frame =
+                    NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body, CHAIN, NS, &g)
+                        .unwrap();
+                trial_write_with_digest(&db, &frame, &g, height, true, true, &report.order_digest);
+                expected.push((parent.clone(), height, report));
+            }
+        }
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert_eq!(reader.current_generation(), Ok(2));
+        let mut restored = BTreeMap::from([(g.clone(), genesis)]);
+        for (hash, generation, original) in expected {
+            let row = reader.read_accepted(&hash).unwrap().unwrap();
+            assert_eq!(
+                reader.has_accepted_membership(&hash, 2),
+                Ok(Some(generation))
+            );
+            let journal = reader.independent_journal(&hash, 2).unwrap().unwrap();
+            assert_eq!(journal.accepted_generation, generation);
+            assert_eq!(row.committed_generation, generation);
+            restored.insert(hash.clone(), row.frame.envelope().clone());
+            let replay = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                CHAIN, NS, &g, &hash, &restored, 0, &opening,
+            )
+            .unwrap();
+            assert_eq!(replay, original);
+            assert_eq!(journal.gd08_order_digest, replay.order_digest);
+            assert_eq!(row.committed_gd08_digest, replay.order_digest);
+            assert_eq!(journal.monetary_state_root, replay.resulting_state_root);
+            assert_eq!(row.committed_state_root, replay.resulting_state_root);
+        }
         drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }

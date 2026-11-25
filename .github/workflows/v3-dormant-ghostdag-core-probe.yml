@@ -10,6 +10,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
       - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
+      - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -39,6 +40,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
       - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
+      - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -168,6 +170,16 @@ jobs:
               # Zero-issued frozen genesis trial only; still forbid runtime callers.
               Path("crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs"),
           }
+          # The storage journal's replay regression is compiled only in tests.
+          # Do not authorize this diagnostic from the production reader.
+          journal = Path("crates/pulsedag-storage/src/native_accepted_disk_v3.rs")
+          reader, separator, _ = journal.read_text(encoding="utf-8").partition(
+              "#[cfg(test)]\nmod tests {"
+          )
+          assert separator and "native_gd08_signed_utxo_trial_v3" not in reader, (
+              "native accepted reader must not use signed replay as live monetary authority"
+          )
+          allowed_signed_consumers.add(journal)
           assert not (signed_consumers - allowed_signed_consumers), (
               f"unexpected native signed-UTXO trial live caller: {sorted(map(str, signed_consumers - allowed_signed_consumers))}"
           )
