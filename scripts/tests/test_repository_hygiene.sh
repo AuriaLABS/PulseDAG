@@ -65,6 +65,8 @@ python3 scripts/repository_version_surface_audit.py --strict
     docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md
     docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
     docs/release/V2_3_0_RELEASE_DECISION.md
+    scripts/LEGACY_COMPATIBILITY_V2_3_0.md
+    configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md
   )
   for path in "${retired_paths[@]}"; do
     git update-index --add --cacheinfo "100644,$blob,$path"
