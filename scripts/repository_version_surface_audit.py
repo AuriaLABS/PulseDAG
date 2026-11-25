@@ -223,7 +223,7 @@ def main() -> int:
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_SCRIPT_FAMILIES,
-        manifest_path=Path("docs/PROTOTYPE_TEST_DEPENDENCIES.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy script/test",
         failures=failures,
         warnings=warnings,
@@ -231,7 +231,7 @@ def main() -> int:
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_CONFIG_FAMILIES,
-        manifest_path=Path("docs/PROTOTYPE_TEST_DEPENDENCIES.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy private-testnet configuration",
         failures=failures,
         warnings=warnings,

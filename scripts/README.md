@@ -26,7 +26,7 @@ The software candidate is v3.0.0. Public native-v3 testnet is the first deployed
 
 ## Transitional test dependencies
 
-Older prototype paths still referenced by CI are transitional test harnesses, not operator instructions or compatibility obligations. See [remaining dependency classification](../docs/PROTOTYPE_TEST_DEPENDENCIES.md). Replace the harnesses with native equivalents before removing associated regressions. New tools use neutral or native-v3 names.
+Older prototype paths still referenced by CI are transitional test harnesses, not operator instructions or compatibility obligations. See [remaining dependency classification](PROTOTYPE_TEST_DEPENDENCIES.md). Replace the harnesses with native equivalents before removing associated regressions. New tools use neutral or native-v3 names.
 
 ## Safety boundary
 
