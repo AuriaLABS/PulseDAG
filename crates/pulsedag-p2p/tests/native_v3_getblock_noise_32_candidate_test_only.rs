@@ -69,6 +69,7 @@ fn test_swarm(key: identity::Keypair, mode: ProtocolSupport) -> DirectSwarm {
             )
         })
         .expect("test-only protocol, no production Swarm changes")
+        .with_swarm_config(|config| config.with_idle_connection_timeout(Duration::from_secs(120)))
         .build()
 }
 
@@ -288,6 +289,229 @@ async fn thirty_two_real_pow_native_v3_envelopes_cross_authenticated_noise_witho
     })
     .await
     .expect("32 real native-v3 envelopes must traverse Noise within fixed timeout");
+}
+
+/// Exercise the isolation timeline with five actual authenticated peers.
+/// Candidates are PoW-valid envelopes, not consensus-admitted monetary blocks.
+#[tokio::test(flavor = "current_thread")]
+async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolation() {
+    use libp2p::futures::future::select_all;
+    use pulsedag_p2p::messages::native_v3_getblock_correlation_v1::{
+        NativeV3GetBlockCorrelationBookV1, NativeV3GetBlockCorrelationError,
+    };
+    use std::time::Instant;
+
+    const ISOLATED: usize = 4;
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let keys: Vec<_> = (0..5)
+            .map(|_| identity::Keypair::generate_ed25519())
+            .collect();
+        let peers: Vec<_> = keys.iter().map(|key| PeerId::from(key.public())).collect();
+        assert_eq!(peers.iter().collect::<HashSet<_>>().len(), 5);
+        let mut swarms: Vec<_> = keys
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| {
+                test_swarm(
+                    key,
+                    if index == 0 {
+                        ProtocolSupport::Inbound
+                    } else {
+                        ProtocolSupport::Outbound
+                    },
+                )
+            })
+            .collect();
+        let mut book =
+            NativeV3GetBlockCorrelationBookV1::<OutboundRequestId>::new(CHAIN, peers[ISOLATED])
+                .unwrap();
+        let mut listener: Option<Multiaddr> = None;
+        let mut seed_up = [false; 5];
+        let mut leaf_up = [false; 5];
+        let mut closed_seed = false;
+        let mut closed_leaf = false;
+        let mut phase = 0_u8;
+        let mut cache = BTreeMap::new();
+        let mut hashes = Vec::new();
+        let mut received = HashSet::new();
+        let mut served = 0_usize;
+        let mut delivered = 0_usize;
+
+        swarms[0]
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+
+        while delivered < CANDIDATES {
+            let next = select_all(swarms.iter_mut().enumerate().map(|(index, swarm)| {
+                Box::pin(async move { (index, swarm.select_next_some().await) })
+            }));
+            let ((index, event), _, _) = next.await;
+            match event {
+                SwarmEvent::NewListenAddr { address, .. } if index == 0 && listener.is_none() => {
+                    listener = Some(address.clone());
+                    for leaf in swarms.iter_mut().skip(1) {
+                        leaf.dial(address.clone().with(Protocol::P2p(peers[0])))
+                            .unwrap();
+                    }
+                }
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    if index == 0 {
+                        let leaf = peers.iter().position(|id| *id == peer_id).unwrap();
+                        assert!(leaf > 0);
+                        seed_up[leaf] = true;
+                    } else {
+                        assert_eq!(peer_id, peers[0]);
+                        leaf_up[index] = true;
+                    }
+                }
+                SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    assert_eq!(phase, 1, "unexpected disconnect outside isolation");
+                    if index == 0 {
+                        assert_eq!(peer_id, peers[ISOLATED]);
+                        seed_up[ISOLATED] = false;
+                        closed_seed = true;
+                    } else {
+                        assert_eq!(index, ISOLATED);
+                        assert_eq!(peer_id, peers[0]);
+                        leaf_up[ISOLATED] = false;
+                        closed_leaf = true;
+                        book.peer_disconnected(&peer_id);
+                        assert!(book.is_empty());
+                    }
+                }
+                SwarmEvent::Behaviour(request_response::Event::Message {
+                    peer,
+                    message:
+                        request_response::Message::Request {
+                            request: raw,
+                            channel,
+                            ..
+                        },
+                    ..
+                }) => {
+                    assert_eq!(phase, 3);
+                    assert_eq!(index, 0);
+                    assert_eq!(peer, peers[ISOLATED]);
+                    let verified = decode_direct_getblock_request(
+                        &raw,
+                        CHAIN,
+                        &peer.to_string(),
+                        &peers[0].to_string(),
+                    )
+                    .unwrap();
+                    let block = cache.get(&verified.block_hash).cloned().unwrap();
+                    let reply = NativeV3GetBlockCandidateResponse {
+                        version: NATIVE_V3_GETBLOCK_CANDIDATE_VERSION,
+                        chain_id: CHAIN.into(),
+                        request_id: verified.request_id.clone(),
+                        responding_peer_id: peers[0].to_string(),
+                        block_hash: verified.block_hash.clone(),
+                        block: Some(block),
+                    };
+                    let wire = encode_native_v3_getblock_candidate_response(
+                        &reply,
+                        &verified,
+                        CHAIN,
+                        &peer.to_string(),
+                        &peers[0].to_string(),
+                    )
+                    .unwrap();
+                    assert!(swarms[0]
+                        .behaviour_mut()
+                        .send_response(channel, wire)
+                        .is_ok());
+                    served += 1;
+                }
+                SwarmEvent::Behaviour(request_response::Event::Message {
+                    peer,
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
+                    ..
+                }) => {
+                    assert_eq!(phase, 3);
+                    assert_eq!(index, ISOLATED);
+                    assert_eq!(peer, peers[0]);
+                    let verified = book
+                        .complete_from_noise(&request_id, &peer, &response, Instant::now())
+                        .unwrap();
+                    let candidate = verified.block.unwrap();
+                    assert_eq!(candidate.hash, hashes[delivered]);
+                    assert_eq!(candidate.header, cache[&candidate.hash].header);
+                    assert!(received.insert(candidate.hash));
+                    assert!(book.is_empty());
+                    assert_eq!(
+                        book.complete_from_noise(&request_id, &peer, &response, Instant::now())
+                            .unwrap_err(),
+                        NativeV3GetBlockCorrelationError::UnknownTransportId
+                    );
+                    delivered += 1;
+                }
+                SwarmEvent::Behaviour(request_response::Event::InboundFailure { .. })
+                | SwarmEvent::Behaviour(request_response::Event::OutboundFailure { .. }) => {
+                    panic!("unexpected test-only Noise request failure");
+                }
+                _ => {}
+            }
+
+            if phase == 0 && seed_up[1..].iter().all(|up| *up) && leaf_up[1..].iter().all(|up| *up)
+            {
+                assert!(cache.is_empty() && hashes.is_empty());
+                swarms[ISOLATED].disconnect_peer_id(peers[0]).unwrap();
+                phase = 1;
+            }
+            if phase == 1 && closed_seed && closed_leaf {
+                assert!(!swarms[0].is_connected(&peers[ISOLATED]));
+                assert!(!swarms[ISOLATED].is_connected(&peers[0]));
+                for leaf in 1..ISOLATED {
+                    assert!(swarms[0].is_connected(&peers[leaf]));
+                    assert!(swarms[leaf].is_connected(&peers[0]));
+                }
+                assert!(cache.is_empty() && hashes.is_empty());
+                // Only now create the genuine native PoW fork/merge corpus.
+                (cache, hashes) = native_corpus();
+                assert_eq!(hashes.len(), CANDIDATES);
+                assert!(!swarms[ISOLATED].is_connected(&peers[0]));
+                swarms[ISOLATED]
+                    .dial(
+                        listener
+                            .as_ref()
+                            .unwrap()
+                            .clone()
+                            .with(Protocol::P2p(peers[0])),
+                    )
+                    .unwrap();
+                phase = 2;
+            }
+            if phase == 2 && seed_up[ISOLATED] && leaf_up[ISOLATED] {
+                assert_eq!(delivered, 0);
+                phase = 3;
+            }
+            if phase == 3 && book.is_empty() && delivered < CANDIDATES {
+                let connected = swarms[ISOLATED].is_connected(&peers[0]);
+                book.issue_with(
+                    &peers[0],
+                    &hashes[delivered],
+                    connected,
+                    Instant::now(),
+                    |peer, wire| swarms[ISOLATED].behaviour_mut().send_request(peer, wire),
+                )
+                .unwrap();
+            }
+        }
+        assert!(closed_seed && closed_leaf);
+        assert_eq!(served, CANDIDATES);
+        assert_eq!(received.len(), CANDIDATES);
+        assert!(book.is_empty());
+        for leaf in 1..5 {
+            assert!(swarms[0].is_connected(&peers[leaf]));
+            assert!(swarms[leaf].is_connected(&peers[0]));
+        }
+    })
+    .await
+    .expect("bounded five-peer native candidate isolation/rejoin transport");
 }
 
 /// A forged response crossing an otherwise authentic TCP/Noise stream must
