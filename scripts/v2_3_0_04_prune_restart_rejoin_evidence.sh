@@ -9,7 +9,7 @@
 #   ./scripts/v2_3_0_04_prune_restart_rejoin_evidence.sh
 #
 # The script mirrors the validation section of:
-#   docs/codex_tasks/v2_3_0_04_prune_restart_rejoin_evidence.md
+#   docs/FIRST_NETWORK_BASELINE.md (retained regression requirements)
 
 set -euo pipefail
 
