@@ -595,7 +595,8 @@ mod tests {
             reward_settlement_v3::settlement_outpoint_v3,
             state::UtxoState,
             tx::{
-                address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2,
+                address_from_public_key, compute_txid_v2, signing_message_v2,
+                TRANSACTION_VERSION_V2,
             },
             types::{OutPoint, Transaction, TxInput, TxOutput, Utxo},
         };
@@ -640,7 +641,8 @@ mod tests {
                         nonce: 3,
                     };
                     tx.inputs[0].signature = hex::encode(
-                        key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes(),
+                        key.sign(&signing_message_v2(&tx, CHAIN).unwrap())
+                            .to_bytes(),
                     );
                     tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
                     state.utxos.remove(&coin.outpoint).unwrap();
@@ -656,7 +658,9 @@ mod tests {
                         height,
                     };
                     state.utxos.insert(output.outpoint.clone(), output.clone());
-                    state.address_index.insert(owner.clone(), vec![output.outpoint]);
+                    state
+                        .address_index
+                        .insert(owner.clone(), vec![output.outpoint]);
                     spend = Some(tx.txid.clone());
                     txs.push(tx);
                 }
@@ -725,11 +729,17 @@ mod tests {
         for (hash, generation, original) in expected {
             let row = reader.read_accepted(&hash).unwrap().unwrap();
             let journal = reader.independent_journal(&hash, 3).unwrap().unwrap();
-            assert_eq!(reader.has_accepted_membership(&hash, 3), Ok(Some(generation)));
+            assert_eq!(
+                reader.has_accepted_membership(&hash, 3),
+                Ok(Some(generation))
+            );
             assert_eq!(row.committed_generation, generation);
             assert_eq!(journal.accepted_generation, generation);
             if generation == 3 {
-                assert_eq!(row.frame.envelope().transactions[1].txid, spend.clone().unwrap());
+                assert_eq!(
+                    row.frame.envelope().transactions[1].txid,
+                    spend.clone().unwrap()
+                );
             }
             restored.insert(hash.clone(), row.frame.envelope().clone());
             let replay = inspect_dormant_native_linear_monetary_trial(
