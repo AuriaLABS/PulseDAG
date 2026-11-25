@@ -9,6 +9,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
       - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
       - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
+      - crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
       - crates/pulsedag-core/src/lib.rs
@@ -39,6 +40,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
       - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
       - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
+      - crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
       - crates/pulsedag-core/src/lib.rs
@@ -158,6 +160,20 @@ jobs:
               "reward preview must not call the GD08 kernel outside its tests"
           )
           allowed_gd08_consumers.add(preview)
+          # The linear replay kernel remains diagnostic and cannot be called
+          # by production code. Limit both module and exported function references.
+          linear = Path("crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs")
+          if linear.is_file():
+              allowed_linear = {Path("crates/pulsedag-core/src/lib.rs"), linear}
+              linear_consumers = (consumers("native_gd08_linear_monetary_trial_v3")
+                                  | consumers("inspect_dormant_native_linear_monetary_trial"))
+              assert not (linear_consumers - allowed_linear), (
+                  f"unexpected native linear trial caller: {sorted(map(str, linear_consumers - allowed_linear))}"
+              )
+              assert "inspect_dormant_native_linear_monetary_trial" not in Path(
+                  "crates/pulsedag-core/src/lib.rs"
+              ).read_text(encoding="utf-8"), "linear trial must not be called or re-exported by lib.rs"
+              allowed_gd08_consumers.add(linear)
           assert not (gd08_consumers - allowed_gd08_consumers), (
               f"unexpected GD-08 live caller: {sorted(map(str, gd08_consumers - allowed_gd08_consumers))}"
           )
@@ -180,6 +196,8 @@ jobs:
               "native accepted reader must not use signed replay as live monetary authority"
           )
           allowed_signed_consumers.add(journal)
+          if linear.is_file():
+              allowed_signed_consumers.add(linear)
           assert not (signed_consumers - allowed_signed_consumers), (
               f"unexpected native signed-UTXO trial live caller: {sorted(map(str, signed_consumers - allowed_signed_consumers))}"
           )
