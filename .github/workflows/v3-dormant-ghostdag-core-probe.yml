@@ -7,6 +7,9 @@ on:
     paths:
       - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
       - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
+      - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
+      - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
+      - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -33,6 +36,9 @@ on:
     paths:
       - crates/pulsedag-core/src/native_ghostdag_policy_candidate_v3.rs
       - crates/pulsedag-core/src/native_gd08_order_kernel_v3.rs
+      - crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs
+      - crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs
+      - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -140,6 +146,16 @@ jobs:
               # Dormant cross-language test vector: never a live consensus caller.
               Path("crates/pulsedag-core/tests/native_v3_gd08_crosslang_order_digest.rs"),
           }
+          # Reward preview tests independently derive the fee winner from GD08.
+          # Keep this exception restricted to the existing test module.
+          preview = Path("crates/pulsedag-core/src/native_gd08_reward_preview_v3.rs")
+          production, separator, _ = preview.read_text(encoding="utf-8").partition(
+              "#[cfg(test)]\nmod tests {"
+          )
+          assert separator and "native_gd08_order_kernel_v3" not in production, (
+              "reward preview must not call the GD08 kernel outside its tests"
+          )
+          allowed_gd08_consumers.add(preview)
           assert not (gd08_consumers - allowed_gd08_consumers), (
               f"unexpected GD-08 live caller: {sorted(map(str, gd08_consumers - allowed_gd08_consumers))}"
           )
