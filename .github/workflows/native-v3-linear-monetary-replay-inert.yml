@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs"
+      - "crates/pulsedag-core/src/monetary_v3.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"
       - ".github/workflows/v3-dormant-ghostdag-core-probe.yml"
