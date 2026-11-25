@@ -48,6 +48,35 @@ if grep -Eq 'v2_2_17|V2_2_17|v2_2_18|V2_2_18|old doc still in docs root:.*ROADMA
 fi
 
 python3 scripts/repository_version_surface_audit.py --strict
+
+# Use an isolated index to simulate accidentally reintroducing retired paths.
+# Never modify the real working tree or Git index.
+(
+  export GIT_INDEX_FILE="$tmp_dir/retired-paths.index"
+  git read-tree HEAD
+  blob="$(git rev-parse HEAD:VERSION)"
+  retired_paths=(
+    .github/workflows/v2_3_0_netns_live_rehearsal.yml
+    .github/workflows/v2_3_0_node_lifecycle.yml
+    .github/workflows/v2_3_0_private_testnet_bootstrap.yml
+    configs/private-testnet/miner.env.example
+    configs/private-testnet/node.env.example
+    configs/private-testnet/seed.env.example
+    docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md
+    docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
+    docs/release/V2_3_0_RELEASE_DECISION.md
+  )
+  for path in "${retired_paths[@]}"; do
+    git update-index --add --cacheinfo "100644,$blob,$path"
+  done
+  if python3 scripts/repository_version_surface_audit.py --strict > "$tmp_dir/retired-paths.log" 2>&1; then
+    echo "expected reintroduced prototype paths to fail the audit" >&2
+    exit 1
+  fi
+  for path in "${retired_paths[@]}"; do
+    grep -Fq "retired prototype copy reintroduced: $path" "$tmp_dir/retired-paths.log"
+  done
+)
 OUT_DIR="$tmp_dir/evidence" bash scripts/repository_hygiene.sh --strict
 python3 - "$tmp_dir/evidence/repository-hygiene.json" <<'PY'
 import json
