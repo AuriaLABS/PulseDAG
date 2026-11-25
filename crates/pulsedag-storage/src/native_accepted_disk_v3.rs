@@ -424,13 +424,10 @@ mod tests {
         let other_genesis = dormant_native_genesis_envelope_v3_ns(other_chain, NS)
             .unwrap()
             .hash;
-        assert!(NativeV3AcceptedRocksDbReadOnlyV1::open(
-            &db_path,
-            other_chain,
-            NS,
-            &other_genesis,
-        )
-        .is_err());
+        assert!(
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, other_chain, NS, &other_genesis,)
+                .is_err()
+        );
         let other_time = NS + 1;
         let other_genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, other_time)
             .unwrap()
