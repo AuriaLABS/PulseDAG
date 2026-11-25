@@ -587,6 +587,166 @@ mod tests {
     }
 
     #[test]
+    fn native_linear_maturity_and_signed_spend_survive_disk_replay() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use pulsedag_core::{
+            monetary_v3::{subsidy_atoms_for_score, MonetaryCadenceSegment},
+            native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial,
+            reward_settlement_v3::settlement_outpoint_v3,
+            state::UtxoState,
+            tx::{
+                address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2,
+            },
+            types::{OutPoint, Transaction, TxInput, TxOutput, Utxo},
+        };
+        use std::collections::BTreeMap;
+
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 3_600_000_000_000,
+        }];
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let key = SigningKey::from_bytes(&[19u8; 32]);
+        let public_key = hex::encode(key.verifying_key().to_bytes());
+        let owner = address_from_public_key(&public_key);
+        let mut state = UtxoState::default();
+        let mut corpus = BTreeMap::from([(g.clone(), genesis.clone())]);
+        let mut parent = g.clone();
+        let mut expected = Vec::new();
+        let mut previous_reward: Option<Utxo> = None;
+        let mut spend = None;
+        let db_path = path();
+        {
+            let db = open_test_writer(&db_path);
+            for height in 1..=3_u64 {
+                let claim = build_reward_claim_transaction_v3(&owner, height, CHAIN).unwrap();
+                let mut txs = vec![claim.clone()];
+                if height == 3 {
+                    let coin = state.utxos.values().next().unwrap().clone();
+                    let mut tx = Transaction {
+                        txid: String::new(),
+                        version: TRANSACTION_VERSION_V2,
+                        inputs: vec![TxInput {
+                            previous_output: coin.outpoint.clone(),
+                            public_key: public_key.clone(),
+                            signature: String::new(),
+                        }],
+                        outputs: vec![TxOutput {
+                            address: owner.clone(),
+                            amount: coin.amount - 1,
+                        }],
+                        fee: 1,
+                        nonce: 3,
+                    };
+                    tx.inputs[0].signature = hex::encode(
+                        key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes(),
+                    );
+                    tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
+                    state.utxos.remove(&coin.outpoint).unwrap();
+                    state.address_index.clear();
+                    let output = Utxo {
+                        outpoint: OutPoint {
+                            txid: tx.txid.clone(),
+                            index: 0,
+                        },
+                        address: owner.clone(),
+                        amount: tx.outputs[0].amount,
+                        coinbase: false,
+                        height,
+                    };
+                    state.utxos.insert(output.outpoint.clone(), output.clone());
+                    state.address_index.insert(owner.clone(), vec![output.outpoint]);
+                    spend = Some(tx.txid.clone());
+                    txs.push(tx);
+                }
+                if let Some(coin) = previous_reward.take() {
+                    state.utxos.insert(coin.outpoint.clone(), coin.clone());
+                    state
+                        .address_index
+                        .entry(owner.clone())
+                        .or_default()
+                        .push(coin.outpoint);
+                }
+                let mut header = BlockHeaderV3 {
+                    version: BLOCK_HEADER_VERSION_V3,
+                    parents: vec![parent.clone()],
+                    timestamp_ns: NS + height * 500_000_000,
+                    difficulty: 0x207f_ffff,
+                    nonce: 0,
+                    merkle_root: compute_merkle_root(&txs),
+                    state_root: state.compute_state_root().unwrap(),
+                    blue_score: height,
+                    height,
+                };
+                header.nonce = (0..4096)
+                    .find(|nonce| {
+                        header.nonce = *nonce;
+                        evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+                    })
+                    .unwrap();
+                let body = build_block_envelope_v3(CHAIN, header, txs).unwrap();
+                parent = body.hash.clone();
+                previous_reward = Some(Utxo {
+                    outpoint: settlement_outpoint_v3(CHAIN, &parent, &claim.txid),
+                    address: owner.clone(),
+                    amount: subsidy_atoms_for_score(height, &cadence).unwrap()
+                        + u64::from(height == 3),
+                    coinbase: true,
+                    height,
+                });
+                corpus.insert(parent.clone(), body.clone());
+                let report = inspect_dormant_native_linear_monetary_trial(
+                    CHAIN, NS, &g, &parent, &corpus, &cadence,
+                )
+                .unwrap();
+                assert_eq!(report.state_root, state.compute_state_root().unwrap());
+                assert_eq!(report.mature_rewards, (height - 1) as usize);
+                assert_eq!(report.applied_transfers, usize::from(height == 3));
+                assert_eq!(
+                    report.pending_reward_atoms,
+                    subsidy_atoms_for_score(height, &cadence).unwrap() + u64::from(height == 3)
+                );
+                assert_eq!(
+                    report.total_subsidy_atoms,
+                    report.spendable_atoms + report.pending_reward_atoms
+                );
+                let frame =
+                    NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body, CHAIN, NS, &g)
+                        .unwrap();
+                trial_write_with_digest(&db, &frame, &g, height, true, true, &report.order_digest);
+                expected.push((parent.clone(), height, report));
+            }
+        }
+
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert_eq!(reader.current_generation(), Ok(3));
+        let mut restored = BTreeMap::from([(g.clone(), genesis)]);
+        for (hash, generation, original) in expected {
+            let row = reader.read_accepted(&hash).unwrap().unwrap();
+            let journal = reader.independent_journal(&hash, 3).unwrap().unwrap();
+            assert_eq!(reader.has_accepted_membership(&hash, 3), Ok(Some(generation)));
+            assert_eq!(row.committed_generation, generation);
+            assert_eq!(journal.accepted_generation, generation);
+            if generation == 3 {
+                assert_eq!(row.frame.envelope().transactions[1].txid, spend.clone().unwrap());
+            }
+            restored.insert(hash.clone(), row.frame.envelope().clone());
+            let replay = inspect_dormant_native_linear_monetary_trial(
+                CHAIN, NS, &g, &hash, &restored, &cadence,
+            )
+            .unwrap();
+            assert_eq!(replay, original);
+            assert_eq!(row.committed_state_root, replay.state_root);
+            assert_eq!(journal.monetary_state_root, replay.state_root);
+            assert_eq!(row.committed_gd08_digest, replay.order_digest);
+            assert_eq!(journal.gd08_order_digest, replay.order_digest);
+        }
+        drop(reader);
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
     fn near_limit_full_native_frame_has_compact_bounded_row_round_trip() {
         // JSON Vec<u8> would expand a valid ~2 MiB block into >6 MiB.
         // The binary envelope remains byte-preserving with bounded overhead.

@@ -164,7 +164,17 @@ jobs:
           # by production code. Limit both module and exported function references.
           linear = Path("crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs")
           if linear.is_file():
-              allowed_linear = {Path("crates/pulsedag-core/src/lib.rs"), linear}
+              linear_journal = Path("crates/pulsedag-storage/src/native_accepted_disk_v3.rs")
+              linear_reader, test_boundary, _ = linear_journal.read_text(encoding="utf-8").partition(
+                  "#[cfg(test)]\nmod tests {"
+              )
+              assert test_boundary and all(
+                  symbol not in linear_reader for symbol in (
+                      "native_gd08_linear_monetary_trial_v3",
+                      "inspect_dormant_native_linear_monetary_trial",
+                  )
+              ), "linear replay must stay in the storage unit test module"
+              allowed_linear = {Path("crates/pulsedag-core/src/lib.rs"), linear, linear_journal}
               linear_consumers = (consumers("native_gd08_linear_monetary_trial_v3")
                                   | consumers("inspect_dormant_native_linear_monetary_trial"))
               assert not (linear_consumers - allowed_linear), (

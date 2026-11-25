@@ -5,6 +5,7 @@ on:
     paths:
       - "crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs"
       - "crates/pulsedag-core/src/monetary_v3.rs"
+      - "crates/pulsedag-storage/src/native_accepted_disk_v3.rs"
       - "crates/pulsedag-core/src/lib.rs"
       - "crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"
       - ".github/workflows/v3-dormant-ghostdag-core-probe.yml"
@@ -20,7 +21,7 @@ env:
 jobs:
   native-v3-linear-monetary-replay:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - name: Exact native commit checkout
         uses: actions/checkout@v4
@@ -44,5 +45,7 @@ jobs:
         run: cargo +1.91.0 test --locked -p pulsedag-core --lib native_gd08_linear_monetary_trial_v3 -- --nocapture
       - name: Strict core Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Verify native monetary RocksDB unit-test round trip
+        run: cargo +1.91.0 test --locked -p pulsedag-storage --lib native_linear_maturity_and_signed_spend_survive_disk_replay -- --nocapture
       - name: No dependency change
         run: git diff --exit-code -- Cargo.lock
