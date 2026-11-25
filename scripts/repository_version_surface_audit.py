@@ -196,6 +196,19 @@ def main() -> int:
                 failures.append(f"historical v2.2 workflow remains active: {path}")
 
     paths = tracked_files()
+    for path in paths:
+        if (
+            re.match(r"^docs/codex_tasks/v2_[234]_", path)
+            or path.startswith("scripts/archive/v2_2_history/")
+            or path in {
+                "docs/release/V2_4_0_RELEASE_NOTES.md",
+                "docs/release/V2_4_0_KNOWN_LIMITATIONS.md",
+                "scripts/v2_2_17_rpc_security_smoke.sh",
+                "scripts/v2_2_19_rpc_security_smoke.sh",
+            }
+        ):
+            failures.append(f"retired prototype copy reintroduced: {path}")
+
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_SCRIPT_FAMILIES,
