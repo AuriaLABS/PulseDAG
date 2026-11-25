@@ -32,7 +32,7 @@ jobs:
           python3 scripts/release/validate_v3_evidence_ledger.py --self-test
           if [[ -f docs/release/v3-evidence-ledger.json ]]; then
             args=()
-            if [[ -f docs/release/v3-testnet-evidence-ledger.json ]]; then
+            if python3 -c 'import json, sys; d = json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if d.get("stage") == "mainnet" and d.get("decision") == "GO_V3_MAINNET" else 1)' docs/release/v3-evidence-ledger.json; then
               args+=(--prior-testnet-ledger docs/release/v3-testnet-evidence-ledger.json)
             fi
             python3 scripts/release/validate_v3_evidence_ledger.py docs/release/v3-evidence-ledger.json "${args[@]}"
