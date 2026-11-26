@@ -490,6 +490,55 @@ mod tests {
                 if positive_generation(&raw_member)? != old {
                     return Err("previous trial membership mismatch".into());
                 }
+                // Recompute the previous tip commitment from the actual
+                // supplied prefix; membership alone is not sufficient.
+                let mut prefix = corpus.clone();
+                prefix.remove(tip);
+                let previous_report = inspect_dormant_native_linear_monetary_trial(
+                    CHAIN, NS, genesis, parent, &prefix, cadence,
+                )
+                .map_err(|e| e.to_string())?;
+                let body_cf = db.cf_handle(CF_BODIES).ok_or("missing body namespace")?;
+                let journal_cf = db.cf_handle(CF_JOURNAL).ok_or("missing journal namespace")?;
+                let raw_body = db
+                    .get_cf(body_cf, parent.as_bytes())
+                    .map_err(|e| e.to_string())?
+                    .ok_or("missing previous body")?;
+                let raw_journal = db
+                    .get_cf(journal_cf, parent.as_bytes())
+                    .map_err(|e| e.to_string())?
+                    .ok_or("missing previous journal")?;
+                if raw_body.len() > MAX_ROW_BYTES || raw_journal.len() > MAX_JOURNAL_BYTES {
+                    return Err("oversized previous trial record".into());
+                }
+                let row: PersistedNativeRowV1 = native_row_codec()
+                    .deserialize(&raw_body)
+                    .map_err(|e| e.to_string())?;
+                let entry: NativeV3IndependentJournalV1 =
+                    serde_json::from_slice(&raw_journal).map_err(|e| e.to_string())?;
+                let expected_frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+                    prefix[parent].clone(),
+                    CHAIN,
+                    NS,
+                    genesis,
+                )
+                .map_err(|e| e.to_string())?
+                .encode_verified(CHAIN, NS, genesis)
+                .map_err(|e| e.to_string())?;
+                if previous_report.monetary_score != old
+                    || row.schema != JOURNAL_SCHEMA
+                    || row.chain_id != CHAIN
+                    || row.genesis_hash != genesis
+                    || row.committed_generation != old
+                    || row.committed_state_root != previous_report.state_root
+                    || row.committed_gd08_digest != previous_report.order_digest
+                    || row.full_native_v3_frame != expected_frame
+                    || entry.accepted_generation != old
+                    || entry.monetary_state_root != previous_report.state_root
+                    || entry.gd08_order_digest != previous_report.order_digest
+                {
+                    return Err("previous trial commitment differs from verified replay".into());
+                }
             }
             _ => return Err("incomplete or nonsequential trial metadata".into()),
         }
@@ -863,6 +912,35 @@ mod tests {
                     report.total_subsidy_atoms,
                     report.spendable_atoms + report.pending_reward_atoms
                 );
+                if height == 3 {
+                    let predecessor = &corpus[&parent].header.parents[0];
+                    let journal_cf = db.cf_handle(CF_JOURNAL).unwrap();
+                    let meta = db.cf_handle(CF_META).unwrap();
+                    let original = db.get_cf(journal_cf, predecessor.as_bytes()).unwrap().unwrap();
+                    let mut corrupt: NativeV3IndependentJournalV1 =
+                        serde_json::from_slice(&original).unwrap();
+                    corrupt.gd08_order_digest = "e".repeat(64);
+                    db.put_cf(
+                        journal_cf,
+                        predecessor.as_bytes(),
+                        serde_json::to_vec(&corrupt).unwrap(),
+                    )
+                    .unwrap();
+                    assert!(
+                        trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err()
+                    );
+                    assert_eq!(
+                        positive_generation(&db.get_cf(meta, GENERATION_KEY).unwrap().unwrap()),
+                        Ok(2)
+                    );
+                    for name in [CF_BODIES, CF_MEMBERSHIP, CF_JOURNAL] {
+                        assert!(db
+                            .get_cf(db.cf_handle(name).unwrap(), parent.as_bytes())
+                            .unwrap()
+                            .is_none());
+                    }
+                    db.put_cf(journal_cf, predecessor.as_bytes(), original).unwrap();
+                }
                 trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).unwrap();
                 assert!(trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err());
                 let meta = db.cf_handle(CF_META).unwrap();
