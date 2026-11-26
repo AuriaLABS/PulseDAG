@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
-    native_gd08_order_kernel_v3::derive_dormant_native_gd08_order_from_ghostdag_trial,
+    native_gd08_order_kernel_v3::{
+        derive_dormant_native_gd08_order_from_ghostdag_trial, DormantGd08AnchorSlot, DormantGd08Role,
+    },
     pow_v3::verify_v3_header_pow,
     types::BlockId,
 };
@@ -96,6 +98,51 @@ fn native_real_pow_gd08_k0_k1_order_and_digest_match_independent_python() {
         assert_eq!(
             derived.red_count,
             golden["cases"][name]["red_count"].as_u64().unwrap() as usize
+        );
+        // The monetary replay boundary needs exact roles, not just counts.
+        // Compare the exposed slots against independent frozen parent identities.
+        let chosen = field(&original, "chosen_parent").to_string();
+        let side = field(&original, "other_parent").to_string();
+        assert_eq!(
+            derived.selected_spine,
+            vec![genesis.hash.clone(), chosen.clone(), tip.clone()]
+        );
+        assert_eq!(
+            derived.slots,
+            BTreeMap::from([
+                (
+                    genesis.hash.clone(),
+                    DormantGd08AnchorSlot {
+                        anchor: 0,
+                        role: DormantGd08Role::Selected,
+                    },
+                ),
+                (
+                    chosen,
+                    DormantGd08AnchorSlot {
+                        anchor: 1,
+                        role: DormantGd08Role::Selected,
+                    },
+                ),
+                (
+                    side,
+                    DormantGd08AnchorSlot {
+                        anchor: 2,
+                        role: if k == 0 {
+                            DormantGd08Role::MergeRed
+                        } else {
+                            DormantGd08Role::MergeBlue
+                        },
+                    },
+                ),
+                (
+                    tip.clone(),
+                    DormantGd08AnchorSlot {
+                        anchor: 2,
+                        role: DormantGd08Role::Selected,
+                    },
+                ),
+            ])
         );
         digests.push(derived.digest.clone());
 
