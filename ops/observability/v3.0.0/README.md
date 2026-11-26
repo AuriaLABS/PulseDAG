@@ -17,7 +17,7 @@ It does **not** require `/admin/*`, `/runtime`, wallet routes, credentials, bear
 - `alert-rules.yml`: warning/critical thresholds for consensus commit/state, storage, mining submit finality, P2P recovery, sync convergence, RPC liveness and mempool pressure.
 - `grafana-dashboard.json`: importable v3.0.0 dashboard baseline.
 
-The exporter remains `scripts/private_testnet/runtime_metrics_exporter.py`. v2.3.0 remains supported for historical evidence; v3.0 operators select this inventory explicitly.
+The exporter remains `scripts/private_testnet/runtime_metrics_exporter.py`. Only the v3.0.0 inventory is accepted. Retired inventories remain in Git history.
 
 ## Start one exporter per node
 
@@ -77,7 +77,7 @@ The validator checks:
 - mandatory consensus/state/mining/P2P/sync/RPC alert classes exist;
 - every alert runbook path exists;
 - the Prometheus example contains exactly five rehearsal targets;
-- the exporter explicitly supports both v2.3.0 and v3.0.0 inventories.
+- the exporter accepts only the v3.0.0 inventory identity and rejects retired identities.
 
 ## Guardrails
 

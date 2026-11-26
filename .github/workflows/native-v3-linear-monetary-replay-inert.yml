@@ -1,0 +1,51 @@
+name: "Native-v3 linear monetary maturity and signed replay (DORMANT)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs"
+      - "crates/pulsedag-core/src/monetary_v3.rs"
+      - "crates/pulsedag-storage/src/native_accepted_disk_v3.rs"
+      - "crates/pulsedag-core/src/lib.rs"
+      - "crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"
+      - ".github/workflows/v3-dormant-ghostdag-core-probe.yml"
+      - ".github/workflows/native-v3-linear-monetary-replay-inert.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-v3-linear-monetary-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Exact native commit checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce dormant first-network consensus boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          ! grep -Fq 'native_gd08_linear_monetary_trial_v3' apps/pulsedagd/src/main.rs
+          ! grep -Fq 'native_gd08_linear_monetary_trial_v3' crates/pulsedag-p2p/src/lib.rs
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact head formatting
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Test native rewards, maturity, signed transfers, supply and committed roots
+        run: cargo +1.91.0 test --locked -p pulsedag-core --lib native_gd08_linear_monetary_trial_v3 -- --nocapture
+      - name: Strict core Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: Verify native monetary RocksDB unit-test round trip
+        run: cargo +1.91.0 test --locked -p pulsedag-storage --lib native_linear_maturity_and_signed_spend_survive_disk_replay -- --nocapture
+      - name: No dependency change
+        run: git diff --exit-code -- Cargo.lock

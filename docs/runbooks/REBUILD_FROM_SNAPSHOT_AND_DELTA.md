@@ -135,4 +135,4 @@ The final v2.3.0 closeout must retain fresh output from the exact candidate. His
 - `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md`
 - `docs/runbooks/RECOVERY_ORCHESTRATION.md`
 - `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`
-- `docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`
+- [first-network release evidence policy](../RELEASE_EVIDENCE.md)

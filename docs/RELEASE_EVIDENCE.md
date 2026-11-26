@@ -1,58 +1,33 @@
-# PulseDAG v2.4.0 release evidence policy
+# PulseDAG first-network release evidence policy
 
 ## Current candidate
 
-- Repository version: `v2.4.0`.
-- Cargo workspace version: `2.4.0`.
-- Candidate vehicle: Task31 PR #993 from `main@91dd8f4314cd0a0672cf3c98f00eea039e59e429`.
-- Exact final release SHA: not frozen; the candidate is still moving.
-- Final release/activation decision: `PENDING_EXACT_CANDIDATE_EVIDENCE`.
-- Public-testnet authorization is separate and remains false.
+Software version: v3.0.0. Final source SHA and native network identity are not frozen by this document. Decision remains `PENDING_EXACT_CANDIDATE_EVIDENCE`. Public testnet is the first live native monetary network; mainnet follows independently. The sole launch authority is [#781](https://github.com/AuriaLABS/PulseDAG/issues/781).
 
-Evidence from the historical `release/2.4.0` branch, v2.3.0 candidates, Task30 pre-release SHAs, or different Task31 heads must not be combined as if they were one final candidate.
+## Evidence classes
 
-## Required evidence classes
+Bind each acceptance record to the exact source/tree SHA, network identity, genesis and configuration digests, artifact digests, workflow run and UTC timestamp.
 
-A v2.4.0 release/activation decision must be bound to one exact final candidate SHA and include:
+1. Locked Cargo metadata, formatting, compilation, workspace tests and Clippy.
+2. Native consensus and monetary policy: deterministic parent/order/work, PoW/retarget, signed UTXO admission, fees, rewards, supply, state roots, atomic persistence and fail-closed invalid-input handling.
+3. Chain/signing domains, externally pinned genesis, network-specific storage and wallet identity, restart and authenticated checkpoint/replay safety.
+4. Applicable local P2P, RPC, resource limits, dependency and keyless-node security regressions.
+5. Native node and standalone CPU miner package builds and smoke checks on every approved target; wallet tooling and its explicit custody boundary.
+6. Per-archive manifests, SHA-256 checksums, provenance, install verification and independent review.
+7. Approved operator roles, bootnodes, DNS/TLS, credentials, observability, incident response, backup, rollback and reset policy.
 
-1. deterministic Cargo metadata and lockfile validation;
-2. workspace format, check, test and Clippy results;
-3. transaction/header v2 and `ghostdag_v1` activation identity validation;
-4. clean-chain genesis, P2P capability, storage restart/restore and protocol-sidecar validation;
-5. Task30 deterministic/adversarial matrices rerun where affected by Task31 changes;
-6. RPC, security, keyless-node, release and repository-hygiene gates;
-7. native node/miner package builds and smoke verification on every approved target;
-8. per-archive manifests, SHA-256 checksums and provenance;
-9. packaged operator startup/recovery validation;
-10. explicit tag/publication authorization and independent evidence review.
+Apply the [T0/T1/M0 sequence](runbooks/V3_0_0_TESTNET_FIRST_LAUNCH.md): minimum safe native implementation and local evidence before testnet GO; genuine public testnet validation after authorization; at least 30 consecutive meaningful monitored days and separate exact-candidate mainnet acceptance thereafter. No private live-network prerequisite. Bounded contract core READY is required before mainnet, but contracts remain INACTIVE throughout v3.0.0.
 
-## Artifact rules
+## Artifact and decision rules
 
-- Node and standalone miner archives are separate release assets.
-- The current candidate does not include an official end-user custody wallet unless that wallet is separately ported, packaged and revalidated.
-- Every archive requires a matching checksum and provenance manifest.
-- Native binaries are smoke-tested only on their native runner.
-- Evidence artifacts are retained independently of a GitHub Release.
-- Exact source SHA, network identity, genesis/config digests and artifact digests must agree across the complete decision record.
+- Node and external miner are separate assets. Verify the [packaging and checksum contract](release/ARTIFACTS.md) and [installation instructions](INSTALL_BINARIES.md).
+- Do not advertise production wallet custody or GPU hardware readiness without specific evidence.
+- Preserve evidence independently of GitHub Release publication. Record owner, UTC decision, rationale, open risks, security dispositions, rollback conditions and artifact identities.
+- Any relevant change to code, dependency, configuration, consensus, storage, signing domain, package or validation workflow invalidates affected evidence. Never aggregate incompatible candidates into a single final PASS.
+- A failed build, digest mismatch, unresolved integrity/security failure or unsafe recovery blocks the affected decision.
+- No tag or publication without separate maintainer authorization; neither authorizes a network launch.
+- PRE-GO remains `public_testnet_ready=false`, `thirty_day_public_testnet_clock_started=false`, `contracts_enabled=false`. No mining activation, Day 0, high cadence or mainnet GO by inference.
 
-## Guardrails
+## Historical provenance
 
-Current evidence does not authorize:
-
-- creating the `v2.4.0` tag;
-- publishing a GitHub Release;
-- launching a public testnet or recording Day 0;
-- setting `public_testnet_ready=true`;
-- starting or backdating the 30-day public-testnet clock;
-- enabling high cadence by default;
-- enabling smart contracts.
-
-Recorded candidate state:
-
-- `public_testnet_ready=false`
-- `thirty_day_public_testnet_clock_started=false`
-- `contracts_enabled=false`
-
-## Historical evidence
-
-v2.3.x and v2.2.x evidence remains valid as historical provenance and compatibility input only. It cannot satisfy an exact-SHA v2.4.0 Task31 gate unless the gate explicitly proves that the evidence is invariant to the final candidate changes.
+The superseded prototype [release decision](https://github.com/AuriaLABS/PulseDAG/blob/49f2c05deabec5fad2473fdf631682e1386c391f/docs/release/V2_3_0_RELEASE_DECISION.md), [approval record](https://github.com/AuriaLABS/PulseDAG/blob/49f2c05deabec5fad2473fdf631682e1386c391f/docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md) and [closeout checklist](https://github.com/AuriaLABS/PulseDAG/blob/49f2c05deabec5fad2473fdf631682e1386c391f/docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md) remain available in immutable Git history. They are not current authorization, migration obligations or first-network acceptance. Preserve applicable regression coverage, not historical release gates.

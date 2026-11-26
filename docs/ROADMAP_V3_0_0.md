@@ -8,7 +8,7 @@ This document is the active product/protocol roadmap for the `v3.0.0` candidate 
 
 The repository/version bump and v3 CI target are authorized for development. They do **not** authorize a tag, GitHub Release, public-testnet launch, mainnet launch, default high-cadence activation, PulseVM activation, or `contracts_enabled=true`.
 
-Earlier v2.x release lines are no longer predecessor release gates. Their artifacts remain useful only as compatibility, regression, migration, and provenance inputs. Scale/resilience and bounded-programmability work previously described under v2.5/v2.6 is folded into the v3 backlog and must be proven by v3 workflows on the exact candidate SHA.
+PulseDAG has never deployed a public network. There are no predecessor network releases, historical balances or compatibility/migration obligations. The first network is native-v3 public testnet. Applicable prototype regressions remain useful but do not establish native acceptance. All launch evidence must be bound to the exact candidate SHA.
 
 Physical NVIDIA/AMD acceptance is not a v3.0.0 GO prerequisite under #781/#794; production GPU claims remain separately gated.
 
@@ -53,10 +53,10 @@ Activation intent for the v3.0 candidate genesis:
 - Consensus determinism and fail-closed validation remain primary.
 - Miner remains external. No pool, vardiff, share accounting, or payout logic in `pulsedagd` or the official miner.
 - CPU mining is the launch-supported production mining path for v3.0.0. NVIDIA/AMD GPU code may remain present, but physical GPU production support stays unadvertised and `GPU_MINING_NVIDIA_PASS` / `GPU_MINING_AMD_PASS` remain `NOT_CLAIMED` until separate physical validation is completed.
-- No silent mutation of Transaction Protocol v2 or UTXO semantics.
+- Freeze native transaction/signing and UTXO semantics before testnet; reject unsupported formats.
 - No EVM compatibility claim.
-- No default high cadence without the measured envelope required by `ROADMAP_V2_5_0.md`.
-- Domain-separated PoW preimage (`PulseDAG:pow:v2` + `chain_id` + header v2). Kaspa work is not reusable.
+- No default high cadence without the measured envelope in Task P8 and the network acceptance program below.
+- Freeze native chain-bound KHeavyHash preimage, target and retarget semantics under #1466; work from another network is not reusable.
 - Planning text is not protocol identity. Inactive `contract_v3` / `covenant_v1` / `tx_v3` modules on `main` stay disabled until an explicit activation contract exists.
 
 ## Work items
@@ -86,7 +86,7 @@ The state scheduler applies non-conflicting transactions in parallel under canon
 
 Product metric: conflict-free transactions applied per pulse.
 
-This may ship as a v2 extension or as part of versioned tx-v3, but it must not silently reinterpret existing v2 transactions.
+Use the frozen native transaction format and explicit activation; unsupported prototype formats are rejected.
 
 ### Task P3 — Covenant template freeze (no general VM)
 
@@ -125,13 +125,13 @@ Productize existing replay/evidence culture:
 
 - `pulsedag verify --from-genesis` reconstructs selected parent, blue/red classification, UTXO, and state digest;
 - emits a receipt bound to binary identity and chain identity;
-- versioned snapshot manifests from v2.5 Task 35 remain the bootstrap path.
+- versioned authenticated snapshot manifests remain the bootstrap path.
 
 A third party can lie about history; the receipt cannot.
 
 ### Task P6 — Mining identity without an in-node pool
 
-- Keep miner protocol upgrades from v2.5 Task 37 (DAG-aware templates, selected tip, parallel parents).
+- Use the native mining protocol (DAG-aware templates, selected tip, parallel parents).
 - Publish work-certificate semantics as an optional UTXO/covenant so PulseDAG work can be proven and transferred without embedding pool software.
 - Official Desktop remains first-class solo mining UX.
 
@@ -147,7 +147,7 @@ No official custody wallet is claimed until the v3 user-surface gate is explicit
 
 ### Task P8 — Measured finality envelope
 
-Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
+Collect cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 
 - chosen public cadence;
 - DAG width, stale rate, apply lag, miner fairness;
@@ -164,17 +164,35 @@ Use v2.5 Task 41 cadence evidence (`~1s`, `500ms`, `250ms`) to publish:
 - Representing NVIDIA or AMD GPU mining as production-validated before separate physical hardware evidence exists.
 - Opaque treasury or reflection-style tokenomics in consensus.
 
-## Suggested sequencing
+## First-network delivery sequence
 
-| Phase | In scope | Out of scope |
-|---|---|---|
-| v2.4.0 | GHOSTDAG v1, tx v2, header v2, exact-candidate release gates | this roadmap |
-| v2.5.0 | compact relay, pruning/sync, mempool, miner proto v3, NVIDIA+AMD GPU, cadence envelope, 1M-block replay | contracts |
-| v2.6-lite / 3.0 spec freeze | PulseClock, access sets, six templates, colored UTXO, based-app v0, `pulsedag verify`, wallet + DAG explorer | PulseVM, generic ZK, NFT standards |
-| public v3 testnet (separate GO) | first real network for native-v3 CPU monetary mining, signed transfers, fees/rewards, nodes, reorg and prune/recovery trials; own genesis/keys; smart contracts INACTIVE | real mainnet value or premature mainnet GO |
-| public testnet stabilization | >=30 days meaningful monitored public operation and incident/remediation/rollback evidence | automated permission to launch mainnet |
-| v3.0.0 mainnet genesis (later separate GO) | new independent production identity; final exact-candidate acceptance, bounded contract core READY but `contracts_enabled=false` | active general VM, contract deployment and public contract RPC |
-| 3.1+ / remaining v2.6.0 | separately versioned activation of already tested PulseScript/VM, advanced assets, ZK PulseProgs and future extensions | — |
+| Phase | In scope |
+|---|---|
+| Native baseline | GHOSTDAG/GD-08, chain-bound PoW/retarget, signed UTXO, atomic economic admission, rewards, maturity, fees and supply; daemon, CPU miner, wallet, P2P and isolated testnet identity |
+| Public testnet entry | Exact-candidate minimum offline safety, public attack-surface controls, operator ownership, independent GO_PUBLIC_TESTNET |
+| Public testnet | Genuine blocks, signed transfers, distributed recovery, stress, pruning, cadence, at least 30 meaningful consecutive days |
+| Mainnet acceptance | Independent production identity, all applicable exact-candidate production gates, bounded contract core READY but INACTIVE, independent GO_V3_MAINNET |
+| Later upgrades | Separately approved activation of programmable functionality and optional extensions |
+
+## Native network and production acceptance program
+
+The following requirements consolidate the former scale/resilience work. Scope and timing follow #781, #794 and the testnet-first runbook; do not infer that a requirement is implemented or passed.
+
+- **P2P (#1034/#1465):** authenticated parent-aware body-on-demand retrieval, peer scoring/diversity, inbound/outbound quotas, eclipse/flood resistance, per-peer CPU/RAM/disk/bandwidth budgets, bounded churn and penalties, compact DAG reconstruction with identical full validation and measured propagation/bandwidth.
+- **State (#1367):** authenticated versioned snapshot/state commitments, resumable bounded chunk transfer, pruning-aware frontier, clean catch-up, poisoning/incompatibility rejection, restart and full-replay equivalence, bounded storage.
+- **Mempool and fees:** deterministic fee-rate estimation, hard limits, eviction/expiry, replacement, ancestor/descendant/package bounds, conflict handling, anti-spam, restart and reorder reconciliation.
+- **Mining (#1037):** external miner; versioned jobs, sequence IDs, notification, invalidation/target updates, parallel-parent templates, stable submission IDs, accepted/rejected/stale/unknown-finality classification, reconciliation, bounded backpressure and telemetry.
+- **GPU (deferred physical acceptance):** CPU oracle; NVIDIA and AMD golden parity, nonce/target/endianness/overflow boundaries, device isolation, nonce partitioning, recovery/reconnect and telemetry; profile kernels and long soaks before any production claim. No GPU consensus shortcut; CPU is the required launch path.
+- **Cadence and replay (#1039):** approximately 1s/500ms/250ms measurement points, propagation/orphans/DAG width/state-apply/database amplification/template freshness/submit/stale/finality/fairness; choose measured envelope. Replay at least 1,000,000 blocks with identical parents, blue/red, order, transaction outcomes and UTXO roots across arrival permutations, forks, snapshots, pruning and restarts.
+- **API/operations (#1039/#1050):** bounded versioned public RPC/API, schema, errors, IDs, pagination, rate limits and event streams; private admin interfaces. Monitor node/miner/storage/network health. Automated chaos covers node/miner loss, disk pressure, packet loss, seed loss, partitions, clock skew, orphan storms, RPC load and recovery; record timeline, metrics, digests and outcomes. Future upgrades of the deployed network require capability negotiation, canary, explicit activation and safe rollback/downgrade refusal; no compatibility with never-deployed prototypes.
+- **Release/security (#1047/#1048):** locked reproducible or independently verifiable builds, SBOM, provenance, signed manifests, dependency audit, least privilege, clean-machine native smoke, exact artifact/config hashes; wallet custody and network separation (#1046/#1049).
+- **Mainnet distributed validation (#1040):** at least 25 nodes/16 CPU miners, diverse failure domains, adversarial partitions/churn/seed loss/stale work/target changes/pruning/rejoin/upgrade/load, convergence without unexplained state divergence; at least 168 contiguous hours on one unchanged production candidate, plus at least 30 consecutive days meaningful monitored public testnet. Record and resolve launch-blocking incidents. Physical GPU evidence remains separately gated.
+
+## Programmability engineering boundary
+
+Bounded contract core readiness before mainnet is governed by #1333. Preserve canonical contract transaction serialization/signatures/domain binding and resource limits; reproducible typed PulseScript compilation, exact integer/overflow semantics and golden vectors; deterministic VM with instruction/memory/stack/call/state limits, no host I/O/time/randomness; canonical read/write conflicts and rollback, deterministic fee/state accounting, replay, fuzzing and differential security tests. Contract state, events, fees and RPC must not interfere with the active monetary network.
+
+Covenant/application features require explicit independent scope and admission rules; nothing here authorizes contract execution, deployment, state transitions or public contract RPC in v3.0.0. Optional Based Apps, PulseProgs, ZK verification, advanced assets/token standards and public programmable-fee/contract runtime are later-version research or activation work. Future activation needs version/domain and proof limits, resource metering, supply/state replay, bounded APIs, adversarial tests, separately approved network activation, rollback and dedicated burn-in. No previous-version prerequisite release exists.
 
 ## Acceptance demo (planning bar, not a release gate)
 
