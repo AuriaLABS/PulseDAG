@@ -8,7 +8,8 @@ use pulsedag_core::{
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::{compute_block_hash_v3, BlockHeaderV3},
     native_gd08_order_kernel_v3::{
-        derive_dormant_native_gd08_order_from_ghostdag_trial, DormantGd08AnchorSlot, DormantGd08Role,
+        derive_dormant_native_gd08_order_from_ghostdag_trial, DormantGd08AnchorSlot,
+        DormantGd08Role,
     },
     pow_v3::verify_v3_header_pow,
     types::BlockId,
