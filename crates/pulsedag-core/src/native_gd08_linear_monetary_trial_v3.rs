@@ -122,7 +122,15 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
     cadence: &[MonetaryCadenceSegment],
 ) -> Result<DormantNativeLinearMonetaryReportV3, PulseError> {
-    Ok(replay_linear_state(chain_id, genesis_ns, trusted_genesis, tip, envelopes, cadence)?.report)
+    Ok(replay_linear_state(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        envelopes,
+        cadence,
+    )?
+    .report)
 }
 
 struct LinearReplayState {
@@ -283,7 +291,11 @@ fn replay_linear_state(
         mature_rewards,
         applied_transfers,
     };
-    Ok(LinearReplayState { report, state, created })
+    Ok(LinearReplayState {
+        report,
+        state,
+        created,
+    })
 }
 
 /// Evidence for the individual direct parents of a single candidate merge.
@@ -525,7 +537,8 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         fees_by_block.insert(hash.clone(), fee);
     }
     let remaining_spendable_atoms = opening.state.utxos.values().try_fold(0_u64, |sum, coin| {
-        sum.checked_add(coin.amount).ok_or_else(|| invalid("ordinary trial balance overflow"))
+        sum.checked_add(coin.amount)
+            .ok_or_else(|| invalid("ordinary trial balance overflow"))
     })?;
     if remaining_spendable_atoms.checked_add(total_fees) != Some(opening.report.spendable_atoms) {
         return Err(invalid("ordinary trial spendable value plus fees mismatch"));
