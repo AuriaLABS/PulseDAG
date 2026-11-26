@@ -39,6 +39,11 @@ pub struct DormantGd08AnchorSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantGd08OrderPreview {
     pub ordered: Vec<BlockId>,
+    /// Exact validated anchor/role assignment for each ordered block.
+    /// Diagnostic only: does not determine monetary eligibility.
+    pub slots: BTreeMap<BlockId, DormantGd08AnchorSlot>,
+    /// Selected-parent spine in genesis-to-tip order.
+    pub selected_spine: Vec<BlockId>,
     pub digest: String,
     pub blue_count: usize,
     pub red_count: usize,
@@ -201,6 +206,8 @@ pub fn derive_dormant_native_gd08_order(
             .filter(|s| s.role == DormantGd08Role::MergeRed)
             .count(),
         ordered,
+        slots: assignments.clone(),
+        selected_spine: selected_spine.to_vec(),
         digest: hex::encode(hasher.finalize()),
     })
 }
