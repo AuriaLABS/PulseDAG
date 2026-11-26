@@ -302,7 +302,7 @@ mod tests {
         pow_v3::evaluate_v3_header_pow, protocol::BLOCK_HEADER_VERSION_V3,
         reward_settlement_v3::build_reward_claim_transaction_v3, types::compute_merkle_root,
     };
-    use rocksdb::{ColumnFamilyDescriptor, WriteBatch};
+    use rocksdb::{ColumnFamilyDescriptor, WriteBatch, WriteOptions};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const CHAIN: &str = "first-native-v3-readonly-journal-test";
@@ -364,7 +364,7 @@ mod tests {
     // helper imitates the future consensus writer solely to exercise RocksDB
     // power-loss atomicity and strict read logic.
     #[allow(clippy::too_many_arguments)]
-    fn trial_write_with_digest(
+    fn trial_batch_with_digest(
         db: &DB,
         frame: &NativeV3EnvelopeRestoreRecordV1,
         genesis: &str,
@@ -372,7 +372,7 @@ mod tests {
         include_membership: bool,
         include_journal: bool,
         gd08_digest: &str,
-    ) {
+    ) -> WriteBatch {
         let hash = frame.envelope().hash.as_bytes();
         let row = PersistedNativeRowV1 {
             schema: JOURNAL_SCHEMA,
@@ -410,7 +410,120 @@ mod tests {
         if include_journal {
             batch.put_cf(journal, hash, serde_json::to_vec(&entry).unwrap());
         }
-        db.write(batch).unwrap();
+        batch
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn trial_write_with_digest(
+        db: &DB,
+        frame: &NativeV3EnvelopeRestoreRecordV1,
+        genesis: &str,
+        generation: u64,
+        include_membership: bool,
+        include_journal: bool,
+        gd08_digest: &str,
+    ) {
+        db.write(trial_batch_with_digest(
+            db,
+            frame,
+            genesis,
+            generation,
+            include_membership,
+            include_journal,
+            gd08_digest,
+        ))
+        .unwrap();
+    }
+
+    // Deliberately private, test-only, single-writer linear append. Never
+    // expose this as accepted production authority or support fork replacement.
+    fn trial_append_verified_linear(
+        db: &DB,
+        genesis: &str,
+        tip: &String,
+        corpus: &std::collections::BTreeMap<
+            String,
+            pulsedag_core::block_envelope_v3::BlockEnvelopeV3,
+        >,
+        cadence: &[pulsedag_core::monetary_v3::MonetaryCadenceSegment],
+    ) -> Result<(), String> {
+        use pulsedag_core::native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial;
+
+        const TIP_KEY: &[u8] = b"test_linear_tip";
+        const CADENCE_KEY: &[u8] = b"test_linear_cadence";
+        let report =
+            inspect_dormant_native_linear_monetary_trial(CHAIN, NS, genesis, tip, corpus, cadence)
+                .map_err(|e| e.to_string())?;
+        let body = corpus.get(tip).ok_or("missing trial tip")?;
+        let generation = report.monetary_score;
+        let meta = db.cf_handle(CF_META).ok_or("missing metadata")?;
+        let get = |key: &[u8]| db.get_cf(meta, key).map_err(|e| e.to_string());
+        let previous = get(GENERATION_KEY)?;
+        let previous_tip = get(TIP_KEY)?;
+        let previous_cadence = get(CADENCE_KEY)?;
+        let identity = get(IDENTITY_KEY)?;
+        let expected_identity = PersistedNativeIdentityV1 {
+            schema: JOURNAL_SCHEMA,
+            chain_id: CHAIN.to_owned(),
+            genesis_timestamp_ns: NS,
+            genesis_hash: genesis.to_owned(),
+        };
+        let parent = body.header.parents.first().ok_or("missing trial parent")?;
+        match (previous, previous_tip, previous_cadence, identity) {
+            (None, None, None, None) if generation == 1 && parent == genesis => {}
+            (Some(raw), Some(old_tip), Some(old_cadence), Some(raw_identity)) => {
+                let old = positive_generation(&raw)?;
+                let old_identity: PersistedNativeIdentityV1 =
+                    serde_json::from_slice(&raw_identity).map_err(|e| e.to_string())?;
+                if old.checked_add(1) != Some(generation)
+                    || old_tip != parent.as_bytes()
+                    || old_cadence != report.cadence_fingerprint.as_bytes()
+                    || old_identity != expected_identity
+                {
+                    return Err("nonsequential or foreign trial append".into());
+                }
+                let membership = db.cf_handle(CF_MEMBERSHIP).ok_or("missing membership")?;
+                let raw_member = db
+                    .get_cf(membership, parent.as_bytes())
+                    .map_err(|e| e.to_string())?
+                    .ok_or("missing previous membership")?;
+                if positive_generation(&raw_member)? != old {
+                    return Err("previous trial membership mismatch".into());
+                }
+            }
+            _ => return Err("incomplete or nonsequential trial metadata".into()),
+        }
+        for name in [CF_BODIES, CF_MEMBERSHIP, CF_JOURNAL] {
+            let cf = db.cf_handle(name).ok_or("missing trial namespace")?;
+            if db
+                .get_cf(cf, tip.as_bytes())
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err("trial append would overwrite an existing record".into());
+            }
+        }
+        let frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+            body.clone(),
+            CHAIN,
+            NS,
+            genesis,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut batch = trial_batch_with_digest(
+            db,
+            &frame,
+            genesis,
+            generation,
+            true,
+            true,
+            &report.order_digest,
+        );
+        batch.put_cf(meta, TIP_KEY, tip.as_bytes());
+        batch.put_cf(meta, CADENCE_KEY, report.cadence_fingerprint.as_bytes());
+        let mut options = WriteOptions::default();
+        options.set_sync(true);
+        db.write_opt(batch, &options).map_err(|e| e.to_string())
     }
 
     fn trial_write(
@@ -750,10 +863,13 @@ mod tests {
                     report.total_subsidy_atoms,
                     report.spendable_atoms + report.pending_reward_atoms
                 );
-                let frame =
-                    NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body, CHAIN, NS, &g)
-                        .unwrap();
-                trial_write_with_digest(&db, &frame, &g, height, true, true, &report.order_digest);
+                trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).unwrap();
+                assert!(trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err());
+                let meta = db.cf_handle(CF_META).unwrap();
+                assert_eq!(
+                    positive_generation(&db.get_cf(meta, GENERATION_KEY).unwrap().unwrap()),
+                    Ok(height)
+                );
                 expected.push((parent.clone(), height, report));
             }
         }
