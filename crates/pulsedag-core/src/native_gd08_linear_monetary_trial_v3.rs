@@ -264,6 +264,9 @@ pub struct DormantNativeMergeParentReportV3 {
     pub candidate_hash: BlockId,
     pub order_digest: String,
     pub parent_reports: BTreeMap<BlockId, DormantNativeLinearMonetaryReportV3>,
+    /// Distinct authenticated transaction IDs spending the same outpoint in
+    /// separately verified parent histories. No winner or fee is authorized.
+    pub competing_spends: BTreeMap<OutPoint, BTreeSet<String>>,
 }
 
 /// Authenticate a bounded merge candidate and independently rebuild every
@@ -321,6 +324,8 @@ pub fn inspect_dormant_native_merge_parent_linear_trials(
         return Err(invalid("unrelated blocks in merge trial"));
     }
     let mut parent_reports = BTreeMap::new();
+    let mut competing_spends: BTreeMap<OutPoint, BTreeSet<String>> = BTreeMap::new();
+    let mut inspected_blocks = BTreeSet::new();
     for parent in &merge.header.parents {
         let mut prefix = BTreeMap::new();
         let mut next = parent.clone();
@@ -347,14 +352,30 @@ pub fn inspect_dormant_native_merge_parent_linear_trials(
             &prefix,
             cadence,
         )?;
+        // Collect only after successful monetary replay; shared ancestors are
+        // inspected once, and repeated identical txids are not distinct spends.
+        for (hash, envelope) in &prefix {
+            if inspected_blocks.insert(hash.clone()) {
+                for tx in envelope.transactions.iter().skip(1) {
+                    for input in &tx.inputs {
+                        competing_spends
+                            .entry(input.previous_output.clone())
+                            .or_default()
+                            .insert(tx.txid.clone());
+                    }
+                }
+            }
+        }
         if parent_reports.insert(parent.clone(), report).is_some() {
             return Err(invalid("duplicate merge parent"));
         }
     }
+    competing_spends.retain(|_, txids| txids.len() > 1);
     Ok(DormantNativeMergeParentReportV3 {
         candidate_hash: candidate.clone(),
         order_digest: order.digest,
         parent_reports,
+        competing_spends,
     })
 }
 
@@ -689,7 +710,13 @@ mod tests {
             .unwrap();
             state.compute_state_root().unwrap()
         };
-        let a = mine(&b2.hash, 3, &owner, branch_root(&spend_a), vec![spend_a]);
+        let a = mine(
+            &b2.hash,
+            3,
+            &owner,
+            branch_root(&spend_a),
+            vec![spend_a.clone()],
+        );
         let b = mine(
             &b2.hash,
             3,
@@ -719,6 +746,13 @@ mod tests {
         .unwrap();
         assert_eq!(report.candidate_hash, join.hash);
         assert_eq!(report.parent_reports.len(), 2);
+        assert_eq!(
+            report.competing_spends,
+            BTreeMap::from([(
+                r1.outpoint.clone(),
+                BTreeSet::from([spend_a.txid.clone(), spend_b.txid.clone()]),
+            )])
+        );
         for parent in [&a, &b] {
             let branch = &report.parent_reports[&parent.hash];
             assert_eq!(branch.applied_transfers, 1);
@@ -732,6 +766,38 @@ mod tests {
             report.parent_reports[&a.hash].state_root,
             report.parent_reports[&b.hash].state_root
         );
+        // The same signed transaction included in two sibling blocks is a
+        // duplicate inclusion, not two distinct competing spends.
+        let duplicate = mine(
+            &b2.hash,
+            3,
+            "pulse1otherminer",
+            branch_root(&spend_a),
+            vec![spend_a],
+        );
+        let duplicate_join = mine_with_parents(
+            vec![a.hash.clone(), duplicate.hash.clone()],
+            4,
+            &owner,
+            "ab".repeat(32),
+            vec![],
+        );
+        let mut repeated = corpus.clone();
+        repeated.remove(&b.hash);
+        repeated.remove(&join.hash);
+        repeated.insert(duplicate.hash.clone(), duplicate);
+        repeated.insert(duplicate_join.hash.clone(), duplicate_join.clone());
+        let repeated_report = inspect_dormant_native_merge_parent_linear_trials(
+            CHAIN,
+            NS,
+            &g,
+            &duplicate_join.hash,
+            &repeated,
+            &CADENCE,
+            0,
+        )
+        .unwrap();
+        assert!(repeated_report.competing_spends.is_empty());
         let forged = mine(&b2.hash, 3, &owner, "ff".repeat(32), vec![spend_b]);
         let bad_join = mine_with_parents(
             vec![a.hash.clone(), forged.hash.clone()],
