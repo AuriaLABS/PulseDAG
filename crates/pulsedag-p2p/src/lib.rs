@@ -15011,7 +15011,10 @@ mod bounded_authenticated_tip_refresh_regressions {
 
     #[test]
     fn observed_auth_subscription_still_retries_after_initial_publish_failure() {
-        let peer = identity::Keypair::generate_ed25519().public().to_peer_id().to_string();
+        let peer = identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string();
         let mut observed = HashSet::new();
         let delivered_one_shot = HashSet::<String>::new();
         assert!(!authenticated_periodic_tip_refresh_allowed(
