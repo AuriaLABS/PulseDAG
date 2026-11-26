@@ -484,7 +484,9 @@ mod tests {
                 }
                 let membership = db.cf_handle(CF_MEMBERSHIP).ok_or("missing membership")?;
                 let body_cf = db.cf_handle(CF_BODIES).ok_or("missing body namespace")?;
-                let journal_cf = db.cf_handle(CF_JOURNAL).ok_or("missing journal namespace")?;
+                let journal_cf = db
+                    .cf_handle(CF_JOURNAL)
+                    .ok_or("missing journal namespace")?;
                 // Audit every persisted non-genesis ancestor, not just the
                 // previous tip. The initial replay bounds and validates the
                 // entire linear corpus. Replaying its decreasing prefixes is
@@ -938,10 +940,10 @@ mod tests {
                                 } else {
                                     db.put_cf(cf, prior.as_bytes(), b"corrupt").unwrap();
                                 }
-                                assert!(
-                                    trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence)
-                                        .is_err()
-                                );
+                                assert!(trial_append_verified_linear(
+                                    &db, &g, &parent, &corpus, &cadence
+                                )
+                                .is_err());
                                 assert_eq!(
                                     positive_generation(
                                         &db.get_cf(meta, GENERATION_KEY).unwrap().unwrap()
@@ -983,7 +985,8 @@ mod tests {
                             .unwrap()
                             .is_none());
                     }
-                    db.put_cf(journal_cf, ancestor.as_bytes(), original).unwrap();
+                    db.put_cf(journal_cf, ancestor.as_bytes(), original)
+                        .unwrap();
                 }
                 trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).unwrap();
                 assert!(trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err());
