@@ -53,6 +53,7 @@ jobs:
           cargo test --locked -p pulsedag-p2p --lib actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count -- --nocapture
           cargo test --locked -p pulsedag-p2p --lib simulated_connections_never_claim_real_remote_gossipsub_subscribers -- --nocapture
           cargo test --locked -p pulsedag-rpc --lib p2p_status_mode_semantics_guardrails_cover_simulated_dev_and_real_modes -- --nocapture
+          cargo test --locked -p pulsedag-p2p --lib bounded_authenticated_tip_refresh_regressions -- --nocapture
           cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
           cargo clippy --locked -p pulsedag-rpc --all-targets -- -D warnings
           git diff --exit-code -- Cargo.lock
