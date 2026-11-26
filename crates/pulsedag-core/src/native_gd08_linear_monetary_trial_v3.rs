@@ -640,7 +640,13 @@ mod tests {
         let key = SigningKey::from_bytes(&[19u8; 32]);
         let owner = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
         let mut expected = UtxoState::default();
-        let b1 = mine(&g, 1, &owner, expected.compute_state_root().unwrap(), vec![]);
+        let b1 = mine(
+            &g,
+            1,
+            &owner,
+            expected.compute_state_root().unwrap(),
+            vec![],
+        );
         let subsidy = subsidy_atoms_for_score(1, &CADENCE).unwrap();
         let r1 = reward(&b1, subsidy);
         insert_coin(&mut expected, r1.clone()).unwrap();
@@ -740,7 +746,13 @@ mod tests {
         bad.insert(forged.hash.clone(), forged);
         bad.insert(bad_join.hash.clone(), bad_join.clone());
         assert!(inspect_dormant_native_merge_parent_linear_trials(
-            CHAIN, NS, &g, &bad_join.hash, &bad, &CADENCE, 0,
+            CHAIN,
+            NS,
+            &g,
+            &bad_join.hash,
+            &bad,
+            &CADENCE,
+            0,
         )
         .is_err());
     }
