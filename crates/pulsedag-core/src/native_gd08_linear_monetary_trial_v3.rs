@@ -571,8 +571,7 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         .map_err(|_| invalid("candidate score overflow"))?;
     let mut hypothetical_reward_positions = Vec::new();
     let mut hypothetical_total_issued_atoms = opening.report.total_subsidy_atoms;
-    let mut hypothetical_reward_reserve_before_maturity_atoms =
-        opening.report.pending_reward_atoms;
+    let mut hypothetical_reward_reserve_before_maturity_atoms = opening.report.pending_reward_atoms;
     let mut previous_score = opening.report.monetary_score;
     for (index, hash) in verified.ordered_blocks.iter().enumerate() {
         if hash != candidate && !verified.parent_reports.contains_key(hash) {
@@ -628,8 +627,7 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     if previous_score != candidate_score
         || hypothetical_reward_positions.last().map(|p| &p.block_hash) != Some(candidate)
         || hypothetical_total_issued_atoms != scheduled
-        || remaining_spendable_atoms
-            .checked_add(hypothetical_reward_reserve_before_maturity_atoms)
+        || remaining_spendable_atoms.checked_add(hypothetical_reward_reserve_before_maturity_atoms)
             != Some(scheduled)
     {
         return Err(invalid("hypothetical reward plan does not conserve supply"));
@@ -1109,8 +1107,7 @@ mod tests {
             total_supply_atoms_for_score(5, &CADENCE).unwrap()
         );
         assert_eq!(
-            fees.remaining_spendable_atoms
-                + fees.hypothetical_reward_reserve_before_maturity_atoms,
+            fees.remaining_spendable_atoms + fees.hypothetical_reward_reserve_before_maturity_atoms,
             fees.hypothetical_total_issued_atoms
         );
         assert_ne!(
