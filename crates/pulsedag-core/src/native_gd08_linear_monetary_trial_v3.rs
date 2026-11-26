@@ -839,13 +839,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[23u8; 32]);
         let owner = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
         let mut opening = UtxoState::default();
-        let b1 = mine(
-            &g,
-            1,
-            &owner,
-            opening.compute_state_root().unwrap(),
-            vec![],
-        );
+        let b1 = mine(&g, 1, &owner, opening.compute_state_root().unwrap(), vec![]);
         let r1 = reward(&b1, subsidy_atoms_for_score(1, &CADENCE).unwrap());
         insert_coin(&mut opening, r1.clone()).unwrap();
         let b2 = mine(
@@ -930,12 +924,18 @@ mod tests {
         .unwrap();
         assert_eq!(report.accepted.len(), 2);
         assert!(report.skipped.is_empty());
-        assert_eq!(report.fees_by_block, BTreeMap::from([(a.hash, 1), (b.hash, 3)]));
+        assert_eq!(
+            report.fees_by_block,
+            BTreeMap::from([(a.hash, 1), (b.hash, 3)])
+        );
         assert_eq!(report.total_fees, 4);
         assert_eq!(report.opening_spendable_atoms, r1.amount + r2.amount);
         assert_eq!(report.remaining_spendable_atoms, r1.amount + r2.amount - 4);
         assert_eq!(report.unchanged_pending_reward_atoms, r3.amount);
-        assert_eq!(report.opening_state_root, opening.compute_state_root().unwrap());
+        assert_eq!(
+            report.opening_state_root,
+            opening.compute_state_root().unwrap()
+        );
         let mut expected = UtxoState::default();
         insert_coin(&mut expected, output(&a_tx)).unwrap();
         insert_coin(&mut expected, output(&b_tx)).unwrap();
