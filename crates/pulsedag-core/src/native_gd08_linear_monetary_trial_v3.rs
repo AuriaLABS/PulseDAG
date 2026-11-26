@@ -257,6 +257,107 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     })
 }
 
+/// Evidence for the individual direct parents of a single candidate merge.
+/// Each report is branch-local, NOT an aggregate balance or merge settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeMergeParentReportV3 {
+    pub candidate_hash: BlockId,
+    pub order_digest: String,
+    pub parent_reports: BTreeMap<BlockId, DormantNativeLinearMonetaryReportV3>,
+}
+
+/// Authenticate a bounded merge candidate and independently rebuild every
+/// direct parent's linear past from frozen genesis. Competing spends may be
+/// valid on separate branches; their balances MUST NOT be added together.
+/// The merge's own committed state root, rewards and conflict winners remain
+/// unverified. Reject nested merges rather than invent an economic policy.
+pub fn inspect_dormant_native_merge_parent_linear_trials(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    candidate: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    cadence: &[MonetaryCadenceSegment],
+    trial_k: usize,
+) -> Result<DormantNativeMergeParentReportV3, PulseError> {
+    const MAX_MERGE_PARENTS: usize = 8;
+    if envelopes.is_empty() || envelopes.len() > MAX_TRIAL_BLOCKS {
+        return Err(invalid("unsupported bounded merge corpus length"));
+    }
+    let merge = envelopes
+        .get(candidate)
+        .ok_or_else(|| invalid("missing merge candidate"))?;
+    if !(2..=MAX_MERGE_PARENTS).contains(&merge.header.parents.len()) {
+        return Err(invalid("unsupported direct merge parent count"));
+    }
+    let mut headers = BTreeMap::new();
+    let mut item_count = 0usize;
+    for (hash, envelope) in envelopes {
+        if hash != &envelope.hash {
+            return Err(invalid("incorrect envelope map key"));
+        }
+        for tx in envelope.transactions.iter().skip(1) {
+            item_count = item_count
+                .checked_add(1)
+                .and_then(|n| n.checked_add(tx.inputs.len()))
+                .and_then(|n| n.checked_add(tx.outputs.len()))
+                .ok_or_else(|| invalid("transaction budget overflow"))?;
+            if item_count > MAX_TRIAL_ORDINARY_ITEMS {
+                return Err(invalid("transaction budget exceeded"));
+            }
+        }
+        validate_dormant_native_v3_monetary_body_preflight(envelope, chain_id)?;
+        headers.insert(hash.clone(), envelope.header.clone());
+    }
+    let order = derive_dormant_native_gd08_order_from_ghostdag_trial(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        candidate,
+        &headers,
+        trial_k,
+    )?;
+    if order.ordered.len() != envelopes.len() {
+        return Err(invalid("unrelated blocks in merge trial"));
+    }
+    let mut parent_reports = BTreeMap::new();
+    for parent in &merge.header.parents {
+        let mut prefix = BTreeMap::new();
+        let mut next = parent.clone();
+        loop {
+            let envelope = envelopes
+                .get(&next)
+                .ok_or_else(|| invalid("missing parent branch envelope"))?;
+            if prefix.insert(next.clone(), envelope.clone()).is_some() {
+                return Err(invalid("cycle in parent branch"));
+            }
+            if next == trusted_genesis {
+                break;
+            }
+            if envelope.header.parents.len() != 1 {
+                return Err(invalid("nested merge monetary policy not frozen"));
+            }
+            next = envelope.header.parents[0].clone();
+        }
+        let report = inspect_dormant_native_linear_monetary_trial(
+            chain_id,
+            genesis_ns,
+            trusted_genesis,
+            parent,
+            &prefix,
+            cadence,
+        )?;
+        if parent_reports.insert(parent.clone(), report).is_some() {
+            return Err(invalid("duplicate merge parent"));
+        }
+    }
+    Ok(DormantNativeMergeParentReportV3 {
+        candidate_hash: candidate.clone(),
+        order_digest: order.digest,
+        parent_reports,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,12 +389,23 @@ mod tests {
         root: String,
         spends: Vec<Transaction>,
     ) -> BlockEnvelopeV3 {
+        mine_with_parents(vec![parent.to_owned()], height, beneficiary, root, spends)
+    }
+
+    fn mine_with_parents(
+        mut parents: Vec<BlockId>,
+        height: u64,
+        beneficiary: &str,
+        root: String,
+        spends: Vec<Transaction>,
+    ) -> BlockEnvelopeV3 {
+        parents.sort();
         let mut transactions =
             vec![build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap()];
         transactions.extend(spends);
         let mut header = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
-            parents: vec![parent.to_owned()],
+            parents,
             timestamp_ns: NS + height * 500_000_000,
             difficulty: 0x207f_ffff,
             nonce: 0,
@@ -517,6 +629,118 @@ mod tests {
             &forged.hash,
             &bad,
             &CADENCE,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn competing_parent_spends_are_branch_local_and_bad_parent_roots_fail() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let key = SigningKey::from_bytes(&[19u8; 32]);
+        let owner = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        let mut expected = UtxoState::default();
+        let b1 = mine(&g, 1, &owner, expected.compute_state_root().unwrap(), vec![]);
+        let subsidy = subsidy_atoms_for_score(1, &CADENCE).unwrap();
+        let r1 = reward(&b1, subsidy);
+        insert_coin(&mut expected, r1.clone()).unwrap();
+        let b2 = mine(
+            &b1.hash,
+            2,
+            &owner,
+            expected.compute_state_root().unwrap(),
+            vec![],
+        );
+        let spend_a = signed_spend(&key, &r1.outpoint, subsidy);
+        let mut spend_b = spend_a.clone();
+        spend_b.nonce += 1;
+        spend_b.outputs[0].address = "pulse1otherrecipient".into();
+        spend_b.inputs[0].signature = hex::encode(
+            key.sign(&signing_message_v2(&spend_b, CHAIN).unwrap())
+                .to_bytes(),
+        );
+        spend_b.txid = compute_txid_v2(&spend_b, CHAIN).unwrap();
+        let branch_root = |tx: &Transaction| {
+            let mut state = UtxoState::default();
+            insert_coin(
+                &mut state,
+                Utxo {
+                    outpoint: OutPoint {
+                        txid: tx.txid.clone(),
+                        index: 0,
+                    },
+                    address: tx.outputs[0].address.clone(),
+                    amount: tx.outputs[0].amount,
+                    coinbase: false,
+                    height: 3,
+                },
+            )
+            .unwrap();
+            insert_coin(
+                &mut state,
+                reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap()),
+            )
+            .unwrap();
+            state.compute_state_root().unwrap()
+        };
+        let a = mine(&b2.hash, 3, &owner, branch_root(&spend_a), vec![spend_a]);
+        let b = mine(
+            &b2.hash,
+            3,
+            &owner,
+            branch_root(&spend_b),
+            vec![spend_b.clone()],
+        );
+        // Deliberately arbitrary merge root: this API verifies parents only.
+        let join = mine_with_parents(
+            vec![a.hash.clone(), b.hash.clone()],
+            4,
+            &owner,
+            "ab".repeat(32),
+            vec![],
+        );
+        let corpus = BTreeMap::from([
+            (g.clone(), genesis),
+            (b1.hash.clone(), b1),
+            (b2.hash.clone(), b2.clone()),
+            (a.hash.clone(), a.clone()),
+            (b.hash.clone(), b.clone()),
+            (join.hash.clone(), join.clone()),
+        ]);
+        let report = inspect_dormant_native_merge_parent_linear_trials(
+            CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
+        )
+        .unwrap();
+        assert_eq!(report.candidate_hash, join.hash);
+        assert_eq!(report.parent_reports.len(), 2);
+        for parent in [&a, &b] {
+            let branch = &report.parent_reports[&parent.hash];
+            assert_eq!(branch.applied_transfers, 1);
+            assert_eq!(branch.state_root, parent.header.state_root);
+            assert_eq!(
+                branch.total_subsidy_atoms,
+                branch.spendable_atoms + branch.pending_reward_atoms
+            );
+        }
+        assert_ne!(
+            report.parent_reports[&a.hash].state_root,
+            report.parent_reports[&b.hash].state_root
+        );
+        let forged = mine(&b2.hash, 3, &owner, "ff".repeat(32), vec![spend_b]);
+        let bad_join = mine_with_parents(
+            vec![a.hash.clone(), forged.hash.clone()],
+            4,
+            &owner,
+            "ab".repeat(32),
+            vec![],
+        );
+        let mut bad = corpus;
+        bad.remove(&b.hash);
+        bad.remove(&join.hash);
+        bad.insert(forged.hash.clone(), forged);
+        bad.insert(bad_join.hash.clone(), bad_join.clone());
+        assert!(inspect_dormant_native_merge_parent_linear_trials(
+            CHAIN, NS, &g, &bad_join.hash, &bad, &CADENCE, 0,
         )
         .is_err());
     }
