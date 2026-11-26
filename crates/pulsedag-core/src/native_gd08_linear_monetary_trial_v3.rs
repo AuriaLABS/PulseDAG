@@ -263,6 +263,7 @@ pub fn inspect_dormant_native_linear_monetary_trial(
 pub struct DormantNativeMergeParentReportV3 {
     pub candidate_hash: BlockId,
     pub order_digest: String,
+    pub ordered_blocks: Vec<BlockId>,
     pub parent_reports: BTreeMap<BlockId, DormantNativeLinearMonetaryReportV3>,
     /// Distinct authenticated transaction IDs spending the same outpoint in
     /// separately verified parent histories. No winner or fee is authorized.
@@ -374,8 +375,105 @@ pub fn inspect_dormant_native_merge_parent_linear_trials(
     Ok(DormantNativeMergeParentReportV3 {
         candidate_hash: candidate.clone(),
         order_digest: order.digest,
+        ordered_blocks: order.ordered,
         parent_reports,
         competing_spends,
+    })
+}
+
+/// Trial ordinary fee attribution only; no issuance or merge-root acceptance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeSiblingFeeTrialV3 {
+    pub order_digest: String,
+    pub accepted: Vec<(BlockId, String)>,
+    pub skipped: Vec<(BlockId, String)>,
+    pub fees_by_block: BTreeMap<BlockId, u64>,
+    pub total_fees: u64,
+}
+
+/// Restricted experiment: all direct parents are siblings of the same linear
+/// prefix, each has at most one ordinary transfer, and the merge itself has
+/// none. Independently verify every parent before applying first-in-GD08-order
+/// conflict selection. All siblings (including reds) participate in THIS
+/// trial; this is not an approved GD08 color, reward or finality policy.
+/// A losing transaction consumes no inputs and earns no fees. Never use this
+/// result as monetary admission or as a verified merge UTXO root.
+pub fn inspect_dormant_native_sibling_fee_trial(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    candidate: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    cadence: &[MonetaryCadenceSegment],
+    trial_k: usize,
+) -> Result<DormantNativeSiblingFeeTrialV3, PulseError> {
+    let verified = inspect_dormant_native_merge_parent_linear_trials(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        candidate,
+        envelopes,
+        cadence,
+        trial_k,
+    )?;
+    let merge = &envelopes[candidate];
+    if merge.transactions.len() != 1 {
+        return Err(invalid("merge transfers outside sibling fee trial"));
+    }
+    let mut common_parent = None;
+    for hash in &merge.header.parents {
+        let sibling = &envelopes[hash];
+        if sibling.header.parents.len() != 1 || sibling.transactions.len() > 2 {
+            return Err(invalid("unsupported sibling fee trial shape"));
+        }
+        let parent = &sibling.header.parents[0];
+        if common_parent.is_some_and(|previous| previous != parent) {
+            return Err(invalid("siblings must share one verified parent"));
+        }
+        common_parent = Some(parent);
+    }
+
+    // Each sibling's only ordinary transfer has already been verified against
+    // the identical mature opening view of that common parent. No sibling
+    // output, new reward or end-of-score maturity can fund another transfer
+    // in this restricted experiment.
+    let mut accepted = Vec::new();
+    let mut skipped = Vec::new();
+    let mut consumed = BTreeSet::new();
+    let mut txids = BTreeSet::new();
+    let mut fees_by_block = BTreeMap::new();
+    let mut total_fees = 0_u64;
+    for hash in &verified.ordered_blocks {
+        if !verified.parent_reports.contains_key(hash) {
+            continue;
+        }
+        let mut fee = 0;
+        if let Some(tx) = envelopes[hash].transactions.get(1) {
+            if txids.contains(&tx.txid)
+                || tx
+                    .inputs
+                    .iter()
+                    .any(|input| consumed.contains(&input.previous_output))
+            {
+                skipped.push((hash.clone(), tx.txid.clone()));
+            } else {
+                consumed.extend(tx.inputs.iter().map(|input| input.previous_output.clone()));
+                txids.insert(tx.txid.clone());
+                accepted.push((hash.clone(), tx.txid.clone()));
+                fee = tx.fee;
+                total_fees = total_fees
+                    .checked_add(fee)
+                    .ok_or_else(|| invalid("sibling trial fee overflow"))?;
+            }
+        }
+        fees_by_block.insert(hash.clone(), fee);
+    }
+    Ok(DormantNativeSiblingFeeTrialV3 {
+        order_digest: verified.order_digest,
+        accepted,
+        skipped,
+        fees_by_block,
+        total_fees,
     })
 }
 
@@ -762,6 +860,23 @@ mod tests {
                 branch.spendable_atoms + branch.pending_reward_atoms
             );
         }
+        let fees = inspect_dormant_native_sibling_fee_trial(
+            CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
+        )
+        .unwrap();
+        let first = report
+            .ordered_blocks
+            .iter()
+            .find(|hash| report.parent_reports.contains_key(*hash))
+            .unwrap();
+        assert_eq!(fees.accepted.len(), 1);
+        assert_eq!(&fees.accepted[0].0, first);
+        assert_eq!(fees.accepted[0].1, corpus[first].transactions[1].txid);
+        assert_eq!(fees.skipped.len(), 1);
+        assert_eq!(fees.total_fees, 1);
+        assert_eq!(fees.fees_by_block[first], 1);
+        assert_eq!(fees.fees_by_block[&fees.skipped[0].0], 0);
+        assert_eq!(fees.order_digest, report.order_digest);
         assert_ne!(
             report.parent_reports[&a.hash].state_root,
             report.parent_reports[&b.hash].state_root
@@ -798,6 +913,20 @@ mod tests {
         )
         .unwrap();
         assert!(repeated_report.competing_spends.is_empty());
+        let duplicate_fees = inspect_dormant_native_sibling_fee_trial(
+            CHAIN,
+            NS,
+            &g,
+            &duplicate_join.hash,
+            &repeated,
+            &CADENCE,
+            0,
+        )
+        .unwrap();
+        assert_eq!(duplicate_fees.accepted.len(), 1);
+        assert_eq!(duplicate_fees.skipped.len(), 1);
+        assert_eq!(duplicate_fees.accepted[0].1, duplicate_fees.skipped[0].1);
+        assert_eq!(duplicate_fees.total_fees, 1);
         let forged = mine(&b2.hash, 3, &owner, "ff".repeat(32), vec![spend_b]);
         let bad_join = mine_with_parents(
             vec![a.hash.clone(), forged.hash.clone()],
