@@ -62,6 +62,53 @@ fn insert_coin(state: &mut UtxoState, coin: Utxo) -> Result<(), PulseError> {
     Ok(())
 }
 
+fn apply_verified_transfer(
+    state: &mut UtxoState,
+    created: &mut BTreeSet<OutPoint>,
+    tx: &crate::types::Transaction,
+    chain_id: &str,
+    height: u64,
+) -> Result<(), PulseError> {
+    let mut view = BTreeMap::new();
+    for input in &tx.inputs {
+        let coin = state
+            .utxos
+            .get(&input.previous_output)
+            .ok_or_else(|| invalid("missing, spent or immature input"))?;
+        view.insert(input.previous_output.clone(), coin.clone());
+    }
+    verify_full_signed_spend(tx, chain_id, &view)?;
+    for input in &tx.inputs {
+        let coin = state
+            .utxos
+            .remove(&input.previous_output)
+            .ok_or_else(|| invalid("duplicate input"))?;
+        if let Some(index) = state.address_index.get_mut(&coin.address) {
+            index.retain(|outpoint| outpoint != &coin.outpoint);
+        }
+    }
+    for (i, output) in tx.outputs.iter().enumerate() {
+        let outpoint = OutPoint {
+            txid: tx.txid.clone(),
+            index: u32::try_from(i).map_err(|_| invalid("output index overflow"))?,
+        };
+        if !created.insert(outpoint.clone()) {
+            return Err(invalid("repeated output history"));
+        }
+        insert_coin(
+            state,
+            Utxo {
+                outpoint,
+                address: output.address.clone(),
+                amount: output.amount,
+                coinbase: false,
+                height,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// Rebuild from the full pinned genesis; no caller-supplied balances.
 /// Outputs are diagnostics only. Reject any unsupported nonlinear history,
 /// missing/immature input, duplicate spend, bad signature or root mismatch.
@@ -75,6 +122,31 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
     cadence: &[MonetaryCadenceSegment],
 ) -> Result<DormantNativeLinearMonetaryReportV3, PulseError> {
+    Ok(replay_linear_state(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        envelopes,
+        cadence,
+    )?
+    .report)
+}
+
+struct LinearReplayState {
+    report: DormantNativeLinearMonetaryReportV3,
+    state: UtxoState,
+    created: BTreeSet<OutPoint>,
+}
+
+fn replay_linear_state(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    tip: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    cadence: &[MonetaryCadenceSegment],
+) -> Result<LinearReplayState, PulseError> {
     if envelopes.is_empty() || envelopes.len() > MAX_TRIAL_BLOCKS {
         return Err(invalid("unsupported bounded prefix length"));
     }
@@ -146,43 +218,7 @@ pub fn inspect_dormant_native_linear_monetary_trial(
             .map_err(|e| invalid(e.to_string()))?;
         let mut fees = 0_u64;
         for tx in block.transactions.iter().skip(1) {
-            let mut view = BTreeMap::new();
-            for input in &tx.inputs {
-                let coin = state
-                    .utxos
-                    .get(&input.previous_output)
-                    .ok_or_else(|| invalid("missing, spent or immature input"))?;
-                view.insert(input.previous_output.clone(), coin.clone());
-            }
-            verify_full_signed_spend(tx, chain_id, &view)?;
-            for input in &tx.inputs {
-                let coin = state
-                    .utxos
-                    .remove(&input.previous_output)
-                    .ok_or_else(|| invalid("duplicate input"))?;
-                if let Some(index) = state.address_index.get_mut(&coin.address) {
-                    index.retain(|outpoint| outpoint != &coin.outpoint);
-                }
-            }
-            for (i, output) in tx.outputs.iter().enumerate() {
-                let outpoint = OutPoint {
-                    txid: tx.txid.clone(),
-                    index: u32::try_from(i).map_err(|_| invalid("output index overflow"))?,
-                };
-                if !created.insert(outpoint.clone()) {
-                    return Err(invalid("repeated output history"));
-                }
-                insert_coin(
-                    &mut state,
-                    Utxo {
-                        outpoint,
-                        address: output.address.clone(),
-                        amount: output.amount,
-                        coinbase: false,
-                        height: block.header.height,
-                    },
-                )?;
-            }
+            apply_verified_transfer(&mut state, &mut created, tx, chain_id, block.header.height)?;
             fees = fees
                 .checked_add(tx.fee)
                 .ok_or_else(|| invalid("fee overflow"))?;
@@ -244,7 +280,7 @@ pub fn inspect_dormant_native_linear_monetary_trial(
     }
     let pending_reward_atoms = pending.iter().map(|(_, coin)| coin.amount).sum();
     let spendable_atoms = state.utxos.values().map(|coin| coin.amount).sum();
-    Ok(DormantNativeLinearMonetaryReportV3 {
+    let report = DormantNativeLinearMonetaryReportV3 {
         order_digest: order.digest,
         cadence_fingerprint,
         state_root: state.compute_state_root()?,
@@ -254,6 +290,11 @@ pub fn inspect_dormant_native_linear_monetary_trial(
         spendable_atoms,
         mature_rewards,
         applied_transfers,
+    };
+    Ok(LinearReplayState {
+        report,
+        state,
+        created,
     })
 }
 
@@ -389,6 +430,11 @@ pub struct DormantNativeSiblingFeeTrialV3 {
     pub skipped: Vec<(BlockId, String)>,
     pub fees_by_block: BTreeMap<BlockId, u64>,
     pub total_fees: u64,
+    pub opening_state_root: String,
+    pub ordinary_only_state_root: String,
+    pub opening_spendable_atoms: u64,
+    pub remaining_spendable_atoms: u64,
+    pub unchanged_pending_reward_atoms: u64,
 }
 
 /// Restricted experiment: all direct parents are siblings of the same linear
@@ -433,6 +479,21 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         common_parent = Some(parent);
     }
 
+    let common_parent = common_parent.ok_or_else(|| invalid("missing common parent"))?;
+    let prefix = envelopes
+        .iter()
+        .filter(|(hash, _)| *hash != candidate && !verified.parent_reports.contains_key(*hash))
+        .map(|(hash, body)| (hash.clone(), body.clone()))
+        .collect();
+    let mut opening = replay_linear_state(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        common_parent,
+        &prefix,
+        cadence,
+    )?;
+
     // Each sibling's only ordinary transfer has already been verified against
     // the identical mature opening view of that common parent. No sibling
     // output, new reward or end-of-score maturity can fund another transfer
@@ -457,6 +518,13 @@ pub fn inspect_dormant_native_sibling_fee_trial(
             {
                 skipped.push((hash.clone(), tx.txid.clone()));
             } else {
+                apply_verified_transfer(
+                    &mut opening.state,
+                    &mut opening.created,
+                    tx,
+                    chain_id,
+                    envelopes[hash].header.height,
+                )?;
                 consumed.extend(tx.inputs.iter().map(|input| input.previous_output.clone()));
                 txids.insert(tx.txid.clone());
                 accepted.push((hash.clone(), tx.txid.clone()));
@@ -468,12 +536,24 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         }
         fees_by_block.insert(hash.clone(), fee);
     }
+    let remaining_spendable_atoms = opening.state.utxos.values().try_fold(0_u64, |sum, coin| {
+        sum.checked_add(coin.amount)
+            .ok_or_else(|| invalid("ordinary trial balance overflow"))
+    })?;
+    if remaining_spendable_atoms.checked_add(total_fees) != Some(opening.report.spendable_atoms) {
+        return Err(invalid("ordinary trial spendable value plus fees mismatch"));
+    }
     Ok(DormantNativeSiblingFeeTrialV3 {
         order_digest: verified.order_digest,
         accepted,
         skipped,
         fees_by_block,
         total_fees,
+        opening_state_root: opening.report.state_root,
+        ordinary_only_state_root: opening.state.compute_state_root()?,
+        opening_spendable_atoms: opening.report.spendable_atoms,
+        remaining_spendable_atoms,
+        unchanged_pending_reward_atoms: opening.report.pending_reward_atoms,
     })
 }
 
@@ -874,6 +954,33 @@ mod tests {
         assert_eq!(fees.accepted[0].1, corpus[first].transactions[1].txid);
         assert_eq!(fees.skipped.len(), 1);
         assert_eq!(fees.total_fees, 1);
+        assert_eq!(fees.opening_state_root, b2.header.state_root);
+        assert_eq!(fees.opening_spendable_atoms, subsidy);
+        assert_eq!(fees.remaining_spendable_atoms, subsidy - 1);
+        assert_eq!(
+            fees.unchanged_pending_reward_atoms,
+            subsidy_atoms_for_score(2, &CADENCE).unwrap()
+        );
+        let winner = &corpus[first].transactions[1];
+        let mut ordinary = UtxoState::default();
+        insert_coin(
+            &mut ordinary,
+            Utxo {
+                outpoint: OutPoint {
+                    txid: winner.txid.clone(),
+                    index: 0,
+                },
+                address: winner.outputs[0].address.clone(),
+                amount: subsidy - 1,
+                coinbase: false,
+                height: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fees.ordinary_only_state_root,
+            ordinary.compute_state_root().unwrap()
+        );
         assert_eq!(fees.fees_by_block[first], 1);
         assert_eq!(fees.fees_by_block[&fees.skipped[0].0], 0);
         assert_eq!(fees.order_digest, report.order_digest);
