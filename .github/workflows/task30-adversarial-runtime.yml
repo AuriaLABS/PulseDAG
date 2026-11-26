@@ -20,6 +20,7 @@ on:
       - scripts/lib/patch_task30_runtime_topology.py
       - scripts/lib/patch_task30_v24_runtime_compat.py
       - scripts/lib/test_task30_candidate_lock_wasm.py
+      - scripts/lib/test_task30_tx_topic_accounting.py
       - Cargo.lock
       - apps/pulsedagd/src/**
       - crates/pulsedag-p2p/**
@@ -48,6 +49,7 @@ on:
       - scripts/lib/patch_task30_runtime_topology.py
       - scripts/lib/patch_task30_v24_runtime_compat.py
       - scripts/lib/test_task30_candidate_lock_wasm.py
+      - scripts/lib/test_task30_tx_topic_accounting.py
       - Cargo.lock
       - apps/pulsedagd/src/**
       - crates/pulsedag-p2p/**
@@ -99,8 +101,10 @@ jobs:
             scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
             scripts/lib/patch_task30_runtime_topology.py \
             scripts/lib/patch_task30_v24_runtime_compat.py \
-            scripts/lib/test_task30_candidate_lock_wasm.py
+            scripts/lib/test_task30_candidate_lock_wasm.py \
+            scripts/lib/test_task30_tx_topic_accounting.py
           python3 -m unittest discover -v -s scripts/lib -p 'test_task30_candidate_lock_wasm.py'
+          python3 -m unittest discover -v -s scripts/lib -p 'test_task30_tx_topic_accounting.py'
           # Offline/internal harness regression: invalid interim P2P samples
           # must retry within bounded deadline, never bypass convergence.
           python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py -v

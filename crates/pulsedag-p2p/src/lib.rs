@@ -575,6 +575,9 @@ pub struct P2pStatus {
     pub runtime_mode_detail: String,
     pub swarm_events_seen: usize,
     pub subscriptions_active: usize,
+    pub remote_sync_subscribed_peer_ids: Vec<String>,
+    pub remote_sync_subscription_events_total: u64,
+    pub remote_sync_unsubscription_events_total: u64,
     pub last_message_kind: Option<String>,
     pub last_swarm_event: Option<String>,
     pub per_topic_publishes: HashMap<String, usize>,
@@ -1236,6 +1239,9 @@ struct InnerState {
     runtime_mode_detail: String,
     swarm_events_seen: usize,
     subscriptions_active: usize,
+    remote_sync_subscribed_peers: HashSet<String>,
+    remote_sync_subscription_events_total: u64,
+    remote_sync_unsubscription_events_total: u64,
     last_message_kind: Option<String>,
     last_swarm_event: Option<String>,
     per_topic_publishes: HashMap<String, usize>,
@@ -1988,6 +1994,9 @@ impl P2pHandle for MemoryP2pHandle {
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
             subscriptions_active: inner.subscriptions_active,
+            remote_sync_subscribed_peer_ids: remote_sync_subscribed_peers_snapshot(&inner),
+            remote_sync_subscription_events_total: inner.remote_sync_subscription_events_total,
+            remote_sync_unsubscription_events_total: inner.remote_sync_unsubscription_events_total,
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
@@ -2388,6 +2397,34 @@ fn current_tip_inventory_for_send(
             .or_insert(0) += 1;
     }
     inventory
+}
+
+// A bounded periodic GetTips request must not reuse byte-identical gossip
+// payloads for minutes after a real peer reconnects. Only re-observe the
+// *existing* local selected tip with a fresh timestamp; never fabricate a
+// different tip/height/work or rewrite the persisted inventory generation.
+// This helper is diagnostic P2P discovery, NOT native-v3 block admission.
+fn periodic_authenticated_get_tips_inventory(
+    state: &mut InnerState,
+    chain_id: &str,
+    now: u64,
+) -> Option<TipInventoryStatus> {
+    let mut inventory = current_tip_inventory(state, chain_id)?;
+    // Do not publish an empty/malformed inventory as fresh recovery evidence.
+    // No canonical selected tip/height exists in an uninitialized node.
+    if inventory.selected_tip.as_deref().is_none_or(str::is_empty)
+        || inventory.selected_height.is_none()
+        || !valid_tip_inventory_shape(&inventory)
+        || now <= inventory.observed_at_unix
+    {
+        return None;
+    }
+    inventory.observed_at_unix = now;
+    *state
+        .local_tip_inventory_sent_total
+        .entry("GetTips".to_string())
+        .or_insert(0) += 1;
+    Some(inventory)
 }
 
 fn valid_tip_inventory_shape(inventory: &TipInventoryStatus) -> bool {
@@ -6848,6 +6885,78 @@ fn should_retry_get_tips_on_remote_sync_subscription_v1(
         && remote_topic == format!("{chain_id}-sync")
 }
 
+/// Count only actual authenticated remote subscription events for this chain's
+/// Gossipsub sync topic. A local subscription (subscriptions_active == 3)
+/// does NOT prove there is an eligible remote subscriber or a healthy mesh.
+/// Never use these observations to override the separate direct Noise hard gate.
+fn record_remote_sync_subscription(
+    state: &mut InnerState,
+    peer_id: &PeerId,
+    topic: &str,
+    subscribed: bool,
+    authenticated_connected: bool,
+) -> bool {
+    if !authenticated_connected
+        || !mode_connected_peers_are_real_network(&state.mode)
+        || topic != format!("{}-sync", state.chain_id)
+    {
+        return false;
+    }
+    if subscribed {
+        // Observability is bounded and never grants routing privileges.
+        if state.remote_sync_subscribed_peers.len() >= 1024 {
+            return false;
+        }
+        if state
+            .remote_sync_subscribed_peers
+            .insert(peer_id.to_string())
+        {
+            state.remote_sync_subscription_events_total = state
+                .remote_sync_subscription_events_total
+                .saturating_add(1);
+            return true;
+        }
+    } else if state
+        .remote_sync_subscribed_peers
+        .remove(&peer_id.to_string())
+    {
+        state.remote_sync_unsubscription_events_total = state
+            .remote_sync_unsubscription_events_total
+            .saturating_add(1);
+        return true;
+    }
+    false
+}
+
+fn forget_remote_sync_subscription_on_final_disconnect(
+    state: &mut InnerState,
+    peer_id: &PeerId,
+) -> bool {
+    state
+        .remote_sync_subscribed_peers
+        .remove(&peer_id.to_string())
+}
+
+fn remote_sync_subscribed_peers_snapshot(state: &InnerState) -> Vec<String> {
+    let mut peers = state
+        .remote_sync_subscribed_peers
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    peers.sort_unstable();
+    peers
+}
+
+// Unlike the one-shot delivery tracker, this authorization follows the
+// authenticated subscription event, NOT successful publication. Otherwise
+// transient Gossipsub congestion permanently disables periodic repair.
+fn authenticated_periodic_tip_refresh_allowed<F: Fn(&String) -> bool>(
+    observed_subscriptions: &HashSet<String>,
+    connected: F,
+) -> bool {
+    observed_subscriptions.iter().any(connected)
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -6998,6 +7107,9 @@ async fn run_libp2p_real_runtime(
     let mut bootnode_redial_backoff_secs: HashMap<PeerId, u64> = HashMap::new();
     let mut bootnode_redial_tick = tokio::time::interval(Duration::from_secs(3));
     bootnode_redial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Bounded refresh from observed authenticated subscribers, independent of prior publish success.
+    let mut authenticated_tip_refresh_tick = tokio::time::interval(Duration::from_secs(15));
+    authenticated_tip_refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -7501,6 +7613,12 @@ async fn run_libp2p_real_runtime(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                        if let Ok(mut state) = inner.lock() {
+                            record_remote_sync_subscription(
+                                &mut state, &peer_id, topic.as_str(), true,
+                                swarm.is_connected(&peer_id),
+                            );
+                        }
                         // GetTips sent immediately on ConnectionEstablished can be
                         // rejected before remote Gossipsub has advertised the
                         // chain's -sync topic. Retry ONCE per authenticated
@@ -7554,6 +7672,14 @@ async fn run_libp2p_real_runtime(
                                     );
                                 }
                             }
+                        }
+                    }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
+                        if let Ok(mut state) = inner.lock() {
+                            record_remote_sync_subscription(
+                                &mut state, &peer_id, topic.as_str(), false,
+                                swarm.is_connected(&peer_id),
+                            );
                         }
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, message, .. })) => {
@@ -7732,6 +7858,9 @@ async fn run_libp2p_real_runtime(
                         );
                         if should_mark_disconnected {
                             tips_refreshed_after_remote_sync_subscription.remove(&peer_id);
+                            if let Ok(mut state) = inner.lock() {
+                                forget_remote_sync_subscription_on_final_disconnect(&mut state, &peer_id);
+                            }
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
@@ -7786,6 +7915,57 @@ async fn run_libp2p_real_runtime(
                             }
                         }
                         note_swarm_event(&inner, format!("swarm:{other:?}"));
+                    }
+                }
+            }
+            _ = authenticated_tip_refresh_tick.tick() => {
+                // An authenticated Noise connection alone is insufficient.
+                // Publish ONLY while at least one connected remote peer has
+                // advertised its actual Gossipsub -sync topic subscription.
+                let allowed = inner.lock().ok().is_some_and(|state| {
+                    authenticated_periodic_tip_refresh_allowed(
+                        &state.remote_sync_subscribed_peers,
+                        |peer| peer.parse::<PeerId>().is_ok_and(|id| swarm.is_connected(&id)),
+                    )
+                });
+                if allowed {
+                    let inventory = inner.lock().ok().and_then(|mut guard| {
+                        periodic_authenticated_get_tips_inventory(
+                            &mut guard,
+                            &cfg.chain_id,
+                            now_unix(),
+                        )
+                    });
+                    if let Some(inventory) = inventory {
+                        match encode_network_message_for_transport(
+                            &inner,
+                            &NetworkMessage::GetTips {
+                                chain_id: cfg.chain_id.clone(),
+                                inventory: Some(inventory),
+                            },
+                        ) {
+                            Ok(bytes) => {
+                                let topic = gossipsub::IdentTopic::new(
+                                    format!("{}-sync", cfg.chain_id),
+                                );
+                                match swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                    Ok(_) => note_swarm_event(
+                                        &inner,
+                                        "authenticated-periodic-gettips-published",
+                                    ),
+                                    Err(error) => note_swarm_event(
+                                        &inner,
+                                        format!("authenticated-periodic-gettips-publish-failed:{error}"),
+                                    ),
+                                }
+                            }
+                            Err(error) => note_swarm_event(
+                                &inner,
+                                format!("authenticated-periodic-gettips-encode-failed:{error}"),
+                            ),
+                        }
+                    } else {
+                        note_swarm_event(&inner, "authenticated-periodic-gettips-no-fresh-inventory");
                     }
                 }
             }
@@ -8636,6 +8816,9 @@ impl P2pHandle for Libp2pHandle {
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
             swarm_events_seen: inner.swarm_events_seen,
             subscriptions_active: inner.subscriptions_active,
+            remote_sync_subscribed_peer_ids: remote_sync_subscribed_peers_snapshot(&inner),
+            remote_sync_subscription_events_total: inner.remote_sync_subscription_events_total,
+            remote_sync_unsubscription_events_total: inner.remote_sync_unsubscription_events_total,
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
@@ -14757,5 +14940,231 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
         assert_eq!(guard.peer_addressed_getblock_local_sequence, 0);
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 1);
         assert!(guard.outstanding_getblock_requests.is_empty());
+    }
+
+    #[test]
+    fn actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count() {
+        let chain = "sync-subscription-observations";
+        let sync_topic = format!("{chain}-sync");
+        let other_topic = format!("{chain}-blocks");
+        let alice = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let bob = PeerId::from(identity::Keypair::generate_ed25519().public());
+        let mut state = InnerState {
+            chain_id: chain.to_string(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            subscriptions_active: 3,
+            ..InnerState::default()
+        };
+        assert_eq!(state.subscriptions_active, 3);
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
+            false,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &other_topic,
+            true,
+            true,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            "different-chain-sync",
+            true,
+            true,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert!(record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
+            true,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
+            true,
+        ));
+        assert!(record_remote_sync_subscription(
+            &mut state,
+            &bob,
+            &sync_topic,
+            true,
+            true,
+        ));
+        assert_eq!(remote_sync_subscribed_peers_snapshot(&state).len(), 2,);
+        assert_eq!(state.remote_sync_subscription_events_total, 2);
+        assert_eq!(state.remote_sync_unsubscription_events_total, 0);
+        assert!(record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            false,
+            true,
+        ));
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            false,
+            true,
+        ));
+        assert_eq!(
+            remote_sync_subscribed_peers_snapshot(&state),
+            vec![bob.to_string()],
+        );
+        assert_eq!(state.remote_sync_unsubscription_events_total, 1);
+        assert!(forget_remote_sync_subscription_on_final_disconnect(
+            &mut state, &bob,
+        ));
+        assert!(!forget_remote_sync_subscription_on_final_disconnect(
+            &mut state, &bob,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert_eq!(state.subscriptions_active, 3);
+    }
+
+    #[test]
+    fn simulated_connections_never_claim_real_remote_gossipsub_subscribers() {
+        let mut state = InnerState {
+            chain_id: "simulation-domain".to_string(),
+            mode: P2P_MODE_MEMORY_SIMULATED.to_string(),
+            subscriptions_active: 3,
+            ..InnerState::default()
+        };
+        let remote = PeerId::from(identity::Keypair::generate_ed25519().public());
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &remote,
+            "simulation-domain-sync",
+            true,
+            true,
+        ));
+        assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
+        assert_eq!(state.remote_sync_subscription_events_total, 0);
+    }
+}
+
+#[cfg(test)]
+mod bounded_authenticated_tip_refresh_regressions {
+    use super::*;
+
+    #[test]
+    fn observed_auth_subscription_still_retries_after_initial_publish_failure() {
+        let peer = identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string();
+        let mut observed = HashSet::new();
+        let delivered_one_shot = HashSet::<String>::new();
+        assert!(!authenticated_periodic_tip_refresh_allowed(
+            &observed,
+            |_| true
+        ));
+        observed.insert(peer.clone());
+        assert!(
+            authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
+            "observed real subscription allows periodic retry despite failed initial publish"
+        );
+        assert!(!delivered_one_shot.contains(&peer));
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| false),
+            "transport disconnect must prevent periodic publish"
+        );
+        observed.remove(&peer);
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| true),
+            "Gossipsub unsubscribe must revoke periodic authorization"
+        );
+    }
+
+    #[test]
+    fn periodic_tip_request_reobserves_same_canonical_tip_without_rewriting_authority() {
+        let mut state = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
+        let original = TipInventoryStatus {
+            chain_id: state.chain_id.clone(),
+            selected_tip: Some("44".repeat(32)),
+            selected_height: Some(32),
+            selected_blue_score: Some(33),
+            ordered_dag_tip: Some("44".repeat(32)),
+            state_root_digest: Some("55".repeat(32)),
+            observed_at_unix: 1_800_000_000,
+            inventory_generation: 0,
+        };
+        next_local_tip_inventory(&mut state, original);
+        let frozen = state
+            .local_tip_inventory
+            .clone()
+            .expect("local selected tip");
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut state,
+                "first-native-v3-network",
+                frozen.observed_at_unix,
+            )
+            .is_none(),
+            "same-second replays are not fresh requests"
+        );
+        let published = periodic_authenticated_get_tips_inventory(
+            &mut state,
+            "first-native-v3-network",
+            frozen.observed_at_unix + 15,
+        )
+        .expect("bounded fresh tip request");
+        assert_eq!(published.selected_tip, frozen.selected_tip);
+        assert_eq!(published.selected_height, frozen.selected_height);
+        assert_eq!(published.inventory_generation, frozen.inventory_generation);
+        assert_eq!(published.observed_at_unix, frozen.observed_at_unix + 15);
+        assert_eq!(
+            state
+                .local_tip_inventory
+                .as_ref()
+                .expect("unchanged authority"),
+            &frozen,
+            "transport freshness must not change canonical tip generation"
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut InnerState::default(),
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "missing local tip must not produce fabricated network evidence"
+        );
+        let mut empty = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
+        let chain_id = empty.chain_id.clone();
+        next_local_tip_inventory(
+            &mut empty,
+            TipInventoryStatus {
+                chain_id,
+                observed_at_unix: frozen.observed_at_unix,
+                ..TipInventoryStatus::default()
+            },
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut empty,
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "existing inventory without a selected tip and height must fail closed"
+        );
+        assert!(!empty.local_tip_inventory_sent_total.contains_key("GetTips"));
     }
 }

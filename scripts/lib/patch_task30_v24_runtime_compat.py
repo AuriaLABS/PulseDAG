@@ -239,6 +239,59 @@ TXID="$(jq -r '.transaction.txid // empty' "$OUT_DIR/tx/submit-n1-body.json")"; 
 jq -e '.ok == true and .data.accepted == true' "$OUT_DIR/tx/submit-n1.json" >/dev/null || { fail "signed transaction was not accepted on n1"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"'''
     text = replace_once(text, old_initial, new_initial, "relay retired wallet RPC initial flow")
+    # The signed-relay Task30 drill must NOT count periodic GetTips/Tips
+    # as a conflicting transaction broadcast. Test only tx-topic publishes.
+    tx_counter_function = r'''task30_tx_topic_publishes() {
+  # Global publish_attempts counts GetTips and Tips too.
+  # Require exactly one valid -txs topic; do not hide missing evidence.
+  local snapshot="$1"
+  jq -er '
+    (.data.per_topic_publishes // error("missing per-topic publications"))
+    | if type == "object" then to_entries else error("invalid per-topic map") end
+    | [.[] | select(.key | endswith("-txs"))]
+    | if length == 1 then .[0].value else error("expected exactly one transaction topic") end
+    | if type == "number" and . >= 0 and floor == . then . else error("invalid transaction publish count") end
+  ' "$snapshot"
+}
+'''
+    text = replace_once(
+        text,
+        'dupe_counts="[]"; counter_deltas="[]"; publish_unchanged=true',
+        tx_counter_function + 'dupe_counts="[]"; counter_deltas="[]"; publish_unchanged=true',
+        "relay tx-topic scoped publish counter",
+    )
+    text = replace_once(
+        text,
+        'before_publish="$(jq -r \'.data.publish_attempts // 0\' "$before_file")"; after_publish="$(jq -r \'.data.publish_attempts // 0\' "$after_file")"',
+        'before_publish="$(task30_tx_topic_publishes "$before_file")"; after_publish="$(task30_tx_topic_publishes "$after_file")"',
+        "relay duplicate tx-topic-only publication evidence",
+    )
+    text = replace_once(
+        text,
+        'before_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/before_conflict/n${i}-p2p-status.json")"',
+        'before_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/before_conflict/n${i}-p2p-status.json")"',
+        "relay conflict tx-topic prior publication evidence",
+    )
+    text = replace_once(
+        text,
+        'after_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/after_conflict/n${i}-p2p-status.json")"',
+        'after_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/after_conflict/n${i}-p2p-status.json")"',
+        "relay conflict tx-topic after publication evidence",
+    )
+
+    text = replace_once(
+        text,
+        'before_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/before_stale/n${i}-p2p-status.json")"',
+        'before_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/before_stale/n${i}-p2p-status.json")"',
+        "relay stale confirmed tx-topic prior publication evidence",
+    )
+    text = replace_once(
+        text,
+        'after_publish="$(jq -r \'.data.publish_attempts // 0\' "$OUT_DIR/endpoints/after_stale/n${i}-p2p-status.json")"',
+        'after_publish="$(task30_tx_topic_publishes "$OUT_DIR/endpoints/after_stale/n${i}-p2p-status.json")"',
+        "relay stale confirmed tx-topic after publication evidence",
+    )
+
     old_dup = r'''DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }'''
     text = replace_once(text, old_dup, 'DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-body.json")"', "relay duplicate body source")
     old_conflict = r'''post_json "$(rpc_url 3)/wallet/new" '{}' "$OUT_DIR/tx/conflict-recipient-wallet.json"
