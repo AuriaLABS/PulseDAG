@@ -450,7 +450,10 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         let mut fee = 0;
         if let Some(tx) = envelopes[hash].transactions.get(1) {
             if txids.contains(&tx.txid)
-                || tx.inputs.iter().any(|input| consumed.contains(&input.previous_output))
+                || tx
+                    .inputs
+                    .iter()
+                    .any(|input| consumed.contains(&input.previous_output))
             {
                 skipped.push((hash.clone(), tx.txid.clone()));
             } else {
