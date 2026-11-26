@@ -15005,4 +15005,115 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
     }
 }
 
+#[cfg(test)]
+mod bounded_authenticated_tip_refresh_regressions {
+    use super::*;
 
+    #[test]
+    fn observed_auth_subscription_still_retries_after_initial_publish_failure() {
+        let peer = identity::Keypair::generate_ed25519().public().to_peer_id().to_string();
+        let mut observed = HashSet::new();
+        let delivered_one_shot = HashSet::<String>::new();
+        assert!(!authenticated_periodic_tip_refresh_allowed(
+            &observed,
+            |_| true
+        ));
+        observed.insert(peer.clone());
+        assert!(
+            authenticated_periodic_tip_refresh_allowed(&observed, |p| p == &peer),
+            "observed real subscription allows periodic retry despite failed initial publish"
+        );
+        assert!(!delivered_one_shot.contains(&peer));
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| false),
+            "transport disconnect must prevent periodic publish"
+        );
+        observed.remove(&peer);
+        assert!(
+            !authenticated_periodic_tip_refresh_allowed(&observed, |_| true),
+            "Gossipsub unsubscribe must revoke periodic authorization"
+        );
+    }
+
+    #[test]
+    fn periodic_tip_request_reobserves_same_canonical_tip_without_rewriting_authority() {
+        let mut state = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
+        let original = TipInventoryStatus {
+            chain_id: state.chain_id.clone(),
+            selected_tip: Some("44".repeat(32)),
+            selected_height: Some(32),
+            selected_blue_score: Some(33),
+            ordered_dag_tip: Some("44".repeat(32)),
+            state_root_digest: Some("55".repeat(32)),
+            observed_at_unix: 1_800_000_000,
+            inventory_generation: 0,
+        };
+        next_local_tip_inventory(&mut state, original);
+        let frozen = state
+            .local_tip_inventory
+            .clone()
+            .expect("local selected tip");
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut state,
+                "first-native-v3-network",
+                frozen.observed_at_unix,
+            )
+            .is_none(),
+            "same-second replays are not fresh requests"
+        );
+        let published = periodic_authenticated_get_tips_inventory(
+            &mut state,
+            "first-native-v3-network",
+            frozen.observed_at_unix + 15,
+        )
+        .expect("bounded fresh tip request");
+        assert_eq!(published.selected_tip, frozen.selected_tip);
+        assert_eq!(published.selected_height, frozen.selected_height);
+        assert_eq!(published.inventory_generation, frozen.inventory_generation);
+        assert_eq!(published.observed_at_unix, frozen.observed_at_unix + 15);
+        assert_eq!(
+            state
+                .local_tip_inventory
+                .as_ref()
+                .expect("unchanged authority"),
+            &frozen,
+            "transport freshness must not change canonical tip generation"
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut InnerState::default(),
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "missing local tip must not produce fabricated network evidence"
+        );
+        let mut empty = InnerState {
+            chain_id: "first-native-v3-network".into(),
+            ..InnerState::default()
+        };
+        let chain_id = empty.chain_id.clone();
+        next_local_tip_inventory(
+            &mut empty,
+            TipInventoryStatus {
+                chain_id,
+                observed_at_unix: frozen.observed_at_unix,
+                ..TipInventoryStatus::default()
+            },
+        );
+        assert!(
+            periodic_authenticated_get_tips_inventory(
+                &mut empty,
+                "first-native-v3-network",
+                frozen.observed_at_unix + 30,
+            )
+            .is_none(),
+            "existing inventory without a selected tip and height must fail closed"
+        );
+        assert!(!empty.local_tip_inventory_sent_total.contains_key("GetTips"));
+    }
+}
