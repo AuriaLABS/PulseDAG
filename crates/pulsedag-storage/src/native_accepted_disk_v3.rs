@@ -441,17 +441,19 @@ mod tests {
         db: &DB,
         genesis: &str,
         tip: &String,
-        corpus: &std::collections::BTreeMap<String, pulsedag_core::block_envelope_v3::BlockEnvelopeV3>,
+        corpus: &std::collections::BTreeMap<
+            String,
+            pulsedag_core::block_envelope_v3::BlockEnvelopeV3,
+        >,
         cadence: &[pulsedag_core::monetary_v3::MonetaryCadenceSegment],
     ) -> Result<(), String> {
         use pulsedag_core::native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial;
 
         const TIP_KEY: &[u8] = b"test_linear_tip";
         const CADENCE_KEY: &[u8] = b"test_linear_cadence";
-        let report = inspect_dormant_native_linear_monetary_trial(
-            CHAIN, NS, genesis, tip, corpus, cadence,
-        )
-        .map_err(|e| e.to_string())?;
+        let report =
+            inspect_dormant_native_linear_monetary_trial(CHAIN, NS, genesis, tip, corpus, cadence)
+                .map_err(|e| e.to_string())?;
         let body = corpus.get(tip).ok_or("missing trial tip")?;
         let generation = report.monetary_score;
         let meta = db.cf_handle(CF_META).ok_or("missing metadata")?;
@@ -501,9 +503,13 @@ mod tests {
                 return Err("trial append would overwrite an existing record".into());
             }
         }
-        let frame =
-            NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(body.clone(), CHAIN, NS, genesis)
-                .map_err(|e| e.to_string())?;
+        let frame = NativeV3EnvelopeRestoreRecordV1::from_verified_envelope(
+            body.clone(),
+            CHAIN,
+            NS,
+            genesis,
+        )
+        .map_err(|e| e.to_string())?;
         let mut batch = trial_batch_with_digest(
             db,
             &frame,
@@ -858,9 +864,7 @@ mod tests {
                     report.spendable_atoms + report.pending_reward_atoms
                 );
                 trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).unwrap();
-                assert!(
-                    trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err()
-                );
+                assert!(trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err());
                 let meta = db.cf_handle(CF_META).unwrap();
                 assert_eq!(
                     positive_generation(&db.get_cf(meta, GENERATION_KEY).unwrap().unwrap()),
