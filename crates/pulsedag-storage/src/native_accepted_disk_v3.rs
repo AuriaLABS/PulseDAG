@@ -901,9 +901,17 @@ mod tests {
             .is_none());
         drop(reader);
         for (generation, root, digest) in [
-            (3, frame.envelope().header.state_root.clone(), "a".repeat(64)),
+            (
+                3,
+                frame.envelope().header.state_root.clone(),
+                "a".repeat(64),
+            ),
             (4, "b".repeat(64), "a".repeat(64)),
-            (4, frame.envelope().header.state_root.clone(), "c".repeat(64)),
+            (
+                4,
+                frame.envelope().header.state_root.clone(),
+                "c".repeat(64),
+            ),
         ] {
             {
                 let db = open_test_writer(&db_path);
