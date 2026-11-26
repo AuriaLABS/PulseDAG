@@ -102,7 +102,7 @@ fn apply_verified_transfer(
                 address: output.address.clone(),
                 amount: output.amount,
                 coinbase: false,
-                height: height,
+                height,
             },
         )?;
     }
