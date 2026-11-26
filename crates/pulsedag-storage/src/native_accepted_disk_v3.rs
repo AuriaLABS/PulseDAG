@@ -499,7 +499,9 @@ mod tests {
                 )
                 .map_err(|e| e.to_string())?;
                 let body_cf = db.cf_handle(CF_BODIES).ok_or("missing body namespace")?;
-                let journal_cf = db.cf_handle(CF_JOURNAL).ok_or("missing journal namespace")?;
+                let journal_cf = db
+                    .cf_handle(CF_JOURNAL)
+                    .ok_or("missing journal namespace")?;
                 let raw_body = db
                     .get_cf(body_cf, parent.as_bytes())
                     .map_err(|e| e.to_string())?
@@ -916,7 +918,10 @@ mod tests {
                     let predecessor = &corpus[&parent].header.parents[0];
                     let journal_cf = db.cf_handle(CF_JOURNAL).unwrap();
                     let meta = db.cf_handle(CF_META).unwrap();
-                    let original = db.get_cf(journal_cf, predecessor.as_bytes()).unwrap().unwrap();
+                    let original = db
+                        .get_cf(journal_cf, predecessor.as_bytes())
+                        .unwrap()
+                        .unwrap();
                     let mut corrupt: NativeV3IndependentJournalV1 =
                         serde_json::from_slice(&original).unwrap();
                     corrupt.gd08_order_digest = "e".repeat(64);
@@ -939,7 +944,8 @@ mod tests {
                             .unwrap()
                             .is_none());
                     }
-                    db.put_cf(journal_cf, predecessor.as_bytes(), original).unwrap();
+                    db.put_cf(journal_cf, predecessor.as_bytes(), original)
+                        .unwrap();
                 }
                 trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).unwrap();
                 assert!(trial_append_verified_linear(&db, &g, &parent, &corpus, &cadence).is_err());
