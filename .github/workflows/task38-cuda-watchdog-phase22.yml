@@ -141,12 +141,18 @@ jobs:
           grep -q 'failed_opencl_worker_stays_quarantined_when_capability_probe_fails' apps/pulsedag-miner/src/opencl_backend.rs
           grep -q 'clEnqueueNDRangeKernel(kheavyhash) returned a null completion event' apps/pulsedag-miner/src/opencl_driver_launch.rs
           grep -q 'CL_TRUE' apps/pulsedag-miner/src/opencl_driver_launch.rs
-          ! grep -q 'cl_finish' apps/pulsedag-miner/src/opencl_driver_launch.rs
+          if grep -q 'cl_finish' apps/pulsedag-miner/src/opencl_driver_launch.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           grep -q 'LaunchExecution::TimedOut' apps/pulsedag-miner/src/cuda_driver_launch.rs
           grep -q 'LaunchExecution::FailedAfterSubmission' apps/pulsedag-miner/src/cuda_driver_launch.rs
           grep -q 'retain_library_for_process_lifetime' apps/pulsedag-miner/src/cuda_driver_launch.rs
           grep -q 'PULSEDAG_TEST_CUDA_UNLOAD_MARKER' apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
-          ! grep -q 'cu_ctx_synchronize' apps/pulsedag-miner/src/cuda_driver_launch.rs
+          if grep -q 'cu_ctx_synchronize' apps/pulsedag-miner/src/cuda_driver_launch.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           echo "cuda_watchdog_deadline_detection_software=PASS"
           echo "opencl_watchdog_deadline_detection_software=PASS"
           echo "cuda_timeout_context_teardown_path=PASS"

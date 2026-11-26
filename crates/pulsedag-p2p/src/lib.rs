@@ -487,6 +487,10 @@ pub struct RemoteSelectedTipStatus {
     pub ordered_dag_tip: Option<PulseHash>,
     pub state_root_digest: Option<String>,
     pub observed_at_unix: u64,
+    // Locally measured authenticated-message receipt, NEVER supplied by
+    // the remote inventory. Only this timestamp can authorize freshness.
+    #[serde(default)]
+    pub received_at_unix: u64,
     pub inventory_generation: u64,
     pub age_secs: u64,
     pub direct_request_capable: bool,
@@ -571,8 +575,6 @@ pub struct P2pStatus {
     pub runtime_mode_detail: String,
     pub swarm_events_seen: usize,
     pub subscriptions_active: usize,
-    /// Remote authenticated peers observed subscribing to THIS chain's sync
-    /// topic in the actual libp2p Gossipsub Swarm, not our local subscriptions.
     pub remote_sync_subscribed_peer_ids: Vec<String>,
     pub remote_sync_subscription_events_total: u64,
     pub remote_sync_unsubscription_events_total: u64,
@@ -1237,9 +1239,6 @@ struct InnerState {
     runtime_mode_detail: String,
     swarm_events_seen: usize,
     subscriptions_active: usize,
-    /// Remote sync-topic subscriptions delivered by the real Swarm.
-    /// This set is separate from the three locally subscribed topics and
-    /// from generic TCP/Noise connection accounting.
     remote_sync_subscribed_peers: HashSet<String>,
     remote_sync_subscription_events_total: u64,
     remote_sync_unsubscription_events_total: u64,
@@ -2492,6 +2491,7 @@ fn note_remote_tip_inventory(
                     ordered_dag_tip: inventory.ordered_dag_tip,
                     state_root_digest: inventory.state_root_digest,
                     observed_at_unix: inventory.observed_at_unix,
+                    received_at_unix: now,
                     inventory_generation: inventory.inventory_generation,
                     age_secs: now.saturating_sub(inventory.observed_at_unix),
                     direct_request_capable: connection_generation > 0,
@@ -2519,6 +2519,7 @@ fn remote_tip_inventory_snapshot(state: &mut InnerState) -> Vec<RemoteSelectedTi
         .map(|entry| {
             let mut status = entry.status.clone();
             status.age_secs = now_unix().saturating_sub(status.observed_at_unix);
+            status.received_at_unix = entry.last_seen_unix;
             status
         })
         .collect()
@@ -5085,6 +5086,19 @@ fn dispatch_network_message_with_transport_peer(
         }
     }
 
+    // Never dispatch unauthenticated legacy GetBlock/BlockData gossip as
+    // authoritative recovery traffic in a future direct-Noise-enabled mode.
+    // Keep inbound rate limiting above this guard for prefilter accounting.
+    if reject_legacy_getblock_gossip_when_direct_enabled(
+        DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED,
+        &msg,
+    ) {
+        if let Ok(mut guard) = inner.lock() {
+            guard.last_drop_reason = Some("direct_getblock_legacy_gossip_ingress_rejected".into());
+        }
+        return;
+    }
+
     match msg {
         NetworkMessage::NewTransaction {
             chain_id,
@@ -6458,6 +6472,32 @@ type DirectGetBlockSwarmBehaviourV1 = request_response::Behaviour<DirectGetBlock
 // before changing this value. It is not a public testnet launch flag.
 const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;
 
+// Testable independent transition policy. Production direct GetBlock remains OFF.
+// If explicitly enabled in the future, no legacy GetBlock gossip fallback.
+fn enforce_getblock_legacy_broadcast_policy(direct_requests_live: bool) -> Result<(), PulseError> {
+    if direct_requests_live {
+        return Err(PulseError::Internal(
+            "unauthorized legacy GetBlock gossip fallback while direct Noise recovery is enabled"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+// The direct Noise responder does not enter dispatch_network_message_with_transport_peer.
+// Once direct GetBlock is explicitly enabled, legacy Gossipsub GetBlock
+// requests AND BlockData responses cannot grant recovery authority.
+fn reject_legacy_getblock_gossip_when_direct_enabled(
+    direct_requests_live: bool,
+    message: &NetworkMessage,
+) -> bool {
+    direct_requests_live
+        && matches!(
+            message,
+            NetworkMessage::GetBlock { .. } | NetworkMessage::BlockData { .. }
+        )
+}
+
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -6802,6 +6842,20 @@ fn handle_outgoing_connection_error(
         == 0
 }
 
+/// A Noise connection alone is not evidence that its remote Gossipsub peer has
+/// subscribed to our chain's sync topic. A one-shot GetTips retry is allowed
+/// only for the matching authenticated remote subscription in this connection.
+fn should_retry_get_tips_on_remote_sync_subscription_v1(
+    chain_id: &str,
+    remote_topic: &str,
+    authenticated_connected: bool,
+    already_sent_for_connection: bool,
+) -> bool {
+    authenticated_connected
+        && !already_sent_for_connection
+        && remote_topic == format!("{chain_id}-sync")
+}
+
 /// Count only actual authenticated remote subscription events for this chain's
 /// Gossipsub sync topic. A local subscription (subscriptions_active == 3)
 /// does NOT prove there is an eligible remote subscriber or a healthy mesh.
@@ -6811,13 +6865,19 @@ fn record_remote_sync_subscription(
     peer_id: &PeerId,
     topic: &str,
     subscribed: bool,
+    authenticated_connected: bool,
 ) -> bool {
-    if !mode_connected_peers_are_real_network(&state.mode)
+    if !authenticated_connected
+        || !mode_connected_peers_are_real_network(&state.mode)
         || topic != format!("{}-sync", state.chain_id)
     {
         return false;
     }
     if subscribed {
+        // Observability is bounded and never grants routing privileges.
+        if state.remote_sync_subscribed_peers.len() >= 1024 {
+            return false;
+        }
         if state
             .remote_sync_subscribed_peers
             .insert(peer_id.to_string())
@@ -6967,6 +7027,10 @@ async fn run_libp2p_real_runtime(
     note_swarm_event(&inner, "swarm-real-started");
     note_swarm_event(&inner, format!("listen-attempt:{listen_addr}"));
     let mut pending_bootnode_dials: HashSet<PeerId> = HashSet::new();
+    // Only an actual Gossipsub remote topic subscription may close this
+    // bootstrap race; do not treat TCP/Noise connection as topic membership.
+    // Mark only after a successful publish, and clear on final disconnect.
+    let mut tips_refreshed_after_remote_sync_subscription: HashSet<PeerId> = HashSet::new();
     let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
     for (peer_id, addr) in &bootstrap_peers {
         if let Ok(mut guard) = inner.lock() {
@@ -7011,6 +7075,19 @@ async fn run_libp2p_real_runtime(
                 enqueue_outbound_message(&inner, &mut outbound_queue, msg);
                 drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
                 while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
+                    // Second fail-closed boundary: prohibit even direct queue
+                    // injection from reaching a Gossipsub serialization arm.
+                    if matches!(
+                        &msg,
+                        OutboundMessage::GetBlock(_) | OutboundMessage::BlockData { .. }
+                    ) && enforce_getblock_legacy_broadcast_policy(
+                            DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED,
+                        )
+                        .is_err()
+                    {
+                        note_swarm_event(&inner, "direct-getblock-legacy-broadcast-rejected");
+                        continue;
+                    }
                     let msg = match msg {
                         OutboundMessage::GetBlockFrom { peer_id, hash, request_id }
                             if DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED =>
@@ -7494,28 +7571,72 @@ async fn run_libp2p_real_runtime(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
-                        let changed = inner.lock().ok().is_some_and(|mut state| {
+                        if let Ok(mut state) = inner.lock() {
                             record_remote_sync_subscription(
                                 &mut state, &peer_id, topic.as_str(), true,
-                            )
-                        });
-                        if changed {
-                            note_swarm_event(
-                                &inner,
-                                format!("gossipsub-sync-remote-subscribed:{peer_id}"),
+                                swarm.is_connected(&peer_id),
                             );
+                        }
+                        // GetTips sent immediately on ConnectionEstablished can be
+                        // rejected before remote Gossipsub has advertised the
+                        // chain's -sync topic. Retry ONCE per authenticated
+                        // connection after its actual remote subscription.
+                        if should_retry_get_tips_on_remote_sync_subscription_v1(
+                            &cfg.chain_id,
+                            topic.as_str(),
+                            swarm.is_connected(&peer_id),
+                            tips_refreshed_after_remote_sync_subscription.contains(&peer_id),
+                        ) {
+                            let inventory = inner.lock().ok().and_then(|mut guard| {
+                                current_tip_inventory_for_send(
+                                    &mut guard,
+                                    &cfg.chain_id,
+                                    "GetTips",
+                                )
+                            });
+                            let wire = encode_network_message_for_transport(
+                                &inner,
+                                &NetworkMessage::GetTips {
+                                    chain_id: cfg.chain_id.clone(),
+                                    inventory,
+                                },
+                            );
+                            match wire {
+                                Ok(bytes) => {
+                                    let topic = gossipsub::IdentTopic::new(
+                                        format!("{}-sync", cfg.chain_id),
+                                    );
+                                    match swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                        Ok(_) => {
+                                            tips_refreshed_after_remote_sync_subscription
+                                                .insert(peer_id);
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("remote-sync-subscription-gettips-published:{peer_id}"),
+                                            );
+                                        }
+                                        Err(error) => {
+                                            note_swarm_event(
+                                                &inner,
+                                                format!("remote-sync-subscription-gettips-publish-failed:{peer_id}:{error}"),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    note_swarm_event(
+                                        &inner,
+                                        format!("remote-sync-subscription-gettips-encode-failed:{peer_id}:{error}"),
+                                    );
+                                }
+                            }
                         }
                     }
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
-                        let changed = inner.lock().ok().is_some_and(|mut state| {
+                        if let Ok(mut state) = inner.lock() {
                             record_remote_sync_subscription(
                                 &mut state, &peer_id, topic.as_str(), false,
-                            )
-                        });
-                        if changed {
-                            note_swarm_event(
-                                &inner,
-                                format!("gossipsub-sync-remote-unsubscribed:{peer_id}"),
+                                swarm.is_connected(&peer_id),
                             );
                         }
                     }
@@ -7671,7 +7792,12 @@ async fn run_libp2p_real_runtime(
                                 }),
                         }) {
                             note_swarm_event(&inner, format!("startup-tip-exchange:{peer_id}"));
-                            let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
+                            if let Err(error) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                                note_swarm_event(
+                                    &inner,
+                                    format!("startup-tip-exchange-publish-failed:{peer_id}:{error}"),
+                                );
+                            }
                         }
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
@@ -7689,18 +7815,14 @@ async fn run_libp2p_real_runtime(
                             direction,
                         );
                         if should_mark_disconnected {
+                            tips_refreshed_after_remote_sync_subscription.remove(&peer_id);
+                            if let Ok(mut state) = inner.lock() {
+                                forget_remote_sync_subscription_on_final_disconnect(&mut state, &peer_id);
+                            }
                             // Only the LAST authenticated connection may cancel
                             // the peer's request-response slots.
                             direct_getblock_bindings.last_connection_closed(&peer_id);
                             direct_getblock_response_channels.peer_disconnected(&peer_id);
-                            // A TCP/Noise connection can remain alive with zero
-                            // Gossipsub subscribers; conversely, stale subscriber
-                            // identity must not outlive the last connection.
-                            if let Ok(mut state) = inner.lock() {
-                                forget_remote_sync_subscription_on_final_disconnect(
-                                    &mut state, &peer_id,
-                                );
-                            }
                             let peer_key = peer_id.to_string();
                             register_peer_result(&inner, &peer_key, false);
                             let _ = inbound_tx.send(InboundEvent::PeerDisconnected(peer_key));
@@ -8291,6 +8413,9 @@ impl P2pHandle for Libp2pHandle {
     }
 
     fn request_block_broadcast(&self, hash: &PulseHash) -> Result<(), PulseError> {
+        // A direct Noise request must never silently degrade to gossip.
+        // Reject before queuing or incrementing request metrics.
+        enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED)?;
         self.queue_sync_message_required(
             OutboundMessage::GetBlock(hash.clone()),
             "get-block-broadcast",
@@ -14566,6 +14691,116 @@ mod peer_addressed_getblock_local_id_regressions {
         assert!(guard.outstanding_getblock_requests.contains_key(&id));
         assert_eq!(guard.peer_addressed_getblock_transport_error_total, 0);
     }
+}
+
+#[cfg(test)]
+mod authenticated_remote_subscription_get_tips_retry_regressions {
+    use super::should_retry_get_tips_on_remote_sync_subscription_v1;
+
+    #[test]
+    fn authenticated_remote_sync_subscription_retries_once_not_on_early_tcp_connect() {
+        assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            false,
+            false,
+        ));
+        assert!(should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            true,
+            false,
+        ));
+        assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+            "pulse-rejoin",
+            "pulse-rejoin-sync",
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn unrelated_topics_and_other_chains_cannot_trigger_sync_replay() {
+        for unrelated_topic in [
+            "pulse-rejoin-blocks",
+            "other-chain-sync",
+            "pulse-rejoin-sync-extra",
+            "",
+        ] {
+            assert!(!should_retry_get_tips_on_remote_sync_subscription_v1(
+                "pulse-rejoin",
+                unrelated_topic,
+                true,
+                false,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_no_legacy_broadcast_regressions {
+    use super::*;
+
+    #[test]
+    fn direct_mode_rejects_legacy_broadcast_before_queuing() {
+        assert!(enforce_getblock_legacy_broadcast_policy(false).is_ok());
+        assert!(matches!(
+            enforce_getblock_legacy_broadcast_policy(true),
+            Err(PulseError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn deployed_getblock_mode_remains_off() {
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+        assert!(
+            enforce_getblock_legacy_broadcast_policy(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED).is_ok()
+        );
+    }
+}
+
+#[cfg(test)]
+mod direct_getblock_no_legacy_gossip_ingress_regressions {
+    use super::*;
+
+    #[test]
+    fn future_direct_mode_rejects_both_legacy_request_and_response() {
+        let request = NetworkMessage::GetBlock {
+            chain_id: "testnet".into(),
+            hash: "block-hash".into(),
+            request_id: None,
+            requesting_peer_id: None,
+            requested_peer_id: None,
+            request_kind: Some("generic".into()),
+        };
+        let response = NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: None,
+            request_id: None,
+            request_hash: Some("block-hash".into()),
+        };
+        let unrelated = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec![],
+        };
+
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &request
+        ));
+        assert!(reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &request
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            false, &response
+        ));
+        assert!(!reject_legacy_getblock_gossip_when_direct_enabled(
+            true, &unrelated
+        ));
+        assert!(!std::hint::black_box(DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED));
+    }
 
     #[test]
     fn actual_remote_gossipsub_sync_subscriptions_do_not_equal_local_topic_count() {
@@ -14581,11 +14816,19 @@ mod peer_addressed_getblock_local_id_regressions {
             ..InnerState::default()
         };
         assert_eq!(state.subscriptions_active, 3);
+        assert!(!record_remote_sync_subscription(
+            &mut state,
+            &alice,
+            &sync_topic,
+            true,
+            false,
+        ));
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
         assert!(!record_remote_sync_subscription(
             &mut state,
             &alice,
             &other_topic,
+            true,
             true,
         ));
         assert!(!record_remote_sync_subscription(
@@ -14593,6 +14836,7 @@ mod peer_addressed_getblock_local_id_regressions {
             &alice,
             "different-chain-sync",
             true,
+            true,
         ));
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());
         assert!(record_remote_sync_subscription(
@@ -14600,17 +14844,20 @@ mod peer_addressed_getblock_local_id_regressions {
             &alice,
             &sync_topic,
             true,
+            true,
         ));
         assert!(!record_remote_sync_subscription(
             &mut state,
             &alice,
             &sync_topic,
             true,
+            true,
         ));
         assert!(record_remote_sync_subscription(
             &mut state,
             &bob,
             &sync_topic,
+            true,
             true,
         ));
         assert_eq!(remote_sync_subscribed_peers_snapshot(&state).len(), 2,);
@@ -14621,12 +14868,14 @@ mod peer_addressed_getblock_local_id_regressions {
             &alice,
             &sync_topic,
             false,
+            true,
         ));
         assert!(!record_remote_sync_subscription(
             &mut state,
             &alice,
             &sync_topic,
             false,
+            true,
         ));
         assert_eq!(
             remote_sync_subscribed_peers_snapshot(&state),
@@ -14656,6 +14905,7 @@ mod peer_addressed_getblock_local_id_regressions {
             &mut state,
             &remote,
             "simulation-domain-sync",
+            true,
             true,
         ));
         assert!(remote_sync_subscribed_peers_snapshot(&state).is_empty());

@@ -1,0 +1,43 @@
+name: "Native-v3 GD08 signed UTXO tip-root commitment trial (DORMANT)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"
+      - ".github/workflows/native-v3-gd08-signed-tip-root-trial.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  signed-tip-root-trial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce non-authoritative v3 gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_HEAD"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          ! grep -Fq 'inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial' apps/pulsedagd/src/main.rs
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact head Rustfmt
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Authenticated KHeavyHash tip rejects wrong state root then verifies signed UTXO replay
+        run: cargo +1.91.0 test --locked -p pulsedag-core --lib signed_tip_root_trial_rejects_placeholder_then_passes_matching_pow_commitment -- --nocapture
+      - name: Strict core Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
+      - name: No lockfile changes
+        run: git diff --exit-code -- Cargo.lock

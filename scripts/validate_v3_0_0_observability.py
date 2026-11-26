@@ -14,6 +14,8 @@ PACKAGE = ROOT / "ops/observability/v3.0.0"
 INVENTORY = PACKAGE / "metrics-inventory.json"
 DASHBOARD = PACKAGE / "grafana-dashboard.json"
 ALERTS = PACKAGE / "alert-rules.yml"
+OPERATIONS_ALERTS = PACKAGE / "alert-rules-operations.yml"
+HOST_METRICS = PACKAGE / "HOST_METRICS.md"
 PROMETHEUS = PACKAGE / "prometheus-scrape.example.yml"
 EXPORTER = ROOT / "scripts/private_testnet/runtime_metrics_exporter.py"
 ROUTES = ROOT / "crates/pulsedag-rpc/src/routes.rs"
@@ -217,12 +219,35 @@ def validate_alerts(validation: Validation, allowed_metrics: set[str]) -> None:
         validation.require((ROOT / runbook).is_file(), f"alert runbook exists: {runbook}")
 
 
+def validate_operations_alerts(validation: Validation, allowed_metrics: set[str]) -> None:
+    body = OPERATIONS_ALERTS.read_text(encoding="utf-8")
+    alerts = {match.group(1) for line in body.splitlines() if (match := ALERT_NAME.match(line))}
+    required = {
+        "PulseDAGSubmitFinalityUnknown",
+        "PulseDAGSharedStateLockStarvation",
+        "PulseDAGUnexpectedRestart",
+        "PulseDAGDiskPressure",
+    }
+    validation.require(required <= alerts, "mandatory host and process alerts exist")
+    expressions = [match.group(1) for line in body.splitlines() if (match := EXPR.match(line))]
+    runbooks = [match.group(1) for line in body.splitlines() if (match := RUNBOOK.match(line))]
+    validate_metric_references(validation, expressions, allowed_metrics, "operations alerts")
+    validation.require(len(runbooks) == len(alerts), "each operations alert has a runbook")
+    for runbook in runbooks:
+        validation.require((ROOT / runbook).is_file(), f"operations runbook exists: {runbook}")
+    for marker in ("node_filesystem_avail_bytes", "node_filesystem_size_bytes", "pulsedag_node_uptime_seconds"):
+        validation.require(marker in body, f"operations alerts include {marker}")
+        validation.require(marker in HOST_METRICS.read_text(encoding="utf-8"), f"host metrics contract includes {marker}")
+
+
 def validate_prometheus(validation: Validation) -> None:
     body = PROMETHEUS.read_text(encoding="utf-8")
     targets = {match.group(1) for line in body.splitlines() if (match := PROM_TARGET.match(line))}
     validation.require(len(targets) == 5, "Prometheus example contains exactly five unique exporter targets")
     validation.require("metrics_path: /metrics" in body, "Prometheus scrapes the exporter metrics path")
     validation.require("alert-rules.yml" in body, "Prometheus loads the versioned alert rules")
+    validation.require("alert-rules-operations.yml" in body, "Prometheus loads operations alerts")
+    validation.require("pulsedag-v3.0.0-host" in body and ":9100" in body, "Prometheus includes host exporter job")
     validation.require("private-testnet-v3.0.0" in body, "Prometheus labels the v3.0.0 private rehearsal network")
     validation.require("example.invalid" in body, "Prometheus example uses deliberately non-routable placeholders")
 
@@ -239,11 +264,11 @@ def validate_public_safe_routes(validation: Validation) -> None:
 def validate_exporter(validation: Validation) -> None:
     source = EXPORTER.read_text(encoding="utf-8")
     validation.require("SUPPORTED_RELEASE_LINES" in source, "exporter has an explicit release-line allowlist")
-    validation.require('"v3.0.0"' in source, "exporter accepts v3.0.0 inventories")
+    validation.require('SUPPORTED_RELEASE_LINES = {"v3.0.0"}' in source, "exporter accepts only v3.0.0 inventory identity")
 
 
 def validate_files(validation: Validation) -> None:
-    required = [INVENTORY, DASHBOARD, ALERTS, PROMETHEUS, EXPORTER, ROUTES]
+    required = [INVENTORY, DASHBOARD, ALERTS, OPERATIONS_ALERTS, HOST_METRICS, PROMETHEUS, EXPORTER, ROUTES]
     for path in required:
         validation.require(path.is_file(), f"required observability file exists: {path.relative_to(ROOT)}")
 
@@ -256,6 +281,7 @@ def main() -> int:
         metric_names = validate_inventory(validation, inventory)
         validate_dashboard(validation, metric_names)
         validate_alerts(validation, metric_names)
+        validate_operations_alerts(validation, metric_names)
         validate_prometheus(validation)
         validate_public_safe_routes(validation)
         validate_exporter(validation)

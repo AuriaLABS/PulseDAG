@@ -53,7 +53,7 @@ jobs:
               'zstd-sys': '2.1.2+zstd.1.5.7',
               'webpki-roots': '1.0.10',
               'rustls-webpki': '0.103.16',
-              'libz-sys': '1.1.31',
+              'libz-sys': '1.1.33',
           }
           for name, wanted in expected.items():
               if name == 'chacha20':

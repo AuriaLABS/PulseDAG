@@ -152,21 +152,18 @@ def main() -> int:
         failures,
     )
 
-    if version == "v2.4.0":
-        require_markers(
-            Path("docs/ROADMAP_V2_4_0.md"), ["v2.4.0"], failures
-        )
-        require_markers(
-            Path("docs/PROTOCOL_ACTIVATION_V2_4_0.md"),
-            ["v2.4.0", "ghostdag_v1"],
-            failures,
-        )
-    elif version == "v3.0.0":
-        require_markers(
-            Path("docs/ROADMAP_V3_0_0.md"),
-            ["v3.0.0", "ACTIVE v3.0.0 CANDIDATE ROADMAP", "contracts_enabled=false"],
-            failures,
-        )
+    if version != "v3.0.0":
+        failures.append(f"unsupported first-network candidate identity: {version}")
+    require_markers(
+        Path("docs/ROADMAP_V3_0_0.md"),
+        ["v3.0.0", "ACTIVE v3.0.0 CANDIDATE ROADMAP", "contracts_enabled=false"],
+        failures,
+    )
+    require_markers(
+        Path("docs/FIRST_NETWORK_BASELINE.md"),
+        ["no previously deployed network", "Contracts INACTIVE", "Mainnet NO-GO"],
+        failures,
+    )
 
     # Primary surfaces must not still identify a different release as current.
     for path in PRIMARY_ACTIVE_FILES:
@@ -199,10 +196,34 @@ def main() -> int:
                 failures.append(f"historical v2.2 workflow remains active: {path}")
 
     paths = tracked_files()
+    for path in paths:
+        if (
+            re.match(r"^docs/codex_tasks/v2_[234]_", path)
+            or path.startswith("scripts/archive/v2_2_history/")
+            or path in {
+                ".github/workflows/v2_3_0_netns_live_rehearsal.yml",
+                ".github/workflows/v2_3_0_node_lifecycle.yml",
+                ".github/workflows/v2_3_0_private_testnet_bootstrap.yml",
+                "configs/private-testnet/miner.env.example",
+                "configs/private-testnet/node.env.example",
+                "configs/private-testnet/seed.env.example",
+                "docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md",
+                "docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md",
+                "docs/release/V2_3_0_RELEASE_DECISION.md",
+                "scripts/LEGACY_COMPATIBILITY_V2_3_0.md",
+                "configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md",
+                "docs/release/V2_4_0_RELEASE_NOTES.md",
+                "docs/release/V2_4_0_KNOWN_LIMITATIONS.md",
+                "scripts/v2_2_17_rpc_security_smoke.sh",
+                "scripts/v2_2_19_rpc_security_smoke.sh",
+            }
+        ):
+            failures.append(f"retired prototype copy reintroduced: {path}")
+
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_SCRIPT_FAMILIES,
-        manifest_path=Path("scripts/LEGACY_COMPATIBILITY_V2_3_0.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy script/test",
         failures=failures,
         warnings=warnings,
@@ -210,7 +231,7 @@ def main() -> int:
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_CONFIG_FAMILIES,
-        manifest_path=Path("configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy private-testnet configuration",
         failures=failures,
         warnings=warnings,

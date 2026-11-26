@@ -123,7 +123,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+            --include-file docs/INSTALL_BINARIES.md
 
           miner_version="$("${miner_binary}" --version 2>&1)"
           printf '%s\n' "${miner_version}"
@@ -149,7 +149,7 @@ jobs:
             --run-attempt "${{ github.run_attempt }}" \
             "${miner_feature_args[@]}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+            --include-file docs/INSTALL_BINARIES.md
 
       - name: Enforce miner build-feature provenance
         shell: bash

@@ -1,5 +1,7 @@
 # PulseDAG v2.3.0 Multi-Host Private-Testnet Rehearsal
 
+> RETIRED PROTOTYPE PROCEDURE — not first-network operator guidance. Do not run the historical deployment commands. Use [the testnet-first launch runbook](V3_0_0_TESTNET_FIRST_LAUNCH.md). This document remains temporarily for development-harness provenance only.
+
 ## Purpose
 
 Run the final v2.3.0 private-testnet operations rehearsal against one exact candidate commit and produce a checksummed GO/NO-GO bundle. This procedure validates the Task 07 bootstrap contract, Task 09 lifecycle controller, Task 10 observability fields, Task 11 operating procedures, external mining, restart, partition, and rejoin as one coherent system.
@@ -159,7 +161,7 @@ After `NO-GO`, preserve evidence, restore networking, stabilize the nodes, and f
 
 ## Protected Actions execution
 
-`.github/workflows/v2_3_0_multi_host_rehearsal.yml` always runs the deterministic contract regression. The live job is manual, uses a protected self-hosted environment, and requires these environment secrets:
+The retired `v2_3_0_multi_host_rehearsal.yml` workflow previously ran deterministic regression and protected manual rehearsal jobs. It is no longer an active workflow; the following historical secret names are retained only for provenance:
 
 - `PULSEDAG_V2_3_0_REHEARSAL_INVENTORY_B64`;
 - `PULSEDAG_V2_3_0_REHEARSAL_SSH_KEY`;

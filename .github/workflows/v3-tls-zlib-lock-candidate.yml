@@ -49,7 +49,7 @@ jobs:
           wanted = {
               "webpki-roots": "1.0.10",
               "rustls-webpki": "0.103.16",
-              "libz-sys": "1.1.31",
+              "libz-sys": "1.1.33",
           }
           for name, version in wanted.items():
               assert versions.get(name) == {version}, (name, versions.get(name))

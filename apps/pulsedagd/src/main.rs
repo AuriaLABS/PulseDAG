@@ -6,6 +6,8 @@ mod compact_relay;
 mod config;
 mod direct_getblock_authority;
 mod fast_sync_bootstrap;
+#[allow(dead_code)]
+mod native_v3_accepted_getblock_authority;
 mod startup_protocol;
 
 use std::{

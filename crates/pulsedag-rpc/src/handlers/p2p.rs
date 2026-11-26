@@ -1,4 +1,9 @@
 use axum::{extract::State, Json};
+
+use super::canonical_sync::{
+    build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
+    CanonicalSyncState, REMOTE_SELECTED_TIP_MAX_AGE_SECS,
+};
 use pulsedag_p2p::{
     connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
     P2pStatus, PeerRecoveryStatus,
@@ -73,6 +78,7 @@ fn p2p_readiness_reasons(
     pending_missing_parents: usize,
     orphan_count: usize,
     best_height: u64,
+    canonical_sync: Option<&CanonicalSyncState>,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if !enabled {
@@ -117,7 +123,22 @@ fn p2p_readiness_reasons(
     if orphan_count > 0 {
         reasons.push(format!("{} orphan block(s) queued", orphan_count));
     }
-    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
+    // NEVER clear raw pipeline errors or non-synced runtime state merely
+    // because the canonical view has an empty local request queue. A failing
+    // monetary sidecar can stay invalid after all requests drain (#1465).
+    // The canonical view adds stricter gap/storage checks; it does NOT
+    // override the original fail-closed invariant.
+    if runtime.sync_pipeline.last_error.is_some()
+        || runtime.sync_state != "synced"
+        || canonical_sync.is_none_or(|sync| {
+            sync.live_sync_error_active > 0
+                || sync.sync_state != "synced"
+                || sync.catchup_stage != "steady"
+                || sync.storage_memory_mismatch
+                || sync.network_selected_tip_mismatch
+                || sync.network_selected_height_gap > 0
+        })
+    {
         reasons.push("sync pipeline reports degraded state".to_string());
     }
     reasons
@@ -135,6 +156,7 @@ fn disabled_p2p_payload(
         pending_missing_parents,
         orphan_count,
         0,
+        None,
     );
     let mut payload = serde_json::json!({
         "p2p_enabled": false,
@@ -813,6 +835,23 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 "compact_relay_controller".into(),
                 serde_json::json!(&runtime.compact_relay_controller),
             );
+            // Fail closed on unavailable persistence. Use exactly the count
+            // used by /sync/status for canonical replay consistency.
+            let persisted_block_count = match state.storage().block_count() {
+                Ok(count) => count,
+                Err(e) => {
+                    payload.insert("p2p_status_degraded".into(), serde_json::json!(true));
+                    payload.insert(
+                        "p2p_status_degraded_reason".into(),
+                        serde_json::json!(e.to_string()),
+                    );
+                    payload.insert(
+                        "readiness_reasons".into(),
+                        serde_json::json!(["storage unavailable during P2P readiness capture"]),
+                    );
+                    return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
+                }
+            };
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
@@ -834,14 +873,53 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 && pending_missing_parents > 0
                 && missing_parent_entry_count == 0
                 && missing_parent_index_entry_count == 0;
-            let readiness_reasons = p2p_readiness_reasons(
+            // Remote-supplied observed_at_unix may be arbitrarily future-dated.
+            // Only the P2P transport's LOCAL receipt time (authenticated
+            // sender, known connection) is trusted for staleness filtering.
+            let remote_evidence = remote_sync_evidence_from_p2p_status(Some(&status), now_unix)
+                .into_iter()
+                .filter_map(|mut evidence| {
+                    let received_at = status
+                        .remote_selected_tip_inventory
+                        .iter()
+                        .find(|tip| {
+                            tip.peer_id == evidence.peer_id
+                                && tip.chain_id == evidence.chain_id
+                                && tip.selected_height == evidence.selected_height
+                        })?
+                        .received_at_unix;
+                    if received_at == 0
+                        || received_at > now_unix
+                        || now_unix - received_at > REMOTE_SELECTED_TIP_MAX_AGE_SECS
+                    {
+                        return None;
+                    }
+                    evidence.observed_at_unix = received_at;
+                    Some(evidence)
+                })
+                .collect::<Vec<_>>();
+            let canonical_sync = build_canonical_sync_state_with_remote_evidence(
+                &chain,
+                &runtime,
+                persisted_block_count,
+                now_unix,
+                status.selected_sync_peer.clone(),
+                &remote_evidence,
+            );
+            let mut readiness_reasons = p2p_readiness_reasons(
                 true,
                 Some(&status),
                 &runtime,
                 pending_missing_parents,
                 orphan_count,
                 chain.dag.best_height,
+                Some(&canonical_sync),
             );
+            // Cached or degraded P2P observations cannot prove a peer is
+            // still connected, even when a signed tip was observed earlier.
+            if p2p_status_stale || p2p_status_degraded_reason.is_some() {
+                readiness_reasons.push("fresh P2P status unavailable".to_string());
+            }
             let isolated_genesis_node_total =
                 isolated_genesis_node_total(true, Some(&status), chain.dag.best_height);
             let bootnode_last_disconnect_reason = bootnode_last_disconnect_reason(&status);
@@ -987,7 +1065,17 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(missing_parent_index_mismatch),
             );
             payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
+            // Surface both views. Never label an unresolved runtime error
+            // "synced" just because local canonical queues look empty.
             payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
+            payload.insert(
+                "canonical_sync_state".into(),
+                serde_json::json!(&canonical_sync.sync_state),
+            );
+            payload.insert(
+                "canonical_network_selected_height_gap".into(),
+                serde_json::json!(canonical_sync.network_selected_height_gap),
+            );
             payload.insert(
                 "last_accepted_peer_block".into(),
                 serde_json::json!(runtime.last_accepted_peer_block),
@@ -1537,6 +1625,9 @@ mod tests {
             runtime_mode_detail: "in-process-dispatch".into(),
             swarm_events_seen: 9,
             subscriptions_active: 1,
+            remote_sync_subscribed_peer_ids: vec![],
+            remote_sync_subscription_events_total: 0,
+            remote_sync_unsubscription_events_total: 0,
             last_message_kind: Some("block".into()),
             last_swarm_event: Some("connection-established".into()),
             per_topic_publishes: HashMap::from([("blocks".into(), 4usize)]),
@@ -1905,6 +1996,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn p2p_readiness_retains_unresolved_errors_despite_empty_local_queues() {
+        // The real Task30 rejoin left node-4 at height 2 and peers at 62.
+        // A locally quiescent canonical view is NOT enough to declare GO.
+        let state = mk_state(P2pStatus {
+            chain_id: "testnet-dev".into(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/30333".into()],
+            connected_peers: vec!["peer-a".into()],
+            ..P2pStatus::default()
+        });
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.sync_state = "catching_up".to_string();
+            runtime.sync_pipeline.last_error = Some("orphan recovery: missing parent".to_string());
+        }
+        let Json(unresolved) = get_p2p_status(State(state.clone())).await;
+        assert!(unresolved.ok);
+        let unresolved = unresolved.data.expect("unresolved status");
+        assert_eq!(unresolved["sync_state"], "catching_up");
+        assert_eq!(unresolved["p2p_ready_for_private_rehearsal"], false);
+        assert!(unresolved["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "sync pipeline reports degraded state"));
+
+        {
+            let mut runtime = state.runtime.write().await;
+            runtime.pending_block_requests = 1;
+        }
+        let Json(blocked) = get_p2p_status(State(state.clone())).await;
+        assert!(blocked.ok);
+        let blocked = blocked.data.expect("blocked status");
+        assert_eq!(blocked["p2p_ready_for_private_rehearsal"], false);
+        assert!(blocked["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "1 pending block request(s)"));
+
+        // A future-dated peer tip cannot clear an invalid monetary sidecar.
+        // In particular no request-backlog heuristic may override this error.
+        let genesis_hash = state.chain.read().await.dag.genesis_hash.clone();
+        let fresh_state = mk_state(P2pStatus {
+            chain_id: "testnet-dev".into(),
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/30333".into()],
+            connected_peers: vec!["peer-a".into()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".into(),
+                chain_id: "testnet-dev".into(),
+                selected_tip: Some(genesis_hash),
+                selected_height: 0,
+                observed_at_unix: super::unix_now_secs().saturating_add(86_400),
+                // A future remote timestamp cannot replace the local
+                // authenticated transport receipt, which the P2P layer owns.
+                received_at_unix: super::unix_now_secs(),
+                direct_request_capable: true,
+                connected: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        });
+        {
+            let mut runtime = fresh_state.runtime.write().await;
+            runtime.sync_state = "degraded".to_string();
+            runtime.sync_pipeline.last_error = Some("invalid monetary sidecar".to_string());
+        }
+        let Json(forged) = get_p2p_status(State(fresh_state.clone())).await;
+        assert!(forged.ok);
+        let forged = forged.data.expect("untrusted future tip");
+        assert_eq!(forged["sync_state"], "degraded");
+        assert_eq!(forged["p2p_ready_for_private_rehearsal"], false);
+        assert!(forged["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "sync pipeline reports degraded state"));
+
+        // ONLY the responsible runtime explicitly clearing its prior error
+        // and declaring synced can permit readiness, never the remote date.
+        {
+            let mut runtime = fresh_state.runtime.write().await;
+            runtime.sync_pipeline.last_error = None;
+            runtime.sync_state = "synced".to_string();
+        }
+        let Json(clean) = get_p2p_status(State(fresh_state)).await;
+        assert!(clean.ok);
+        let clean = clean.data.expect("resolved runtime");
+        assert_eq!(clean["sync_state"], "synced");
+        assert_eq!(clean["p2p_ready_for_private_rehearsal"], true);
+    }
+
+    #[tokio::test]
     async fn p2p_disabled_mode_reports_structured_diagnostics() {
         let Json(resp) = get_p2p_status(State(mk_state_without_p2p())).await;
         assert!(resp.ok);
@@ -2147,8 +2334,6 @@ mod tests {
             assert_eq!(data["runtime_mode_detail"], status.runtime_mode_detail);
             assert_eq!(data["connected_peers_are_real_network"], expect_real);
             assert_eq!(data["connected_peers_semantics"], expect_semantics);
-            // Local topic registration is independent from authenticated remote
-            // sync subscribers; the RPC must expose all three evidence fields.
             assert_eq!(data["subscriptions_active"], 3);
             assert_eq!(
                 data["remote_sync_subscribed_peer_ids"],

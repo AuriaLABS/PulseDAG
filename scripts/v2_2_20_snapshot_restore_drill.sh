@@ -61,7 +61,7 @@ fi
 if [[ "${1:-}" == "--compare-summaries" ]]; then
   a="${2:?original summary required}"
   b="${3:?restored summary required}"
-  jq -n --argjson a "$(cat "$a")" --argjson b "$(cat "$b")" '{chain_id_match:($a.chain_id==$b.chain_id),best_height_match:($a.best_height==$b.best_height),selected_tip_match:($a.selected_tip==$b.selected_tip),block_count_match:($a.block_count==$b.block_count),snapshot_height_match:($a.snapshot_height==$b.snapshot_height),snapshot_checksum_present:(($a.snapshot_sha256 // "") != "" and ($a.snapshot_sha256 == ($b.snapshot_sha256 // $a.snapshot_sha256)))}'
+  jq -n --argjson a "$(cat "$a")" --argjson b "$(cat "$b")" '{chain_id_match:($a.chain_id==$b.chain_id),best_height_match:($a.best_height==$b.best_height),selected_tip_match:($a.selected_tip==$b.selected_tip),block_count_match:($a.block_count==$b.block_count),snapshot_height_match:($a.snapshot_height==$b.snapshot_height),schema_version_match:(($a.schema_version|type)=="number" and $a.schema_version >= 1 and $a.schema_version==$b.schema_version),snapshot_checksum_present:(($a.snapshot_sha256|type)=="string" and ($a.snapshot_sha256|test("^[0-9a-f]{64}$")) and $a.snapshot_sha256==$b.snapshot_sha256)}'
   exit 0
 fi
 
@@ -101,7 +101,7 @@ status_summary() {
     --argjson status "$(rpc_data status)" \
     --argjson readiness "$(rpc_data readiness)" \
     --argjson snapshot "$(rpc_data snapshot)" \
-    '{chain_id:$status.chain_id,best_height:$status.best_height,selected_tip:($status.selected_tip // ""),block_count:$status.block_count,snapshot_exists:$snapshot.snapshot_exists,snapshot_height:$snapshot.snapshot_height,schema_version:$snapshot.schema_version,snapshot_metadata:$snapshot.snapshot_metadata,snapshot_sha256:$snapshot_sha256,readiness:$readiness}'
+    '{chain_id:$status.chain_id,best_height:$status.best_height,selected_tip:($status.selected_tip // ""),block_count:$status.block_count,snapshot_exists:$snapshot.snapshot_exists,snapshot_height:$snapshot.snapshot_height,schema_version:($snapshot.schema_version // $snapshot.snapshot_metadata.schema_version),snapshot_metadata:$snapshot.snapshot_metadata,snapshot_sha256:$snapshot_sha256,readiness:$readiness}'
 }
 
 validate_status_summary() {
@@ -169,8 +169,21 @@ wait_ready || { echo "error: restored node did not become ready" >&2; exit 1; }
 status_summary "$snapshot_digest" > "$RESTORED_STATUS"
 validate_status_summary "$RESTORED_STATUS" || { echo "error: invalid restored status summary" >&2; exit 1; }
 "$0" --compare-summaries "$ORIG_STATUS" "$RESTORED_STATUS" > "$RESTORE_REPORT"
-all_ok="$(jq -r '.chain_id_match and .best_height_match and .selected_tip_match and .block_count_match and .snapshot_height_match and .snapshot_checksum_present' "$RESTORE_REPORT")"
+all_ok="$(jq -r '.chain_id_match and .best_height_match and .selected_tip_match and .block_count_match and .snapshot_height_match and .schema_version_match and .snapshot_checksum_present' "$RESTORE_REPORT")"
 [[ "$all_ok" == "true" ]] || { echo "error: restore comparison mismatch" >&2; exit 1; }
+
+# Reopen the imported database and require the same selected state after restart.
+kill "$RESTORED_PID" >/dev/null 2>&1 || true
+wait "$RESTORED_PID" || true
+RESTORED_PID=""
+start_node "$RESTORE_DB" "${OUT_DIR}/restored-restart.log"
+RESTORED_PID="$STARTED_NODE_PID"
+wait_ready || { echo "error: imported node did not become ready after restart" >&2; exit 1; }
+status_summary "$snapshot_digest" > "${OUT_DIR}/restored_restart_status.json"
+validate_status_summary "${OUT_DIR}/restored_restart_status.json"
+"$0" --compare-summaries "$ORIG_STATUS" "${OUT_DIR}/restored_restart_status.json" > "${OUT_DIR}/restore_restart_report.json"
+jq -e '.chain_id_match and .best_height_match and .selected_tip_match and .block_count_match and .snapshot_height_match and .schema_version_match and .snapshot_checksum_present' "${OUT_DIR}/restore_restart_report.json" >/dev/null
+
 
 cat > "$SUMMARY_MD" <<MD
 # v2.2.20 deterministic snapshot restore drill summary
@@ -179,7 +192,7 @@ cat > "$SUMMARY_MD" <<MD
 - ci_mode: ${CI_MODE}
 - chain_id: ${CHAIN_ID}
 - height_threshold: ${HEIGHT_THRESHOLD}
-- restored height/tip gate: pass
+- restored height/tip/schema gate: pass
 - snapshot checksum: ${snapshot_digest}
 - snapshot artifact: snapshot_bundle.bin
 MD
@@ -192,11 +205,11 @@ jq -n \
   --argjson original "$(cat "$ORIG_STATUS")" \
   --argjson restored "$(cat "$RESTORED_STATUS")" \
   --argjson restore_report "$(cat "$RESTORE_REPORT")" \
-  '{run_id:$run_id,chain_id:$chain_id,ci_mode:($ci_mode == "1"),snapshot_artifact:"snapshot_bundle.bin",snapshot_sha256:$snapshot_sha256,original:$original,restored:$restored,restore_report:$restore_report,files:["summary.md","snapshot_bundle.bin","snapshot_bundle.bin.sha256","snapshot_export_report.json","snapshot_import_report.json","original_status.json","restored_status.json","restore_report.json","original-node.log","restored-node.log","evidence.tar.gz","evidence.tar.gz.sha256"]}' > "$MANIFEST_JSON"
+  '{run_id:$run_id,chain_id:$chain_id,ci_mode:($ci_mode == "1"),snapshot_artifact:"snapshot_bundle.bin",snapshot_sha256:$snapshot_sha256,original:$original,restored:$restored,restore_report:$restore_report,files:["summary.md","snapshot_bundle.bin","snapshot_bundle.bin.sha256","snapshot_export_report.json","snapshot_import_report.json","original_status.json","restored_status.json","restore_report.json","original-node.log","restored-node.log","restored-restart.log","restored_restart_status.json","restore_restart_report.json","evidence.tar.gz","evidence.tar.gz.sha256"]}' > "$MANIFEST_JSON"
 
 (
   cd "$OUT_DIR"
-  tar -czf "$TARBALL" summary.md snapshot_bundle.bin snapshot_bundle.bin.sha256 snapshot_export_report.json snapshot_import_report.json original_status.json restored_status.json restore_report.json evidence_manifest.json original-node.log restored-node.log
+  tar -czf "$TARBALL" summary.md snapshot_bundle.bin snapshot_bundle.bin.sha256 snapshot_export_report.json snapshot_import_report.json original_status.json restored_status.json restore_report.json evidence_manifest.json original-node.log restored-node.log restored-restart.log restored_restart_status.json restore_restart_report.json
   sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL_SHA256")"
 )
 

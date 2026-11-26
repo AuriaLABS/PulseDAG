@@ -351,3 +351,11 @@ inventory, Windows/Linux and P2P codec tests; parent-only green checks are
 insufficient. The dormant codec is **not** attached to live block service;
 public testnet and mainnet remain NO-GO, monetary mining OFF and contracts
 INACTIVE.
+
+## 2026-11-19 — RUSTSEC-2026-0544 libz-sys remediation (pre-GO)
+
+The 2026-11-18 raw advisory database update exposed **RUSTSEC-2026-0544 / CVE-2026-85091**, a zlib heap-buffer-overflow warning, on the public root `Cargo.lock` package `libz-sys 1.1.31`. This supersedes the earlier **historically correct** `1.1.31` fix for the unrelated RUSTSEC-2026-0418 build-script advisory in the November 4 table above. The newly published patch boundary is **`libz-sys >=1.1.33`**, and the target exact registry archive checksum for `1.1.33` is `fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045`.
+
+Source evidence: [RustSec RUSTSEC-2026-0544](https://rustsec.org/advisories/RUSTSEC-2026-0544.html); the immutable failed scheduled [RustSec/reachability job on main@019de275](https://github.com/AuriaLABS/PulseDAG/actions/runs/44298356958/job/134781200031) and [raw audit artifact](https://github.com/AuriaLABS/PulseDAG/actions/runs/44298356958/artifacts/14425078783). That raw report contains exactly **one** newly listed vulnerability `libz-sys@1.1.31`, besides the earlier `bincode` and `paste` informational unmaintained warnings. It is not an authorization to suppress the raw audit or relabel vulnerable code as unreachable.
+
+This security candidate replaces only the locked `libz-sys` version/checksum and three existing exact-version workflow assertions, preserving the rest of the dependency graph and `.cargo/audit.toml` (`ignore=[]`). **Before merge:** require exact-head RustSec raw zero-vulnerability report, `cargo check --locked` against the active node/P2P/miner/wallet roots, Linux/Windows and existing security gates, plus clean Codex review. The change does not activate native-v3 monetary mining, testnet/mainnet, direct GetBlock, or smart contracts. Public Testnet NO-GO, Mainnet NO-GO; monetary mining OFF; contracts INACTIVE.
