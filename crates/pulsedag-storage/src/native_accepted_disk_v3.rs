@@ -257,6 +257,41 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
         }
         Ok(Some(entry))
     }
+
+    /// Read a coherent committed row from all three independent namespaces.
+    /// A missing body is only Missing if the other namespaces are also absent.
+    /// This verifies stored consistency, not economic consensus or finality.
+    pub fn read_consistent_accepted(
+        &self,
+        hash: &str,
+    ) -> Result<Option<NativeV3AcceptedDiskRowV1>, String> {
+        let before = self.current_generation()?;
+        let body = self.read_accepted(hash)?;
+        let membership = self.has_accepted_membership(hash, before)?;
+        let journal = self.independent_journal(hash, before)?;
+        if self.current_generation()? != before {
+            return Err("native accepted generation changed during read".into());
+        }
+        match (body, membership, journal) {
+            (None, None, None) => Ok(None),
+            (Some(row), Some(generation), Some(entry)) => {
+                if row.committed_generation != generation
+                    || entry.accepted_generation != generation
+                    || generation > before
+                {
+                    return Err("inconsistent native accepted generation".into());
+                }
+                if row.committed_state_root != row.frame.envelope().header.state_root
+                    || row.committed_state_root != entry.monetary_state_root
+                    || row.committed_gd08_digest != entry.gd08_order_digest
+                {
+                    return Err("inconsistent native accepted root or order commitment".into());
+                }
+                Ok(Some(row))
+            }
+            _ => Err("incomplete native accepted body/membership/journal".into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -727,7 +762,7 @@ mod tests {
         assert_eq!(reader.current_generation(), Ok(3));
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
-            let row = reader.read_accepted(&hash).unwrap().unwrap();
+            let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
             let journal = reader.independent_journal(&hash, 3).unwrap().unwrap();
             assert_eq!(
                 reader.has_accepted_membership(&hash, 3),
@@ -844,6 +879,67 @@ mod tests {
         assert_eq!(reader.independent_journal(&hash, 4), Ok(None));
         assert!(reader.independent_journal(&hash, 0).is_err());
         assert!(reader.has_accepted_membership(&hash, 3).is_err());
+        drop(reader);
+        let _ = std::fs::remove_dir_all(db_path);
+    }
+
+    #[test]
+    fn consistent_native_read_rejects_tampered_or_incomplete_seals() {
+        let db_path = path();
+        let (genesis, frame) = fixture();
+        let hash = frame.envelope().hash.clone();
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 4, true, true);
+        }
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        assert!(reader.read_consistent_accepted(&hash).unwrap().is_some());
+        assert!(reader
+            .read_consistent_accepted(&"0".repeat(64))
+            .unwrap()
+            .is_none());
+        drop(reader);
+        for (generation, root, digest) in [
+            (
+                3,
+                frame.envelope().header.state_root.clone(),
+                "a".repeat(64),
+            ),
+            (4, "b".repeat(64), "a".repeat(64)),
+            (
+                4,
+                frame.envelope().header.state_root.clone(),
+                "c".repeat(64),
+            ),
+        ] {
+            {
+                let db = open_test_writer(&db_path);
+                let entry = NativeV3IndependentJournalV1 {
+                    accepted_generation: generation,
+                    monetary_state_root: root,
+                    gd08_order_digest: digest,
+                };
+                db.put_cf(
+                    db.cf_handle(CF_JOURNAL).unwrap(),
+                    hash.as_bytes(),
+                    serde_json::to_vec(&entry).unwrap(),
+                )
+                .unwrap();
+            }
+            let reader =
+                NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+            assert!(reader.read_consistent_accepted(&hash).is_err());
+        }
+        {
+            let db = open_test_writer(&db_path);
+            trial_write(&db, &frame, &genesis, 4, true, true);
+            db.delete_cf(db.cf_handle(CF_BODIES).unwrap(), hash.as_bytes())
+                .unwrap();
+        }
+        let reader =
+            NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &genesis).unwrap();
+        assert!(reader.read_consistent_accepted(&hash).is_err());
         drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
