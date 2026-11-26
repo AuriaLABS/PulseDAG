@@ -925,6 +925,119 @@ mod tests {
     }
 
     #[test]
+    fn disjoint_sibling_spends_preserve_both_outputs_and_exact_fees() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let key = SigningKey::from_bytes(&[23u8; 32]);
+        let owner = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        let mut opening = UtxoState::default();
+        let b1 = mine(&g, 1, &owner, opening.compute_state_root().unwrap(), vec![]);
+        let r1 = reward(&b1, subsidy_atoms_for_score(1, &CADENCE).unwrap());
+        insert_coin(&mut opening, r1.clone()).unwrap();
+        let b2 = mine(
+            &b1.hash,
+            2,
+            &owner,
+            opening.compute_state_root().unwrap(),
+            vec![],
+        );
+        let r2 = reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap());
+        insert_coin(&mut opening, r2.clone()).unwrap();
+        let b3 = mine(
+            &b2.hash,
+            3,
+            &owner,
+            opening.compute_state_root().unwrap(),
+            vec![],
+        );
+        let r3 = reward(&b3, subsidy_atoms_for_score(3, &CADENCE).unwrap());
+        let a_tx = signed_spend(&key, &r1.outpoint, r1.amount);
+        let mut b_tx = signed_spend(&key, &r2.outpoint, r2.amount);
+        b_tx.fee = 3;
+        b_tx.outputs[0].amount = r2.amount - 3;
+        b_tx.outputs[0].address = "pulse1otherrecipient".into();
+        b_tx.inputs[0].signature = hex::encode(
+            key.sign(&signing_message_v2(&b_tx, CHAIN).unwrap())
+                .to_bytes(),
+        );
+        b_tx.txid = compute_txid_v2(&b_tx, CHAIN).unwrap();
+
+        let output = |tx: &Transaction| Utxo {
+            outpoint: OutPoint {
+                txid: tx.txid.clone(),
+                index: 0,
+            },
+            address: tx.outputs[0].address.clone(),
+            amount: tx.outputs[0].amount,
+            coinbase: false,
+            height: 4,
+        };
+        // Construct each branch root independently of the replay function.
+        let branch_root = |tx: &Transaction, unspent: &Utxo| {
+            let mut state = UtxoState::default();
+            insert_coin(&mut state, unspent.clone()).unwrap();
+            insert_coin(&mut state, r3.clone()).unwrap();
+            insert_coin(&mut state, output(tx)).unwrap();
+            state.compute_state_root().unwrap()
+        };
+        let a = mine(
+            &b3.hash,
+            4,
+            &owner,
+            branch_root(&a_tx, &r2),
+            vec![a_tx.clone()],
+        );
+        let b = mine(
+            &b3.hash,
+            4,
+            &owner,
+            branch_root(&b_tx, &r1),
+            vec![b_tx.clone()],
+        );
+        let join = mine_with_parents(
+            vec![a.hash.clone(), b.hash.clone()],
+            5,
+            &owner,
+            "ab".repeat(32),
+            vec![],
+        );
+        let corpus = BTreeMap::from([
+            (g.clone(), genesis),
+            (b1.hash.clone(), b1),
+            (b2.hash.clone(), b2),
+            (b3.hash.clone(), b3),
+            (a.hash.clone(), a.clone()),
+            (b.hash.clone(), b.clone()),
+            (join.hash.clone(), join.clone()),
+        ]);
+        let report = inspect_dormant_native_sibling_fee_trial(
+            CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
+        )
+        .unwrap();
+        assert_eq!(report.accepted.len(), 2);
+        assert!(report.skipped.is_empty());
+        assert_eq!(
+            report.fees_by_block,
+            BTreeMap::from([(a.hash, 1), (b.hash, 3)])
+        );
+        assert_eq!(report.total_fees, 4);
+        assert_eq!(report.opening_spendable_atoms, r1.amount + r2.amount);
+        assert_eq!(report.remaining_spendable_atoms, r1.amount + r2.amount - 4);
+        assert_eq!(report.unchanged_pending_reward_atoms, r3.amount);
+        assert_eq!(
+            report.opening_state_root,
+            opening.compute_state_root().unwrap()
+        );
+        let mut expected = UtxoState::default();
+        insert_coin(&mut expected, output(&a_tx)).unwrap();
+        insert_coin(&mut expected, output(&b_tx)).unwrap();
+        assert_eq!(
+            report.ordinary_only_state_root,
+            expected.compute_state_root().unwrap()
+        );
+    }
+
+    #[test]
     fn competing_parent_spends_are_branch_local_and_bad_parent_roots_fail() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
         let g = genesis.hash.clone();
