@@ -210,6 +210,8 @@ def main() -> int:
                 "docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md",
                 "docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md",
                 "docs/release/V2_3_0_RELEASE_DECISION.md",
+                "scripts/LEGACY_COMPATIBILITY_V2_3_0.md",
+                "configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md",
                 "docs/release/V2_4_0_RELEASE_NOTES.md",
                 "docs/release/V2_4_0_KNOWN_LIMITATIONS.md",
                 "scripts/v2_2_17_rpc_security_smoke.sh",
@@ -221,7 +223,7 @@ def main() -> int:
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_SCRIPT_FAMILIES,
-        manifest_path=Path("scripts/LEGACY_COMPATIBILITY_V2_3_0.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy script/test",
         failures=failures,
         warnings=warnings,
@@ -229,7 +231,7 @@ def main() -> int:
     require_family_manifest(
         paths=paths,
         patterns=LEGACY_CONFIG_FAMILIES,
-        manifest_path=Path("configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md"),
+        manifest_path=Path("scripts/PROTOTYPE_TEST_DEPENDENCIES.md"),
         label="legacy private-testnet configuration",
         failures=failures,
         warnings=warnings,
