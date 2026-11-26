@@ -6,6 +6,9 @@ on:
       - "crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs"
       - "crates/pulsedag-core/src/monetary_v3.rs"
       - "crates/pulsedag-storage/src/native_accepted_disk_v3.rs"
+      - "crates/pulsedag-storage/src/root.rs"
+      - "crates/pulsedag-storage/Cargo.toml"
+      - "crates/pulsedag-core/Cargo.toml"
       - "crates/pulsedag-core/src/lib.rs"
       - "crates/pulsedag-core/src/native_gd08_signed_utxo_trial_v3.rs"
       - ".github/workflows/v3-dormant-ghostdag-core-probe.yml"
@@ -42,10 +45,44 @@ jobs:
       - name: Exact head formatting
         run: cargo +1.91.0 fmt --all -- --check
       - name: Test native rewards, maturity, signed transfers, supply and committed roots
-        run: cargo +1.91.0 test --locked -p pulsedag-core --lib native_gd08_linear_monetary_trial_v3 -- --nocapture
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          cargo +1.91.0 test --locked -p pulsedag-core --lib native_gd08_linear_monetary_trial_v3 -- --format pretty --test-threads=1 | tee "$log"
+          for name in \
+            genesis_only_rejects_invalid_cadence_and_binds_valid_schedule \
+            native_reward_matures_then_signed_spend_and_fee_preserve_supply \
+            competing_parent_spends_are_branch_local_and_bad_parent_roots_fail; do
+            grep -Fxq "test native_gd08_linear_monetary_trial_v3::tests::$name ... ok" "$log" || {
+              echo "::error::Required regression did not pass: $name"
+              exit 1
+            }
+          done
       - name: Strict core Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-core --all-targets -- -D warnings
-      - name: Verify native monetary RocksDB unit-test round trip
-        run: cargo +1.91.0 test --locked -p pulsedag-storage --lib native_linear_maturity_and_signed_spend_survive_disk_replay -- --nocapture
+      - name: Require all native accepted RocksDB regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          cargo +1.91.0 test --locked -p pulsedag-storage --lib native_accepted_disk_v3 -- --format pretty --test-threads=1 | tee "$log"
+          for name in \
+            atomic_native_fixture_reopens_read_only_with_all_three_independent_keys \
+            foreign_database_is_rejected_even_with_valid_requested_genesis \
+            missing_or_invalid_database_seal_fails_before_serving_any_hash \
+            replay_derived_zero_issuance_prefix_survives_atomic_fixture_reopen \
+            native_linear_maturity_and_signed_spend_survive_disk_replay \
+            near_limit_full_native_frame_has_compact_bounded_row_round_trip \
+            partial_seal_update_keeps_the_old_membership_generation_visible \
+            body_only_or_accepted_index_without_journal_never_becomes_accepted \
+            consistent_native_read_rejects_tampered_or_incomplete_seals; do
+            grep -Fxq "test native_accepted_disk_v3::tests::$name ... ok" "$log" || {
+              echo "::error::Required regression did not pass: $name"
+              exit 1
+            }
+          done
       - name: No dependency change
         run: git diff --exit-code -- Cargo.lock
