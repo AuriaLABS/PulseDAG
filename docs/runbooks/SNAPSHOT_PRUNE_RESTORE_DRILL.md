@@ -131,4 +131,4 @@ The retained bundle must include:
 - `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`
 - `docs/runbooks/MAINTENANCE_SELF_CHECK.md`
 - `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`
-- `docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`
+- [first-network release evidence policy](../RELEASE_EVIDENCE.md)

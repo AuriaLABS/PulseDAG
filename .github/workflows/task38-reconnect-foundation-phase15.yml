@@ -107,8 +107,14 @@ jobs:
           grep -q 'redistribute_failed_device' apps/pulsedag-miner/src/accelerator_reconnect.rs
           grep -q 'complete_lane(stale_before_reconnect).is_err' apps/pulsedag-miner/src/accelerator_reconnect.rs
           grep -q 'miner_loop_integration=NOT_CLAIMED' apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
-          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
-          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs
+          if grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
+          if grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/accelerator_reconnect.rs apps/pulsedag-miner/src/bin/pulsedag-accelerator-reconnect-probe.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
           echo 'accelerator_reconnect_foundation=PASS'
           echo 'miner_loop_integration=NOT_CLAIMED'
           echo 'network_transport_execution=NOT_CLAIMED'

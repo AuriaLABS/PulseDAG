@@ -89,5 +89,11 @@ jobs:
           grep -q 'TemplateLoopbackStep::HttpStatus(503)' apps/pulsedag-miner/src/main.rs
           grep -q 'AcceleratorControlTransition::Reconnect' apps/pulsedag-miner/src/main.rs
           grep -q 'AcceleratorControlTransition::JobRefresh' apps/pulsedag-miner/src/main.rs
-          ! grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/main.rs
-          ! grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/main.rs
+          if grep -q 'GPU_MINING_NVIDIA_PASS=true' apps/pulsedag-miner/src/main.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi
+          if grep -q 'GPU_MINING_AMD_PASS=true' apps/pulsedag-miner/src/main.rs; then
+            echo "::error::Task38 forbidden implementation or unverified GPU success marker detected" >&2
+            exit 1
+          fi

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_INVENTORY = Path("ops/observability/v3.0.0/metrics-inventory.json")
-SUPPORTED_RELEASE_LINES = {"v2.3.0", "v2.4.0", "v3.0.0"}
+SUPPORTED_RELEASE_LINES = {"v3.0.0"}
 
 
 class ExporterError(RuntimeError):

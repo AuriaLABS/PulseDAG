@@ -5,7 +5,7 @@ Status: **FAIL-CLOSED MATCHER IN TREE** (not activated)
 Date: 2026-09-16 UTC
 Parent issues: #1178, #794
 Source thesis: `ROADMAP_V3_0_0.md` Task P8
-Depends on: `PULSECLOCK_V1.md`, cadence work in `ROADMAP_V2_5_0.md` Task 41
+Depends on: `PULSECLOCK_V1.md`, cadence work in `ROADMAP_V3_0_0.md` Task P8
 
 Planning only. Does not enable default high cadence or change GHOSTDAG `k` on the Task31 candidate.
 
@@ -49,7 +49,7 @@ Silent `k` changes are forbidden. A new `k` needs:
 
 - a versioned activation contract;
 - replay of the million-block (or current) deterministic corpus;
-- mixed-version window rules from v2.5 Task 43 if a live network exists.
+- explicit upgrade/rollback rules for the deployed network, if any.
 
 ## Fail closed
 

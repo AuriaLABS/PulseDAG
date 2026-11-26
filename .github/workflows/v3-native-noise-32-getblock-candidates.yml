@@ -1,0 +1,46 @@
+name: "First-network v3 32 native PoW envelopes over authenticated Noise (test only)"
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-p2p/tests/native_v3_getblock_noise_32_candidate_test_only.rs"
+      - "crates/pulsedag-p2p/src/messages/native_v3_getblock_candidate_v1.rs"
+      - "crates/pulsedag-p2p/src/messages/direct_getblock_codec_v1.rs"
+      - ".github/workflows/v3-native-noise-32-getblock-candidates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  native-v3-noise-32-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact HEAD and inactive live gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          grep -Fq 'const DIRECT_GETBLOCK_LIVE_REQUESTS_ENABLED: bool = false;' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'ProtocolSupport::Outbound' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'PULSEDAG_CONTRACTS_ENABLED=false' configs/public-testnet/node.env.template
+          ! grep -Fq 'native_v3_getblock_candidate_v1::' crates/pulsedag-p2p/src/lib.rs
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt,clippy
+      - name: Exact-head Rustfmt
+        run: cargo +1.91.0 fmt --all -- --check
+      - name: Verify native-v3 PoW transport and five-peer isolation/rejoin
+        run: cargo +1.91.0 test --locked -p pulsedag-p2p --test native_v3_getblock_noise_32_candidate_test_only -- --nocapture
+      - name: Strict P2P Clippy
+        run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
+      - name: Lockfile unchanged
+        run: git diff --exit-code -- Cargo.lock

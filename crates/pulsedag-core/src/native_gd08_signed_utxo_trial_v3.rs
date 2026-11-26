@@ -53,7 +53,7 @@ fn reject(reason: impl Into<String>) -> PulseError {
 /// Independently verify signatures and full monetary conservation against
 /// input UTXOs, even for transactions that later lose a canonical conflict.
 /// Never classify a forged or phantom transfer as a harmless conflict loser.
-fn verify_full_signed_spend(
+pub(crate) fn verify_full_signed_spend(
     tx: &Transaction,
     chain_id: &str,
     view: &BTreeMap<OutPoint, Utxo>,
@@ -331,6 +331,44 @@ pub fn inspect_dormant_native_gd08_signed_prefix(
     })
 }
 
+/// A stricter INERT GD-08 diagnostic: reject a KHeavyHash-authenticated native
+/// tip when its *committed* UTXO state_root differs from replay of genuine
+/// Ed25519-signed ordinary transfers, including only fees from winners.
+///
+/// This does NOT independently verify the caller-provided opening UTXOs,
+/// settle/mature reward claims, freeze K/blue-red monetary eligibility,
+/// authenticate checkpoints, or give any peer/block economic acceptance.
+/// The height-1/merge-order root rule is NOT a final GD-08 consensus policy.
+/// Do not use in live mining, P2P, daemon state or contracts.
+pub fn inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+    chain_id: &str,
+    frozen_genesis_ns: u64,
+    frozen_genesis_hash: &str,
+    tip: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    trial_k: usize,
+    opening_utxo: &UtxoState,
+) -> Result<DormantNativeGd08SignedPrefixV3, PulseError> {
+    let observed = inspect_dormant_native_gd08_signed_prefix(
+        chain_id,
+        frozen_genesis_ns,
+        frozen_genesis_hash,
+        tip,
+        envelopes,
+        trial_k,
+        opening_utxo,
+    )?;
+    let committed_tip = envelopes
+        .get(tip)
+        .ok_or_else(|| reject("missing committed tip envelope"))?;
+    if observed.resulting_state_root != committed_tip.header.state_root {
+        return Err(reject(
+            "authenticated tip root does not match signed GD-08 UTXO trial replay",
+        ));
+    }
+    Ok(observed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +484,60 @@ mod tests {
             result.resulting_state_root,
             opening.compute_state_root().unwrap()
         );
+    }
+
+    #[test]
+    fn signed_tip_root_trial_rejects_placeholder_then_passes_matching_pow_commitment() {
+        let (opening, key, source) = initial();
+        let tx = spend(&key, &source, 9, 1, 1);
+        let (genesis, stale_tip, mut bodies) = fixture(vec![tx]);
+        let observed = inspect_dormant_native_gd08_signed_prefix(
+            CHAIN, TS, &genesis, &stale_tip, &bodies, 0, &opening,
+        )
+        .unwrap();
+        assert_ne!(
+            bodies[&stale_tip].header.state_root, observed.resulting_state_root,
+            "the original PoW fixture intentionally advertises a fake root"
+        );
+        assert!(
+            inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+                CHAIN, TS, &genesis, &stale_tip, &bodies, 0, &opening,
+            )
+            .is_err()
+        );
+
+        let old = bodies.remove(&stale_tip).unwrap();
+        let mut header = old.header.clone();
+        header.state_root = observed.resulting_state_root.clone();
+        let mut found = false;
+        for nonce in 0..4096_u64 {
+            header.nonce = nonce;
+            if evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "re-commit real tip root under authenticated KHeavyHash"
+        );
+        let fresh = build_block_envelope_v3(CHAIN, header, old.transactions).unwrap();
+        let canonical_tip = fresh.hash.clone();
+        assert_ne!(canonical_tip, stale_tip);
+        bodies.insert(canonical_tip.clone(), fresh);
+        let checked = inspect_dormant_native_gd08_signed_prefix_with_tip_root_trial(
+            CHAIN,
+            TS,
+            &genesis,
+            &canonical_tip,
+            &bodies,
+            0,
+            &opening,
+        )
+        .unwrap();
+        assert_eq!(checked.resulting_state_root, observed.resulting_state_root);
+        assert_eq!(checked.applied_txids.len(), 1);
+        assert_eq!(checked.eligible_fees_by_block, vec![(canonical_tip, 1)]);
     }
 
     #[test]

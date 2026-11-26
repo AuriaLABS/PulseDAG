@@ -262,14 +262,15 @@ mod tests {
         let index = include_str!("../../../../docs/runbooks/INDEX.md");
         let dashboard_readme = include_str!("../../../../docs/dashboard/README.md");
         let dashboard_json =
-            include_str!("../../../../docs/dashboard/assets/pulsedag-operator-overview.json");
-        let datasource =
-            include_str!("../../../../docs/dashboard/config/datasource-prometheus.yml");
+            include_str!("../../../../ops/observability/v3.0.0/grafana-dashboard.json");
+        let scrape_config =
+            include_str!("../../../../ops/observability/v3.0.0/prometheus-scrape.example.yml");
 
         assert!(index.contains("docs/dashboard/README.md"));
-        assert!(dashboard_readme.contains("Operator Dashboard Package (v2.2)"));
-        assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.2)"));
-        assert!(datasource.contains("PulseDAG-Prometheus"));
+        assert!(dashboard_readme.contains("ops/observability/v3.0.0/grafana-dashboard.json"));
+        assert!(dashboard_json.contains("PulseDAG v3.0.0 Release-Candidate Observability"));
+        assert!(dashboard_json.contains("pulsedag-v300-ops"));
+        assert!(scrape_config.contains("job_name: pulsedag-v3.0.0"));
     }
 
     #[test]

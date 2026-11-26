@@ -617,6 +617,13 @@ fn apply_mined_header(
     Ok(())
 }
 
+// Offline Task39 harness requests a cooperative stop at the NEXT mine_once
+// boundary, never while a PoW submit RPC may still be awaiting its terminal
+// result. Absent this explicit harness-only env var, miner behavior is unchanged.
+fn task39_cooperative_stop_requested(stop_file: Option<&Path>) -> bool {
+    stop_file.is_some_and(|path| path.is_file())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
@@ -629,7 +636,16 @@ async fn main() -> Result<()> {
     if cfg.loop_mode {
         let mut loop_control =
             LoopControlState::new(&selection.accelerator_devices, cfg.max_tries)?;
+        let task39_stop_file = std::env::var_os("PULSEDAG_TASK39_STOP_FILE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         loop {
+            // A stop marker never interrupts an inflight mining or submit RPC;
+            // it is observed only BEFORE beginning the next complete iteration.
+            if task39_cooperative_stop_requested(task39_stop_file.as_deref()) {
+                println!("task39_cooperative_stop: no_new_mining_iteration=true");
+                return Ok(());
+            }
             match mine_once(
                 &client,
                 &cfg,
@@ -648,6 +664,12 @@ async fn main() -> Result<()> {
                     );
                 }
                 Err(error) => eprintln!("mine loop error: {error}"),
+            }
+            // The current mine_once has finished (including an RPC response,
+            // rejection or error). Do not start another iteration after stop.
+            if task39_cooperative_stop_requested(task39_stop_file.as_deref()) {
+                println!("task39_cooperative_stop: finished_current_iteration=true");
+                return Ok(());
             }
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
@@ -1646,6 +1668,24 @@ mod tests {
             gpu_device: None,
             cuda_module: None,
         }
+    }
+
+    #[test]
+    fn task39_cooperative_stop_requires_explicit_existing_marker() {
+        assert!(!super::task39_cooperative_stop_requested(None));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let marker = std::env::temp_dir().join(format!(
+            "pulsedag-task39-cooperative-stop-{}-{nonce}",
+            std::process::id()
+        ));
+        assert!(!super::task39_cooperative_stop_requested(Some(&marker)));
+        std::fs::write(&marker, b"stop\n").unwrap();
+        assert!(super::task39_cooperative_stop_requested(Some(&marker)));
+        std::fs::remove_file(&marker).unwrap();
+        assert!(!super::task39_cooperative_stop_requested(Some(&marker)));
     }
 
     #[test]

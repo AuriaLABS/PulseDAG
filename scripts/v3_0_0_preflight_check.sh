@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 expected_version="${PULSEDAG_REHEARSAL_VERSION:-v3.0.0}"
-expected_cargo_version="${expected_version#v}"
 expected_version_slug="${PULSEDAG_REHEARSAL_VERSION_SLUG:-v3_0_0}"
 fail=0
 checks=0
@@ -23,9 +22,26 @@ check() {
   fi
 }
 
-for dep in bash jq curl tar gzip; do
+# Classify missing host tools separately from candidate failures.
+env_fail=0
+dependencies=(bash jq curl tar gzip tr awk grep)
+if [[ "${1:-}" == "--docker-mode" || "${REHEARSAL_DOCKER_MODE:-0}" == "1" ]]; then
+  dependencies+=(docker)
+fi
+for dep in "${dependencies[@]}"; do
   check "dependency available: $dep" command -v "$dep"
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    echo "ENV_FAIL: missing dependency: $dep" >&2
+    env_fail=1
+  fi
 done
+if (( env_fail != 0 )); then
+  if [[ -n "${OUT_DIR:-}" ]]; then
+    mkdir -p "$OUT_DIR"
+    printf '%s\n' '# v3.0.0 rehearsal preflight' '- failure_class: environment' '- result: FAIL' > "$OUT_DIR/preflight-summary.md"
+  fi
+  exit 2
+fi
 
 version="$(tr -d '\r' < VERSION)"
 cargo_version="$(awk '/^[[:space:]]*version[[:space:]]*=/{gsub(/"/, "", $3); print $3; exit}' Cargo.toml | tr -d '\r')"
@@ -33,8 +49,9 @@ cargo_version="$(awk '/^[[:space:]]*version[[:space:]]*=/{gsub(/"/, "", $3); pri
 echo "Expected v3 rehearsal version: $expected_version"
 echo "Git commit: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
-check "VERSION == $expected_version" test "$version" = "$expected_version"
-check "Cargo workspace version == $expected_cargo_version" test "$cargo_version" = "$expected_cargo_version"
+check "requested identity is v3.0.0" test "$expected_version" = "v3.0.0"
+check "VERSION == v3.0.0" test "$version" = "v3.0.0"
+check "Cargo workspace version == 3.0.0" test "$cargo_version" = "3.0.0"
 check "v3 version slug == v3_0_0" test "$expected_version_slug" = "v3_0_0"
 
 required_files=(
@@ -52,6 +69,8 @@ done
 check "README identifies v3.0.0" grep -Fq '# PulseDAG v3.0.0' README.md
 check "version matrix identifies active v3 candidate" grep -Fq 'Active candidate construction' docs/VERSION_MATRIX.md
 check "contracts remain disabled" grep -Fq '`contracts_enabled=false`' docs/VERSION_MATRIX.md
+check "public testnet remains unapproved" grep -Fq '`public_testnet_ready=false`' docs/VERSION_MATRIX.md
+check "public testnet clock remains stopped" grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/VERSION_MATRIX.md
 
 checks=$((checks + 1))
 if grep -Eiq 'public testnet (is|now) live|mainnet (is|now) live|v3\.0(\.0)? (is )?ready|ready for v3\.0(\.0)?' README.md docs/VERSION_MATRIX.md; then

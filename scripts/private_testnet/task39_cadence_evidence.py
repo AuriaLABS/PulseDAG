@@ -617,6 +617,21 @@ def start_rehearsal_nodes(node, run_dir, cadence):
         raise
 
 
+def cooperative_stop_miners(stop_files, miners):
+    """Request stop at miner iteration boundaries, bounded and fail closed."""
+    if not miners or set(stop_files) != set(miners):
+        raise RuntimeError("missing or unpaired Task39 cooperative miner stop marker")
+    # Mark ALL first, then wait: avoids extra mining on an unchecked worker.
+    for stop_file in stop_files.values():
+        stop_file.write_text("stop\n", encoding="utf-8")
+    for name, proc in miners.items():
+        proc.drain()
+        if proc.process.returncode != 0:
+            raise RuntimeError(
+                f"miner {name} failed cooperative stop rc={proc.process.returncode}"
+            )
+
+
 def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tries, threads):
     del root
     run_dir = out / f"cadence-{cadence}ms"
@@ -625,6 +640,7 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
     urls = {name: url for name, _, url, _ in NODES}
     nodes = {}
     miners = {}
+    miner_stop_files = {}
     samples = []
     before_size = {}
     shutdown_overhead_ms = None
@@ -659,7 +675,11 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 str(sleep_ms),
                 "--no-heartbeat",
             ]
-            miners[name] = Proc(cmd, os.environ.copy(), run_dir / f"miner-{name}.log")
+            stop_file = run_dir / f"miner-{name}.stop"
+            miner_env = os.environ.copy()
+            miner_env["PULSEDAG_TASK39_STOP_FILE"] = str(stop_file)
+            miner_stop_files[name] = stop_file
+            miners[name] = Proc(cmd, miner_env, run_dir / f"miner-{name}.log")
             if index < 2:
                 time.sleep(cadence / 3000)
 
@@ -672,10 +692,11 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
             time.sleep(max(0.01, sample_ms / 1000))
 
         shutdown_started = time.monotonic_ns()
-        for proc in miners.values():
-            proc.terminate()
-        for proc in miners.values():
-            proc.drain()
+        # Never SIGTERM an in-flight RPC: ask each miner to exit only AFTER
+        # its current mine_once has received the terminal submit response.
+        # The existing Proc.drain timeout remains bounded; forced termination
+        # or non-zero return code fails closed instead of inventing acceptance.
+        cooperative_stop_miners(miner_stop_files, miners)
         measured_end = time.monotonic_ns()
         shutdown_overhead_ms = (measured_end - shutdown_started) / 1_000_000.0
 
@@ -1245,6 +1266,45 @@ def selftest():
     for proc in fake:
         proc.drain()
     assert events == ["terminate", "terminate", "terminate", "drain", "drain", "drain"]
+
+    # The actual cadence path must never SIGTERM an inflight RPC; all three
+    # stop markers are created BEFORE drains begin. Forced/non-zero stop fails.
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as root:
+        markers = {name: Path(root) / f"miner-{name}.stop" for name in "abc"}
+        drained = []
+
+        class FakeCooperativeMiner:
+            def __init__(self, name, returncode=0):
+                self.name = name
+                self.process = SimpleNamespace(returncode=returncode)
+
+            def terminate(self):
+                raise AssertionError("cooperative stop must not call SIGTERM")
+
+            def drain(self):
+                assert all(marker.is_file() for marker in markers.values())
+                drained.append(self.name)
+
+        miners = {name: FakeCooperativeMiner(name) for name in "abc"}
+        cooperative_stop_miners(markers, miners)
+        assert drained == ["a", "b", "c"]
+        assert all(marker.read_text(encoding="utf-8") == "stop\n" for marker in markers.values())
+        try:
+            cooperative_stop_miners(
+                {"bad": Path(root) / "bad.stop"},
+                {"bad": FakeCooperativeMiner("bad", returncode=-9)},
+            )
+            raise AssertionError("forced miner termination was accepted")
+        except RuntimeError:
+            pass
+        try:
+            cooperative_stop_miners({}, {"missing": FakeCooperativeMiner("missing")})
+            raise AssertionError("missing cooperative marker was accepted")
+        except RuntimeError:
+            pass
+
 
     print("task39 cadence evidence self-test: PASS")
 
