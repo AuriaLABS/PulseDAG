@@ -29,10 +29,10 @@ use pulsedag_core::{
     native_gd08_linear_monetary_trial_v3::{
         inspect_dormant_native_linear_monetary_trial, DormantNativeLinearMonetaryReportV3,
     },
-    state::UtxoState,
     pow_v3::evaluate_v3_header_pow,
     protocol::BLOCK_HEADER_VERSION_V3,
     reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
+    state::UtxoState,
     types::{compute_merkle_root, BlockId, Utxo},
 };
 use pulsedag_p2p::messages::{
@@ -521,16 +521,25 @@ async fn five_peer_recovery(monetary: bool) {
                     assert_eq!(candidate.hash, hashes[delivered]);
                     assert_eq!(candidate.header, cache[&candidate.hash].header);
                     if monetary {
-                        assert!(replayed.insert(candidate.hash.clone(), candidate.clone()).is_none());
+                        assert!(replayed
+                            .insert(candidate.hash.clone(), candidate.clone())
+                            .is_none());
                         let report = inspect_dormant_native_linear_monetary_trial(
-                            CHAIN, GENESIS_NS, &genesis_hash, &candidate.hash,
-                            &replayed, &TRIAL_CADENCE,
-                        ).unwrap();
+                            CHAIN,
+                            GENESIS_NS,
+                            &genesis_hash,
+                            &candidate.hash,
+                            &replayed,
+                            &TRIAL_CADENCE,
+                        )
+                        .unwrap();
                         assert_eq!(report, sender_reports[&candidate.hash]);
                         assert_eq!(report.state_root, candidate.header.state_root);
                         assert_eq!(report.mature_rewards, delivered);
-                        assert_eq!(report.spendable_atoms + report.pending_reward_atoms,
-                            report.total_subsidy_atoms);
+                        assert_eq!(
+                            report.spendable_atoms + report.pending_reward_atoms,
+                            report.total_subsidy_atoms
+                        );
                     }
                     assert!(received.insert(candidate.hash));
                     assert!(book.is_empty());
@@ -574,8 +583,14 @@ async fn five_peer_recovery(monetary: bool) {
                     for hash in &hashes {
                         prefix.insert(hash.clone(), cache[hash].clone());
                         let report = inspect_dormant_native_linear_monetary_trial(
-                            CHAIN, GENESIS_NS, &genesis_hash, hash, &prefix, &TRIAL_CADENCE,
-                        ).unwrap();
+                            CHAIN,
+                            GENESIS_NS,
+                            &genesis_hash,
+                            hash,
+                            &prefix,
+                            &TRIAL_CADENCE,
+                        )
+                        .unwrap();
                         assert!(sender_reports.insert(hash.clone(), report).is_none());
                     }
                 }
