@@ -10448,7 +10448,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(selected_locator_peer_for_priority_gap(&status, 25, 64), None);
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 25, 64),
+            None
+        );
         assert_eq!(
             selected_locator_peer_for_orphan_recovery(&status, 25, 101),
             Some(("peer-a".into(), 63))
