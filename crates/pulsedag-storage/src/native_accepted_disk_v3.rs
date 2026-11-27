@@ -1039,8 +1039,7 @@ mod tests {
     #[ignore = "requires actual receiver export from the five-peer Noise CI test"]
     fn recovered_noise_linear_bodies_survive_disk_restart_and_replay() {
         use pulsedag_core::{
-            block_envelope_v3::BlockEnvelopeV3,
-            monetary_v3::MonetaryCadenceSegment,
+            block_envelope_v3::BlockEnvelopeV3, monetary_v3::MonetaryCadenceSegment,
             native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial,
         };
         use std::{collections::BTreeMap, io::Read};
@@ -1108,7 +1107,10 @@ mod tests {
             let journal = reader.independent_journal(&hash, 32).unwrap().unwrap();
             assert_eq!(row.committed_generation, generation);
             assert_eq!(journal.accepted_generation, generation);
-            assert_eq!(reader.has_accepted_membership(&hash, 32), Ok(Some(generation)));
+            assert_eq!(
+                reader.has_accepted_membership(&hash, 32),
+                Ok(Some(generation))
+            );
             let body = row.frame.envelope();
             assert_eq!(
                 serde_json::to_vec(body).unwrap(),
