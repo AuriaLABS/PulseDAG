@@ -12,6 +12,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
+      - crates/pulsedag-p2p/tests/native_v3_getblock_noise_32_candidate_test_only.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -43,6 +44,7 @@ on:
       - crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs
       - crates/pulsedag-core/src/native_gd08_genesis_bootstrap_trial_v3.rs
       - crates/pulsedag-storage/src/native_accepted_disk_v3.rs
+      - crates/pulsedag-p2p/tests/native_v3_getblock_noise_32_candidate_test_only.rs
       - crates/pulsedag-core/src/lib.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_policy_bridge.rs
       - crates/pulsedag-core/tests/native_v3_ghostdag_crosslang_vectors.rs
@@ -174,7 +176,9 @@ jobs:
                       "inspect_dormant_native_linear_monetary_trial",
                   )
               ), "linear replay must stay in the storage unit test module"
-              allowed_linear = {Path("crates/pulsedag-core/src/lib.rs"), linear, linear_journal}
+              # Only this standalone integration test may replay received monetary candidates.
+              linear_noise_test = Path("crates/pulsedag-p2p/tests/native_v3_getblock_noise_32_candidate_test_only.rs")
+              allowed_linear = {Path("crates/pulsedag-core/src/lib.rs"), linear, linear_journal, linear_noise_test}
               linear_consumers = (consumers("native_gd08_linear_monetary_trial_v3")
                                   | consumers("inspect_dormant_native_linear_monetary_trial"))
               assert not (linear_consumers - allowed_linear), (

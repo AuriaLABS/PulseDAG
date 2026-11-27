@@ -1012,7 +1012,10 @@ mod tests {
                     assert_eq!(reader.current_generation(), Ok(height));
                     let row = reader.read_consistent_accepted(&parent).unwrap().unwrap();
                     assert_eq!(row.committed_generation, height);
-                    assert_eq!(row.committed_state_root, state.compute_state_root().unwrap());
+                    assert_eq!(
+                        row.committed_state_root,
+                        state.compute_state_root().unwrap()
+                    );
                     drop(reader);
                     db = open_test_writer(&db_path);
                 }
@@ -1024,7 +1027,10 @@ mod tests {
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
             let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
-            let journal = reader.independent_journal(&hash, block_count).unwrap().unwrap();
+            let journal = reader
+                .independent_journal(&hash, block_count)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 reader.has_accepted_membership(&hash, block_count),
                 Ok(Some(generation))

@@ -6,10 +6,11 @@
 //! The receiving peer checks the exact authenticated request/response binding
 //! and native-v3 body/PoW, never deserializes legacy `types::Block`.
 //!
-//! Crucially these candidates have placeholder state roots, no independently
+//! The fork/merge candidates have placeholder state roots, no independently
 //! verified GHOSTDAG K/blue-work, rewards, mature UTXOs or checkpoint proof.
 //! They are NOT consensus-admitted, not served from production daemon storage,
-//! not a 5-daemon/32-monetary-block acceptance proof and not a live testnet.
+//! not a 5-daemon/32-monetary-block acceptance proof and not a live testnet. A separate linear monetary trial compares real committed roots,
+//! maturity and issuance after authenticated recovery.
 //! The production libp2p GetBlock path remains outbound-only and HARD OFF.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -24,10 +25,15 @@ use pulsedag_core::{
     block_envelope_v3::{build_block_envelope_v3, BlockEnvelopeV3},
     genesis_v3::dormant_native_genesis_envelope_v3_ns,
     header_v3::BlockHeaderV3,
+    monetary_v3::{subsidy_atoms_for_score, MonetaryCadenceSegment},
+    native_gd08_linear_monetary_trial_v3::{
+        inspect_dormant_native_linear_monetary_trial, DormantNativeLinearMonetaryReportV3,
+    },
     pow_v3::evaluate_v3_header_pow,
     protocol::BLOCK_HEADER_VERSION_V3,
-    reward_settlement_v3::build_reward_claim_transaction_v3,
-    types::{compute_merkle_root, BlockId},
+    reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
+    state::UtxoState,
+    types::{compute_merkle_root, BlockId, Utxo},
 };
 use pulsedag_p2p::messages::{
     direct_getblock_codec_v1::{DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1},
@@ -153,6 +159,64 @@ fn native_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>) {
         1
     );
     assert!(map.values().any(|b| b.header.parents.len() == 2));
+    (map, requested)
+}
+
+// Accelerated economic cadence exercises maturity within the bounded corpus;
+// it is not a proposed public-network block interval.
+const TRIAL_CADENCE: [MonetaryCadenceSegment; 1] = [MonetaryCadenceSegment {
+    activation_score: 0,
+    target_interval_ns: 3_600_000_000_000,
+}];
+
+fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>) {
+    let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+    let mut parent = genesis.hash;
+    let mut map = BTreeMap::new();
+    let mut requested = Vec::new();
+    let mut state = UtxoState::default();
+    let mut pending: Option<Utxo> = None;
+    let beneficiary = "pulse1native-monetary-test-miner";
+    for height in 1..=CANDIDATES as u64 {
+        if let Some(coin) = pending.take() {
+            state
+                .address_index
+                .entry(coin.address.clone())
+                .or_default()
+                .push(coin.outpoint.clone());
+            state.utxos.insert(coin.outpoint.clone(), coin);
+        }
+        let claim = build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap();
+        let transactions = vec![claim.clone()];
+        let mut header = BlockHeaderV3 {
+            version: BLOCK_HEADER_VERSION_V3,
+            parents: vec![parent.clone()],
+            timestamp_ns: GENESIS_NS + height * 500_000_000,
+            difficulty: BITS,
+            nonce: 0,
+            merkle_root: compute_merkle_root(&transactions),
+            state_root: state.compute_state_root().unwrap(),
+            blue_score: height,
+            height,
+        };
+        header.nonce = (0..4096)
+            .find(|nonce| {
+                header.nonce = *nonce;
+                evaluate_v3_header_pow(&header, CHAIN).unwrap().pow.accepted
+            })
+            .unwrap();
+        let body = build_block_envelope_v3(CHAIN, header, transactions).unwrap();
+        parent = body.hash.clone();
+        pending = Some(Utxo {
+            outpoint: settlement_outpoint_v3(CHAIN, &parent, &claim.txid),
+            address: beneficiary.into(),
+            amount: subsidy_atoms_for_score(height, &TRIAL_CADENCE).unwrap(),
+            coinbase: true,
+            height,
+        });
+        requested.push(parent.clone());
+        assert!(map.insert(parent.clone(), body).is_none());
+    }
     (map, requested)
 }
 
@@ -295,6 +359,17 @@ async fn thirty_two_real_pow_native_v3_envelopes_cross_authenticated_noise_witho
 /// Candidates are PoW-valid envelopes, not consensus-admitted monetary blocks.
 #[tokio::test(flavor = "current_thread")]
 async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolation() {
+    five_peer_recovery(false).await;
+}
+
+/// Actual monetary roots and independent sender/receiver replay of 32 linear
+/// candidates. Still a test-only transport, not five production daemons.
+#[tokio::test(flavor = "current_thread")]
+async fn five_noise_peers_rejoin_and_replay_32_monetary_linear_candidates() {
+    five_peer_recovery(true).await;
+}
+
+async fn five_peer_recovery(monetary: bool) {
     use libp2p::futures::future::select_all;
     use pulsedag_p2p::messages::native_v3_getblock_correlation_v1::{
         NativeV3GetBlockCorrelationBookV1, NativeV3GetBlockCorrelationError,
@@ -334,6 +409,11 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
         let mut cache = BTreeMap::new();
         let mut hashes = Vec::new();
         let mut received = HashSet::new();
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, GENESIS_NS).unwrap();
+        let genesis_hash = genesis.hash.clone();
+        let mut replayed = BTreeMap::from([(genesis_hash.clone(), genesis.clone())]);
+        let mut sender_reports: BTreeMap<BlockId, DormantNativeLinearMonetaryReportV3> =
+            BTreeMap::new();
         let mut served = 0_usize;
         let mut delivered = 0_usize;
 
@@ -440,6 +520,27 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                     let candidate = verified.block.unwrap();
                     assert_eq!(candidate.hash, hashes[delivered]);
                     assert_eq!(candidate.header, cache[&candidate.hash].header);
+                    if monetary {
+                        assert!(replayed
+                            .insert(candidate.hash.clone(), candidate.clone())
+                            .is_none());
+                        let report = inspect_dormant_native_linear_monetary_trial(
+                            CHAIN,
+                            GENESIS_NS,
+                            &genesis_hash,
+                            &candidate.hash,
+                            &replayed,
+                            &TRIAL_CADENCE,
+                        )
+                        .unwrap();
+                        assert_eq!(report, sender_reports[&candidate.hash]);
+                        assert_eq!(report.state_root, candidate.header.state_root);
+                        assert_eq!(report.mature_rewards, delivered);
+                        assert_eq!(
+                            report.spendable_atoms + report.pending_reward_atoms,
+                            report.total_subsidy_atoms
+                        );
+                    }
                     assert!(received.insert(candidate.hash));
                     assert!(book.is_empty());
                     assert_eq!(
@@ -471,8 +572,28 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
                 }
                 assert!(cache.is_empty() && hashes.is_empty());
                 // Only now create the genuine native PoW fork/merge corpus.
-                (cache, hashes) = native_corpus();
+                (cache, hashes) = if monetary {
+                    monetary_linear_corpus()
+                } else {
+                    native_corpus()
+                };
                 assert_eq!(hashes.len(), CANDIDATES);
+                if monetary {
+                    let mut prefix = BTreeMap::from([(genesis_hash.clone(), genesis.clone())]);
+                    for hash in &hashes {
+                        prefix.insert(hash.clone(), cache[hash].clone());
+                        let report = inspect_dormant_native_linear_monetary_trial(
+                            CHAIN,
+                            GENESIS_NS,
+                            &genesis_hash,
+                            hash,
+                            &prefix,
+                            &TRIAL_CADENCE,
+                        )
+                        .unwrap();
+                        assert!(sender_reports.insert(hash.clone(), report).is_none());
+                    }
+                }
                 assert!(!swarms[ISOLATED].is_connected(&peers[0]));
                 swarms[ISOLATED]
                     .dial(
@@ -504,6 +625,10 @@ async fn five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolat
         assert!(closed_seed && closed_leaf);
         assert_eq!(served, CANDIDATES);
         assert_eq!(received.len(), CANDIDATES);
+        if monetary {
+            assert_eq!(replayed.len(), CANDIDATES + 1);
+            assert_eq!(sender_reports.len(), CANDIDATES);
+        }
         assert!(book.is_empty());
         for leaf in 1..5 {
             assert!(swarms[0].is_connected(&peers[leaf]));
