@@ -300,6 +300,92 @@ fn replay_linear_state(
     })
 }
 
+/// Offline commitment to the complete bounded replay state, not a snapshot
+/// encoding, signature, approved policy, or permission to discard history.
+/// In particular, equal spendable roots alone do not establish equivalence.
+pub fn inspect_dormant_native_linear_checkpoint_commitment(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    tip: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    cadence: &[MonetaryCadenceSegment],
+) -> Result<String, PulseError> {
+    let replay = replay_linear_state(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        envelopes,
+        cadence,
+    )?;
+    Ok(linear_checkpoint_commitment(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        tip,
+        &replay,
+    ))
+}
+
+fn linear_checkpoint_commitment(
+    chain_id: &str,
+    genesis_ns: u64,
+    genesis: &str,
+    tip: &str,
+    replay: &LinearReplayState,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    fn field(hash: &mut Sha256, value: &str) {
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value.as_bytes());
+    }
+
+    fn outpoint(hash: &mut Sha256, value: &OutPoint) {
+        field(hash, &value.txid);
+        hash.update(value.index.to_le_bytes());
+    }
+
+    let mut hash = Sha256::new();
+    hash.update(b"PulseDAG:UNAPPROVED:linear-checkpoint-monetary:v1");
+    field(&mut hash, chain_id);
+    hash.update(genesis_ns.to_le_bytes());
+    field(&mut hash, genesis);
+    field(&mut hash, tip);
+    field(
+        &mut hash,
+        crate::monetary_v3::MONETARY_POLICY_FINGERPRINT_V3,
+    );
+    field(&mut hash, &replay.report.cadence_fingerprint);
+    field(&mut hash, &replay.report.order_digest);
+    field(&mut hash, &replay.report.state_root);
+    for value in [
+        replay.report.monetary_score,
+        replay.report.total_subsidy_atoms,
+        replay.report.spendable_atoms,
+        replay.report.pending_reward_atoms,
+        replay.report.mature_rewards as u64,
+        replay.report.applied_transfers as u64,
+    ] {
+        hash.update(value.to_le_bytes());
+    }
+    hash.update((replay.created.len() as u64).to_le_bytes());
+    for created in &replay.created {
+        outpoint(&mut hash, created);
+    }
+    hash.update((replay.pending.len() as u64).to_le_bytes());
+    for (score, coin) in &replay.pending {
+        hash.update(score.to_le_bytes());
+        outpoint(&mut hash, &coin.outpoint);
+        field(&mut hash, &coin.address);
+        hash.update(coin.amount.to_le_bytes());
+        hash.update([u8::from(coin.coinbase)]);
+        hash.update(coin.height.to_le_bytes());
+    }
+    hex::encode(hash.finalize())
+}
+
 /// Evidence for the individual direct parents of a single candidate merge.
 /// Each report is branch-local, NOT an aggregate balance or merge settlement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -976,6 +1062,45 @@ mod tests {
         assert_eq!(
             observed.total_subsidy_atoms,
             observed.spendable_atoms + observed.pending_reward_atoms
+        );
+
+        let committed = inspect_dormant_native_linear_checkpoint_commitment(
+            CHAIN, NS, &g, &b4.hash, &corpus, &CADENCE,
+        )
+        .unwrap();
+        let reversed = corpus
+            .iter()
+            .rev()
+            .map(|(hash, body)| (hash.clone(), body.clone()))
+            .collect();
+        assert_eq!(
+            inspect_dormant_native_linear_checkpoint_commitment(
+                CHAIN, NS, &g, &b4.hash, &reversed, &CADENCE,
+            )
+            .unwrap(),
+            committed
+        );
+        let mut full = replay_linear_state(CHAIN, NS, &g, &b4.hash, &corpus, &CADENCE).unwrap();
+        assert_eq!(
+            linear_checkpoint_commitment(CHAIN, NS, &g, &b4.hash, &full),
+            committed
+        );
+        // Changing only the beneficiary preserves both the spendable root
+        // and total pending amount but must change the checkpoint commitment.
+        full.pending.front_mut().unwrap().1.address = "pulse1different".into();
+        assert_eq!(full.state.compute_state_root().unwrap(), observed.state_root);
+        assert_ne!(
+            linear_checkpoint_commitment(CHAIN, NS, &g, &b4.hash, &full),
+            committed
+        );
+        let mut full = replay_linear_state(CHAIN, NS, &g, &b4.hash, &corpus, &CADENCE).unwrap();
+        // The already spent reward is absent from the spendable state but
+        // must remain in the creation history to prevent outpoint reuse.
+        assert!(full.created.remove(&r1.outpoint));
+        assert_eq!(full.state.compute_state_root().unwrap(), observed.state_root);
+        assert_ne!(
+            linear_checkpoint_commitment(CHAIN, NS, &g, &b4.hash, &full),
+            committed
         );
 
         let replay = mine(
