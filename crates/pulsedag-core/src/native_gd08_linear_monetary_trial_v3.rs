@@ -715,6 +715,14 @@ pub enum DormantNativeEconomicOrdinalPolicyV3 {
     SelectedAndBlueOnly,
 }
 
+/// Explicitly pair trial topology and economic policy; neither is a default
+/// or an approved network constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DormantNativeEconomicSchedulePolicyV3 {
+    pub trial_k: usize,
+    pub ordinal_policy: DormantNativeEconomicOrdinalPolicyV3,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeEconomicPositionV3 {
     pub block_hash: BlockId,
@@ -743,10 +751,14 @@ pub fn inspect_dormant_native_economic_schedule(
     candidate: &BlockId,
     headers: &BTreeMap<BlockId, crate::header_v3::BlockHeaderV3>,
     cadence: &[MonetaryCadenceSegment],
-    trial_k: usize,
-    policy: DormantNativeEconomicOrdinalPolicyV3,
+    schedule_policy: DormantNativeEconomicSchedulePolicyV3,
 ) -> Result<DormantNativeEconomicScheduleV3, PulseError> {
     use crate::native_gd08_order_kernel_v3::DormantGd08Role;
+
+    let DormantNativeEconomicSchedulePolicyV3 {
+        trial_k,
+        ordinal_policy: policy,
+    } = schedule_policy;
 
     if headers.is_empty()
         || headers.len() > MAX_TRIAL_BLOCKS
@@ -1323,7 +1335,16 @@ mod tests {
             .collect();
         let schedule = |policy| {
             inspect_dormant_native_economic_schedule(
-                CHAIN, NS, &g, &join.hash, &headers, &CADENCE, 0, policy,
+                CHAIN,
+                NS,
+                &g,
+                &join.hash,
+                &headers,
+                &CADENCE,
+                DormantNativeEconomicSchedulePolicyV3 {
+                    trial_k: 0,
+                    ordinal_policy: policy,
+                },
             )
             .unwrap()
         };
