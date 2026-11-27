@@ -76,6 +76,7 @@ jobs:
             missing_or_invalid_database_seal_fails_before_serving_any_hash \
             replay_derived_zero_issuance_prefix_survives_atomic_fixture_reopen \
             native_linear_maturity_and_signed_spend_survive_disk_replay \
+            native_32_block_monetary_disk_replay_survives_writer_restart \
             near_limit_full_native_frame_has_compact_bounded_row_round_trip \
             partial_seal_update_keeps_the_old_membership_generation_visible \
             body_only_or_accepted_index_without_journal_never_becomes_accepted \
