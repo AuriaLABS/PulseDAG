@@ -318,7 +318,7 @@ mod tests {
         ) -> Result<
             pulsedag_core::native_gd08_linear_monetary_trial_v3::DormantNativeLinearMonetaryReportV3,
             String,
-        > {
+        >{
             use pulsedag_core::native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial;
             use std::collections::BTreeMap;
 
