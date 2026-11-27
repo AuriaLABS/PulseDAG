@@ -47,7 +47,8 @@ use pulsedag_p2p::messages::{
     },
 };
 
-const CHAIN: &str = "first-public-v3-noise-32-candidates-test-only";
+// Shared exclusively with the storage unit-test importer, never a live chain.
+const CHAIN: &str = "first-native-v3-readonly-journal-test";
 const GENESIS_NS: u64 = 1_800_000_000_500_000_000;
 const BITS: u32 = 0x207f_ffff;
 const CANDIDATES: usize = 32;
@@ -628,6 +629,19 @@ async fn five_peer_recovery(monetary: bool) {
         if monetary {
             assert_eq!(replayed.len(), CANDIDATES + 1);
             assert_eq!(sender_reports.len(), CANDIDATES);
+            // Export only the bodies received and replayed by the isolated
+            // peer, in the authenticated recovery order. CI supplies a fresh
+            // private temporary directory; ordinary tests need no file.
+            if let Some(destination) = std::env::var_os("PULSEDAG_TEST_NOISE_RECOVERY_EXPORT") {
+                let bodies: Vec<_> = hashes.iter().map(|hash| &replayed[hash]).collect();
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(destination)
+                    .unwrap();
+                serde_json::to_writer(&file, &bodies).unwrap();
+                file.sync_all().unwrap();
+            }
         }
         assert!(book.is_empty());
         for leaf in 1..5 {
