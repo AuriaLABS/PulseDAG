@@ -422,7 +422,21 @@ pub fn inspect_dormant_native_merge_parent_linear_trials(
     })
 }
 
-/// Trial ordinary fee attribution only; no issuance or merge-root acceptance.
+/// Hypothetical all-position reward accounting; not a settled or spendable coin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeSiblingRewardPositionV3 {
+    pub block_hash: BlockId,
+    pub score: u64,
+    pub outpoint: OutPoint,
+    pub beneficiary: String,
+    pub subsidy_atoms: u64,
+    pub accepted_fees_atoms: u64,
+    pub claim_atoms: u64,
+    /// Economic time only, without finality or a state transition.
+    pub economic_maturity_at_candidate: bool,
+}
+
+/// Ordinary fee attribution and hypothetical reward plan, not merge acceptance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeSiblingFeeTrialV3 {
     pub order_digest: String,
@@ -435,6 +449,13 @@ pub struct DormantNativeSiblingFeeTrialV3 {
     pub opening_spendable_atoms: u64,
     pub remaining_spendable_atoms: u64,
     pub unchanged_pending_reward_atoms: u64,
+    /// Explicit trial in which every canonical position (including red blocks
+    /// and the merge candidate) receives the scheduled subsidy. No eligibility
+    /// policy, finality, reward spendability or merge root is authorized.
+    pub hypothetical_reward_positions: Vec<DormantNativeSiblingRewardPositionV3>,
+    pub hypothetical_total_issued_atoms: u64,
+    /// Includes prior pending amounts and all new claims, before any maturity.
+    pub hypothetical_reward_reserve_before_maturity_atoms: u64,
 }
 
 /// Restricted experiment: all direct parents are siblings of the same linear
@@ -543,6 +564,74 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     if remaining_spendable_atoms.checked_add(total_fees) != Some(opening.report.spendable_atoms) {
         return Err(invalid("ordinary trial spendable value plus fees mismatch"));
     }
+    // Plan, but never settle, all canonical positions beyond the common
+    // prefix. This is deliberately the same all-sibling experiment as the
+    // ordinary fee trial, not an approved blue/red economic policy.
+    let candidate_score = u64::try_from(verified.ordered_blocks.len() - 1)
+        .map_err(|_| invalid("candidate score overflow"))?;
+    let mut hypothetical_reward_positions = Vec::new();
+    let mut hypothetical_total_issued_atoms = opening.report.total_subsidy_atoms;
+    let mut hypothetical_reward_reserve_before_maturity_atoms = opening.report.pending_reward_atoms;
+    let mut previous_score = opening.report.monetary_score;
+    for (index, hash) in verified.ordered_blocks.iter().enumerate() {
+        if hash != candidate && !verified.parent_reports.contains_key(hash) {
+            continue;
+        }
+        let score = u64::try_from(index).map_err(|_| invalid("reward score overflow"))?;
+        if previous_score.checked_add(1) != Some(score) {
+            return Err(invalid("noncontiguous sibling reward plan"));
+        }
+        previous_score = score;
+        let accepted_fees_atoms = if hash == candidate {
+            0
+        } else {
+            *fees_by_block
+                .get(hash)
+                .ok_or_else(|| invalid("missing sibling fee attribution"))?
+        };
+        let claim = &envelopes[hash].transactions[0];
+        let outpoint = settlement_outpoint_v3(chain_id, hash, &claim.txid);
+        if !opening.created.insert(outpoint.clone()) {
+            return Err(invalid("repeated hypothetical reward outpoint"));
+        }
+        let subsidy_atoms =
+            subsidy_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))?;
+        let claim_atoms = subsidy_atoms
+            .checked_add(accepted_fees_atoms)
+            .ok_or_else(|| invalid("hypothetical reward overflow"))?;
+        hypothetical_total_issued_atoms = hypothetical_total_issued_atoms
+            .checked_add(subsidy_atoms)
+            .ok_or_else(|| invalid("hypothetical issuance overflow"))?;
+        hypothetical_reward_reserve_before_maturity_atoms =
+            hypothetical_reward_reserve_before_maturity_atoms
+                .checked_add(claim_atoms)
+                .ok_or_else(|| invalid("hypothetical reward reserve overflow"))?;
+        hypothetical_reward_positions.push(DormantNativeSiblingRewardPositionV3 {
+            block_hash: hash.clone(),
+            score,
+            outpoint,
+            beneficiary: claim.outputs[0].address.clone(),
+            subsidy_atoms,
+            accepted_fees_atoms,
+            claim_atoms,
+            economic_maturity_at_candidate: economic_maturity_reached(
+                score,
+                candidate_score,
+                cadence,
+            )
+            .map_err(|e| invalid(e.to_string()))?,
+        });
+    }
+    let scheduled = total_supply_atoms_for_score(candidate_score, cadence)
+        .map_err(|e| invalid(e.to_string()))?;
+    if previous_score != candidate_score
+        || hypothetical_reward_positions.last().map(|p| &p.block_hash) != Some(candidate)
+        || hypothetical_total_issued_atoms != scheduled
+        || remaining_spendable_atoms.checked_add(hypothetical_reward_reserve_before_maturity_atoms)
+            != Some(scheduled)
+    {
+        return Err(invalid("hypothetical reward plan does not conserve supply"));
+    }
     Ok(DormantNativeSiblingFeeTrialV3 {
         order_digest: verified.order_digest,
         accepted,
@@ -554,6 +643,9 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         opening_spendable_atoms: opening.report.spendable_atoms,
         remaining_spendable_atoms,
         unchanged_pending_reward_atoms: opening.report.pending_reward_atoms,
+        hypothetical_reward_positions,
+        hypothetical_total_issued_atoms,
+        hypothetical_reward_reserve_before_maturity_atoms,
     })
 }
 
@@ -833,6 +925,119 @@ mod tests {
     }
 
     #[test]
+    fn disjoint_sibling_spends_preserve_both_outputs_and_exact_fees() {
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let key = SigningKey::from_bytes(&[23u8; 32]);
+        let owner = address_from_public_key(&hex::encode(key.verifying_key().to_bytes()));
+        let mut opening = UtxoState::default();
+        let b1 = mine(&g, 1, &owner, opening.compute_state_root().unwrap(), vec![]);
+        let r1 = reward(&b1, subsidy_atoms_for_score(1, &CADENCE).unwrap());
+        insert_coin(&mut opening, r1.clone()).unwrap();
+        let b2 = mine(
+            &b1.hash,
+            2,
+            &owner,
+            opening.compute_state_root().unwrap(),
+            vec![],
+        );
+        let r2 = reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap());
+        insert_coin(&mut opening, r2.clone()).unwrap();
+        let b3 = mine(
+            &b2.hash,
+            3,
+            &owner,
+            opening.compute_state_root().unwrap(),
+            vec![],
+        );
+        let r3 = reward(&b3, subsidy_atoms_for_score(3, &CADENCE).unwrap());
+        let a_tx = signed_spend(&key, &r1.outpoint, r1.amount);
+        let mut b_tx = signed_spend(&key, &r2.outpoint, r2.amount);
+        b_tx.fee = 3;
+        b_tx.outputs[0].amount = r2.amount - 3;
+        b_tx.outputs[0].address = "pulse1otherrecipient".into();
+        b_tx.inputs[0].signature = hex::encode(
+            key.sign(&signing_message_v2(&b_tx, CHAIN).unwrap())
+                .to_bytes(),
+        );
+        b_tx.txid = compute_txid_v2(&b_tx, CHAIN).unwrap();
+
+        let output = |tx: &Transaction| Utxo {
+            outpoint: OutPoint {
+                txid: tx.txid.clone(),
+                index: 0,
+            },
+            address: tx.outputs[0].address.clone(),
+            amount: tx.outputs[0].amount,
+            coinbase: false,
+            height: 4,
+        };
+        // Construct each branch root independently of the replay function.
+        let branch_root = |tx: &Transaction, unspent: &Utxo| {
+            let mut state = UtxoState::default();
+            insert_coin(&mut state, unspent.clone()).unwrap();
+            insert_coin(&mut state, r3.clone()).unwrap();
+            insert_coin(&mut state, output(tx)).unwrap();
+            state.compute_state_root().unwrap()
+        };
+        let a = mine(
+            &b3.hash,
+            4,
+            &owner,
+            branch_root(&a_tx, &r2),
+            vec![a_tx.clone()],
+        );
+        let b = mine(
+            &b3.hash,
+            4,
+            &owner,
+            branch_root(&b_tx, &r1),
+            vec![b_tx.clone()],
+        );
+        let join = mine_with_parents(
+            vec![a.hash.clone(), b.hash.clone()],
+            5,
+            &owner,
+            "ab".repeat(32),
+            vec![],
+        );
+        let corpus = BTreeMap::from([
+            (g.clone(), genesis),
+            (b1.hash.clone(), b1),
+            (b2.hash.clone(), b2),
+            (b3.hash.clone(), b3),
+            (a.hash.clone(), a.clone()),
+            (b.hash.clone(), b.clone()),
+            (join.hash.clone(), join.clone()),
+        ]);
+        let report = inspect_dormant_native_sibling_fee_trial(
+            CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
+        )
+        .unwrap();
+        assert_eq!(report.accepted.len(), 2);
+        assert!(report.skipped.is_empty());
+        assert_eq!(
+            report.fees_by_block,
+            BTreeMap::from([(a.hash, 1), (b.hash, 3)])
+        );
+        assert_eq!(report.total_fees, 4);
+        assert_eq!(report.opening_spendable_atoms, r1.amount + r2.amount);
+        assert_eq!(report.remaining_spendable_atoms, r1.amount + r2.amount - 4);
+        assert_eq!(report.unchanged_pending_reward_atoms, r3.amount);
+        assert_eq!(
+            report.opening_state_root,
+            opening.compute_state_root().unwrap()
+        );
+        let mut expected = UtxoState::default();
+        insert_coin(&mut expected, output(&a_tx)).unwrap();
+        insert_coin(&mut expected, output(&b_tx)).unwrap();
+        assert_eq!(
+            report.ordinary_only_state_root,
+            expected.compute_state_root().unwrap()
+        );
+    }
+
+    #[test]
     fn competing_parent_spends_are_branch_local_and_bad_parent_roots_fail() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
         let g = genesis.hash.clone();
@@ -984,6 +1189,40 @@ mod tests {
         assert_eq!(fees.fees_by_block[first], 1);
         assert_eq!(fees.fees_by_block[&fees.skipped[0].0], 0);
         assert_eq!(fees.order_digest, report.order_digest);
+        let positions = &fees.hypothetical_reward_positions;
+        assert_eq!(positions.len(), 3);
+        assert_eq!(positions[0].block_hash, *first);
+        assert_eq!(positions[0].accepted_fees_atoms, 1);
+        assert_eq!(positions[1].block_hash, fees.skipped[0].0);
+        assert_eq!(positions[1].accepted_fees_atoms, 0);
+        assert_eq!(positions[2].block_hash, join.hash);
+        assert_eq!(positions[2].accepted_fees_atoms, 0);
+        for (position, score) in positions.iter().zip(3..=5) {
+            let claim = &corpus[&position.block_hash].transactions[0];
+            assert_eq!(position.score, score);
+            assert_eq!(position.beneficiary, claim.outputs[0].address);
+            assert_eq!(
+                position.outpoint,
+                settlement_outpoint_v3(CHAIN, &position.block_hash, &claim.txid)
+            );
+            assert_eq!(
+                position.subsidy_atoms,
+                subsidy_atoms_for_score(score, &CADENCE).unwrap()
+            );
+            assert_eq!(
+                position.claim_atoms,
+                position.subsidy_atoms + position.accepted_fees_atoms
+            );
+            assert_eq!(position.economic_maturity_at_candidate, score < 5);
+        }
+        assert_eq!(
+            fees.hypothetical_total_issued_atoms,
+            total_supply_atoms_for_score(5, &CADENCE).unwrap()
+        );
+        assert_eq!(
+            fees.remaining_spendable_atoms + fees.hypothetical_reward_reserve_before_maturity_atoms,
+            fees.hypothetical_total_issued_atoms
+        );
         assert_ne!(
             report.parent_reports[&a.hash].state_root,
             report.parent_reports[&b.hash].state_root
@@ -1034,6 +1273,14 @@ mod tests {
         assert_eq!(duplicate_fees.skipped.len(), 1);
         assert_eq!(duplicate_fees.accepted[0].1, duplicate_fees.skipped[0].1);
         assert_eq!(duplicate_fees.total_fees, 1);
+        assert_eq!(
+            duplicate_fees
+                .hypothetical_reward_positions
+                .iter()
+                .map(|position| position.accepted_fees_atoms)
+                .sum::<u64>(),
+            1
+        );
         let forged = mine(&b2.hash, 3, &owner, "ff".repeat(32), vec![spend_b]);
         let bad_join = mine_with_parents(
             vec![a.hash.clone(), forged.hash.clone()],

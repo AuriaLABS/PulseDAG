@@ -54,7 +54,8 @@ jobs:
           for name in \
             genesis_only_rejects_invalid_cadence_and_binds_valid_schedule \
             native_reward_matures_then_signed_spend_and_fee_preserve_supply \
-            competing_parent_spends_are_branch_local_and_bad_parent_roots_fail; do
+            competing_parent_spends_are_branch_local_and_bad_parent_roots_fail \
+            disjoint_sibling_spends_preserve_both_outputs_and_exact_fees; do
             grep -Fxq "test native_gd08_linear_monetary_trial_v3::tests::$name ... ok" "$log" || {
               echo "::error::Required regression did not pass: $name"
               exit 1
