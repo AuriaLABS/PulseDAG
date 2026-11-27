@@ -1032,6 +1032,104 @@ mod tests {
         let _ = std::fs::remove_dir_all(db_path);
     }
 
+    // Explicitly invoked by the cross-crate Noise workflow. Do not silently
+    // pass when the handoff is missing; ordinary storage CI excludes this
+    // external-fixture test by design.
+    #[test]
+    #[ignore = "requires actual receiver export from the five-peer Noise CI test"]
+    fn recovered_noise_linear_bodies_survive_disk_restart_and_replay() {
+        use pulsedag_core::{
+            block_envelope_v3::BlockEnvelopeV3,
+            monetary_v3::MonetaryCadenceSegment,
+            native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial,
+        };
+        use std::{collections::BTreeMap, io::Read};
+
+        const MAX_EXPORT_BYTES: u64 = 8 * 1024 * 1024;
+        let source = std::env::var_os("PULSEDAG_TEST_NOISE_RECOVERY_EXPORT")
+            .expect("authenticated Noise receiver export is required");
+        let mut bytes = Vec::new();
+        std::fs::File::open(source)
+            .unwrap()
+            .take(MAX_EXPORT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert!(bytes.len() as u64 <= MAX_EXPORT_BYTES);
+        let received: Vec<BlockEnvelopeV3> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(received.len(), 32);
+        let cadence = [MonetaryCadenceSegment {
+            activation_score: 0,
+            target_interval_ns: 3_600_000_000_000,
+        }];
+        let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
+        let g = genesis.hash.clone();
+        let mut prefix = BTreeMap::from([(g.clone(), genesis.clone())]);
+        let mut parent = g.clone();
+        let mut expected = Vec::new();
+        let db_path = path();
+        {
+            let mut db = open_test_writer(&db_path);
+            for (index, body) in received.into_iter().enumerate() {
+                let generation = index as u64 + 1;
+                assert_eq!(body.header.parents, vec![parent.clone()]);
+                assert_eq!(body.header.height, generation);
+                parent = body.hash.clone();
+                assert!(prefix.insert(parent.clone(), body).is_none());
+                let report = inspect_dormant_native_linear_monetary_trial(
+                    CHAIN, NS, &g, &parent, &prefix, &cadence,
+                )
+                .unwrap();
+                assert_eq!(report.monetary_score, generation);
+                assert_eq!(report.mature_rewards, index);
+                assert_eq!(report.state_root, prefix[&parent].header.state_root);
+                assert_eq!(
+                    report.total_subsidy_atoms,
+                    report.spendable_atoms + report.pending_reward_atoms
+                );
+                trial_append_verified_linear(&db, &g, &parent, &prefix, &cadence).unwrap();
+                expected.push((parent.clone(), generation, report));
+                if generation == 16 {
+                    drop(db);
+                    let reader =
+                        NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+                    assert_eq!(reader.current_generation(), Ok(generation));
+                    let row = reader.read_consistent_accepted(&parent).unwrap().unwrap();
+                    assert_eq!(row.committed_state_root, prefix[&parent].header.state_root);
+                    drop(reader);
+                    db = open_test_writer(&db_path);
+                }
+            }
+        }
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert_eq!(reader.current_generation(), Ok(32));
+        let mut restored = BTreeMap::from([(g.clone(), genesis)]);
+        for (hash, generation, original) in expected {
+            let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
+            let journal = reader.independent_journal(&hash, 32).unwrap().unwrap();
+            assert_eq!(row.committed_generation, generation);
+            assert_eq!(journal.accepted_generation, generation);
+            assert_eq!(reader.has_accepted_membership(&hash, 32), Ok(Some(generation)));
+            let body = row.frame.envelope();
+            assert_eq!(
+                serde_json::to_vec(body).unwrap(),
+                serde_json::to_vec(&prefix[&hash]).unwrap()
+            );
+            assert!(restored.insert(hash.clone(), body.clone()).is_none());
+            let report = inspect_dormant_native_linear_monetary_trial(
+                CHAIN, NS, &g, &hash, &restored, &cadence,
+            )
+            .unwrap();
+            assert_eq!(report, original);
+            assert_eq!(row.committed_state_root, report.state_root);
+            assert_eq!(journal.monetary_state_root, report.state_root);
+            assert_eq!(row.committed_gd08_digest, report.order_digest);
+            assert_eq!(journal.gd08_order_digest, report.order_digest);
+        }
+        assert_eq!(restored.len(), 33);
+        drop(reader);
+        std::fs::remove_dir_all(db_path).unwrap();
+    }
+
     #[test]
     fn near_limit_full_native_frame_has_compact_bounded_row_round_trip() {
         // JSON Vec<u8> would expand a valid ~2 MiB block into >6 MiB.
