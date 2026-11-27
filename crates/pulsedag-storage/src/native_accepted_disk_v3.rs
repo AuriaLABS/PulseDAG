@@ -305,6 +305,81 @@ mod tests {
     use rocksdb::{ColumnFamilyDescriptor, WriteBatch, WriteOptions};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    // Keep the diagnostic entirely out of the compiled production reader.
+    impl NativeV3AcceptedRocksDbReadOnlyV1 {
+        /// Reconstruct and audit a bounded, complete linear accepted history from
+        /// disk, not a caller-supplied corpus. The caller must independently pin
+        /// the expected tip and trial cadence. This is read-only evidence, not
+        /// approval of a pruned checkpoint or a production monetary policy.
+        fn audit_dormant_linear_tip(
+            &self,
+            expected_tip: &str,
+            cadence: &[pulsedag_core::monetary_v3::MonetaryCadenceSegment],
+        ) -> Result<
+            pulsedag_core::native_gd08_linear_monetary_trial_v3::DormantNativeLinearMonetaryReportV3,
+            String,
+        >{
+            use pulsedag_core::native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial;
+            use std::collections::BTreeMap;
+
+            const MAX_AUDIT_BLOCKS: u64 = 32;
+            let generation = self.current_generation()?;
+            if generation > MAX_AUDIT_BLOCKS || !canonical_hash(expected_tip) {
+                return Err("unsupported bounded native linear audit tip".into());
+            }
+            let mut cursor = expected_tip.to_owned();
+            let mut descending = Vec::new();
+            for expected in (1..=generation).rev() {
+                let row = self
+                    .read_consistent_accepted(&cursor)?
+                    .ok_or_else(|| "missing accepted ancestor in native audit".to_string())?;
+                let envelope = row.frame.envelope();
+                if row.committed_generation != expected
+                    || envelope.header.height != expected
+                    || envelope.header.parents.len() != 1
+                {
+                    return Err("nonlinear or noncontiguous native audit history".into());
+                }
+                cursor = envelope.header.parents[0].clone();
+                descending.push(row);
+            }
+            if cursor != self.frozen_genesis_hash {
+                return Err("native audit did not reach independently frozen genesis".into());
+            }
+            let genesis =
+                dormant_native_genesis_envelope_v3_ns(&self.chain_id, self.genesis_timestamp_ns)
+                    .map_err(|e| e.to_string())?;
+            let mut corpus = BTreeMap::from([(genesis.hash.clone(), genesis)]);
+            let mut last_report = None;
+            for row in descending.into_iter().rev() {
+                let envelope = row.frame.envelope();
+                let hash = envelope.hash.clone();
+                if corpus.insert(hash.clone(), envelope.clone()).is_some() {
+                    return Err("duplicate native audit ancestor".into());
+                }
+                let report = inspect_dormant_native_linear_monetary_trial(
+                    &self.chain_id,
+                    self.genesis_timestamp_ns,
+                    &self.frozen_genesis_hash,
+                    &hash,
+                    &corpus,
+                    cadence,
+                )
+                .map_err(|e| e.to_string())?;
+                if report.state_root != row.committed_state_root
+                    || report.order_digest != row.committed_gd08_digest
+                {
+                    return Err("native audit replay differs from persisted commitment".into());
+                }
+                last_report = Some(report);
+            }
+            if self.current_generation()? != generation {
+                return Err("native accepted generation changed during audit".into());
+            }
+            last_report.ok_or_else(|| "empty native accepted audit history".to_string())
+        }
+    }
+
     const CHAIN: &str = "first-native-v3-readonly-journal-test";
     const NS: u64 = 1_800_000_000_500_000_000;
 
@@ -1024,6 +1099,15 @@ mod tests {
 
         let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
         assert_eq!(reader.current_generation(), Ok(block_count));
+        let (tip, _, final_report) = expected.last().unwrap();
+        assert_eq!(
+            &reader.audit_dormant_linear_tip(tip, &cadence).unwrap(),
+            final_report
+        );
+        assert!(reader.audit_dormant_linear_tip(&g, &cadence).is_err());
+        assert!(reader
+            .audit_dormant_linear_tip(&"f".repeat(64), &cadence)
+            .is_err());
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
             let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
@@ -1055,6 +1139,44 @@ mod tests {
             assert_eq!(journal.gd08_order_digest, replay.order_digest);
         }
         assert_eq!(restored.len(), block_count as usize + 1);
+        drop(reader);
+        // Coherently forge BOTH stored copies of an ancestor order digest.
+        // Local row consistency is insufficient; full replay must reject it.
+        let ancestor = restored
+            .values()
+            .find(|body| body.header.height == 1)
+            .unwrap();
+        let tip = restored
+            .values()
+            .find(|body| body.header.height == block_count)
+            .unwrap();
+        {
+            let db = open_test_writer(&db_path);
+            let body_cf = db.cf_handle(CF_BODIES).unwrap();
+            let journal_cf = db.cf_handle(CF_JOURNAL).unwrap();
+            let key = ancestor.hash.as_bytes();
+            let raw = db.get_cf(body_cf, key).unwrap().unwrap();
+            let mut row: PersistedNativeRowV1 = native_row_codec().deserialize(&raw).unwrap();
+            let mut journal: NativeV3IndependentJournalV1 =
+                serde_json::from_slice(&db.get_cf(journal_cf, key).unwrap().unwrap()).unwrap();
+            let forged = "f".repeat(64);
+            assert_ne!(row.committed_gd08_digest, forged);
+            row.committed_gd08_digest = forged.clone();
+            journal.gd08_order_digest = forged;
+            let mut batch = WriteBatch::default();
+            batch.put_cf(body_cf, key, native_row_codec().serialize(&row).unwrap());
+            batch.put_cf(journal_cf, key, serde_json::to_vec(&journal).unwrap());
+            db.write(batch).unwrap();
+        }
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert!(reader
+            .read_consistent_accepted(&ancestor.hash)
+            .unwrap()
+            .is_some());
+        assert!(reader
+            .audit_dormant_linear_tip(&tip.hash, &cadence)
+            .is_err());
+        assert_eq!(reader.current_generation(), Ok(block_count));
         drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
