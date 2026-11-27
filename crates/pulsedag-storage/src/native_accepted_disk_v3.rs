@@ -292,6 +292,78 @@ impl NativeV3AcceptedRocksDbReadOnlyV1 {
             _ => Err("incomplete native accepted body/membership/journal".into()),
         }
     }
+
+    /// Reconstruct and audit a bounded, complete linear accepted history from
+    /// disk, not a caller-supplied corpus. The caller must independently pin
+    /// the expected tip and trial cadence. This is read-only evidence, not
+    /// approval of a pruned checkpoint or a production monetary policy.
+    pub fn audit_dormant_linear_tip(
+        &self,
+        expected_tip: &str,
+        cadence: &[pulsedag_core::monetary_v3::MonetaryCadenceSegment],
+    ) -> Result<
+        pulsedag_core::native_gd08_linear_monetary_trial_v3::DormantNativeLinearMonetaryReportV3,
+        String,
+    > {
+        use pulsedag_core::native_gd08_linear_monetary_trial_v3::inspect_dormant_native_linear_monetary_trial;
+        use std::collections::BTreeMap;
+
+        const MAX_AUDIT_BLOCKS: u64 = 32;
+        let generation = self.current_generation()?;
+        if generation > MAX_AUDIT_BLOCKS || !canonical_hash(expected_tip) {
+            return Err("unsupported bounded native linear audit tip".into());
+        }
+        let mut cursor = expected_tip.to_owned();
+        let mut descending = Vec::new();
+        for expected in (1..=generation).rev() {
+            let row = self
+                .read_consistent_accepted(&cursor)?
+                .ok_or_else(|| "missing accepted ancestor in native audit".to_string())?;
+            let envelope = row.frame.envelope();
+            if row.committed_generation != expected
+                || envelope.header.height != expected
+                || envelope.header.parents.len() != 1
+            {
+                return Err("nonlinear or noncontiguous native audit history".into());
+            }
+            cursor = envelope.header.parents[0].clone();
+            descending.push(row);
+        }
+        if cursor != self.frozen_genesis_hash {
+            return Err("native audit did not reach independently frozen genesis".into());
+        }
+        let genesis =
+            dormant_native_genesis_envelope_v3_ns(&self.chain_id, self.genesis_timestamp_ns)
+                .map_err(|e| e.to_string())?;
+        let mut corpus = BTreeMap::from([(genesis.hash.clone(), genesis)]);
+        let mut last_report = None;
+        for row in descending.into_iter().rev() {
+            let envelope = row.frame.envelope();
+            let hash = envelope.hash.clone();
+            if corpus.insert(hash.clone(), envelope.clone()).is_some() {
+                return Err("duplicate native audit ancestor".into());
+            }
+            let report = inspect_dormant_native_linear_monetary_trial(
+                &self.chain_id,
+                self.genesis_timestamp_ns,
+                &self.frozen_genesis_hash,
+                &hash,
+                &corpus,
+                cadence,
+            )
+            .map_err(|e| e.to_string())?;
+            if report.state_root != row.committed_state_root
+                || report.order_digest != row.committed_gd08_digest
+            {
+                return Err("native audit replay differs from persisted commitment".into());
+            }
+            last_report = Some(report);
+        }
+        if self.current_generation()? != generation {
+            return Err("native accepted generation changed during audit".into());
+        }
+        last_report.ok_or_else(|| "empty native accepted audit history".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1024,6 +1096,15 @@ mod tests {
 
         let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
         assert_eq!(reader.current_generation(), Ok(block_count));
+        let (tip, _, final_report) = expected.last().unwrap();
+        assert_eq!(
+            &reader.audit_dormant_linear_tip(tip, &cadence).unwrap(),
+            final_report
+        );
+        assert!(reader.audit_dormant_linear_tip(&g, &cadence).is_err());
+        assert!(reader
+            .audit_dormant_linear_tip(&"f".repeat(64), &cadence)
+            .is_err());
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
             let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
