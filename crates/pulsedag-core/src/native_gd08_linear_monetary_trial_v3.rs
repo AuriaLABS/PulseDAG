@@ -137,6 +137,7 @@ struct LinearReplayState {
     report: DormantNativeLinearMonetaryReportV3,
     state: UtxoState,
     created: BTreeSet<OutPoint>,
+    pending: VecDeque<(u64, Utxo)>,
 }
 
 fn replay_linear_state(
@@ -295,6 +296,7 @@ fn replay_linear_state(
         report,
         state,
         created,
+        pending,
     })
 }
 
@@ -436,7 +438,7 @@ pub struct DormantNativeSiblingRewardPositionV3 {
     pub economic_maturity_at_candidate: bool,
 }
 
-/// Ordinary fee attribution and hypothetical reward plan, not merge acceptance.
+/// Ordinary fee attribution and hypothetical economic-time reward projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DormantNativeSiblingFeeTrialV3 {
     pub order_digest: String,
@@ -456,6 +458,12 @@ pub struct DormantNativeSiblingFeeTrialV3 {
     pub hypothetical_total_issued_atoms: u64,
     /// Includes prior pending amounts and all new claims, before any maturity.
     pub hypothetical_reward_reserve_before_maturity_atoms: u64,
+    /// Economic-time-only projection after all ordinary spends. No finality
+    /// or actual merge-header commitment is checked by this experiment.
+    pub hypothetical_post_maturity_state_root: String,
+    pub hypothetical_post_maturity_spendable_atoms: u64,
+    pub hypothetical_post_maturity_pending_atoms: u64,
+    pub hypothetical_newly_matured_rewards: usize,
 }
 
 /// Restricted experiment: all direct parents are siblings of the same linear
@@ -564,7 +572,7 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     if remaining_spendable_atoms.checked_add(total_fees) != Some(opening.report.spendable_atoms) {
         return Err(invalid("ordinary trial spendable value plus fees mismatch"));
     }
-    // Plan, but never settle, all canonical positions beyond the common
+    // Plan hypothetical claims for all canonical positions beyond the common
     // prefix. This is deliberately the same all-sibling experiment as the
     // ordinary fee trial, not an approved blue/red economic policy.
     let candidate_score = u64::try_from(verified.ordered_blocks.len() - 1)
@@ -632,6 +640,51 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     {
         return Err(invalid("hypothetical reward plan does not conserve supply"));
     }
+    let ordinary_only_state_root = opening.state.compute_state_root()?;
+    // Materialize the hypothetical reward queue only AFTER ordinary spends.
+    // Preserve the independently replayed prefix's pending claims rather
+    // than deriving them from caller-supplied balances or branch-local sums.
+    for position in &hypothetical_reward_positions {
+        opening.pending.push_back((
+            position.score,
+            Utxo {
+                outpoint: position.outpoint.clone(),
+                address: position.beneficiary.clone(),
+                amount: position.claim_atoms,
+                coinbase: true,
+                height: envelopes[&position.block_hash].header.height,
+            },
+        ));
+    }
+    let mut hypothetical_newly_matured_rewards = 0;
+    while let Some((reward_score, _)) = opening.pending.front() {
+        if !economic_maturity_reached(*reward_score, candidate_score, cadence)
+            .map_err(|e| invalid(e.to_string()))?
+        {
+            break;
+        }
+        let (_, coin) = opening.pending.pop_front().expect("checked nonempty queue");
+        if coin.amount != 0 {
+            insert_coin(&mut opening.state, coin)?;
+        }
+        hypothetical_newly_matured_rewards += 1;
+    }
+    let hypothetical_post_maturity_spendable_atoms =
+        opening.state.utxos.values().try_fold(0_u64, |sum, coin| {
+            sum.checked_add(coin.amount)
+                .ok_or_else(|| invalid("hypothetical mature balance overflow"))
+        })?;
+    let hypothetical_post_maturity_pending_atoms =
+        opening.pending.iter().try_fold(0_u64, |sum, (_, coin)| {
+            sum.checked_add(coin.amount)
+                .ok_or_else(|| invalid("hypothetical pending balance overflow"))
+        })?;
+    if hypothetical_post_maturity_spendable_atoms
+        .checked_add(hypothetical_post_maturity_pending_atoms)
+        != Some(scheduled)
+    {
+        return Err(invalid("hypothetical post-maturity supply mismatch"));
+    }
     Ok(DormantNativeSiblingFeeTrialV3 {
         order_digest: verified.order_digest,
         accepted,
@@ -639,13 +692,17 @@ pub fn inspect_dormant_native_sibling_fee_trial(
         fees_by_block,
         total_fees,
         opening_state_root: opening.report.state_root,
-        ordinary_only_state_root: opening.state.compute_state_root()?,
+        ordinary_only_state_root,
         opening_spendable_atoms: opening.report.spendable_atoms,
         remaining_spendable_atoms,
         unchanged_pending_reward_atoms: opening.report.pending_reward_atoms,
         hypothetical_reward_positions,
         hypothetical_total_issued_atoms,
         hypothetical_reward_reserve_before_maturity_atoms,
+        hypothetical_post_maturity_state_root: opening.state.compute_state_root()?,
+        hypothetical_post_maturity_spendable_atoms,
+        hypothetical_post_maturity_pending_atoms,
+        hypothetical_newly_matured_rewards,
     })
 }
 
@@ -1222,6 +1279,33 @@ mod tests {
         assert_eq!(
             fees.remaining_spendable_atoms + fees.hypothetical_reward_reserve_before_maturity_atoms,
             fees.hypothetical_total_issued_atoms
+        );
+        // The common prefix has one pending reward, then both siblings
+        // mature at the merge's trial score. The merge's own claim remains
+        // pending. Construct expected mature coins independently.
+        let mut projected = ordinary;
+        insert_coin(
+            &mut projected,
+            reward(&b2, subsidy_atoms_for_score(2, &CADENCE).unwrap()),
+        )
+        .unwrap();
+        for (position, score) in positions.iter().take(2).zip(3..=4) {
+            let amount = subsidy_atoms_for_score(score, &CADENCE).unwrap()
+                + u64::from(&position.block_hash == first);
+            insert_coin(&mut projected, reward(&corpus[&position.block_hash], amount)).unwrap();
+        }
+        assert_eq!(fees.hypothetical_newly_matured_rewards, 3);
+        assert_eq!(
+            fees.hypothetical_post_maturity_state_root,
+            projected.compute_state_root().unwrap()
+        );
+        assert_eq!(
+            fees.hypothetical_post_maturity_pending_atoms,
+            subsidy_atoms_for_score(5, &CADENCE).unwrap()
+        );
+        assert_eq!(
+            fees.hypothetical_post_maturity_spendable_atoms,
+            total_supply_atoms_for_score(4, &CADENCE).unwrap()
         );
         assert_ne!(
             report.parent_reports[&a.hash].state_root,
