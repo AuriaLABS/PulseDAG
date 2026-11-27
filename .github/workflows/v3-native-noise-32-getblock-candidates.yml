@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "crates/pulsedag-p2p/tests/native_v3_getblock_noise_32_candidate_test_only.rs"
+      - "crates/pulsedag-core/src/native_gd08_linear_monetary_trial_v3.rs"
+      - "crates/pulsedag-core/src/monetary_v3.rs"
       - "crates/pulsedag-p2p/src/messages/native_v3_getblock_candidate_v1.rs"
       - "crates/pulsedag-p2p/src/messages/direct_getblock_codec_v1.rs"
       - ".github/workflows/v3-native-noise-32-getblock-candidates.yml"
@@ -39,7 +41,14 @@ jobs:
       - name: Exact-head Rustfmt
         run: cargo +1.91.0 fmt --all -- --check
       - name: Verify native-v3 PoW transport and five-peer isolation/rejoin
-        run: cargo +1.91.0 test --locked -p pulsedag-p2p --test native_v3_getblock_noise_32_candidate_test_only -- --nocapture
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          cargo +1.91.0 test --locked -p pulsedag-p2p --test native_v3_getblock_noise_32_candidate_test_only -- --format pretty --test-threads=1 | tee "$log"
+          grep -Fxq 'test five_noise_peers_rejoin_and_replay_32_monetary_linear_candidates ... ok' "$log"
+          grep -Fxq 'test five_noise_peers_rejoin_and_fetch_native_candidates_mined_during_isolation ... ok' "$log"
       - name: Strict P2P Clippy
         run: cargo +1.91.0 clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
       - name: Lockfile unchanged
