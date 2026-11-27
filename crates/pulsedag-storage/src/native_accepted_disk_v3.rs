@@ -797,6 +797,15 @@ mod tests {
 
     #[test]
     fn native_linear_maturity_and_signed_spend_survive_disk_replay() {
+        verify_native_linear_disk_replay(3);
+    }
+
+    #[test]
+    fn native_32_block_monetary_disk_replay_survives_writer_restart() {
+        verify_native_linear_disk_replay(32);
+    }
+
+    fn verify_native_linear_disk_replay(block_count: u64) {
         use ed25519_dalek::{Signer, SigningKey};
         use pulsedag_core::{
             monetary_v3::{subsidy_atoms_for_score, MonetaryCadenceSegment},
@@ -828,8 +837,8 @@ mod tests {
         let mut spend = None;
         let db_path = path();
         {
-            let db = open_test_writer(&db_path);
-            for height in 1..=3_u64 {
+            let mut db = open_test_writer(&db_path);
+            for height in 1..=block_count {
                 let claim = build_reward_claim_transaction_v3(&owner, height, CHAIN).unwrap();
                 let mut txs = vec![claim.clone()];
                 if height == 3 {
@@ -915,7 +924,7 @@ mod tests {
                 .unwrap();
                 assert_eq!(report.state_root, state.compute_state_root().unwrap());
                 assert_eq!(report.mature_rewards, (height - 1) as usize);
-                assert_eq!(report.applied_transfers, usize::from(height == 3));
+                assert_eq!(report.applied_transfers, usize::from(height >= 3));
                 assert_eq!(
                     report.pending_reward_atoms,
                     subsidy_atoms_for_score(height, &cadence).unwrap() + u64::from(height == 3)
@@ -996,17 +1005,28 @@ mod tests {
                     Ok(height)
                 );
                 expected.push((parent.clone(), height, report));
+                if block_count == 32 && height == 16 {
+                    drop(db);
+                    let reader =
+                        NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+                    assert_eq!(reader.current_generation(), Ok(height));
+                    let row = reader.read_consistent_accepted(&parent).unwrap().unwrap();
+                    assert_eq!(row.committed_generation, height);
+                    assert_eq!(row.committed_state_root, state.compute_state_root().unwrap());
+                    drop(reader);
+                    db = open_test_writer(&db_path);
+                }
             }
         }
 
         let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
-        assert_eq!(reader.current_generation(), Ok(3));
+        assert_eq!(reader.current_generation(), Ok(block_count));
         let mut restored = BTreeMap::from([(g.clone(), genesis)]);
         for (hash, generation, original) in expected {
             let row = reader.read_consistent_accepted(&hash).unwrap().unwrap();
-            let journal = reader.independent_journal(&hash, 3).unwrap().unwrap();
+            let journal = reader.independent_journal(&hash, block_count).unwrap().unwrap();
             assert_eq!(
-                reader.has_accepted_membership(&hash, 3),
+                reader.has_accepted_membership(&hash, block_count),
                 Ok(Some(generation))
             );
             assert_eq!(row.committed_generation, generation);
@@ -1028,6 +1048,7 @@ mod tests {
             assert_eq!(row.committed_gd08_digest, replay.order_digest);
             assert_eq!(journal.gd08_order_digest, replay.order_digest);
         }
+        assert_eq!(restored.len(), block_count as usize + 1);
         drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
