@@ -798,9 +798,10 @@ pub fn inspect_dormant_native_economic_schedule(
             scheduled_subsidy_atoms: subsidy,
         });
     }
-    if issued != total_supply_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))?
-    {
-        return Err(invalid("economic schedule does not match cumulative supply"));
+    if issued != total_supply_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))? {
+        return Err(invalid(
+            "economic schedule does not match cumulative supply",
+        ));
     }
     Ok(DormantNativeEconomicScheduleV3 {
         policy,
