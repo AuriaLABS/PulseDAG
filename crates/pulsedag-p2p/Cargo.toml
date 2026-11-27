@@ -11,4 +11,6 @@ tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 libp2p = { version = "=0.57.1", default-features = false, features = ["tokio", "gossipsub", "identify", "kad", "macros", "tcp", "noise", "yamux", "ping", "request-response"] }
 
 [dev-dependencies]
+ed25519-dalek = "2"
+hex = "0.4"
 tempfile = "3"
