@@ -336,6 +336,35 @@ fn selected_locator_peer_for_priority_gap(
         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
 }
 
+// When an orphan still needs a parent, a modest remote height gap can
+// strand the generic fetch path below the normal selected-locator threshold.
+// Use fresh, connected, same-chain inventory only to schedule a locator;
+// existing priority ownership, validation, and timeout rules still apply.
+fn selected_locator_peer_for_orphan_recovery(
+    status: &P2pStatus,
+    local_height: u64,
+    now: u64,
+) -> Option<(String, u64)> {
+    status
+        .remote_selected_tip_inventory
+        .iter()
+        .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| status.connected_peers.contains(&remote.peer_id))
+        .filter(|remote| remote.chain_id == status.chain_id)
+        .filter(|remote| {
+            remote.received_at_unix > 0
+                && remote.received_at_unix <= now
+                && now - remote.received_at_unix <= 30
+        })
+        .filter(|remote| remote.selected_height > local_height && remote.selected_tip.is_some())
+        .max_by(|a, b| {
+            a.selected_height
+                .cmp(&b.selected_height)
+                .then_with(|| b.peer_id.cmp(&a.peer_id))
+        })
+        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+}
+
 fn observed_block_selected_locator_peer(
     status: &P2pStatus,
     source_peer: Option<&str>,
@@ -9438,6 +9467,13 @@ async fn main() -> Result<()> {
                         best_height,
                         SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
                     )
+                    .or_else(|| {
+                        if orphan_count > 0 && local_pending_missing_parents > 0 {
+                            selected_locator_peer_for_orphan_recovery(status, best_height, now)
+                        } else {
+                            None
+                        }
+                    })
                 });
                 if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
                     (proactive_selected_locator, p2p.as_ref())
@@ -10391,6 +10427,56 @@ mod tests {
         );
         assert_eq!(
             selected_locator_peer_for_priority_gap(&status, 190, 64),
+            None
+        );
+    }
+
+    #[test]
+    fn orphan_recovery_locator_covers_subthreshold_gap_without_stale_inventory() {
+        let mut status = P2pStatus {
+            chain_id: "test-chain".into(),
+            connected_peers: vec!["peer-a".into()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".into(),
+                chain_id: "test-chain".into(),
+                selected_height: 63,
+                selected_tip: Some("tip".into()),
+                received_at_unix: 100,
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 25, 64),
+            None
+        );
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 25, 101),
+            Some(("peer-a".into(), 63))
+        );
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 25, 131),
+            None
+        );
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 25, 99),
+            None
+        );
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 63, 101),
+            None
+        );
+        status.remote_selected_tip_inventory[0].chain_id = "foreign".into();
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 25, 101),
+            None
+        );
+        status.remote_selected_tip_inventory[0].chain_id = "test-chain".into();
+        status.connected_peers.clear();
+        assert_eq!(
+            selected_locator_peer_for_orphan_recovery(&status, 25, 101),
             None
         );
     }
