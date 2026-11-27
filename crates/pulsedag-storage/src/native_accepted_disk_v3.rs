@@ -1137,6 +1137,42 @@ mod tests {
         }
         assert_eq!(restored.len(), block_count as usize + 1);
         drop(reader);
+        // Coherently forge BOTH stored copies of an ancestor order digest.
+        // Local row consistency is insufficient; full replay must reject it.
+        let ancestor = restored
+            .values()
+            .find(|body| body.header.height == 1)
+            .unwrap();
+        let tip = restored
+            .values()
+            .find(|body| body.header.height == block_count)
+            .unwrap();
+        {
+            let db = open_test_writer(&db_path);
+            let body_cf = db.cf_handle(CF_BODIES).unwrap();
+            let journal_cf = db.cf_handle(CF_JOURNAL).unwrap();
+            let key = ancestor.hash.as_bytes();
+            let raw = db.get_cf(body_cf, key).unwrap().unwrap();
+            let mut row: PersistedNativeRowV1 = native_row_codec().deserialize(&raw).unwrap();
+            let mut journal: NativeV3IndependentJournalV1 =
+                serde_json::from_slice(&db.get_cf(journal_cf, key).unwrap().unwrap()).unwrap();
+            let forged = "f".repeat(64);
+            assert_ne!(row.committed_gd08_digest, forged);
+            row.committed_gd08_digest = forged.clone();
+            journal.gd08_order_digest = forged;
+            let mut batch = WriteBatch::default();
+            batch.put_cf(body_cf, key, native_row_codec().serialize(&row).unwrap());
+            batch.put_cf(journal_cf, key, serde_json::to_vec(&journal).unwrap());
+            db.write(batch).unwrap();
+        }
+        let reader = NativeV3AcceptedRocksDbReadOnlyV1::open(&db_path, CHAIN, NS, &g).unwrap();
+        assert!(reader
+            .read_consistent_accepted(&ancestor.hash)
+            .unwrap()
+            .is_some());
+        assert!(reader.audit_dormant_linear_tip(&tip.hash, &cadence).is_err());
+        assert_eq!(reader.current_generation(), Ok(block_count));
+        drop(reader);
         let _ = std::fs::remove_dir_all(db_path);
     }
 
