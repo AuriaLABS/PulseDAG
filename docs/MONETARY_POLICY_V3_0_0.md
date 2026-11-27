@@ -167,7 +167,7 @@ The #1045 integration line enforces the monetary contract at the live boundaries
 - the persisted reward-finality policy must equal a finality engine actually implemented by the daemon;
 - maturity/finality settlement is evaluated on every authoritative monetary state.
 
-Legacy v2.x subsidy constants remain available for historical compatibility and tests, but monetary activation guards make those paths unreachable as v3 issuance authority. The previously implemented monetary-v3 builder/finalizer, mined/P2P validations and settlement routines remain present for audit and dormant test coverage, **not authorization to operate a production 500 ms v3 network**. Native v3 headers, selected-parent/blue-work authority, retarget, P2P, replay and durable storage must be integrated and independently reviewed before lifting the mining and startup prohibitions.
+Retained prototype subsidy constants support regression evidence only; there is no predecessor live network, migration or compatibility requirement. Remove the prototype issuance paths once native replacements preserve the applicable regression and safety coverage (#1524). Monetary activation guards make those paths unreachable as v3 issuance authority. The previously implemented monetary-v3 builder/finalizer, mined/P2P validations and settlement routines remain present for audit and dormant test coverage, **not authorization to operate a production 500 ms v3 network**. Native v3 headers, selected-parent/blue-work authority, retarget, P2P, replay and durable storage must be integrated and independently reviewed before lifting the mining and startup prohibitions.
 
 ## Remaining #1045 integration gates
 
