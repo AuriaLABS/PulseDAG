@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
+use ed25519_dalek::{Signer, SigningKey};
 use libp2p::futures::StreamExt;
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, OutboundRequestId, ProtocolSupport};
@@ -33,7 +34,8 @@ use pulsedag_core::{
     protocol::BLOCK_HEADER_VERSION_V3,
     reward_settlement_v3::{build_reward_claim_transaction_v3, settlement_outpoint_v3},
     state::UtxoState,
-    types::{compute_merkle_root, BlockId, Utxo},
+    tx::{address_from_public_key, compute_txid_v2, signing_message_v2, TRANSACTION_VERSION_V2},
+    types::{compute_merkle_root, BlockId, OutPoint, Transaction, TxInput, TxOutput, Utxo},
 };
 use pulsedag_p2p::messages::{
     direct_getblock_codec_v1::{DirectGetBlockRawCodecV1, DIRECT_GETBLOCK_STREAM_PROTOCOL_V1},
@@ -177,8 +179,56 @@ fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>
     let mut requested = Vec::new();
     let mut state = UtxoState::default();
     let mut pending: Option<Utxo> = None;
-    let beneficiary = "pulse1native-monetary-test-miner";
+    let key = SigningKey::from_bytes(&[19u8; 32]);
+    let public_key = hex::encode(key.verifying_key().to_bytes());
+    let beneficiary = address_from_public_key(&public_key);
     for height in 1..=CANDIDATES as u64 {
+        let claim = build_reward_claim_transaction_v3(&beneficiary, height, CHAIN).unwrap();
+        let mut transactions = vec![claim.clone()];
+        // Spend a previously mature reward, then spend that ordinary output
+        // again after the storage importer's midpoint restart.
+        if height == 3 || height == 19 {
+            let coin = state
+                .utxos
+                .values()
+                .find(|coin| coin.coinbase == (height == 3))
+                .unwrap()
+                .clone();
+            let mut tx = Transaction {
+                txid: String::new(),
+                version: TRANSACTION_VERSION_V2,
+                inputs: vec![TxInput {
+                    previous_output: coin.outpoint.clone(),
+                    public_key: public_key.clone(),
+                    signature: String::new(),
+                }],
+                outputs: vec![TxOutput {
+                    address: beneficiary.clone(),
+                    amount: coin.amount.checked_sub(1).unwrap(),
+                }],
+                fee: 1,
+                nonce: height,
+            };
+            tx.inputs[0].signature =
+                hex::encode(key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+            tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
+            state.utxos.remove(&coin.outpoint).unwrap();
+            let index = state.address_index.get_mut(&beneficiary).unwrap();
+            index.retain(|outpoint| outpoint != &coin.outpoint);
+            let output = Utxo {
+                outpoint: OutPoint {
+                    txid: tx.txid.clone(),
+                    index: 0,
+                },
+                address: beneficiary.clone(),
+                amount: tx.outputs[0].amount,
+                coinbase: false,
+                height,
+            };
+            index.push(output.outpoint.clone());
+            assert!(state.utxos.insert(output.outpoint.clone(), output).is_none());
+            transactions.push(tx);
+        }
         if let Some(coin) = pending.take() {
             state
                 .address_index
@@ -187,8 +237,6 @@ fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>
                 .push(coin.outpoint.clone());
             state.utxos.insert(coin.outpoint.clone(), coin);
         }
-        let claim = build_reward_claim_transaction_v3(beneficiary, height, CHAIN).unwrap();
-        let transactions = vec![claim.clone()];
         let mut header = BlockHeaderV3 {
             version: BLOCK_HEADER_VERSION_V3,
             parents: vec![parent.clone()],
@@ -210,8 +258,9 @@ fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>
         parent = body.hash.clone();
         pending = Some(Utxo {
             outpoint: settlement_outpoint_v3(CHAIN, &parent, &claim.txid),
-            address: beneficiary.into(),
-            amount: subsidy_atoms_for_score(height, &TRIAL_CADENCE).unwrap(),
+            address: beneficiary.clone(),
+            amount: subsidy_atoms_for_score(height, &TRIAL_CADENCE).unwrap()
+                + u64::from(height == 3 || height == 19),
             coinbase: true,
             height,
         });
@@ -537,6 +586,16 @@ async fn five_peer_recovery(monetary: bool) {
                         assert_eq!(report, sender_reports[&candidate.hash]);
                         assert_eq!(report.state_root, candidate.header.state_root);
                         assert_eq!(report.mature_rewards, delivered);
+                        let height = candidate.header.height;
+                        assert_eq!(
+                            report.applied_transfers,
+                            usize::from(height >= 3) + usize::from(height >= 19)
+                        );
+                        assert_eq!(
+                            report.pending_reward_atoms,
+                            subsidy_atoms_for_score(height, &TRIAL_CADENCE).unwrap()
+                                + u64::from(height == 3 || height == 19)
+                        );
                         assert_eq!(
                             report.spendable_atoms + report.pending_reward_atoms,
                             report.total_subsidy_atoms
