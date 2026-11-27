@@ -706,6 +706,36 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     })
 }
 
+/// Verify the merge header's state commitment under the restricted,
+/// all-position sibling trial. This does not approve the color, reward or
+/// finality policy, and must not be used for live monetary admission.
+pub fn verify_dormant_native_sibling_merge_root(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    candidate: &BlockId,
+    envelopes: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    cadence: &[MonetaryCadenceSegment],
+    trial_k: usize,
+) -> Result<DormantNativeSiblingFeeTrialV3, PulseError> {
+    let report = inspect_dormant_native_sibling_fee_trial(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        candidate,
+        envelopes,
+        cadence,
+        trial_k,
+    )?;
+    let merge = envelopes
+        .get(candidate)
+        .ok_or_else(|| invalid("missing sibling merge candidate"))?;
+    if merge.header.state_root != report.hypothetical_post_maturity_state_root {
+        return Err(invalid("sibling trial merge state root mismatch"));
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1302,6 +1332,43 @@ mod tests {
         assert_eq!(
             fees.hypothetical_post_maturity_state_root,
             projected.compute_state_root().unwrap()
+        );
+        // A PoW-valid merge with an arbitrary root must not pass the strict
+        // trial. Re-mine the candidate with the independently derived root.
+        assert!(verify_dormant_native_sibling_merge_root(
+            CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
+        )
+        .is_err());
+        let bound_join = mine_with_parents(
+            vec![a.hash.clone(), b.hash.clone()],
+            4,
+            &owner,
+            projected.compute_state_root().unwrap(),
+            vec![],
+        );
+        let mut bound_corpus = corpus.clone();
+        bound_corpus.remove(&join.hash);
+        bound_corpus.insert(bound_join.hash.clone(), bound_join.clone());
+        let bound = verify_dormant_native_sibling_merge_root(
+            CHAIN,
+            NS,
+            &g,
+            &bound_join.hash,
+            &bound_corpus,
+            &CADENCE,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            bound.hypothetical_post_maturity_state_root,
+            bound_join.header.state_root
+        );
+        assert_eq!(bound.accepted, fees.accepted);
+        assert_eq!(bound.skipped, fees.skipped);
+        assert_eq!(bound.total_fees, fees.total_fees);
+        assert_eq!(
+            bound.hypothetical_total_issued_atoms,
+            fees.hypothetical_total_issued_atoms
         );
         assert_eq!(
             fees.hypothetical_post_maturity_pending_atoms,
