@@ -209,8 +209,10 @@ fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>
                 fee: 1,
                 nonce: height,
             };
-            tx.inputs[0].signature =
-                hex::encode(key.sign(&signing_message_v2(&tx, CHAIN).unwrap()).to_bytes());
+            tx.inputs[0].signature = hex::encode(
+                key.sign(&signing_message_v2(&tx, CHAIN).unwrap())
+                    .to_bytes(),
+            );
             tx.txid = compute_txid_v2(&tx, CHAIN).unwrap();
             state.utxos.remove(&coin.outpoint).unwrap();
             let index = state.address_index.get_mut(&beneficiary).unwrap();
@@ -226,7 +228,10 @@ fn monetary_linear_corpus() -> (BTreeMap<BlockId, BlockEnvelopeV3>, Vec<BlockId>
                 height,
             };
             index.push(output.outpoint.clone());
-            assert!(state.utxos.insert(output.outpoint.clone(), output).is_none());
+            assert!(state
+                .utxos
+                .insert(output.outpoint.clone(), output)
+                .is_none());
             transactions.push(tx);
         }
         if let Some(coin) = pending.take() {
