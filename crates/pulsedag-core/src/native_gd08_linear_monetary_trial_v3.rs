@@ -1292,7 +1292,11 @@ mod tests {
         for (position, score) in positions.iter().take(2).zip(3..=4) {
             let amount = subsidy_atoms_for_score(score, &CADENCE).unwrap()
                 + u64::from(&position.block_hash == first);
-            insert_coin(&mut projected, reward(&corpus[&position.block_hash], amount)).unwrap();
+            insert_coin(
+                &mut projected,
+                reward(&corpus[&position.block_hash], amount),
+            )
+            .unwrap();
         }
         assert_eq!(fees.hypothetical_newly_matured_rewards, 3);
         assert_eq!(
