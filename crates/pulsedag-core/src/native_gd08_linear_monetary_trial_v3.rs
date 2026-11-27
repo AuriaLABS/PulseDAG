@@ -792,6 +792,125 @@ pub fn inspect_dormant_native_sibling_fee_trial(
     })
 }
 
+/// Explicit, unapproved alternatives for the mapping from authenticated DAG
+/// order to monetary time. Neither may be inferred from block height or a
+/// caller-supplied color map. Selection requires a separate protocol freeze.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DormantNativeEconomicOrdinalPolicyV3 {
+    AllOrderedBlocks,
+    SelectedAndBlueOnly,
+}
+
+/// Explicitly pair trial topology and economic policy; neither is a default
+/// or an approved network constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DormantNativeEconomicSchedulePolicyV3 {
+    pub trial_k: usize,
+    pub ordinal_policy: DormantNativeEconomicOrdinalPolicyV3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeEconomicPositionV3 {
+    pub block_hash: BlockId,
+    pub economic_score: Option<u64>,
+    pub scheduled_subsidy_atoms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DormantNativeEconomicScheduleV3 {
+    pub policy: DormantNativeEconomicOrdinalPolicyV3,
+    pub order_digest: String,
+    pub cadence_fingerprint: String,
+    pub positions: Vec<DormantNativeEconomicPositionV3>,
+    pub final_economic_score: u64,
+    pub total_scheduled_subsidy_atoms: u64,
+}
+
+/// Derive both possible economic schedules from actual authenticated native
+/// GHOSTDAG ancestry. A red block excluded from monetary time has no ordinal
+/// or subsidy under the second alternative. This is schedule arithmetic only:
+/// no fee eligibility, signed replay, finality, header-root or admission proof.
+pub fn inspect_dormant_native_economic_schedule(
+    chain_id: &str,
+    genesis_ns: u64,
+    trusted_genesis: &str,
+    candidate: &BlockId,
+    headers: &BTreeMap<BlockId, crate::header_v3::BlockHeaderV3>,
+    cadence: &[MonetaryCadenceSegment],
+    schedule_policy: DormantNativeEconomicSchedulePolicyV3,
+) -> Result<DormantNativeEconomicScheduleV3, PulseError> {
+    use crate::native_gd08_order_kernel_v3::DormantGd08Role;
+
+    let DormantNativeEconomicSchedulePolicyV3 {
+        trial_k,
+        ordinal_policy: policy,
+    } = schedule_policy;
+
+    if headers.is_empty()
+        || headers.len() > MAX_TRIAL_BLOCKS
+        || cadence.len() > MAX_TRIAL_CADENCE_SEGMENTS
+    {
+        return Err(invalid("economic schedule diagnostic budget exceeded"));
+    }
+    let cadence_fingerprint =
+        monetary_cadence_fingerprint_v3(cadence).map_err(|e| invalid(e.to_string()))?;
+    let order = derive_dormant_native_gd08_order_from_ghostdag_trial(
+        chain_id,
+        genesis_ns,
+        trusted_genesis,
+        candidate,
+        headers,
+        trial_k,
+    )?;
+    if order.ordered.len() != headers.len() {
+        return Err(invalid("economic schedule requires exact reachable corpus"));
+    }
+    let mut positions = Vec::with_capacity(order.ordered.len());
+    let mut score = 0_u64;
+    let mut issued = 0_u64;
+    for hash in &order.ordered {
+        let slot = order
+            .slots
+            .get(hash)
+            .ok_or_else(|| invalid("missing authenticated economic role"))?;
+        let (economic_score, subsidy) = if hash == trusted_genesis {
+            (Some(0), 0)
+        } else if policy == DormantNativeEconomicOrdinalPolicyV3::SelectedAndBlueOnly
+            && slot.role == DormantGd08Role::MergeRed
+        {
+            (None, 0)
+        } else {
+            score = score
+                .checked_add(1)
+                .ok_or_else(|| invalid("economic ordinal overflow"))?;
+            let subsidy =
+                subsidy_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))?;
+            (Some(score), subsidy)
+        };
+        issued = issued
+            .checked_add(subsidy)
+            .ok_or_else(|| invalid("scheduled issuance overflow"))?;
+        positions.push(DormantNativeEconomicPositionV3 {
+            block_hash: hash.clone(),
+            economic_score,
+            scheduled_subsidy_atoms: subsidy,
+        });
+    }
+    if issued != total_supply_atoms_for_score(score, cadence).map_err(|e| invalid(e.to_string()))? {
+        return Err(invalid(
+            "economic schedule does not match cumulative supply",
+        ));
+    }
+    Ok(DormantNativeEconomicScheduleV3 {
+        policy,
+        order_digest: order.digest,
+        cadence_fingerprint,
+        positions,
+        final_economic_score: score,
+        total_scheduled_subsidy_atoms: issued,
+    })
+}
+
 /// Verify the merge header's state commitment under the restricted,
 /// all-position sibling trial. This does not approve the color, reward or
 /// finality policy, and must not be used for live monetary admission.
@@ -1088,7 +1207,10 @@ mod tests {
         // Changing only the beneficiary preserves both the spendable root
         // and total pending amount but must change the checkpoint commitment.
         full.pending.front_mut().unwrap().1.address = "pulse1different".into();
-        assert_eq!(full.state.compute_state_root().unwrap(), observed.state_root);
+        assert_eq!(
+            full.state.compute_state_root().unwrap(),
+            observed.state_root
+        );
         assert_ne!(
             linear_checkpoint_commitment(CHAIN, NS, &g, &b4.hash, &full),
             committed
@@ -1097,7 +1219,10 @@ mod tests {
         // The already spent reward is absent from the spendable state but
         // must remain in the creation history to prevent outpoint reuse.
         assert!(full.created.remove(&r1.outpoint));
-        assert_eq!(full.state.compute_state_root().unwrap(), observed.state_root);
+        assert_eq!(
+            full.state.compute_state_root().unwrap(),
+            observed.state_root
+        );
         assert_ne!(
             linear_checkpoint_commitment(CHAIN, NS, &g, &b4.hash, &full),
             committed
@@ -1335,6 +1460,49 @@ mod tests {
             (b.hash.clone(), b.clone()),
             (join.hash.clone(), join.clone()),
         ]);
+        let headers = corpus
+            .iter()
+            .map(|(hash, body)| (hash.clone(), body.header.clone()))
+            .collect();
+        let schedule = |policy| {
+            inspect_dormant_native_economic_schedule(
+                CHAIN,
+                NS,
+                &g,
+                &join.hash,
+                &headers,
+                &CADENCE,
+                DormantNativeEconomicSchedulePolicyV3 {
+                    trial_k: 0,
+                    ordinal_policy: policy,
+                },
+            )
+            .unwrap()
+        };
+        let all = schedule(DormantNativeEconomicOrdinalPolicyV3::AllOrderedBlocks);
+        let blue = schedule(DormantNativeEconomicOrdinalPolicyV3::SelectedAndBlueOnly);
+        assert_eq!(all.order_digest, blue.order_digest);
+        assert_eq!(all.cadence_fingerprint, blue.cadence_fingerprint);
+        assert_eq!(all.final_economic_score, 5);
+        assert_eq!(blue.final_economic_score, 4);
+        assert_eq!(
+            all.total_scheduled_subsidy_atoms,
+            total_supply_atoms_for_score(5, &CADENCE).unwrap()
+        );
+        assert_eq!(
+            blue.total_scheduled_subsidy_atoms,
+            total_supply_atoms_for_score(4, &CADENCE).unwrap()
+        );
+        let excluded: Vec<_> = blue
+            .positions
+            .iter()
+            .filter(|position| position.economic_score.is_none())
+            .collect();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].scheduled_subsidy_atoms, 0);
+        assert!(excluded[0].block_hash == a.hash || excluded[0].block_hash == b.hash);
+        assert_eq!(blue.positions.last().unwrap().economic_score, Some(4));
+
         let report = inspect_dormant_native_merge_parent_linear_trials(
             CHAIN, NS, &g, &join.hash, &corpus, &CADENCE, 0,
         )
