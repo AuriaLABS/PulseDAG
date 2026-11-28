@@ -6957,6 +6957,37 @@ fn authenticated_periodic_tip_refresh_allowed<F: Fn(&String) -> bool>(
     observed_subscriptions.iter().any(connected)
 }
 
+// A Noise connection is not necessarily a working Gossipsub route. Repair
+// only the isolated, configured bootstrap case after sustained explicit
+// publish failures, never disconnect a healthy sync route or all peers.
+fn sole_bootstrap_sync_repair_due(
+    no_subscriber_secs: u64,
+    since_last_repair_secs: Option<u64>,
+    connected_count: usize,
+    sole_peer_is_bootstrap: bool,
+    has_sync_subscriber: bool,
+) -> bool {
+    no_subscriber_secs >= 30
+        && since_last_repair_secs.is_none_or(|elapsed| elapsed >= 120)
+        && connected_count == 1
+        && sole_peer_is_bootstrap
+        && !has_sync_subscriber
+}
+
+// The timer belongs to a sole configured bootstrap, never an outage with
+// zero connections. Connection lifecycle events also clear this observation.
+fn observe_sole_bootstrap_sync_failure(
+    observation: &mut Option<(PeerId, std::time::Instant)>,
+    sole_bootstrap: Option<PeerId>,
+    now: std::time::Instant,
+) {
+    match sole_bootstrap {
+        Some(peer) if observation.as_ref().is_some_and(|(old, _)| *old == peer) => {}
+        Some(peer) => *observation = Some((peer, now)),
+        None => *observation = None,
+    }
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -7070,6 +7101,8 @@ async fn run_libp2p_real_runtime(
     // bootstrap race; do not treat TCP/Noise connection as topic membership.
     // Mark only after a successful publish, and clear on final disconnect.
     let mut tips_refreshed_after_remote_sync_subscription: HashSet<PeerId> = HashSet::new();
+    let mut sync_no_subscriber_since: Option<(PeerId, std::time::Instant)> = None;
+    let mut last_sync_subscription_repair: Option<std::time::Instant> = None;
     let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
     for (peer_id, addr) in &bootstrap_peers {
         if let Ok(mut guard) = inner.lock() {
@@ -7583,8 +7616,28 @@ async fn run_libp2p_real_runtime(
                     record_publish(&inner, &topic_name, message_kind, &message_id);
 
                     if let Ok(bytes) = wire {
+                        let is_sync = topic_name == format!("{}-sync", cfg.chain_id);
                         let topic = gossipsub::IdentTopic::new(topic_name);
-                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                        let result = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
+                        if is_sync {
+                            match &result {
+                                Ok(_) => sync_no_subscriber_since = None,
+                                Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
+                                    let mut connected = swarm.connected_peers();
+                                    let sole_bootstrap = connected.next().copied().filter(|peer| {
+                                        connected.next().is_none()
+                                            && bootstrap_peers.iter().any(|(configured, _)| configured == peer)
+                                    });
+                                    observe_sole_bootstrap_sync_failure(
+                                        &mut sync_no_subscriber_since,
+                                        sole_bootstrap,
+                                        std::time::Instant::now(),
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        if let Err(e) = result {
                             note_swarm_event(&inner, format!("publish-failed:{e}"));
                             if let Some((peer_id, hash, request_id)) = &legacy_getblock_publish {
                                 if clear_failed_gossipsub_getblock_publish(
@@ -7816,6 +7869,7 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, sanitized);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        sync_no_subscriber_since = None;
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
                         handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id, direction);
@@ -7844,6 +7898,7 @@ async fn run_libp2p_real_runtime(
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, cause, .. } => {
+                        sync_no_subscriber_since = None;
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-disconnected:{direction}:{peer_id}"));
                         let reason = format!("swarm-connection-closed:{cause:?}");
@@ -7970,6 +8025,49 @@ async fn run_libp2p_real_runtime(
                 }
             }
             _ = bootnode_redial_tick.tick() => {
+                let sync_topic = gossipsub::IdentTopic::new(format!("{}-sync", cfg.chain_id));
+                let sync_topic_hash = sync_topic.hash();
+                let has_sync_subscriber = swarm.behaviour().gossipsub.all_peers().any(
+                    |(peer, topics)| swarm.is_connected(peer) && topics.contains(&&sync_topic_hash),
+                );
+                if has_sync_subscriber {
+                    sync_no_subscriber_since = None;
+                }
+                let connected = swarm.connected_peers().copied().collect::<Vec<_>>();
+                let sole_bootstrap = connected.first().copied().filter(|peer| {
+                    connected.len() == 1
+                        && bootstrap_peers.iter().any(|(configured, _)| configured == peer)
+                });
+                if sync_no_subscriber_since
+                    .as_ref()
+                    .is_some_and(|(observed, _)| Some(*observed) != sole_bootstrap)
+                {
+                    sync_no_subscriber_since = None;
+                }
+                if let (Some((_, since)), Some(peer)) = (sync_no_subscriber_since, sole_bootstrap) {
+                    if sole_bootstrap_sync_repair_due(
+                        since.elapsed().as_secs(),
+                        last_sync_subscription_repair.map(|last| last.elapsed().as_secs()),
+                        connected.len(),
+                        true,
+                        has_sync_subscriber,
+                    ) {
+                        // Rate-limit even a failed disconnect. The ordinary final
+                        // disconnect path owns ticket cleanup and bootstrap redial.
+                        last_sync_subscription_repair = Some(std::time::Instant::now());
+                        sync_no_subscriber_since = None;
+                        note_swarm_event(
+                            &inner,
+                            format!("sole-bootstrap-sync-subscription-repair:{peer}"),
+                        );
+                        if swarm.disconnect_peer_id(peer).is_err() {
+                            note_swarm_event(
+                                &inner,
+                                format!("sole-bootstrap-sync-subscription-repair-failed:{peer}"),
+                            );
+                        }
+                    }
+                }
                 // A stalled transport event loop cannot retain pending tickets
                 // beyond the eight-second direct GetBlock budget.
                 direct_getblock_bindings.expire(std::time::Instant::now());
@@ -15056,6 +15154,59 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
 #[cfg(test)]
 mod bounded_authenticated_tip_refresh_regressions {
     use super::*;
+
+    #[test]
+    fn sole_bootstrap_failure_timer_never_inherits_outage_or_replaced_peer() {
+        let a = identity::Keypair::generate_ed25519().public().to_peer_id();
+        let b = identity::Keypair::generate_ed25519().public().to_peer_id();
+        let start = std::time::Instant::now();
+        let later = start + StdDuration::from_secs(45);
+        let mut observation = None;
+        observe_sole_bootstrap_sync_failure(&mut observation, None, start);
+        assert!(observation.is_none());
+        observe_sole_bootstrap_sync_failure(&mut observation, Some(a), later);
+        assert_eq!(observation, Some((a, later)));
+        observe_sole_bootstrap_sync_failure(
+            &mut observation,
+            Some(a),
+            later + StdDuration::from_secs(1),
+        );
+        assert_eq!(observation, Some((a, later)));
+        observe_sole_bootstrap_sync_failure(
+            &mut observation,
+            Some(b),
+            later + StdDuration::from_secs(2),
+        );
+        assert_eq!(observation, Some((b, later + StdDuration::from_secs(2))));
+        observe_sole_bootstrap_sync_failure(&mut observation, None, later);
+        assert!(observation.is_none());
+        observe_sole_bootstrap_sync_failure(&mut observation, Some(a), later);
+        assert_eq!(observation, Some((a, later)));
+    }
+
+    #[test]
+    fn sole_bootstrap_subscription_repair_is_bounded_and_preserves_healthy_routes() {
+        assert!(!sole_bootstrap_sync_repair_due(29, None, 1, true, false));
+        assert!(sole_bootstrap_sync_repair_due(30, None, 1, true, false));
+        assert!(!sole_bootstrap_sync_repair_due(
+            120,
+            Some(119),
+            1,
+            true,
+            false,
+        ));
+        assert!(sole_bootstrap_sync_repair_due(
+            120,
+            Some(120),
+            1,
+            true,
+            false,
+        ));
+        assert!(!sole_bootstrap_sync_repair_due(120, None, 2, true, false));
+        assert!(!sole_bootstrap_sync_repair_due(120, None, 0, true, false));
+        assert!(!sole_bootstrap_sync_repair_due(120, None, 1, false, false));
+        assert!(!sole_bootstrap_sync_repair_due(120, None, 1, true, true));
+    }
 
     #[test]
     fn observed_auth_subscription_still_retries_after_initial_publish_failure() {
