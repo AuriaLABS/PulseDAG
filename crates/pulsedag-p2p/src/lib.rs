@@ -6974,6 +6974,20 @@ fn sole_bootstrap_sync_repair_due(
         && !has_sync_subscriber
 }
 
+// The timer belongs to a sole configured bootstrap, never an outage with
+// zero connections. Connection lifecycle events also clear this observation.
+fn observe_sole_bootstrap_sync_failure(
+    observation: &mut Option<(PeerId, std::time::Instant)>,
+    sole_bootstrap: Option<PeerId>,
+    now: std::time::Instant,
+) {
+    match sole_bootstrap {
+        Some(peer) if observation.as_ref().is_some_and(|(old, _)| *old == peer) => {}
+        Some(peer) => *observation = Some((peer, now)),
+        None => *observation = None,
+    }
+}
+
 async fn run_libp2p_real_runtime(
     cfg: Libp2pConfig,
     local_key: identity::Keypair,
@@ -7087,7 +7101,7 @@ async fn run_libp2p_real_runtime(
     // bootstrap race; do not treat TCP/Noise connection as topic membership.
     // Mark only after a successful publish, and clear on final disconnect.
     let mut tips_refreshed_after_remote_sync_subscription: HashSet<PeerId> = HashSet::new();
-    let mut sync_no_subscriber_since: Option<std::time::Instant> = None;
+    let mut sync_no_subscriber_since: Option<(PeerId, std::time::Instant)> = None;
     let mut last_sync_subscription_repair: Option<std::time::Instant> = None;
     let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
     for (peer_id, addr) in &bootstrap_peers {
@@ -7609,8 +7623,16 @@ async fn run_libp2p_real_runtime(
                             match &result {
                                 Ok(_) => sync_no_subscriber_since = None,
                                 Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
-                                    sync_no_subscriber_since
-                                        .get_or_insert_with(std::time::Instant::now);
+                                    let mut connected = swarm.connected_peers();
+                                    let sole_bootstrap = connected.next().copied().filter(|peer| {
+                                        connected.next().is_none()
+                                            && bootstrap_peers.iter().any(|(configured, _)| configured == peer)
+                                    });
+                                    observe_sole_bootstrap_sync_failure(
+                                        &mut sync_no_subscriber_since,
+                                        sole_bootstrap,
+                                        std::time::Instant::now(),
+                                    );
                                 }
                                 Err(_) => {}
                             }
@@ -7847,6 +7869,7 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, sanitized);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        sync_no_subscriber_since = None;
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
                         handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id, direction);
@@ -7875,6 +7898,7 @@ async fn run_libp2p_real_runtime(
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, cause, .. } => {
+                        sync_no_subscriber_since = None;
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-disconnected:{direction}:{peer_id}"));
                         let reason = format!("swarm-connection-closed:{cause:?}");
@@ -8014,7 +8038,13 @@ async fn run_libp2p_real_runtime(
                     connected.len() == 1
                         && bootstrap_peers.iter().any(|(configured, _)| configured == peer)
                 });
-                if let (Some(since), Some(peer)) = (sync_no_subscriber_since, sole_bootstrap) {
+                if sync_no_subscriber_since
+                    .as_ref()
+                    .is_some_and(|(observed, _)| Some(*observed) != sole_bootstrap)
+                {
+                    sync_no_subscriber_since = None;
+                }
+                if let (Some((_, since)), Some(peer)) = (sync_no_subscriber_since, sole_bootstrap) {
                     if sole_bootstrap_sync_repair_due(
                         since.elapsed().as_secs(),
                         last_sync_subscription_repair.map(|last| last.elapsed().as_secs()),
@@ -15124,6 +15154,35 @@ mod direct_getblock_no_legacy_gossip_ingress_regressions {
 #[cfg(test)]
 mod bounded_authenticated_tip_refresh_regressions {
     use super::*;
+
+    #[test]
+    fn sole_bootstrap_failure_timer_never_inherits_outage_or_replaced_peer() {
+        let a = identity::Keypair::generate_ed25519().public().to_peer_id();
+        let b = identity::Keypair::generate_ed25519().public().to_peer_id();
+        let start = std::time::Instant::now();
+        let later = start + StdDuration::from_secs(45);
+        let mut observation = None;
+        observe_sole_bootstrap_sync_failure(&mut observation, None, start);
+        assert!(observation.is_none());
+        observe_sole_bootstrap_sync_failure(&mut observation, Some(a), later);
+        assert_eq!(observation, Some((a, later)));
+        observe_sole_bootstrap_sync_failure(
+            &mut observation,
+            Some(a),
+            later + StdDuration::from_secs(1),
+        );
+        assert_eq!(observation, Some((a, later)));
+        observe_sole_bootstrap_sync_failure(
+            &mut observation,
+            Some(b),
+            later + StdDuration::from_secs(2),
+        );
+        assert_eq!(observation, Some((b, later + StdDuration::from_secs(2))));
+        observe_sole_bootstrap_sync_failure(&mut observation, None, later);
+        assert!(observation.is_none());
+        observe_sole_bootstrap_sync_failure(&mut observation, Some(a), later);
+        assert_eq!(observation, Some((a, later)));
+    }
 
     #[test]
     fn sole_bootstrap_subscription_repair_is_bounded_and_preserves_healthy_routes() {
