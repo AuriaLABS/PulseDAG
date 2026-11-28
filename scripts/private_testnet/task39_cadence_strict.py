@@ -112,6 +112,67 @@ def diagnostic_fields(data):
     return result
 
 
+READINESS_FIELDS = (
+    "overall_status", "node_ready", "node_operational_ready",
+    "mining_templates_available", "peer_health", "private_testnet_ready",
+    "private_conservative_ready", "ghostdag_dev_ready", "fast_cadence_ready",
+    "public_testnet_ready", "ready_for_release",
+)
+READINESS_METRIC_FIELDS = (
+    "accepted_blocks", "orphan_count", "pending_missing_parents",
+    "pending_block_requests", "inflight_block_requests",
+    "duplicate_block_requests_suppressed", "missing_parent_requests_sent",
+    "orphan_blocks_retried", "orphan_blocks_resolved", "selected_tip",
+    "best_height", "p2p_peer_count", "storage_last_commit_height",
+    "state_root", "consensus_mode", "ghostdag_metadata_active",
+    "high_cadence_allowed",
+)
+
+
+def bounded_strings(values):
+    if not isinstance(values, list):
+        return []
+    return [value[:512] for value in values[:16] if isinstance(value, str)]
+
+
+def readiness_diagnostic_fields(data):
+    result = {}
+    for key in READINESS_FIELDS:
+        value = data.get(key)
+        if key in data and (value is None or isinstance(value, (bool, int, str))):
+            result[key] = value[:512] if isinstance(value, str) else value
+    categories = data.get("categories")
+    if isinstance(categories, dict):
+        result["categories"] = {
+            name[:128]: {
+                "status": entry["status"][:32],
+                "reasons": bounded_strings(entry.get("reasons")),
+            }
+            for name, entry in sorted(categories.items())[:32]
+            if isinstance(name, str) and isinstance(entry, dict)
+            and isinstance(entry.get("status"), str)
+        }
+    metrics = data.get("metrics")
+    if isinstance(metrics, dict):
+        result["metrics"] = {
+            key: value[:512] if isinstance(value, str) else value
+            for key in READINESS_METRIC_FIELDS
+            if key in metrics
+            for value in (metrics[key],)
+            if value is None or isinstance(value, (bool, int, str))
+        }
+        rejected = metrics.get("rejected_blocks_by_reason")
+        if isinstance(rejected, dict):
+            result["metrics"]["rejected_blocks_by_reason"] = {
+                name[:128]: count for name, count in sorted(rejected.items())[:32]
+                if isinstance(name, str) and type(count) is int and count >= 0
+            }
+    for key in ("release_blockers", "warnings"):
+        if key in data:
+            result[key] = bounded_strings(data[key])
+    return result
+
+
 def capture_convergence_failure(base, urls, last_complete, last_attempt):
     # Capture after the deadline, before original_run tears down the nodes.
     # Diagnostic failures must never replace or convert the failed gate.
@@ -120,9 +181,11 @@ def capture_convergence_failure(base, urls, last_complete, last_attempt):
         endpoints = {}
         for path in ("/status", "/readiness", "/sync/status", "/p2p/status"):
             try:
+                data = base.api_data(url, path)
+                project = readiness_diagnostic_fields if path == "/readiness" else diagnostic_fields
                 endpoints[path] = {
                     "t": time.monotonic_ns(),
-                    "fields": diagnostic_fields(base.api_data(url, path)),
+                    "fields": project(data),
                 }
             except Exception as exc:
                 endpoints[path] = {"error_type": type(exc).__name__}
@@ -412,6 +475,22 @@ def selftest():
         def api_data(url, path):
             if path == "/p2p/status":
                 raise TimeoutError("unavailable")
+            if path == "/readiness":
+                return {
+                    "overall_status": "fail",
+                    "node_ready": False,
+                    "mining_templates_available": False,
+                    "categories": {
+                        "sync": {"status": "fail", "reasons": ["missing parent", "x" * 600]},
+                    },
+                    "metrics": {
+                        "pending_missing_parents": 1,
+                        "rejected_blocks_by_reason": {"missing_parent": 2},
+                        "ignored": "secret",
+                    },
+                    "release_blockers": ["sync"],
+                    "effective_rpc_bind": "ignored",
+                }
             return {"selected_height": 9, "sync_state": "degraded", "ignored": "secret"}
 
     failure = capture_convergence_failure(
@@ -422,6 +501,17 @@ def selftest():
     endpoints = failure["post_deadline_diagnostic_only"]["a"]
     assert endpoints["/status"]["fields"]["sync_state"] == "degraded"
     assert "ignored" not in endpoints["/status"]["fields"]
+    readiness = endpoints["/readiness"]["fields"]
+    assert readiness["overall_status"] == "fail"
+    assert readiness["node_ready"] is False
+    assert readiness["mining_templates_available"] is False
+    assert readiness["categories"]["sync"]["status"] == "fail"
+    assert readiness["categories"]["sync"]["reasons"] == ["missing parent", "x" * 512]
+    assert readiness["metrics"]["pending_missing_parents"] == 1
+    assert readiness["metrics"]["rejected_blocks_by_reason"] == {"missing_parent": 2}
+    assert readiness["release_blockers"] == ["sync"]
+    assert "effective_rpc_bind" not in readiness
+    assert "ignored" not in readiness["metrics"]
     assert endpoints["/p2p/status"] == {"error_type": "TimeoutError"}
     assert not convergence_contract({"a": good["a"]})
     print("task39 strict evidence guards self-test: PASS")
