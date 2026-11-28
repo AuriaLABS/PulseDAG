@@ -45,7 +45,8 @@ pub struct RemoteSelectedTipEvidence {
     pub selected_height: u64,
     pub selected_tip: Option<String>,
     pub chain_id: String,
-    pub observed_at_unix: u64,
+    /// Local receipt of an authenticated inventory, not its remote timestamp.
+    pub received_at_unix: u64,
     pub direct_request_capable: bool,
     pub connected: bool,
     pub from_tip_inventory: bool,
@@ -138,12 +139,14 @@ pub fn select_remote_sync_evidence(
         .filter(|ev| ev.chain_id == chain_id)
         .filter(|ev| ev.connected && ev.direct_request_capable && ev.from_tip_inventory)
         .filter(|ev| {
-            now_unix.saturating_sub(ev.observed_at_unix) <= REMOTE_SELECTED_TIP_MAX_AGE_SECS
+            ev.received_at_unix != 0
+                && ev.received_at_unix <= now_unix
+                && now_unix - ev.received_at_unix <= REMOTE_SELECTED_TIP_MAX_AGE_SECS
         })
         .max_by(|a, b| {
             a.selected_height
                 .cmp(&b.selected_height)
-                .then_with(|| a.observed_at_unix.cmp(&b.observed_at_unix))
+                .then_with(|| a.received_at_unix.cmp(&b.received_at_unix))
                 .then_with(|| b.peer_id.cmp(&a.peer_id))
         })
         .cloned()
@@ -173,7 +176,7 @@ pub fn remote_sync_evidence_from_p2p_status(
             selected_height: ev.selected_height,
             selected_tip: ev.selected_tip.clone(),
             chain_id: ev.chain_id.clone(),
-            observed_at_unix: ev.observed_at_unix,
+            received_at_unix: ev.received_at_unix,
             direct_request_capable: ev.direct_request_capable,
             connected: ev.connected,
             from_tip_inventory: true,
@@ -473,7 +476,7 @@ mod tests {
             selected_height: height,
             selected_tip: Some(format!("remote-{height}")),
             chain_id: "testnet-dev".to_string(),
-            observed_at_unix: 1_000,
+            received_at_unix: 1_000,
             direct_request_capable: true,
             connected: true,
             from_tip_inventory: true,
@@ -511,7 +514,7 @@ mod tests {
     #[test]
     fn disconnected_stale_or_wrong_chain_peer_evidence_is_not_used() {
         let stale = RemoteSelectedTipEvidence {
-            observed_at_unix: 900,
+            received_at_unix: 900,
             ..fresh_remote("stale", 700)
         };
         let disconnected = RemoteSelectedTipEvidence {
@@ -522,10 +525,27 @@ mod tests {
             chain_id: "other".into(),
             ..fresh_remote("wrong", 720)
         };
+        let future = RemoteSelectedTipEvidence {
+            received_at_unix: 1_001,
+            ..fresh_remote("future", 730)
+        };
+        let missing_receipt = RemoteSelectedTipEvidence {
+            received_at_unix: 0,
+            ..fresh_remote("missing", 740)
+        };
         assert!(select_remote_sync_evidence(
             "testnet-dev",
             1_000,
-            &[stale, disconnected, wrong_chain]
+            &[stale, disconnected, wrong_chain, future, missing_receipt]
+        )
+        .is_none());
+        assert!(select_remote_sync_evidence(
+            "testnet-dev",
+            1,
+            &[RemoteSelectedTipEvidence {
+                received_at_unix: 0,
+                ..fresh_remote("missing", 740)
+            }]
         )
         .is_none());
     }
@@ -739,7 +759,7 @@ mod tests {
 
     #[test]
     fn p2p_status_remote_inventory_produces_n5_style_gap() {
-        let status = P2pStatus {
+        let mut status = P2pStatus {
             chain_id: "testnet-dev".into(),
             connected_peers: vec!["n1".into()],
             remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
@@ -775,5 +795,23 @@ mod tests {
         assert_eq!(state.network_selected_height_gap, 24);
         assert_eq!(state.sync_state, "locating_common_ancestor");
         assert_eq!(state.catchup_stage, "discovering");
+
+        // The remote clock is not authority for freshness, even for a
+        // connected authenticated peer. A future observation cannot renew
+        // an old local receipt; a skewed remote clock cannot expire a fresh one.
+        status.remote_selected_tip_inventory[0].observed_at_unix = u64::MAX;
+        status.remote_selected_tip_inventory[0].received_at_unix = 969;
+        let evidence = remote_sync_evidence_from_p2p_status(Some(&status), 1_000);
+        assert!(select_remote_sync_evidence("testnet-dev", 1_000, &evidence).is_none());
+
+        status.remote_selected_tip_inventory[0].observed_at_unix = 1;
+        status.remote_selected_tip_inventory[0].received_at_unix = 970;
+        let evidence = remote_sync_evidence_from_p2p_status(Some(&status), 1_000);
+        assert_eq!(
+            select_remote_sync_evidence("testnet-dev", 1_000, &evidence)
+                .unwrap()
+                .peer_id,
+            "n1"
+        );
     }
 }
