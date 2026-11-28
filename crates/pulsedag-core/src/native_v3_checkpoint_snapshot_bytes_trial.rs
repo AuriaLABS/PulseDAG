@@ -25,6 +25,26 @@ fn reject(reason: &str) -> PulseError {
     ))
 }
 
+/// Owned, bounded bytes from the exact stream whose signed SHA-256 was
+/// verified. There is no mutable accessor or public constructor. Consumers
+/// must not reopen the original path and assume it is the same snapshot.
+/// This token proves byte identity only, never economic or restore authority.
+#[derive(Debug)]
+pub struct DormantVerifiedCheckpointBytes {
+    bytes: Vec<u8>,
+    verdict: NativeV3DormantSignatureVerdict,
+}
+
+impl DormantVerifiedCheckpointBytes {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn verdict(&self) -> &NativeV3DormantSignatureVerdict {
+        &self.verdict
+    }
+}
+
 /// First verify an Ed25519 signature against a separately provisioned key,
 /// exact signed commitments and monotonic floor, *then* read the candidate
 /// bytes as one bounded sequential stream. All untrusted I/O errors fail
@@ -33,14 +53,27 @@ pub fn verify_dormant_native_v3_checkpoint_snapshot_bytes<R: Read>(
     claim: &NativeV3CheckpointSignedClaim,
     pin: &NativeV3ExternallyTrustedCheckpointPin,
     previous: Option<NativeV3PreviousAuthenticatedPosition>,
-    mut snapshot: R,
+    snapshot: R,
     max_bytes: u64,
 ) -> Result<NativeV3DormantSignatureVerdict, PulseError> {
+    Ok(read_dormant_verified_checkpoint_bytes(claim, pin, previous, snapshot, max_bytes)?.verdict)
+}
+
+/// Verify and retain the exact bounded bytes, with no subsequent path lookup.
+/// A caller can inspect the immutable bytes but cannot infer restore authority.
+pub fn read_dormant_verified_checkpoint_bytes<R: Read>(
+    claim: &NativeV3CheckpointSignedClaim,
+    pin: &NativeV3ExternallyTrustedCheckpointPin,
+    previous: Option<NativeV3PreviousAuthenticatedPosition>,
+    mut snapshot: R,
+    max_bytes: u64,
+) -> Result<DormantVerifiedCheckpointBytes, PulseError> {
     let mut verdict = verify_dormant_native_v3_checkpoint_signature(claim, pin, previous)?;
     if max_bytes == 0 || max_bytes > DORMANT_CHECKPOINT_SNAPSHOT_MAX_BYTES {
         return Err(reject("invalid bounded snapshot length limit"));
     }
     let mut sha = Sha256::new();
+    let mut bytes = Vec::new();
     let mut length = 0_u64;
     let mut chunk = [0_u8; READ_CHUNK_BYTES];
     loop {
@@ -56,7 +89,11 @@ pub fn verify_dormant_native_v3_checkpoint_snapshot_bytes<R: Read>(
         if length > max_bytes {
             return Err(reject("snapshot exceeds bounded byte limit"));
         }
+        if amount > chunk.len() {
+            return Err(reject("snapshot reader reported invalid byte count"));
+        }
         sha.update(&chunk[..amount]);
+        bytes.extend_from_slice(&chunk[..amount]);
     }
     if length == 0 {
         return Err(reject("empty signed snapshot is not a usable state"));
@@ -68,7 +105,7 @@ pub fn verify_dormant_native_v3_checkpoint_snapshot_bytes<R: Read>(
 
     // Still no full-DAG, monetary replay, persistence, restore or launch GO.
     verdict.snapshot_bytes_verified = true;
-    Ok(verdict)
+    Ok(DormantVerifiedCheckpointBytes { bytes, verdict })
 }
 
 #[cfg(test)]
@@ -139,6 +176,32 @@ mod tests {
         assert!(!verdict.monetary_replay_verified);
         assert!(!verdict.checkpoint_restore_authorized);
         assert!(!verdict.testnet_or_mainnet_launch_authorized);
+    }
+
+    #[test]
+    fn authenticated_snapshot_retains_exact_bytes_after_source_changes() {
+        let mut source = b"fixed checkpoint bytes".to_vec();
+        let (claim, pin) = signed_fixture(&source);
+        let verified = read_dormant_verified_checkpoint_bytes(
+            &claim,
+            &pin,
+            None,
+            Cursor::new(&source),
+            source.len() as u64,
+        )
+        .unwrap();
+        source[0] ^= 1;
+        assert_eq!(verified.bytes(), b"fixed checkpoint bytes");
+        assert!(verified.verdict().snapshot_bytes_verified);
+        assert!(!verified.verdict().checkpoint_restore_authorized);
+        assert!(read_dormant_verified_checkpoint_bytes(
+            &claim,
+            &pin,
+            None,
+            Cursor::new(&source),
+            source.len() as u64,
+        )
+        .is_err());
     }
 
     #[test]
