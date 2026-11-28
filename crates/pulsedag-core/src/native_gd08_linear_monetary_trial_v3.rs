@@ -1083,6 +1083,212 @@ mod tests {
         assert!(inspect(&oversized).is_err());
     }
 
+    // Test-only snapshot encoding, not a production wire format. The
+    // independently reconstructed spendable coins are sorted by outpoint;
+    // the full creation history and ordered pending queue are retained.
+    fn linear_checkpoint_fixture_bytes(replay: &LinearReplayState) -> Result<Vec<u8>, PulseError> {
+        let mut coins = replay.state.utxos.values().collect::<Vec<_>>();
+        coins.sort_unstable_by(|a, b| a.outpoint.cmp(&b.outpoint));
+        serde_json::to_vec(&(
+            "PulseDAG:UNAPPROVED:linear-checkpoint-fixture:v1",
+            &replay.report.state_root,
+            coins,
+            &replay.created,
+            &replay.pending,
+        ))
+        .map_err(|error| invalid(error.to_string()))
+    }
+
+    fn fixture_digest(value: &str) -> Result<[u8; 32], PulseError> {
+        hex::decode(value)
+            .map_err(|error| invalid(error.to_string()))?
+            .try_into()
+            .map_err(|_| invalid("fixture digest width"))
+    }
+
+    // This composition deliberately requires the full unpruned corpus.
+    // Neither the signed claim nor snapshot bytes supply the replay state.
+    fn verify_signed_linear_checkpoint_fixture(
+        claim: &crate::native_v3_checkpoint_external_signature::NativeV3CheckpointSignedClaim,
+        pin: &crate::native_v3_checkpoint_external_signature::NativeV3ExternallyTrustedCheckpointPin,
+        snapshot: &[u8],
+        genesis: &str,
+        tip: &BlockId,
+        corpus: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    ) -> Result<(), PulseError> {
+        use crate::native_v3_checkpoint_snapshot_bytes_trial::{
+            read_dormant_verified_checkpoint_bytes, DORMANT_CHECKPOINT_SNAPSHOT_MAX_BYTES,
+        };
+
+        let verified = read_dormant_verified_checkpoint_bytes(
+            claim,
+            pin,
+            None,
+            std::io::Cursor::new(snapshot),
+            DORMANT_CHECKPOINT_SNAPSHOT_MAX_BYTES,
+        )?;
+        let replay = replay_linear_state(CHAIN, NS, genesis, tip, corpus, &CADENCE)?;
+        // This fixture's checkpoint is the selected linear tip itself.
+        // The linear candidate starts at score zero; every non-genesis
+        // block contributes exactly one. GD08 digest is NOT full consensus.
+        if claim.chain_id != CHAIN
+            || claim.genesis_hash != fixture_digest(genesis)?
+            || claim.checkpoint_hash != fixture_digest(tip)?
+            || claim.selected_tip_hash != fixture_digest(tip)?
+            || claim.checkpoint_height != corpus[tip].header.height
+            || claim.blue_score != replay.report.monetary_score
+            || claim.consensus_digest != fixture_digest(&replay.report.order_digest)?
+            || claim.monetary_digest
+                != fixture_digest(&linear_checkpoint_commitment(
+                    CHAIN, NS, genesis, tip, &replay,
+                ))?
+            || verified.bytes() != linear_checkpoint_fixture_bytes(&replay)?.as_slice()
+        {
+            return Err(invalid("signed checkpoint differs from full linear replay"));
+        }
+        assert!(!verified.verdict().checkpoint_restore_authorized);
+        assert!(!verified.verdict().testnet_or_mainnet_launch_authorized);
+        Ok(())
+    }
+
+    fn assert_signed_linear_checkpoint_matches_history(
+        genesis: &str,
+        tip: &BlockId,
+        corpus: &BTreeMap<BlockId, BlockEnvelopeV3>,
+    ) {
+        use crate::native_v3_checkpoint_external_signature::{
+            dormant_native_v3_checkpoint_signature_preimage, NativeV3CheckpointSignedClaim,
+            NativeV3ExternallyTrustedCheckpointPin,
+        };
+        use sha2::{Digest, Sha256};
+
+        let replay = replay_linear_state(CHAIN, NS, genesis, tip, corpus, &CADENCE).unwrap();
+        let snapshot = linear_checkpoint_fixture_bytes(&replay).unwrap();
+        let key = SigningKey::from_bytes(&[37; 32]);
+        let mut claim = NativeV3CheckpointSignedClaim {
+            chain_id: CHAIN.into(),
+            genesis_hash: fixture_digest(genesis).unwrap(),
+            checkpoint_hash: fixture_digest(tip).unwrap(),
+            selected_tip_hash: fixture_digest(tip).unwrap(),
+            snapshot_sha256: Sha256::digest(&snapshot).into(),
+            consensus_digest: fixture_digest(&replay.report.order_digest).unwrap(),
+            monetary_digest: fixture_digest(&linear_checkpoint_commitment(
+                CHAIN, NS, genesis, tip, &replay,
+            ))
+            .unwrap(),
+            checkpoint_height: corpus[tip].header.height,
+            blue_score: replay.report.monetary_score,
+            sequence: 1,
+            claimed_public_key: key.verifying_key().to_bytes(),
+            signature: [0; 64],
+        };
+        let sign = |claim: &mut NativeV3CheckpointSignedClaim| {
+            let message = dormant_native_v3_checkpoint_signature_preimage(claim).unwrap();
+            claim.signature = key.sign(&message).to_bytes();
+        };
+        sign(&mut claim);
+        let pin = NativeV3ExternallyTrustedCheckpointPin {
+            chain_id: CHAIN.into(),
+            genesis_hash: fixture_digest(genesis).unwrap(),
+            signer_public_key: key.verifying_key().to_bytes(),
+            checkpoint_hash: fixture_digest(tip).unwrap(),
+            selected_tip_hash: fixture_digest(tip).unwrap(),
+            snapshot_sha256: Sha256::digest(&snapshot).into(),
+            consensus_digest: fixture_digest(&replay.report.order_digest).unwrap(),
+            monetary_digest: fixture_digest(&linear_checkpoint_commitment(
+                CHAIN, NS, genesis, tip, &replay,
+            ))
+            .unwrap(),
+            minimum_height: corpus[tip].header.height,
+            minimum_blue_score: replay.report.monetary_score,
+            minimum_sequence: 1,
+        };
+        verify_signed_linear_checkpoint_fixture(&claim, &pin, &snapshot, genesis, tip, corpus)
+            .unwrap();
+
+        // Even a newly valid signature and matching external digest pin
+        // cannot substitute a false monetary commitment for full replay.
+        let mut wrong = claim.clone();
+        wrong.monetary_digest[0] ^= 1;
+        sign(&mut wrong);
+        let mut wrong_pin = pin.clone();
+        wrong_pin.monetary_digest = wrong.monetary_digest;
+        assert!(verify_signed_linear_checkpoint_fixture(
+            &wrong, &wrong_pin, &snapshot, genesis, tip, corpus,
+        )
+        .is_err());
+
+        // A signed replacement snapshot with the genuine monetary digest
+        // is still not the canonical state bytes reconstructed from history.
+        let mut altered = snapshot.clone();
+        altered.push(b' ');
+        let mut wrong = claim.clone();
+        wrong.snapshot_sha256 = Sha256::digest(&altered).into();
+        sign(&mut wrong);
+        let mut wrong_pin = pin.clone();
+        wrong_pin.snapshot_sha256 = wrong.snapshot_sha256;
+        assert!(verify_signed_linear_checkpoint_fixture(
+            &wrong, &wrong_pin, &altered, genesis, tip, corpus,
+        )
+        .is_err());
+
+        let mut truncated = corpus.clone();
+        truncated.remove(genesis);
+        assert!(verify_signed_linear_checkpoint_fixture(
+            &claim, &pin, &snapshot, genesis, tip, &truncated,
+        )
+        .is_err());
+    }
+
+    // Synthetic codec fixture only: independent Python hashlib/struct
+    // preimage (851 bytes). This is not a valid chain or restored state.
+    #[test]
+    fn linear_checkpoint_commitment_matches_independent_encoding_vector() {
+        let earlier = OutPoint {
+            txid: "aa".repeat(32),
+            index: 2,
+        };
+        let pending = OutPoint {
+            txid: "bb".repeat(32),
+            index: 0,
+        };
+        let replay = LinearReplayState {
+            report: DormantNativeLinearMonetaryReportV3 {
+                order_digest: "44".repeat(32),
+                cadence_fingerprint: "33".repeat(32),
+                state_root: "55".repeat(32),
+                monetary_score: 5,
+                total_subsidy_atoms: 100,
+                pending_reward_atoms: 30,
+                spendable_atoms: 70,
+                mature_rewards: 3,
+                applied_transfers: 1,
+            },
+            state: UtxoState::default(),
+            created: BTreeSet::from([pending.clone(), earlier]),
+            pending: VecDeque::from([(
+                5,
+                Utxo {
+                    outpoint: pending,
+                    address: "pulse1vector".into(),
+                    amount: 30,
+                    coinbase: true,
+                    height: 5,
+                },
+            )]),
+        };
+        assert_eq!(
+            linear_checkpoint_commitment(
+                "checkpoint-vector",
+                123,
+                &"11".repeat(32),
+                &"22".repeat(32),
+                &replay,
+            ),
+            "f43b02955245e5d90054236cb3e715123066b1542fb0882c6b6356d489b40206"
+        );
+    }
+
     #[test]
     fn native_reward_matures_then_signed_spend_and_fee_preserve_supply() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
@@ -1182,6 +1388,8 @@ mod tests {
             observed.total_subsidy_atoms,
             observed.spendable_atoms + observed.pending_reward_atoms
         );
+
+        assert_signed_linear_checkpoint_matches_history(&g, &b4.hash, &corpus);
 
         let committed = inspect_dormant_native_linear_checkpoint_commitment(
             CHAIN, NS, &g, &b4.hash, &corpus, &CADENCE,
