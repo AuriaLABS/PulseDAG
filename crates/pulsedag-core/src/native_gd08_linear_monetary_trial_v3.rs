@@ -1139,7 +1139,9 @@ mod tests {
             || claim.blue_score != replay.report.monetary_score
             || claim.consensus_digest != fixture_digest(&replay.report.order_digest)?
             || claim.monetary_digest
-                != fixture_digest(&linear_checkpoint_commitment(CHAIN, NS, genesis, tip, &replay))?
+                != fixture_digest(&linear_checkpoint_commitment(
+                    CHAIN, NS, genesis, tip, &replay,
+                ))?
             || verified.bytes() != linear_checkpoint_fixture_bytes(&replay)?.as_slice()
         {
             return Err(invalid("signed checkpoint differs from full linear replay"));
