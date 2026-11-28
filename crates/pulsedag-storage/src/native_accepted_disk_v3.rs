@@ -1229,6 +1229,16 @@ mod tests {
                 .unwrap();
                 assert_eq!(report.monetary_score, generation);
                 assert_eq!(report.mature_rewards, index);
+                assert_eq!(
+                    report.applied_transfers,
+                    usize::from(generation >= 3) + usize::from(generation >= 19)
+                );
+                assert_eq!(
+                    report.pending_reward_atoms,
+                    pulsedag_core::monetary_v3::subsidy_atoms_for_score(generation, &cadence)
+                        .unwrap()
+                        + u64::from(generation == 3 || generation == 19)
+                );
                 assert_eq!(report.state_root, prefix[&parent].header.state_root);
                 assert_eq!(
                     report.total_subsidy_atoms,
