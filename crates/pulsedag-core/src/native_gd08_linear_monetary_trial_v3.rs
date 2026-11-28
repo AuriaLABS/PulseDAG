@@ -1083,6 +1083,55 @@ mod tests {
         assert!(inspect(&oversized).is_err());
     }
 
+    // Synthetic codec fixture only: independent Python hashlib/struct
+    // preimage (851 bytes). This is not a valid chain or restored state.
+    #[test]
+    fn linear_checkpoint_commitment_matches_independent_encoding_vector() {
+        let earlier = OutPoint {
+            txid: "aa".repeat(32),
+            index: 2,
+        };
+        let pending = OutPoint {
+            txid: "bb".repeat(32),
+            index: 0,
+        };
+        let replay = LinearReplayState {
+            report: DormantNativeLinearMonetaryReportV3 {
+                order_digest: "44".repeat(32),
+                cadence_fingerprint: "33".repeat(32),
+                state_root: "55".repeat(32),
+                monetary_score: 5,
+                total_subsidy_atoms: 100,
+                pending_reward_atoms: 30,
+                spendable_atoms: 70,
+                mature_rewards: 3,
+                applied_transfers: 1,
+            },
+            state: UtxoState::default(),
+            created: BTreeSet::from([pending.clone(), earlier]),
+            pending: VecDeque::from([(
+                5,
+                Utxo {
+                    outpoint: pending,
+                    address: "pulse1vector".into(),
+                    amount: 30,
+                    coinbase: true,
+                    height: 5,
+                },
+            )]),
+        };
+        assert_eq!(
+            linear_checkpoint_commitment(
+                "checkpoint-vector",
+                123,
+                &"11".repeat(32),
+                &"22".repeat(32),
+                &replay,
+            ),
+            "f43b02955245e5d90054236cb3e715123066b1542fb0882c6b6356d489b40206"
+        );
+    }
+
     #[test]
     fn native_reward_matures_then_signed_spend_and_fee_preserve_supply() {
         let genesis = dormant_native_genesis_envelope_v3_ns(CHAIN, NS).unwrap();
