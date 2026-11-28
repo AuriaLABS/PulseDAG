@@ -31,6 +31,7 @@ class SamplingState:
         self.failures = defaultdict(lambda: defaultdict(int))
         self.failure_details = defaultdict(lambda: defaultdict(list))
         self.baseline_tips = set()
+        self.post_convergence_failure = None
 
 
 STATE = SamplingState()
@@ -75,6 +76,66 @@ def convergence_contract(current):
         and all(isinstance(value, str) and value for value in ordered_dag_digests)
         and len(set(ordered_dag_digests)) == 1
     )
+
+
+# Keep only diagnostic fields, not entire RPC payloads or unbounded logs.
+CONVERGENCE_FIELDS = (
+    "selected_tip", "selected_height", "ordered_dag_tip",
+    "ordered_dag_state_root", "selection_digest", "ordered_dag_digest",
+    "best_height", "tip_count", "orphan_count", "persisted_block_count",
+    "peer_count", "sync_state", "canonical_sync_state", "catchup_stage",
+    "network_selected_height_gap", "network_selected_tip_mismatch",
+    "storage_replay_gap", "best_remote_selected_height",
+    "best_remote_selected_tip", "live_sync_error_active", "sync_live_error",
+    "sync_last_historical_error", "pending_missing_parents",
+    "pending_block_requests", "local_pending_missing_parents",
+    "active_session_remaining_blocks", "active_session_id",
+    "p2p_status_stale", "p2p_status_degraded", "last_error",
+    "last_swarm_event", "ready", "status", "code",
+)
+
+
+def diagnostic_fields(data):
+    result = {}
+    for key in CONVERGENCE_FIELDS:
+        value = data.get(key)
+        if key in data and (value is None or isinstance(value, (bool, int, str))):
+            result[key] = value[:512] if isinstance(value, str) else value
+    pipeline = data.get("sync_pipeline")
+    if isinstance(pipeline, dict):
+        result["sync_pipeline"] = {
+            key: value[:512] if isinstance(value, str) else value
+            for key, value in pipeline.items()
+            if key in CONVERGENCE_FIELDS
+            and (value is None or isinstance(value, (bool, int, str)))
+        }
+    return result
+
+
+def capture_convergence_failure(base, urls, last_complete, last_attempt):
+    # Capture after the deadline, before original_run tears down the nodes.
+    # Diagnostic failures must never replace or convert the failed gate.
+    snapshots = {}
+    for name, url in urls.items():
+        endpoints = {}
+        for path in ("/status", "/readiness", "/sync/status", "/p2p/status"):
+            try:
+                endpoints[path] = {
+                    "t": time.monotonic_ns(),
+                    "fields": diagnostic_fields(base.api_data(url, path)),
+                }
+            except Exception as exc:
+                endpoints[path] = {"error_type": type(exc).__name__}
+        snapshots[name] = endpoints
+    return {
+        "last_complete_poll": {
+            name: diagnostic_fields(data) for name, data in last_complete.items()
+        },
+        "last_attempt": {
+            name: diagnostic_fields(data) for name, data in last_attempt.items()
+        },
+        "post_deadline_diagnostic_only": snapshots,
+    }
 
 
 def per_node_poll_gaps(samples):
@@ -191,6 +252,7 @@ def install(base):
         STATE.phase = "post"
         deadline = time.monotonic() + seconds
         last = {}
+        current = {}
         while time.monotonic() < deadline:
             strict_sample(urls, samples)
             current = {}
@@ -204,6 +266,9 @@ def install(base):
                 if convergence_contract(current):
                     return True, current
             time.sleep(0.25)
+        STATE.post_convergence_failure = capture_convergence_failure(
+            base, urls, last, current
+        )
         return False, last
 
     def strict_propagation(samples):
@@ -277,6 +342,9 @@ def install(base):
                         f"canonical state-apply latency has no accepted sample node={name}"
                     )
 
+        if STATE.post_convergence_failure is not None:
+            manifest["post_convergence_failure"] = STATE.post_convergence_failure
+
         measurement = manifest.setdefault("measurement", {})
         measurement["sampling_coverage_by_node"] = coverage
         measurement["sampling_coverage_contract"] = {
@@ -339,6 +407,23 @@ def selftest():
     assert not convergence_contract({**good, "c": {**good["c"], "ordered_dag_tip": None}})
     assert not convergence_contract({**good, "c": {**good["c"], "selection_digest": "different"}})
     assert not convergence_contract({**good, "c": {**good["c"], "ordered_dag_digest": None}})
+    class DiagnosticFixture:
+        @staticmethod
+        def api_data(url, path):
+            if path == "/p2p/status":
+                raise TimeoutError("unavailable")
+            return {"selected_height": 9, "sync_state": "degraded", "ignored": "secret"}
+
+    failure = capture_convergence_failure(
+        DiagnosticFixture(), {"a": "fixture"}, good, {"a": good["a"]}
+    )
+    assert failure["last_complete_poll"]["c"]["selected_tip"] == "s"
+    assert set(failure["last_attempt"]) == {"a"}
+    endpoints = failure["post_deadline_diagnostic_only"]["a"]
+    assert endpoints["/status"]["fields"]["sync_state"] == "degraded"
+    assert "ignored" not in endpoints["/status"]["fields"]
+    assert endpoints["/p2p/status"] == {"error_type": "TimeoutError"}
+    assert not convergence_contract({"a": good["a"]})
     print("task39 strict evidence guards self-test: PASS")
 
 
